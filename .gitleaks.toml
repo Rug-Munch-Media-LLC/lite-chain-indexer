@@ -1,0 +1,24 @@
+# LiteChainIndexer — gitleaks config
+# Public open source project — no secrets in git.
+
+[allowlist]
+description = "Known safe patterns for LiteChainIndexer"
+
+# Allow hex-encoded example addresses used in test code and chain configs
+regexes = [
+    "^0x0000000000000000000000000000000000000000$",
+    "^0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f$",
+    "^0x1F98431c8aD98523631AE4a59f267346ea31F984$",
+    "^0x8909Dc15e40173Ff4699343b6eB8132c65e18eC6$",
+    "^0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73$",
+    "^0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32$",
+    "^0xf1D7CC64Fb4452F05c498126312eBE29f30Fbcf9$",
+    "^0x33128a8fC17869897dcE68Ed026d694621f6FDfD$",
+    "^0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7$",
+    # Event topic hashes (keccak256, not secrets)
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+    "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822",
+    "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67",
+    "0x79b58832c15b09feb3df60e6992ac2bf90bb88a193b76dcf74a5529cfc6a96e2",
+    "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118",
+]
