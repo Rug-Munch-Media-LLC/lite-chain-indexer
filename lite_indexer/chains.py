@@ -31,21 +31,18 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.mevblocker.io",  # T3 — mevblocker
         "https://rpc.ankr.com/eth",  # T3 — ankr
     ],
-    # ── Base (10 endpoints) ─────────────────────────────────────────────
-    # T1: publicnode, 1rpc.io (fast)
-    # T2: onfinality.io (verified), meowrpc, mainnet.base.org (official)
-    # T3: blastapi, ankr, tatum, drpc.org, tenderly
+    # ── Base (4 endpoints) ──────────────────────────────────────────────
+    # T1: tenderly.co (the only reliable eth_getLogs at batch scale)
+    # T2: mainnet.base.org (official — 10-block range limit for eth_getLogs)
+    # T3: blastapi (10-block range, last-resort fallback)
+    # NOTE: Most free Base RPCs (publicnode, 1rpc, meowrpc, onfinality,
+    #       ankr, drpc, tatum) no longer support eth_getLogs on free tier.
+    #       They return auth/rate errors. mainnet.base.org also has a
+    #       "backend response too large" error beyond 10-block range.
     "base": [
-        "https://base-rpc.publicnode.com",  # T1 — publicnode (fast)
-        "https://1rpc.io/base",  # T1 — 1rpc
-        "https://base.api.onfinality.io/public",  # T2 — onfinality (verified)
-        "https://base.meowrpc.com",  # T2 — meowrpc
-        "https://mainnet.base.org",  # T2 — official Base RPC
-        "https://base-mainnet.public.blastapi.io",  # T3 — blastapi
-        "https://rpc.ankr.com/base",  # T3 — ankr
-        "https://base-mainnet.gateway.tatum.io",  # T3 — tatum
-        "https://base.drpc.org",  # T3 — drpc.org
-        "https://base.gateway.tenderly.co",  # T3 — tenderly
+        "https://base.gateway.tenderly.co",  # T1 — tenderly (reliable eth_getLogs, 3 req/s)
+        "https://mainnet.base.org",  # T2 — official (small-range fallback)
+        "https://base-mainnet.public.blastapi.io",  # T3 — blastapi (last resort)
     ],
     # ── BSC (10 endpoints) ─────────────────────────────────────────────
     # T1: publicnode, blastapi (fast)
@@ -230,16 +227,16 @@ TRON_ENDPOINTS: list[str] = [
 ]
 
 # Summary of EVM endpoints per chain:
-#   ethereum: 12    base: 10    bsc: 10    polygon: 8
+#   ethereum: 12    base: 3     bsc: 10    polygon: 8
 #   arbitrum: 9     optimism: 9 avalanche: 7 fantom: 7
 #   linea: 6        scroll: 7   zksync: 6   mantle: 7
 #   gnosis: 7       celo: 6
 # -------------------------------------------------------
-#   Total: 111 endpoints across 14 chains
-#   Previous: 42  |  New: 69  |  Growth: +164%
+#   Total: 104 endpoints across 14 chains
+#   (Base pruned from 10→3 — most free RPCs no longer support eth_getLogs)
 #
 #   Non-EVM: solana (3), tron (3)
-#   Grand total: 117 endpoints across 16 chains
+#   Grand total: 110 endpoints across 16 chains
 
 # ── Provider Rate Limits ───────────────────────────────────────────
 # Per-provider rate limits for adaptive throttling.
@@ -258,7 +255,7 @@ PROVIDER_RATE_LIMITS: dict[str, dict[str, int]] = {
     # Tier 3 — Low capacity / rate limited
     "1rpc.io": {"req_per_sec": 2, "burst": 5},
     "meowrpc.com": {"req_per_sec": 3, "burst": 5},
-    "tenderly.co": {"req_per_sec": 3, "burst": 5},
+    "tenderly.co": {"req_per_sec": 10, "burst": 20},
     "blastapi.io": {"req_per_sec": 3, "burst": 5},
     "blockrazor.xyz": {"req_per_sec": 3, "burst": 5},
     "tatum.io": {"req_per_sec": 5, "burst": 10},
@@ -290,7 +287,7 @@ MAX_BLOCK_RANGE: dict[str, int | None] = {
     "1rpc.io": 10,
     "blastapi.io": 10,
     "blockrazor.xyz": 25,
-    "tenderly.co": 100,
+    "tenderly.co": 5000,
     # Unlimited / unknown
     "meowrpc.com": None,
     "merkle.io": None,
@@ -304,7 +301,7 @@ MAX_BLOCK_RANGE: dict[str, int | None] = {
     "arbitrum.io": None,
     "optimism.io": None,
     "avax.network": None,
-    "base.org": None,
+    "base.org": 10,  # Returns "backend response too large" beyond 10 blocks
     "zksync.io": None,
 }
 
