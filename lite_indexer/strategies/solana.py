@@ -474,7 +474,7 @@ class SolanaStrategy(AbstractChainStrategy):
 
         from datetime import datetime, timezone
 
-        now = datetime.now(timezone.UTC)
+        now = datetime.now(timezone.utc)
         rows: list[tuple] = []
 
         for event in events:

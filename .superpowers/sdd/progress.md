@@ -9,7 +9,7 @@ Status: complete (commit c20a108)
 Status: complete (commit c20a108)
 
 ## Task 3: Add CHAIN_BLOCK_RANGE_LIMITS + error handling + reorg detection
-Status: in-progress
+Status: complete (commit b2c8e5f)
 
 ## Task 4: Final verification — health check + tests
-Status: pending
+Status: complete (17/17 tests passed, health module loaded OK)

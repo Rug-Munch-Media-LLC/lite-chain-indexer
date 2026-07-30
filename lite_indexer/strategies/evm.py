@@ -24,14 +24,11 @@ from lite_indexer.chains import (
 from lite_indexer.config import (
     BATCH_SIZE,
     FACTORY_ADDRESSES,
-    MAX_CONCURRENT_POOL_RESOLVE,
     PAIR_CREATED_TOPIC,
     POOL_CREATED_TOPIC,
     RPC_TIMEOUT,
     SWAP_V2_TOPIC,
     SWAP_V3_TOPIC,
-    TOKEN0_SELECTOR,
-    TOKEN1_SELECTOR,
     TRANSFER_EVENT_TOPIC,
     V3_FACTORY_ADDRESSES,
 )
@@ -52,6 +49,7 @@ from lite_indexer.rpc import (
 )
 from lite_indexer.state import PairCache
 from lite_indexer.strategies.base import AbstractChainStrategy
+from lite_indexer.strategies.pool_resolver import batch_resolve_pool_tokens
 
 logger = get_logger(__name__)
 
@@ -499,7 +497,7 @@ class EVMChainStrategy(AbstractChainStrategy):
                 unknown_pairs.add(pair)
 
         if unknown_pairs:
-            resolved = await self._batch_resolve_pool_tokens(list(unknown_pairs))
+            resolved = await batch_resolve_pool_tokens(self.rpc, self.chain, list(unknown_pairs), self.pair_cache)
             if resolved:
                 for evt in merged:
                     pair = evt.get("pairAddress", "").lower()
@@ -594,77 +592,4 @@ class EVMChainStrategy(AbstractChainStrategy):
             self.pair_cache.save()
 
     # ── Pool Token Resolution ────────────────────────────────────────
-
-    async def _resolve_pool_tokens(self, pair_address: str) -> tuple[str, str]:
-        """Resolve token0/token1 via eth_call on the pool contract."""
-        # 1. Try ClickHouse rugdex.pairs lookup (via ch_writer if available)
-        # (handled by caller via batch_resolve)
-        # 2. Fall back to eth_call
-        try:
-            endpoints = GET_LOGS_ENDPOINTS.get(self.chain, [])
-            if not endpoints:
-                return ("", "")
-            endpoint = get_best_endpoint(endpoints)
-
-            resp0 = await self.rpc.eth_call(endpoint, pair_address, TOKEN0_SELECTOR)
-            resp1 = await self.rpc.eth_call(endpoint, pair_address, TOKEN1_SELECTOR)
-
-            token0 = ""
-            token1 = ""
-            if resp0 and isinstance(resp0, str) and len(resp0) >= 42:
-                token0 = "0x" + resp0[-40:].lower()
-            if resp1 and isinstance(resp1, str) and len(resp1) >= 42:
-                token1 = "0x" + resp1[-40:].lower()
-
-            if token0 and token1:
-                return (token0, token1)
-        except Exception as exc:
-            logger.debug("pool_resolve_failed", pair=pair_address[:20], error=str(exc)[:60])
-
-        return ("", "")
-
-    async def _batch_resolve_pool_tokens(
-        self,
-        pair_addresses: list[str],
-    ) -> dict[str, tuple[str, str]]:
-        """Batch-resolve token0/token1 for unknown pool addresses."""
-        if not pair_addresses:
-            return {}
-
-        # eth_call fallback
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_POOL_RESOLVE)
-        resolved: dict[str, tuple[str, str]] = {}
-        endpoints = GET_LOGS_ENDPOINTS.get(self.chain, [])
-
-        async def _resolve_one(pair: str) -> tuple[str, str, str]:
-            async with semaphore:
-                try:
-                    if not endpoints:
-                        return (pair, "", "")
-                    endpoint = get_best_endpoint(endpoints)
-                    resp0 = await self.rpc.eth_call(endpoint, pair, TOKEN0_SELECTOR)
-                    resp1 = await self.rpc.eth_call(endpoint, pair, TOKEN1_SELECTOR)
-                    t0 = ""
-                    t1 = ""
-                    if resp0 and isinstance(resp0, str) and len(resp0) >= 42:
-                        t0 = "0x" + resp0[-40:].lower()
-                    if resp1 and isinstance(resp1, str) and len(resp1) >= 42:
-                        t1 = "0x" + resp1[-40:].lower()
-                    return (pair, t0, t1)
-                except Exception:
-                    return (pair, "", "")
-
-        tasks = [_resolve_one(p) for p in pair_addresses]
-        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for outcome in outcomes:
-            if isinstance(outcome, tuple) and len(outcome) == 3:
-                pair, t0, t1 = outcome
-                if t0 and t1:
-                    resolved[pair] = (t0, t1)
-                    self.pair_cache.set(pair, (t0, t1))
-
-        if resolved:
-            self.pair_cache.save()
-
-        return resolved
+    # (delegated to pool_resolver.py — see batch_resolve_pool_tokens import)
