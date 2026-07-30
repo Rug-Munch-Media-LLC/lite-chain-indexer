@@ -489,20 +489,17 @@ class SolanaStrategy(AbstractChainStrategy):
 
             rows.append(
                 (
-                    event.get("chain", "solana"),
                     event.get("slot", 0),
+                    ts,
                     event.get("signature", ""),
-                    event.get("mint", ""),
-                    event.get("owner", ""),
                     event.get("token_account", ""),
+                    event.get("mint", ""),
                     event.get("amount_pre", "0"),
                     event.get("amount_post", "0"),
                     event.get("change", "0"),
                     event.get("decimals", 0),
                     event.get("symbol", ""),
                     event.get("token_name", ""),
-                    ts,
-                    event.get("source", "lite_indexer"),
                     now,
                 )
             )
@@ -512,10 +509,10 @@ class SolanaStrategy(AbstractChainStrategy):
         try:
             client.execute(
                 f"INSERT INTO {solana_table} "
-                "(chain, slot, signature, mint, owner, "
-                "token_account, amount_pre, amount_post, "
-                "change, decimals, symbol, token_name, "
-                "block_timestamp, source, ingested_at) VALUES",
+                "(slot, block_timestamp, tx_hash, token_account, "
+                "mint, pre_amount, post_amount, delta, "
+                "decimals, token_symbol, token_name, "
+                "ingested_at) VALUES",
                 rows,
             )
             logger.info("solana_clickhouse_inserted", rows=len(rows))
