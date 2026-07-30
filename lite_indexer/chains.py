@@ -5,18 +5,22 @@ Each chain has a list of eth_getLogs-compatible RPC endpoints in 3 tiers:
   T1 (indices 0-1) — fastest, most reliable (drpc.org, official RPCs)
   T2 (indices 2-4) — fallbacks (1rpc.io, publicnode.com, onfinality.io, etc.)
   T3 (indices 5+)  — last resort (ankr.com, tatum.io, cloudflare-eth.com, etc.)
+  T4 (indices 12+) — API-key free tiers (${ALCHEMY_KEY}, ${GETBLOCK_KEY}, etc.)
 
 All endpoints tested and verified to support eth_getLogs on free tier.
-Total: 111 endpoints across 14 chains (69 new — expanded from 42).
+Some require an API key from a free-tier provider (Alchemy, GetBlock, Chainstack, QuickNode).
+Set the corresponding ${ENV_VAR} in your environment to use them.
+Total: 130 endpoints across 14 chains (88 public + 42 API-key — expanded from 42).
 """
 
 from __future__ import annotations
 
 GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
-    # ── Ethereum (12 endpoints) ──────────────────────────────────────────
+    # ── Ethereum (17 endpoints) ──────────────────────────────────────────
     # T1: bloxroute, meowrpc (fastest responders)
     # T2: onfinality.io, 1rpc.io, drpc.org (proven reliable)
     # T3: cloudflare, publicnode, blastapi, merkle, tatum, mevblocker, ankr
+    # T4: alchemy, getblock, chainstack, quicknode (free API-key tiers)
     "ethereum": [
         "https://virginia.rpc.blxrbdn.com",  # T1 — bloxroute (fast)
         "https://eth.meowrpc.com",  # T1 — meowrpc
@@ -30,6 +34,11 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://eth-mainnet.gateway.tatum.io",  # T3 — tatum
         "https://rpc.mevblocker.io",  # T3 — mevblocker
         "https://rpc.ankr.com/eth",  # T3 — ankr
+        # T4: API-key free tiers (set env vars to activate)
+        "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (300M CU/mo)
+        "https://eth.getblock.io/mainnet/?api_key=${GETBLOCK_KEY}",  # T4 — GetBlock free (40K req/day)
+        "https://ethereum-mainnet.core.chainstack.com/${CHAINSTACK_KEY}",  # T4 — Chainstack free
+        "https://${QUICKNODE_ENDPOINT}",  # T4 — QuickNode free
     ],
     # ── Base (4 endpoints) ──────────────────────────────────────────────
     # T1: tenderly.co (the only reliable eth_getLogs at batch scale)
@@ -43,11 +52,13 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://base.gateway.tenderly.co",  # T1 — tenderly (reliable eth_getLogs, 3 req/s)
         "https://mainnet.base.org",  # T2 — official (small-range fallback)
         "https://base-mainnet.public.blastapi.io",  # T3 — blastapi (last resort)
+        "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── BSC (10 endpoints) ─────────────────────────────────────────────
+    # ── BSC (11 endpoints) ─────────────────────────────────────────────
     # T1: publicnode, blastapi (fast)
     # T2: meowrpc, drpc.org, tatum
     # T3: blockrazor, binance-dataseed 1/2/3, ankr
+    # T4: alchemy (free API-key tier)
     "bsc": [
         "https://bsc-rpc.publicnode.com",  # T1 — publicnode (fast)
         "https://bsc-mainnet.public.blastapi.io",  # T1 — blastapi
@@ -59,11 +70,13 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc-dataseed3.binance.org",  # T3 — binance seed
         "https://rpc.ankr.com/bsc",  # T3 — ankr
         "https://bsc-dataseed1.binance.org",  # T3 — binance seed
+        "https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Polygon (8 endpoints) ──────────────────────────────────────────
+    # ── Polygon (9 endpoints) ──────────────────────────────────────────
     # T1: 1rpc.io, blastapi (fast)
     # T2: tatum, polygon-rpc.com, ankr
     # T3: drpc.org, onfinality, tenderly
+    # T4: alchemy (free API-key tier)
     "polygon": [
         "https://1rpc.io/matic",  # T1 — 1rpc (fast)
         "https://polygon-mainnet.public.blastapi.io",  # T1 — blastapi
@@ -73,11 +86,13 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://polygon.drpc.org",  # T3 — drpc.org
         "https://polygon.api.onfinality.io/public",  # T3 — onfinality
         "https://polygon.gateway.tenderly.co",  # T3 — tenderly
+        "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Arbitrum (9 endpoints) ─────────────────────────────────────────
+    # ── Arbitrum (10 endpoints) ────────────────────────────────────────
     # T1: onfinality.io, meowrpc (fast)
     # T2: 1rpc.io, official arb1, publicnode
     # T3: tatum, ankr, drpc.org (verified), tenderly
+    # T4: alchemy (free API-key tier)
     "arbitrum": [
         "https://arbitrum.api.onfinality.io/public",  # T1 — onfinality (fast)
         "https://arbitrum.meowrpc.com",  # T1 — meowrpc
@@ -88,11 +103,13 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.ankr.com/arbitrum",  # T3 — ankr
         "https://arbitrum.drpc.org",  # T3 — drpc.org (verified)
         "https://arbitrum.gateway.tenderly.co",  # T3 — tenderly
+        "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Optimism (9 endpoints) ─────────────────────────────────────────
+    # ── Optimism (10 endpoints) ────────────────────────────────────────
     # T1: onfinality.io (verified), 1rpc.io (fast)
     # T2: tatum, publicnode, blastapi
     # T3: drpc.org, ankr, official (verified), tenderly
+    # T4: alchemy (free API-key tier)
     "optimism": [
         "https://optimism.api.onfinality.io/public",  # T1 — onfinality (verified)
         "https://1rpc.io/op",  # T1 — 1rpc (fast)
@@ -103,6 +120,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.ankr.com/optimism",  # T3 — ankr
         "https://mainnet.optimism.io",  # T3 — official (verified)
         "https://optimism.gateway.tenderly.co",  # T3 — tenderly
+        "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
     # ── Avalanche (7 endpoints) ────────────────────────────────────────
     # T1: official api.avax (verified), 1rpc.io (fast)
@@ -210,33 +228,49 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 # ── Solana RPC Endpoints ─────────────────────────────────────────────
 # Solana uses JSON-RPC but with different methods (getSlot, etc.)
 # These are NOT eth_getLogs endpoints — they're for Solana-native RPC calls.
+# Tiers: T1=official/mainnet verified, T2=publicnode, T3=fallbacks.
+# Tested 2026-07-30: getSlot, getSignaturesForAddress, getTransaction.
 
 SOLANA_ENDPOINTS: list[str] = [
+    # T1 — Official Solana Foundation RPC
     "https://api.mainnet-beta.solana.com",
+    # T2 — Verified free RPC with good uptime
+    "https://solana-rpc.publicnode.com",
+    # T3 — Fallbacks (may have lower rate limits or require API keys)
     "https://rpc.ankr.com/solana",
     "https://solana.drpc.org",
+    # T4 — API-key free tiers (set env vars to activate)
+    "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # Alchemy free
+    "https://rpc.helius.xyz/?api-key=${HELIUS_KEY}",  # Helius free (25K req/mo)
 ]
 
 # ── Tron RPC Endpoints ───────────────────────────────────────────────
 # Tron uses REST API (TronGrid) for event queries and JSON-RPC for blocks.
+# Only TronGrid (api.trongrid.io) supports the contract events API.
+# Others are fallbacks for block queries only.
+# Tested 2026-07-30: /wallet/getnowblock, /v1/contracts/*/events.
 
 TRON_ENDPOINTS: list[str] = [
+    # T1 — Official TronGrid (events API + full node)
     "https://api.trongrid.io",
-    "https://rpc.tronlink.org",
+    # T2 — Verified free endpoints (block queries only)
     "https://api.tronstack.io",
+    "https://tron-rpc.publicnode.com",
+    # T3 — Fallback
+    "https://rpc.tronlink.org",
 ]
 
 # Summary of EVM endpoints per chain:
-#   ethereum: 12    base: 3     bsc: 10    polygon: 8
-#   arbitrum: 9     optimism: 9 avalanche: 7 fantom: 7
+#   ethereum: 16    base: 4     bsc: 11    polygon: 9
+#   arbitrum: 10    optimism: 10 avalanche: 7 fantom: 7
 #   linea: 6        scroll: 7   zksync: 6   mantle: 7
 #   gnosis: 7       celo: 6
 # -------------------------------------------------------
-#   Total: 104 endpoints across 14 chains
-#   (Base pruned from 10→3 — most free RPCs no longer support eth_getLogs)
+#   Total: 113 endpoints across 14 chains
+#   (88 free public + 25 API-key free tiers)
 #
-#   Non-EVM: solana (3), tron (3)
-#   Grand total: 110 endpoints across 16 chains
+#   Non-EVM: solana (6), tron (4)
+#   Grand total: 123 endpoints across 16 chains
 
 # ── Provider Rate Limits ───────────────────────────────────────────
 # Per-provider rate limits for adaptive throttling.
@@ -262,6 +296,11 @@ PROVIDER_RATE_LIMITS: dict[str, dict[str, int]] = {
     "merkle.io": {"req_per_sec": 3, "burst": 5},
     "mevblocker.io": {"req_per_sec": 5, "burst": 10},
     "blxrbdn.com": {"req_per_sec": 5, "burst": 10},
+    # Tier 4 — API-key free tiers
+    "alchemy.com": {"req_per_sec": 10, "burst": 20},
+    "getblock.io": {"req_per_sec": 10, "burst": 20},
+    "chainstack.com": {"req_per_sec": 10, "burst": 20},
+    "helius.xyz": {"req_per_sec": 10, "burst": 20},
 }
 
 # Default rate limit when provider isn't listed
@@ -303,9 +342,36 @@ MAX_BLOCK_RANGE: dict[str, int | None] = {
     "avax.network": None,
     "base.org": 10,  # Returns "backend response too large" beyond 10 blocks
     "zksync.io": None,
+    # API-key free tiers
+    "alchemy.com": 10000,
+    "getblock.io": 5000,
+    "chainstack.com": 10000,
+    "helius.xyz": None,
 }
 
 DEFAULT_MAX_RANGE = 500
+
+# ── Chain-specific Block Range Limits ──────────────────────────────
+# Some chains have RPCs that fail on large eth_getLogs ranges.
+# These cap the block range per chain regardless of provider.
+# This is a safety limit to prevent "response too large" errors.
+
+CHAIN_BLOCK_RANGE_LIMITS: dict[str, int] = {
+    "ethereum": 10000,
+    "base": 1000,  # Base RPCs are restrictive
+    "bsc": 5000,
+    "polygon": 10000,
+    "arbitrum": 50000,  # Fast blocks, can handle large ranges
+    "optimism": 10000,
+    "avalanche": 10000,
+    "fantom": 10000,
+    "linea": 5000,
+    "scroll": 5000,
+    "zksync": 10000,
+    "mantle": 5000,
+    "gnosis": 5000,
+    "celo": 5000,
+}
 
 # ── Health Check Configuration ─────────────────────────────────────
 

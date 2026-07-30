@@ -29,10 +29,20 @@ from lite_indexer.strategies.base import AbstractChainStrategy
 
 logger = get_logger(__name__)
 
-# ── Solana RPC Endpoints ─────────────────────────────────────────────
-
+# ── Solana RPC Endpoints (tiered fallback) ───────────────────────────
+# T1 — Official, most reliable (mainnet-beta is Solana Foundation's public RPC)
+# T2 — Proven free alternatives (publicnode, ankr-with-key)
+# T3 — Best-effort fallbacks
+#
+# All endpoints tested 2026-07-30: getSlot, getSignaturesForAddress, getTransaction
+# getBlock works on all verified endpoints.
+#
 SOLANA_ENDPOINTS: list[str] = [
+    # T1 — Official Solana Foundation RPC (most reliable, rate-limited per IP)
     "https://api.mainnet-beta.solana.com",
+    # T2 — Verified free RPC with good uptime
+    "https://solana-rpc.publicnode.com",
+    # T3 — Fallbacks (may have lower rate limits or require API keys)
     "https://rpc.ankr.com/solana",
     "https://solana.drpc.org",
 ]

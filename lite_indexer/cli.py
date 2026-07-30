@@ -24,6 +24,7 @@ from lite_indexer.chains import CHAIN_POLL_INTERVALS, GET_LOGS_ENDPOINTS
 from lite_indexer.config import BATCH_SIZE, DATA_DIR, DISK_CAP_BYTES
 from lite_indexer.indexer import LiteIndexer
 from lite_indexer.logging import get_logger, setup_logging
+from lite_indexer.strategies import SUPPORTED_CHAINS
 
 logger = get_logger(__name__)
 
@@ -36,8 +37,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--chain",
         default="ethereum",
-        choices=list(GET_LOGS_ENDPOINTS.keys()),
-        help="Chain to index (default: ethereum)",
+        choices=sorted(SUPPORTED_CHAINS.keys()),
+        help="Chain to index (default: ethereum). All chains: " + ", ".join(sorted(SUPPORTED_CHAINS.keys())),
     )
     parser.add_argument(
         "--from-block",
@@ -71,7 +72,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--chains",
         type=str,
-        default="ethereum,base,bsc,polygon,arbitrum,optimism,avalanche,linea,scroll,zksync,mantle,gnosis",
+        default="ethereum,base,bsc,polygon,arbitrum,optimism,avalanche,linea,scroll,zksync,mantle,gnosis,solana,tron",
         help="Comma-separated list of chains to index in daemon mode",
     )
     parser.add_argument(

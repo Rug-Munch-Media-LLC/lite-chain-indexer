@@ -87,6 +87,9 @@ FREEMIUM_ENDPOINTS: dict[str, list[str]] = {
     "ethereum": [
         "https://mainnet.infura.io/v3/${INFURA_KEY}",
         "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
+        "https://eth.getblock.io/mainnet/?api_key=${GETBLOCK_KEY}",
+        "https://ethereum-mainnet.core.chainstack.com/${CHAINSTACK_KEY}",
+        "https://${QUICKNODE_ENDPOINT}",
     ],
     "base": [
         "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
@@ -134,6 +137,9 @@ PAID_ENDPOINTS: dict[str, list[str]] = {
     "ethereum": [
         "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
         "https://mainnet.infura.io/v3/${INFURA_KEY}",
+        "https://eth.getblock.io/mainnet/?api_key=${GETBLOCK_KEY}",
+        "https://ethereum-mainnet.core.chainstack.com/${CHAINSTACK_KEY}",
+        "https://${QUICKNODE_ENDPOINT}",
     ],
     "base": [
         "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
