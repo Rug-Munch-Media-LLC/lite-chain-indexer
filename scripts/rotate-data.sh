@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-DATA_DIR="${DATA_DIR:-/srv/data/chain-indexer}"
+DATA_DIR="${DATA_DIR:-/var/data/chain-indexer}"
 DAYS="${1:-7}"
 
 echo "==> Rotating NDJSON data older than ${DAYS} days in ${DATA_DIR}"

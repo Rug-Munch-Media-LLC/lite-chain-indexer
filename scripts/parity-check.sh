@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-DATA_DIR="${DATA_DIR:-/srv/data/chain-indexer}"
+DATA_DIR="${DATA_DIR:-/var/data/chain-indexer}"
 STATE_DIR="${DATA_DIR}/state"
 
 # Colors

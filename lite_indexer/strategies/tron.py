@@ -423,8 +423,8 @@ class TronStrategy(AbstractChainStrategy):
     ) -> dict[str, Any] | None:
         """Make a GET request to TronGrid with block number range.
 
-        TronGrid requires duplicate block_number params for range queries,
-        which httpx doesn't handle natively. We build the query string manually.
+        TronGrid uses min_block_number and max_block_number for range queries.
+        We build the query string manually for custom parameter formatting.
 
         Args:
             path: API path.
@@ -436,13 +436,12 @@ class TronStrategy(AbstractChainStrategy):
         Returns:
             Parsed JSON response dict, or None on failure.
         """
-        # Build query string manually for duplicate params
         query_parts = [
-            "event_name=Transfer",
-            f"block_number={from_block}",
-            f"block_number={to_block}",
+            f"event_name=Transfer",
+            f"from_block_number={from_block}",
+            f"to_block_number={to_block}",
             f"limit={TRON_PAGE_SIZE}",
-            "order_by=block_timestamp,asc",
+            "order_by=block_timestamp,desc",
         ]
         if cursor:
             query_parts.append(f"fingerprint={cursor}")

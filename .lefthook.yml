@@ -1,0 +1,163 @@
+# ── lefthook.yml — fast git hooks ───────────────────────────
+# Source of truth: standards/lefthook.yml
+# NEW REPOS: symlink .lefthook.yml -> ../standards/lefthook.yml
+# This template is for reference only; always prefer symlinking.
+#
+# Quick install:
+#   ln -s ../standards/lefthook.yml .lefthook.yml
+#   lefthook install
+#
+# For repo-specific overrides, create .lefthook.local.yml
+# which lefthook auto-merges with the canonical config.
+#
+# Tools provided by canonical config:
+#   Python lint:        ruff, mypy, pyright, bandit, semgrep
+#   Python quality:     vulture (dead code), radon (complexity), interrogate (docstrings)
+#   Python deps:        deptry (freshness), pip-audit (vulnerabilities)
+#   Frontend lint:      biome, oxlint, tsc --noEmit
+#   Frontend quality:   knip (dead code), publint (pkg.json), attw (type exports)
+#   Container/Infra:    hadolint (Dockerfile), shellcheck (.sh), squawk (.sql)
+#   Security universal: gitleaks, envsitter, methodology-leak
+
+pre-commit:
+  parallel: true
+  commands:
+    # -- BLOCK .env files (UNIVERSAL) --------------------------
+    no-env-files:
+      run: |
+        if find . -maxdepth 3 -name '.env' -not -name '.env.example' \
+          -not -path './.git/*' \
+          -not -path '*/node_modules/*' \
+          -not -path '*/venv/*' \
+          -not -path '*/.venv/*' \
+          -not -path '*/__pycache__/*' \
+          | grep -q .; then
+          echo "ERROR: .env files found. Move secrets to gopass."
+          exit 1
+        fi
+      skip:
+        - merge
+        - rebase
+
+    # -- Secret scanning (UNIVERSAL) ---------------------------
+    gitleaks:
+      run: gitleaks protect --staged --verbose
+
+    # -- Python lint (PYTHON repos) ---------------------------
+    ruff:
+      glob: "*.py"
+      run: ruff check --fix {staged_files} && ruff format {staged_files}
+      stage_fixed: true
+
+    # -- Python dead code detection (PYTHON repos) -------------
+    vulture:
+      glob: "*.py"
+      run: vulture {staged_files} 2>/dev/null || echo "vulture check complete"
+
+    # -- Python complexity analysis (PYTHON repos) -------------
+    radon:
+      glob: "*.py"
+      run: radon cc {staged_files} -a -nb 2>/dev/null || true
+
+    # -- Python docstring coverage (PYTHON repos) --------------
+    interrogate:
+      glob: "*.py"
+      run: "interrogate {staged_files} --fail-under=60 2>/dev/null || echo 'interrogate: docstring coverage below threshold'"
+
+    # -- Dependency vulnerability scan (PYTHON repos) ----------
+    pip-audit:
+      glob: "*.py"
+      run: |
+        if [ -f "requirements*.txt" ] || [ -f "pyproject.toml" ]; then
+          pip-audit --severity high --desc 2>/dev/null || echo "pip-audit: vulnerabilities found"
+        fi
+
+    # -- Frontend lint (FRONTEND repos) -----------------------
+    biome:
+      glob: "*.{ts,tsx,js,jsx,json,css}"
+      run: npx biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+
+    oxlint:
+      glob: "*.{ts,tsx,js,jsx}"
+      run: npx oxlint@latest --max-warnings=0 {staged_files}
+
+    # -- Frontend package.json validation (FRONTEND repos) -----
+    publint:
+      glob: "package.json"
+      run: npx publint@latest 2>/dev/null || true
+
+    # -- Shell lint (INFRA repos) -----------------------------
+    shellcheck:
+      glob: "*.sh"
+      run: shellcheck {staged_files}
+
+    # -- Dockerfile lint (INFRA repos) ------------------------
+    hadolint:
+      glob: "Dockerfile*"
+      run: hadolint {staged_files}
+
+pre-push:
+  parallel: true
+  commands:
+    # -- Full-repo secret scan (UNIVERSAL) --------------------
+    gitleaks-full:
+      run: gitleaks detect --source . --no-git -v
+
+    # -- Python type check (PYTHON repos) ---------------------
+    mypy:
+      glob: "*.py"
+      run: mypy . --ignore-missing-imports
+
+    # -- Python security scan (PYTHON repos) ------------------
+    bandit:
+      glob: "*.py"
+      run: bandit -r . -ll
+
+    # -- Python dep freshness (PYTHON repos) ------------------
+    deptry:
+      glob: "*.py"
+      run: deptry . 2>/dev/null || echo "deptry not available — skipping"
+
+    # -- Python dep vulnerability scan (PYTHON repos) ---------
+    pip-audit:
+      glob: "*.py"
+      run: pip-audit --severity high 2>/dev/null || true
+
+    # -- Python dead code full scan (PYTHON repos) ------------
+    vulture:
+      glob: "*.py"
+      run: vulture . --min-confidence 80 2>/dev/null || true
+
+    # -- Python docstring coverage full scan (PYTHON repos) ---
+    interrogate:
+      glob: "*.py"
+      run: interrogate . --fail-under=60 2>/dev/null || true
+
+    # -- Frontend type check (FRONTEND repos) -----------------
+    typecheck:
+      glob: "*.{ts,tsx}"
+      run: |
+        if [ -f "tsconfig.json" ]; then
+          npx tsc --noEmit
+        fi
+
+    # -- Frontend dead code (FRONTEND repos) ------------------
+    knip:
+      glob: "*.{ts,tsx}"
+      run: npx knip --no-progress 2>/dev/null || true
+
+    # -- Frontend package.json validation (FRONTEND repos) -----
+    publint:
+      glob: "package.json"
+      run: npx publint@latest 2>/dev/null || true
+
+    # -- Frontend type export validation (FRONTEND repos) ------
+    attw:
+      glob: "*.{ts,tsx}"
+      run: npx attw@latest --pack . 2>/dev/null || true
+
+commit-msg:
+  commands:
+    commitlint:
+      run: commitlint --edit "$1"

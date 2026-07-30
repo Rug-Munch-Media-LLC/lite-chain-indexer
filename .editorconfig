@@ -1,0 +1,39 @@
+# ── EditorConfig (canonical) ────────────────────────────────────
+# Source of truth: standards/templates/editorconfig.template
+# Install: https://editorconfig.org/
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 100
+
+# Markdown files: don't trim trailing whitespace (allows hard line breaks)
+[*.md]
+trim_trailing_whitespace = false
+
+# Python: 4-space indent
+[*.{py,pyi}]
+indent_size = 4
+max_line_length = 100
+
+# Makefiles require tabs
+[Makefile]
+indent_style = tab
+
+# Shell scripts: 4 spaces
+[*.{sh,bash,zsh}]
+indent_size = 4
+
+# TOML/YAML: 2 spaces (preserved)
+[*.{toml,yaml,yml}]
+indent_size = 2
+
+# JSON: 2 spaces
+[*.json]
+indent_size = 2
