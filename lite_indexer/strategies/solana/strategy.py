@@ -1,5 +1,5 @@
 """
-Solana strategy — SPL token transfer indexing via getSignaturesForAddress.
+Solana Strategy — SPL token transfer indexing via getSignaturesForAddress.
 
 Solana indexing is fundamentally different from EVM:
   - No event logs (no eth_getLogs equivalent)
@@ -27,176 +27,11 @@ import httpx
 from lite_indexer.logging import get_logger
 from lite_indexer.strategies.base import AbstractChainStrategy
 
+from .models import MAX_SIGNATURES_PER_TOKEN, SOLANA_TX_CONCURRENCY, SOLANA_TRACKED_TOKENS
+from .parsing import parse_solana_transfer_events
+from .rpc import rpc_call
+
 logger = get_logger(__name__)
-
-# ── Solana RPC Endpoints (tiered fallback) ───────────────────────────
-# T1 — Official, most reliable (mainnet-beta is Solana Foundation's public RPC)
-# T2 — Proven free alternatives (publicnode, ankr-with-key)
-# T3 — Best-effort fallbacks
-#
-# All endpoints tested 2026-07-30: getSlot, getSignaturesForAddress, getTransaction
-# getBlock works on all verified endpoints.
-#
-SOLANA_ENDPOINTS: list[str] = [
-    # T1 — Official Solana Foundation RPC (most reliable, rate-limited per IP)
-    "https://api.mainnet-beta.solana.com",
-    # T2 — Verified free RPC with good uptime
-    "https://solana-rpc.publicnode.com",
-    # T3 — Fallbacks (may have lower rate limits or require API keys)
-    "https://rpc.ankr.com/solana",
-    "https://solana.drpc.org",
-]
-
-# ── Tracked SPL Tokens ───────────────────────────────────────────────
-# Well-known SPL tokens to track for balance changes.
-# Uses getSignaturesForAddress on the mint address, then parses
-# pre/post token balances from the transaction.
-
-SOLANA_TRACKED_TOKENS: list[dict[str, Any]] = [
-    {"mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "symbol": "USDC", "decimals": 6, "name": "USD Coin"},
-    {"mint": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "symbol": "USDT", "decimals": 6, "name": "Tether USD"},
-    {"mint": "So11111111111111111111111111111111111111112", "symbol": "SOL", "decimals": 9, "name": "Wrapped SOL"},
-    {"mint": "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263", "symbol": "BONK", "decimals": 5, "name": "Bonk"},
-    {"mint": "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN", "symbol": "JUP", "decimals": 6, "name": "Jupiter"},
-    {"mint": "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr", "symbol": "POPCAT", "decimals": 9, "name": "Popcat"},
-    {"mint": "ukHH6c7mMyiWCf1b9pnWe25TSpkDDt3H5pQZgZ74J82", "symbol": "BOME", "decimals": 6, "name": "BOOK OF MEME"},
-    {"mint": "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm", "symbol": "WIF", "decimals": 6, "name": "dogwifhat"},
-    {"mint": "A3eME5CetyZPBoWbRUwY3tSe25S6tb18ba9ZPbWk9eFp", "symbol": "PENG", "decimals": 6, "name": "Peng"},
-    {
-        "mint": "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5",
-        "symbol": "MEW",
-        "decimals": 5,
-        "name": "cat in a dogs world",
-    },
-]
-
-# Maximum signatures to fetch per tracked token per cycle
-MAX_SIGNATURES_PER_TOKEN = 100
-
-# Max concurrent getTransaction calls
-SOLANA_TX_CONCURRENCY = 10
-
-
-def _parse_solana_transfer_events(
-    tx_data: dict[str, Any],
-    slot: int,
-    mint_filter: set[str],
-) -> list[dict[str, Any]]:
-    """Parse SPL token balance changes from a Solana transaction.
-
-    Scans preTokenBalances and postTokenBalances to find accounts
-    whose balance changed for a tracked mint. A transfer involves
-    a decrease in one account and an increase in another for the
-    same mint within the same transaction.
-
-    Args:
-        tx_data: Parsed getTransaction result (jsonParsed encoding).
-        slot: Slot number this transaction was confirmed in.
-        mint_filter: Set of tracked mint addresses to filter for.
-
-    Returns:
-        List of parsed SPL balance change event dicts.
-    """
-    meta = tx_data.get("meta") or {}
-    if not meta:
-        return []
-
-    pre_balances: list[dict] = meta.get("preTokenBalances") or []
-    post_balances: list[dict] = meta.get("postTokenBalances") or []
-
-    if not pre_balances and not post_balances:
-        return []
-
-    # Build a map of account_index -> pre_balance for tracked mints
-    pre_map: dict[int, dict[str, Any]] = {}
-    for bal in pre_balances:
-        mint = bal.get("mint", "")
-        if mint in mint_filter:
-            pre_map[bal["accountIndex"]] = bal
-
-    post_map: dict[int, dict[str, Any]] = {}
-    for bal in post_balances:
-        mint = bal.get("mint", "")
-        if mint in mint_filter:
-            post_map[bal["accountIndex"]] = bal
-
-    if not pre_map and not post_map:
-        return []
-
-    events: list[dict[str, Any]] = []
-    transaction = tx_data.get("transaction") or {}
-    signatures = transaction.get("signatures") or []
-    tx_signature = signatures[0] if signatures else ""
-    block_time = tx_data.get("blockTime")
-
-    # Process all account indices that appear in either pre or post
-    all_indices = set(pre_map.keys()) | set(post_map.keys())
-
-    for idx in all_indices:
-        pre = pre_map.get(idx, {})
-        post = post_map.get(idx, {})
-
-        mint = post.get("mint") or pre.get("mint", "")
-        if mint not in mint_filter:
-            continue
-
-        owner = post.get("owner") or pre.get("owner", "")
-
-        pre_amount = pre.get("uiTokenAmount", {}).get("amount", "0")
-        post_amount = post.get("uiTokenAmount", {}).get("amount", "0")
-
-        # Parse amounts (strings of raw integer values)
-        try:
-            pre_val = int(pre_amount)
-        except (ValueError, TypeError):
-            pre_val = 0
-        try:
-            post_val = int(post_amount)
-        except (ValueError, TypeError):
-            post_val = 0
-
-        change = post_val - pre_val
-
-        # Skip zero-change (no transfer for this account)
-        if change == 0:
-            continue
-
-        # Find token metadata
-        token_info = None
-        for t in SOLANA_TRACKED_TOKENS:
-            if t["mint"] == mint:
-                token_info = t
-                break
-        decimals = token_info["decimals"] if token_info else 0
-        symbol = token_info["symbol"] if token_info else ""
-
-        # Build ISO-8601 timestamp
-        if block_time and isinstance(block_time, (int, float)):
-            ts = datetime.fromtimestamp(block_time, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        else:
-            ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        events.append(
-            {
-                "type": "spl_balance_change",
-                "chain": "solana",
-                "slot": slot,
-                "signature": tx_signature,
-                "mint": mint,
-                "owner": owner,
-                "token_account": "",  # Would need accountKeys resolution
-                "amount_pre": str(pre_val),
-                "amount_post": str(post_val),
-                "change": str(change),
-                "decimals": decimals,
-                "symbol": symbol,
-                "token_name": token_info["name"] if token_info else "",
-                "blockTimestamp": ts,
-                "source": "lite_indexer",
-            }
-        )
-
-    return events
 
 
 class SolanaStrategy(AbstractChainStrategy):
@@ -235,49 +70,9 @@ class SolanaStrategy(AbstractChainStrategy):
         params: list[Any] | None = None,
         endpoint: str | None = None,
     ) -> dict[str, Any] | None:
-        """Make a JSON-RPC call to a Solana RPC endpoint.
-
-        Args:
-            method: Solana RPC method name.
-            params: Method parameters.
-            endpoint: Specific endpoint to use (default: rotate through list).
-
-        Returns:
-            Parsed JSON response dict, or None on failure.
-        """
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": params or [],
-        }
+        """Make a JSON-RPC call using the shared client."""
         client = await self._get_client()
-
-        endpoints = list(SOLANA_ENDPOINTS)
-        if endpoint:
-            endpoints = [endpoint]
-
-        last_error: str | None = None
-        for url in endpoints:
-            try:
-                resp = await client.post(url, json=payload, timeout=30.0)
-                if resp.status_code == 429:
-                    await asyncio.sleep(1)
-                    continue
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, dict) and "result" in data:
-                        return data
-                    if isinstance(data, dict) and "error" in data:
-                        last_error = str(data["error"])
-                        continue
-                last_error = f"http_{resp.status_code}"
-            except (httpx.TimeoutException, httpx.ConnectError) as exc:
-                last_error = str(exc)[:60]
-                continue
-
-        logger.debug("solana_rpc_failed", method=method, error=last_error)
-        return None
+        return await rpc_call(client, method, params, endpoint)
 
     # ── Block Number ─────────────────────────────────────────────────
 
@@ -400,7 +195,6 @@ class SolanaStrategy(AbstractChainStrategy):
             return []
 
         # Step 2: Filter signatures by slot range
-        # Each sig_info has {signature, slot, err, ...}
         relevant_sigs = [
             s
             for s in sig_infos
@@ -432,7 +226,7 @@ class SolanaStrategy(AbstractChainStrategy):
                     )
                     if not tx_result or "result" not in tx_result or tx_result["result"] is None:
                         return []
-                    return _parse_solana_transfer_events(
+                    return parse_solana_transfer_events(
                         tx_result["result"],
                         slot,
                         {mint},
@@ -472,9 +266,7 @@ class SolanaStrategy(AbstractChainStrategy):
             logger.warning("solana_clickhouse_skipped")
             return 0
 
-        from datetime import datetime, timezone
-
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         rows: list[tuple] = []
 
         for event in events:
