@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 # ── Chain-Indexer Directories ─────────────────────────────────────────
-DATA_DIR = Path(os.environ.get("DATA_DIR", "/srv/data/chain-indexer"))
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/var/data/chain-indexer"))
 STATE_DIR = DATA_DIR / "state"
 
 # Hard disk cap: 10 GB

@@ -114,13 +114,18 @@ async def main_daemon(
     start_from_head: bool = False,
     data_dir: str | None = None,
 ) -> int:
-    """Daemon mode: continuously index all configured chains in parallel.
+    """Daemon mode: continuously index all configured chains in PARALLEL with
+    PER-CHAIN independent polling intervals.
 
     Each chain gets its own LiteIndexer instance with independent state
-    tracking and polling interval. Runs until SIGTERM/SIGINT.
-    """
-    _time = time  # local ref to avoid shadowing
+    tracking AND its own asyncio task polling at its own optimal interval.
+    This prevents fast chains (Base 2s, Mantle 2s) from being throttled
+    by slow chains (Ethereum 12s, Linea 12s).
 
+    Previously, ALL chains shared a single max_poll_interval which caused
+    65min lag on Base and 20min lag on Mantle when Ethereum backlogged.
+    Now each chain runs independently. Runs until SIGTERM/SIGINT.
+    """
     logger.info(
         "daemon_start",
         chains=chains,
@@ -131,26 +136,12 @@ async def main_daemon(
 
     data_path = Path(data_dir) if data_dir else DATA_DIR
 
-    indexers = {}
-    for chain in chains:
-        indexer = LiteIndexer(
-            chain=chain,
-            disk_cap=disk_cap,
-            start_from_head=start_from_head,
-            data_dir=data_path,
-        )
-        indexer.dex_enabled = dex_enabled
-        indexer.deployers_enabled = deployers_enabled
-        indexers[chain] = indexer
-
-    running = True
     shutdown_event = asyncio.Event()
+    error_count = 0
 
     def _handle_signal(sig: int, _frame: Any = None) -> None:
-        nonlocal running
         sig_name = signal.Signals(sig).name
         logger.info("daemon_signal_received", signal=sig_name)
-        running = False
         shutdown_event.set()
 
     # Register signal handlers
@@ -161,52 +152,49 @@ async def main_daemon(
         except (NotImplementedError, RuntimeError):
             signal.signal(sig, _handle_signal)
 
-    max_poll_interval = max(CHAIN_POLL_INTERVALS.get(c, 15) for c in chains) if chains else 15
+    async def _chain_loop(chain: str) -> None:
+        """Independent per-chain polling loop with its own poll interval."""
+        nonlocal error_count
+        indexer = LiteIndexer(
+            chain=chain,
+            disk_cap=disk_cap,
+            start_from_head=start_from_head,
+            data_dir=data_path,
+        )
+        indexer.dex_enabled = dex_enabled
+        indexer.deployers_enabled = deployers_enabled
 
-    while running:
-        cycle_start = _time.monotonic()
+        poll_interval = CHAIN_POLL_INTERVALS.get(chain, 15.0)
 
-        async def _sync_chain(chain: str) -> dict[str, Any]:
-            idx = indexers[chain]
+        while not shutdown_event.is_set():
+            loop_start = time.monotonic()
             try:
-                return await idx.sync_loop()
+                result = await indexer.sync_loop()
+                if isinstance(result, dict) and result.get("status") == "error":
+                    error_count += 1
             except Exception as exc:
+                error_count += 1
                 logger.error("daemon_chain_failed", chain=chain, error=str(exc))
-                return {"chain": chain, "status": "error", "error": str(exc)}
 
-        tasks = {}
-        for c in chains:
-            tasks[c] = asyncio.create_task(_sync_chain(c), name=f"sync-{c}")
+            elapsed = time.monotonic() - loop_start
+            remaining = poll_interval - elapsed
+            if remaining > 0:
+                try:
+                    # Use sleep for the remaining interval; cancelled by shutdown_event
+                    await asyncio.sleep(remaining)
+                except asyncio.CancelledError:
+                    break
 
-        results = []
-        for c in chains:
-            try:
-                result = await tasks[c]
-                results.append(result)
-            except Exception as exc:
-                results.append({"chain": c, "status": "error", "error": str(exc)})
+    # Launch one independent task per chain
+    chain_tasks = [asyncio.create_task(_chain_loop(c), name=f"daemon-chain-{c}") for c in chains]
 
-        ok_count = sum(
-            1 for r in results if isinstance(r, dict) and r.get("status") in ("ok", "no_events", "caught_up")
-        )
-        error_count = sum(
-            1 for r in results
-            if isinstance(r, Exception) or (isinstance(r, dict) and r.get("status") == "error")
-        )
+    # Wait for shutdown signal
+    await shutdown_event.wait()
 
-        elapsed = _time.monotonic() - cycle_start
-        logger.info(
-            "daemon_cycle_complete",
-            chains=len(chains),
-            ok=ok_count,
-            errors=error_count,
-            cycle_s=round(elapsed, 2),
-        )
-
-        remaining = max_poll_interval - elapsed
-        if remaining > 0:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(shutdown_event.wait(), timeout=remaining)
+    # Cancel all chain tasks
+    for task in chain_tasks:
+        task.cancel()
+    await asyncio.gather(*chain_tasks, return_exceptions=True)
 
     logger.info("daemon_shutdown")
     return 0 if error_count == 0 else 1
