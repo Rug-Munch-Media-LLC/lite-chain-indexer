@@ -9,6 +9,7 @@ fetch_block_timestamps utility function.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -85,18 +86,55 @@ class RpcClient:
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(endpoint, json=payload)
+
+                # Empty response check
+                if not resp.text or len(resp.text) < 5:
+                    logger.debug("rpc_empty_response", endpoint=endpoint[:50], method=method)
+                    return None
+
                 resp.raise_for_status()
-                return resp.json()
+
+                # Malformed JSON protection
+                try:
+                    return resp.json()
+                except (json.JSONDecodeError, ValueError) as exc:
+                    logger.debug(
+                        "rpc_malformed_json",
+                        endpoint=endpoint[:50],
+                        method=method,
+                        error=str(exc)[:60],
+                    )
+                    return None
+
+        except httpx.TimeoutException:
+            logger.debug("rpc_timeout", endpoint=endpoint[:50], method=method)
+            return None
+        except (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as exc:
+            logger.debug("rpc_connection_error", endpoint=endpoint[:50], method=method, error=str(exc)[:60])
+            return None
+        except httpx.HTTPStatusError as exc:
+            logger.debug("rpc_http_error", endpoint=endpoint[:50], method=method, status=exc.response.status_code)
+            return None
         except Exception as exc:
-            logger.debug("rpc_call_failed", method=method, error=str(exc)[:80])
+            logger.debug("rpc_call_failed", endpoint=endpoint[:50], method=method, error=str(exc)[:80])
             return None
 
     async def eth_block_number(self, endpoint: str) -> int | None:
-        """Get latest block number."""
+        """Get latest block number.
+
+        Handles:
+        - Empty/malformed responses (returns None)
+        - Connection errors (returns None)
+        - Non-hex results (returns None)
+        """
         result = await self.call(endpoint, "eth_blockNumber")
-        if result and "result" in result:
+        if not result or "result" not in result:
+            return None
+        try:
             return int(result["result"], 16)
-        return None
+        except (ValueError, TypeError) as exc:
+            logger.debug("eth_block_number_non_hex", endpoint=endpoint[:50], error=str(exc)[:40])
+            return None
 
     async def eth_get_block_by_number(
         self,

@@ -42,6 +42,24 @@ from lite_indexer.strategies.base import AbstractChainStrategy
 
 logger = get_logger(__name__)
 
+# Sentinel value returned by strategies when a chain reorg is detected
+_REORG_SENTINEL = "__CHAIN_REORG__"
+
+
+def _check_reorg(events: list) -> bool:
+    """Check if the events list contains a chain reorg sentinel.
+
+    Strategies return ["__CHAIN_REORG__"] when from_block > to_block,
+    indicating the chain experienced a reorganization.
+
+    Args:
+        events: Events list returned by a strategy method.
+
+    Returns:
+        True if a reorg was detected.
+    """
+    return bool(events and len(events) == 1 and isinstance(events[0], str) and events[0] == _REORG_SENTINEL)
+
 
 class LiteIndexer:
     """Multi-chain blockchain indexer using the strategy pattern.
@@ -209,7 +227,15 @@ class LiteIndexer:
         For Solana events (spl_balance_change), timestamps come from
         the transaction blockTime field which is already populated.
         For EVM/Tron, timestamps are fetched via RPC.
+
+        Skips reorg sentinel values (string markers).
         """
+        if not events:
+            return events
+
+        # Skip reorg sentinel or non-dict events
+        events = [e for e in events if isinstance(e, dict)]
+
         if not events:
             return events
 
@@ -397,10 +423,24 @@ class LiteIndexer:
         if events:
             summary["events_fetched"] = len(events)
 
+        # 3a. Handle chain reorg
+        if _check_reorg(events):
+            logger.warning("chain_reorg_during_sync", chain=self.chain)
+            self.start_from_head = True
+            summary["status"] = "reorg_detected"
+            summary["duration_seconds"] = time.monotonic() - start_time
+            return summary
+
         # 4. Fetch DEX swap events (EVM only, if enabled)
         dex_events: list[dict[str, Any]] = []
         if self.dex_enabled and self.strategy.supports_dex():
             dex_events = await self.fetch_swap_events(from_block, to_block)
+            if _check_reorg(dex_events):
+                logger.warning("chain_reorg_during_dex_sync", chain=self.chain)
+                self.start_from_head = True
+                summary["status"] = "reorg_detected"
+                summary["duration_seconds"] = time.monotonic() - start_time
+                return summary
             summary["dex_events_fetched"] = len(dex_events)
 
         # 4a. Fetch pair created events for deployer tracking (EVM only)
@@ -417,10 +457,10 @@ class LiteIndexer:
             summary["duration_seconds"] = time.monotonic() - start_time
             return summary
 
-        # 5. Enrich with timestamps
-        if events:
+        # 5. Enrich with timestamps (skip reorg sentinel)
+        if events and not _check_reorg(events):
             events = await self._enrich_timestamps(events)
-        if dex_events:
+        if dex_events and not _check_reorg(dex_events):
             dex_events = await self._enrich_timestamps(dex_events)
 
         # 5b. Write deployer events (EVM only)
