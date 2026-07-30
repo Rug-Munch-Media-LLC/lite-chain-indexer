@@ -1,3 +1,17 @@
+# === RUGMUNCH STANDARD GITIGNORE ===
+# Secrets & Credentials — NEVER commit
+.env
+.env.*
+!.env.example
+credentials.json
+service-account.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.token
+secrets*
+
 # Byte-compiled
 __pycache__/
 *.py[cod]
