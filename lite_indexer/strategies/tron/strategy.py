@@ -1,5 +1,5 @@
 """
-Tron strategy — TRC20 transfer indexing via TronGrid event API.
+Tron Strategy — TRC20 transfer indexing via TronGrid event API.
 
 Tron is TRC20-based (ERC20-compatible) but uses its own RPC API:
   - /wallet/getnowblock → latest block number
@@ -12,7 +12,6 @@ with chain='tron', making them queryable alongside EVM transfers.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -21,127 +20,11 @@ import httpx
 from lite_indexer.logging import get_logger
 from lite_indexer.strategies.base import AbstractChainStrategy
 
+from .models import TRC20_TOKENS, TRON_MAX_BLOCK_RANGE
+from .parsing import parse_tron_transfer_event
+from .rpc import tron_get, tron_get_with_range, tron_post
+
 logger = get_logger(__name__)
-
-# ── Tron RPC Endpoints (tiered fallback) ─────────────────────────────
-# T1 — Official TronGrid (only endpoint that supports contract events API)
-#           /v1/contracts/{address}/events?event_name=Transfer
-# T2 — Verified free endpoints (block queries only, no events API)
-# T3 — Best-effort fallbacks
-#
-# All endpoints tested 2026-07-30: /wallet/getnowblock works.
-# Only TronGrid (api.trongrid.io) supports the events API for TRC20 transfers.
-#
-TRON_ENDPOINTS: list[str] = [
-    # T1 — Official TronGrid (events API + full node)
-    "https://api.trongrid.io",
-    # T2 — Verified free endpoints (block queries only)
-    "https://api.tronstack.io",
-    "https://tron-rpc.publicnode.com",
-    # T3 — Fallback
-    "https://rpc.tronlink.org",
-]
-
-# ── Tracked TRC20 Tokens ─────────────────────────────────────────────
-
-TRC20_TOKENS: list[dict[str, Any]] = [
-    {"address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", "symbol": "USDT", "decimals": 6, "name": "Tether USD"},
-    {"address": "TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8", "symbol": "USDC", "decimals": 6, "name": "USD Coin"},
-    {"address": "TNUC9Qb1rRpS5CbWLmNMxXBjyFoydXjWFR", "symbol": "WTRX", "decimals": 6, "name": "Wrapped TRX"},
-]
-
-# Max events per page from TronGrid (200 is max)
-TRON_PAGE_SIZE = 200
-# Max block range per query (TronGrid limits)
-TRON_MAX_BLOCK_RANGE = 2000
-
-
-def _parse_tron_transfer_event(
-    raw: dict[str, Any],
-    token: dict[str, Any],
-    chain: str,
-) -> dict[str, Any] | None:
-    """Parse a single TRC20 Transfer event from TronGrid response.
-
-    TronGrid event format:
-    {
-      "block_number": "12345",
-      "transaction_id": "0x...",
-      "from": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
-      "to": "...",
-      "result": {
-        "value": "1000000",
-        "from": "...",
-        "to": "..."
-      },
-      "block_timestamp": 1700000000000
-    }
-
-    Args:
-        raw: Raw event dict from TronGrid.
-        token: Tracked token metadata dict.
-        chain: Chain name.
-
-    Returns:
-        Parsed event dict compatible with evm_transfers schema,
-        or None if the event cannot be parsed.
-    """
-    try:
-        result = raw.get("result") or {}
-        from_addr = result.get("from", "") or raw.get("from", "")
-        to_addr = result.get("to", "") or raw.get("to", "")
-
-        if not from_addr or not to_addr:
-            return None
-
-        value = result.get("value", "0")
-        if isinstance(value, str) and value.startswith("0x"):
-            try:
-                value = str(int(value, 16))
-            except ValueError:
-                value = "0"
-
-        block_str = raw.get("block_number", "0")
-        if isinstance(block_str, str):
-            block_num = int(block_str)
-        else:
-            block_num = int(block_str)
-
-        tx_hash = raw.get("transaction_id", "")
-
-        log_index = raw.get("log_index", 0)
-        if isinstance(log_index, str):
-            log_index = int(log_index)
-
-        # Parse timestamp from TronGrid (milliseconds since epoch)
-        ts_raw = raw.get("block_timestamp", 0)
-        if ts_raw:
-            try:
-                ts_sec = int(ts_raw) / 1000.0
-                ts = datetime.fromtimestamp(ts_sec, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            except (ValueError, TypeError, OSError):
-                ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        else:
-            ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        return {
-            "type": "transfer",
-            "chain": chain,
-            "blockNumber": block_num,
-            "blockTimestamp": ts,
-            "txHash": tx_hash,
-            "logIndex": log_index,
-            "from": from_addr,
-            "to": to_addr,
-            "tokenAddress": token["address"],
-            "value": str(value),
-            "tokenSymbol": token["symbol"],
-            "tokenName": token.get("name"),
-            "source": "lite_indexer",
-        }
-    except Exception as exc:
-        logger.debug("tron_event_parse_failed", error=str(exc)[:80])
-        return None
 
 
 class TronStrategy(AbstractChainStrategy):
@@ -190,31 +73,7 @@ class TronStrategy(AbstractChainStrategy):
             Parsed JSON response dict, or None on failure.
         """
         client = await self._get_client()
-        last_error: str | None = None
-
-        for base_url in TRON_ENDPOINTS:
-            url = f"{base_url}{path}"
-            try:
-                resp = await client.get(url, params=params, timeout=30.0)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, dict):
-                        return data
-                    last_error = "non_dict_response"
-                elif resp.status_code == 429:
-                    await asyncio.sleep(1)
-                    continue
-                else:
-                    last_error = f"http_{resp.status_code}"
-            except (httpx.TimeoutException, httpx.ConnectError) as exc:
-                last_error = str(exc)[:60]
-                continue
-            except Exception as exc:
-                last_error = str(exc)[:60]
-                continue
-
-        logger.debug("tron_request_failed", path=path, error=last_error)
-        return None
+        return await tron_get(client, path, params)
 
     async def _post(self, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Make a POST request to TronGrid with endpoint failover.
@@ -227,31 +86,7 @@ class TronStrategy(AbstractChainStrategy):
             Parsed JSON response dict, or None on failure.
         """
         client = await self._get_client()
-        last_error: str | None = None
-
-        for base_url in TRON_ENDPOINTS:
-            url = f"{base_url}{path}"
-            try:
-                resp = await client.post(url, json=json_body or {}, timeout=30.0)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, dict):
-                        return data
-                    last_error = "non_dict_response"
-                elif resp.status_code == 429:
-                    await asyncio.sleep(1)
-                    continue
-                else:
-                    last_error = f"http_{resp.status_code}"
-            except (httpx.TimeoutException, httpx.ConnectError) as exc:
-                last_error = str(exc)[:60]
-                continue
-            except Exception as exc:
-                last_error = str(exc)[:60]
-                continue
-
-        logger.debug("tron_request_failed", path=path, error=last_error)
-        return None
+        return await tron_post(client, path, json_body)
 
     # ── Block Number ─────────────────────────────────────────────────
 
@@ -400,7 +235,8 @@ class TronStrategy(AbstractChainStrategy):
         path = f"/v1/contracts/{address}/events"
 
         while page < max_pages:
-            result = await self._tron_get_with_range(path, address, from_block, to_block, cursor)
+            client = await self._get_client()
+            result = await tron_get_with_range(client, path, from_block, to_block, cursor)
 
             if not result:
                 break
@@ -410,7 +246,7 @@ class TronStrategy(AbstractChainStrategy):
                 break
 
             for raw_event in data_list:
-                parsed = _parse_tron_transfer_event(raw_event, token, self.chain)
+                parsed = parse_tron_transfer_event(raw_event, token, self.chain)
                 if parsed:
                     events.append(parsed)
 
@@ -423,66 +259,3 @@ class TronStrategy(AbstractChainStrategy):
             page += 1
 
         return events
-
-    async def _tron_get_with_range(
-        self,
-        path: str,
-        address: str,
-        from_block: int,
-        to_block: int,
-        cursor: str | None = None,
-    ) -> dict[str, Any] | None:
-        """Make a GET request to TronGrid with block number range.
-
-        TronGrid uses min_block_number and max_block_number for range queries.
-        We build the query string manually for custom parameter formatting.
-
-        Args:
-            path: API path.
-            address: Token contract address (unused, for logging context).
-            from_block: Start block.
-            to_block: End block.
-            cursor: Pagination cursor.
-
-        Returns:
-            Parsed JSON response dict, or None on failure.
-        """
-        query_parts = [
-            f"event_name=Transfer",
-            f"from_block_number={from_block}",
-            f"to_block_number={to_block}",
-            f"limit={TRON_PAGE_SIZE}",
-            "order_by=block_timestamp,desc",
-        ]
-        if cursor:
-            query_parts.append(f"fingerprint={cursor}")
-
-        query_string = "&".join(query_parts)
-        full_url = f"?{query_string}"
-
-        client = await self._get_client()
-        last_error: str | None = None
-
-        for base_url in TRON_ENDPOINTS:
-            url = f"{base_url}{path}{full_url}"
-            try:
-                resp = await client.get(url, timeout=30.0)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, dict):
-                        return data
-                    last_error = "non_dict_response"
-                elif resp.status_code == 429:
-                    await asyncio.sleep(1)
-                    continue
-                else:
-                    last_error = f"http_{resp.status_code}"
-            except (httpx.TimeoutException, httpx.ConnectError) as exc:
-                last_error = str(exc)[:60]
-                continue
-            except Exception as exc:
-                last_error = str(exc)[:60]
-                continue
-
-        logger.debug("tron_get_range_failed", path=path[:50], error=last_error)
-        return None
