@@ -26,6 +26,9 @@ dev = [
     "pre-commit>=4.0.0",
     "gitleaks>=8.18.0",
 ]
+query = [
+    "duckdb>=1.0.0",
+]
 
 [project.scripts]
 lite-indexer = "lite_indexer.cli:main"
