@@ -16,16 +16,20 @@ Non-EVM chains (Solana, Tron) use their own strategy with chain-specific RPC.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from lite_indexer.chains import GET_LOGS_ENDPOINTS
 from lite_indexer.config import DATA_DIR, DISK_CAP_BYTES, HEAD_BUFFER
 from lite_indexer.logging import get_logger
-from lite_indexer.rpc import RpcClient, get_best_endpoint
+from lite_indexer.rpc import RpcClient
+from lite_indexer.rpc.verify import (
+    EndpointVerifyResult,
+    apply_verified_endpoints,
+    restore_original_endpoints,
+    verify_chain_endpoints,
+)
 from lite_indexer.state import StateManager
 from lite_indexer.storage import (
     ClickHouseWriter,
@@ -34,8 +38,8 @@ from lite_indexer.storage import (
     check_disk_space,
 )
 from lite_indexer.strategies import (
-    EVMChainStrategy,
     SUPPORTED_CHAINS,
+    EVMChainStrategy,
     create_strategy,
 )
 from lite_indexer.strategies.base import AbstractChainStrategy
@@ -105,6 +109,9 @@ class LiteIndexer:
 
         # RPC client (used by EVM strategy, others create their own)
         self.rpc = RpcClient()
+
+        # Latest endpoint verification result (EVM only) — restored after sync
+        self._verify_result: EndpointVerifyResult | None = None
 
         # Storage writers
         self._ndjson_writer = NDJSONWriter(data_dir=self.data_dir)
@@ -350,42 +357,27 @@ class LiteIndexer:
         This is EVM-specific because it uses eth_getLogs for verification.
         Non-EVM chains skip this step.
 
+        WARNING: Concurrent access. This method temporarily mutates the
+        module-global ``chains_mod.GET_LOGS_ENDPOINTS`` dict and restores
+        it at the start of ``_sync_loop_inner``. It is NOT safe to run two
+        sync loops for the SAME chain concurrently — parallel daemon tasks
+        must target distinct chains. The swap is only visible to code that
+        reads the dict at call time.
+
         Returns a summary dict if we should abort, or None to proceed.
         """
-        chain_endpoints = GET_LOGS_ENDPOINTS.get(self.chain, [])
-        if not chain_endpoints:
-            logger.error("no_endpoints_for_chain", chain=self.chain)
+        result = await verify_chain_endpoints(self.chain, self.rpc)
+        if result is None:
             summary["status"] = "no_endpoints"
             summary["errors"].append(f"no endpoints configured for {self.chain}")
             return summary
 
-        from lite_indexer.rpc import verify_endpoints_for_chain
-
-        # Get latest block for verification range
-        tip_for_verify = await self.rpc.eth_block_number(get_best_endpoint(chain_endpoints))
-        verified_endpoints = await verify_endpoints_for_chain(
-            chain_endpoints,
-            self.chain,
-            latest_block=tip_for_verify,
-        )
-        logger.info(
-            "endpoint_verification_complete",
-            chain=self.chain,
-            total=len(chain_endpoints),
-            verified=len(verified_endpoints),
-        )
-        summary["endpoints_total"] = len(chain_endpoints)
-        summary["endpoints_verified"] = len(verified_endpoints)
+        summary["endpoints_total"] = result.total
+        summary["endpoints_verified"] = result.verified
 
         # Temporarily use verified endpoints for this sync cycle
-        import lite_indexer.chains as chains_mod
-
-        original_endpoints = chains_mod.GET_LOGS_ENDPOINTS.get(self.chain, [])
-        if verified_endpoints:
-            chains_mod.GET_LOGS_ENDPOINTS[self.chain] = verified_endpoints
-
-        # Store for restoration in _sync_loop_inner
-        self._original_endpoints = original_endpoints
+        self._verify_result = result
+        apply_verified_endpoints(result)
         return None  # Proceed to sync
 
     async def _sync_loop_inner(
@@ -403,10 +395,8 @@ class LiteIndexer:
         """
         # Restore EVM endpoints after verification (if applicable)
         try:
-            if self._is_evm() and hasattr(self, "_original_endpoints"):
-                import lite_indexer.chains as chains_mod
-
-                chains_mod.GET_LOGS_ENDPOINTS[self.chain] = self._original_endpoints
+            if self._is_evm() and self._verify_result is not None:
+                restore_original_endpoints(self._verify_result)
         except Exception:
             pass
 
@@ -443,8 +433,12 @@ class LiteIndexer:
                 return summary
             summary["dex_events_fetched"] = len(dex_events)
 
-        # 4a. Fetch pair created events for deployer tracking (EVM only)
-        if self.deployers_enabled and not self.dex_enabled and self.strategy.supports_deployers():
+        # 4a. Fetch pair created events for deployer tracking (EVM only).
+        # Runs even when DEX is enabled — dex_handler fetches pair-created
+        # events to build its token cache, but deployer events are only
+        # written from the strategy's _last_pair_events, which is populated
+        # here.
+        if self.deployers_enabled and self.strategy.supports_deployers():
             try:
                 await self._fetch_pair_created_events(from_block, to_block)
             except Exception as exc:
@@ -498,6 +492,11 @@ class LiteIndexer:
         # 8. Save state
         total_events = len(events) + len(dex_events) + deployer_written
         self.state.save(to_block, total_events)
+
+        # A reorg-triggered head start (or --start-from-head) is one-shot:
+        # clear the flag after a successful sync so subsequent cycles
+        # resume from saved state instead of re-indexing from the tip.
+        self.start_from_head = False
 
         summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
         logger.info(
