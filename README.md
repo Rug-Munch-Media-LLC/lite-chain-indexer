@@ -249,12 +249,16 @@ File-locked state files allow safe concurrent runs. Pair cache and per-chain pro
 
 ### RPC endpoints
 
-Endpoints live in `lite_indexer/chains/` (`endpoints.py`, `non_evm.py`) and `config/endpoints.yaml`. Each chain has tiers:
+Endpoints live in `lite_indexer/chains/` (`endpoints.py`, `non_evm.py`). Each EVM chain has tiers, all live-verified against a topic-only `eth_getLogs` probe:
 
-- **Tier 1** — fast, reliable (drpc.org, official RPCs, onfinality)
-- **Tier 2** — fallbacks (1rpc.io, publicnode.com, blastapi)
-- **Tier 3** — last resort (ankr.com, cloudflare-eth.com, tatum)
-- **Tier 4** — free API-key tiers (Alchemy, GetBlock, Chainstack, QuickNode, Helius) — set the `${ENV_VAR}` to activate
+- **Tier 1** — fast, reliable (drpc.org, tenderly, official RPCs)
+- **Tier 2** — fallbacks (tatum, blxrbdn, nodereal, 48.club)
+- **Tier 3** — last resort (range-limited publics)
+- **Tier 4** — free API-key tiers (`${ALCHEMY_KEY}`, `${GETBLOCK_KEY}`, Chainstack, QuickNode, Infura) — placeholders are resolved from the environment at import time
+
+The daemon also runs a periodic endpoint health monitor that logs up/down
+status and feeds the adaptive pool scoring, so dead endpoints are
+deprioritized between sync cycles.
 
 ---
 

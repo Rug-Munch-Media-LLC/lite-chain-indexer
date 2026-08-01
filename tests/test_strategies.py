@@ -19,8 +19,6 @@ from lite_indexer.strategies import (
 )
 from lite_indexer.strategies.solana import _parse_solana_transfer_events
 from lite_indexer.strategies.tron import _parse_tron_transfer_event
-from lite_indexer.strategies.evm import EVMChainStrategy
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Solana Strategy Tests

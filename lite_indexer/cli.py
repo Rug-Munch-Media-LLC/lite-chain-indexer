@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import signal
 import sys
@@ -20,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from lite_indexer.chains import CHAIN_POLL_INTERVALS, GET_LOGS_ENDPOINTS
+from lite_indexer.chains import CHAIN_POLL_INTERVALS
 from lite_indexer.config import BATCH_SIZE, DATA_DIR, DISK_CAP_BYTES
 from lite_indexer.indexer import LiteIndexer
 from lite_indexer.logging import get_logger, setup_logging
@@ -189,13 +188,24 @@ async def main_daemon(
     # Launch one independent task per chain
     chain_tasks = [asyncio.create_task(_chain_loop(c), name=f"daemon-chain-{c}") for c in chains]
 
+    # Periodic endpoint health monitor — probes every configured EVM RPC,
+    # logs up/down, and feeds the adaptive pool scoring so dead endpoints
+    # are deprioritized between sync cycles.
+    from lite_indexer.rpc.health import monitor_endpoint_health
+
+    health_task = asyncio.create_task(
+        monitor_endpoint_health(),
+        name="endpoint-health-monitor",
+    )
+
     # Wait for shutdown signal
     await shutdown_event.wait()
 
-    # Cancel all chain tasks
+    # Cancel the health monitor and all chain tasks
+    health_task.cancel()
     for task in chain_tasks:
         task.cancel()
-    await asyncio.gather(*chain_tasks, return_exceptions=True)
+    await asyncio.gather(health_task, *chain_tasks, return_exceptions=True)
 
     logger.info("daemon_shutdown")
     return 0 if error_count == 0 else 1

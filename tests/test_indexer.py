@@ -7,13 +7,9 @@ state management, and the storage layer.
 
 from __future__ import annotations
 
-import json
-import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 # ── Parse/Decoder Tests ──────────────────────────────────────────────
 
@@ -47,19 +43,21 @@ class TestParseTransferLogs:
     def test_basic_transfer(self):
         from lite_indexer.dex import parse_transfer_logs
 
-        logs = [{
-            "blockNumber": "0x100000",
-            "logIndex": "0x1",
-            "transactionHash": "0xabc",
-            "address": "0xtoken",
-            "topics": [
-                "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-                "0x" + "00" * 12 + "dead00000000000000000000000000000000beef",
-                "0x" + "00" * 12 + "cafe00000000000000000000000000000000babe",
-            ],
-            "data": "0x" + "00" * 31 + "01",  # value = 1
-            "removed": False,
-        }]
+        logs = [
+            {
+                "blockNumber": "0x100000",
+                "logIndex": "0x1",
+                "transactionHash": "0xabc",
+                "address": "0xtoken",
+                "topics": [
+                    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                    "0x" + "00" * 12 + "dead00000000000000000000000000000000beef",
+                    "0x" + "00" * 12 + "cafe00000000000000000000000000000000babe",
+                ],
+                "data": "0x" + "00" * 31 + "01",  # value = 1
+                "removed": False,
+            }
+        ]
 
         events = parse_transfer_logs(logs, "ethereum", 0x100000, 0x100000)
         assert len(events) == 1
@@ -72,15 +70,17 @@ class TestParseTransferLogs:
     def test_skips_removed_logs(self):
         from lite_indexer.dex import parse_transfer_logs
 
-        logs = [{
-            "blockNumber": "0x100000",
-            "logIndex": "0x1",
-            "transactionHash": "0xabc",
-            "address": "0xtoken",
-            "topics": ["0xtopic", "0xfrom", "0xto"],
-            "data": "0x1",
-            "removed": True,
-        }]
+        logs = [
+            {
+                "blockNumber": "0x100000",
+                "logIndex": "0x1",
+                "transactionHash": "0xabc",
+                "address": "0xtoken",
+                "topics": ["0xtopic", "0xfrom", "0xto"],
+                "data": "0x1",
+                "removed": True,
+            }
+        ]
         events = parse_transfer_logs(logs, "ethereum", 0x100000, 0x100001)
         assert len(events) == 0
 
@@ -88,20 +88,22 @@ class TestParseTransferLogs:
         """4 topics + value=0 → NFT, not ERC-20."""
         from lite_indexer.dex import parse_transfer_logs
 
-        logs = [{
-            "blockNumber": "0x100000",
-            "logIndex": "0x1",
-            "transactionHash": "0xabc",
-            "address": "0xnft",
-            "topics": [
-                "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
-                "0xfrom",
-                "0xto",
-                "0xtokenid",
-            ],
-            "data": "0x0",
-            "removed": False,
-        }]
+        logs = [
+            {
+                "blockNumber": "0x100000",
+                "logIndex": "0x1",
+                "transactionHash": "0xabc",
+                "address": "0xnft",
+                "topics": [
+                    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                    "0xfrom",
+                    "0xto",
+                    "0xtokenid",
+                ],
+                "data": "0x0",
+                "removed": False,
+            }
+        ]
         events = parse_transfer_logs(logs, "ethereum", 0x100000, 0x100001)
         assert len(events) == 0
 
@@ -125,28 +127,30 @@ class TestParseSwapLogs:
     """Test parsing V2 and V3 swap events."""
 
     def test_v2_swap_basic(self):
-        from lite_indexer.dex import parse_swap_logs, SWAP_V2_TOPIC
+        from lite_indexer.dex import SWAP_V2_TOPIC, parse_swap_logs
 
         pair = "0xpair"
         pair_tokens = {pair: ("0xtoken0", "0xtoken1")}
 
-        logs = [{
-            "blockNumber": "0x100000",
-            "logIndex": "0x1",
-            "transactionHash": "0xabc",
-            "address": pair,
-            "topics": [
-                SWAP_V2_TOPIC,
-                "0x" + "00" * 12 + "sender0000000000000000000000000000",
-                "0x" + "00" * 12 + "recipnt0000000000000000000000000000",
-            ],
-            "data": "0x"
-            + "01" * 32  # amount0In
-            + "02" * 32  # amount1In
-            + "03" * 32  # amount0Out
-            + "04" * 32,  # amount1Out
-            "removed": False,
-        }]
+        logs = [
+            {
+                "blockNumber": "0x100000",
+                "logIndex": "0x1",
+                "transactionHash": "0xabc",
+                "address": pair,
+                "topics": [
+                    SWAP_V2_TOPIC,
+                    "0x" + "00" * 12 + "sender0000000000000000000000000000",
+                    "0x" + "00" * 12 + "recipnt0000000000000000000000000000",
+                ],
+                "data": "0x"
+                + "01" * 32  # amount0In
+                + "02" * 32  # amount1In
+                + "03" * 32  # amount0Out
+                + "04" * 32,  # amount1Out
+                "removed": False,
+            }
+        ]
 
         events = parse_swap_logs(logs, "ethereum", 0x100000, 0x100000, SWAP_V2_TOPIC, pair_tokens)
         assert len(events) == 1
@@ -156,17 +160,19 @@ class TestParseSwapLogs:
         assert events[0]["pairAddress"] == pair
 
     def test_v2_swap_without_pair_tokens_falls_back_empty(self):
-        from lite_indexer.dex import parse_swap_logs, SWAP_V2_TOPIC
+        from lite_indexer.dex import SWAP_V2_TOPIC, parse_swap_logs
 
-        logs = [{
-            "blockNumber": "0x100000",
-            "logIndex": "0x1",
-            "transactionHash": "0xabc",
-            "address": "0xunknown",
-            "topics": [SWAP_V2_TOPIC, "0xsender", "0xrecip"],
-            "data": "0x" + "01" * 128,
-            "removed": False,
-        }]
+        logs = [
+            {
+                "blockNumber": "0x100000",
+                "logIndex": "0x1",
+                "transactionHash": "0xabc",
+                "address": "0xunknown",
+                "topics": [SWAP_V2_TOPIC, "0xsender", "0xrecip"],
+                "data": "0x" + "01" * 128,
+                "removed": False,
+            }
+        ]
 
         events = parse_swap_logs(logs, "ethereum", 0x100000, 0x100000, SWAP_V2_TOPIC, {})
         assert len(events) == 1
@@ -178,7 +184,7 @@ class TestParsePairCreatedLogs:
     """Test parsing PairCreated (V2) and PoolCreated (V3) events."""
 
     def test_v2_pair_created(self):
-        from lite_indexer.dex import parse_pair_created_logs, PAIR_CREATED_TOPIC
+        from lite_indexer.dex import PAIR_CREATED_TOPIC, parse_pair_created_logs
 
         # 20-byte addresses = 40 hex chars
         token0_addr = "dead00000000000000000000000000000000beef"
@@ -219,7 +225,7 @@ class TestStateManager:
     """Test state file management."""
 
     def test_save_and_load(self):
-        from lite_indexer.state import StateManager, STATE_DIR
+        from lite_indexer.state import STATE_DIR, StateManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.object(type(STATE_DIR), "parent", Path(tmpdir)):
@@ -236,7 +242,7 @@ class TestPairCache:
     """Test pair cache persistence."""
 
     def test_cache_persistence(self):
-        from lite_indexer.state import PairCache, STATE_DIR
+        from lite_indexer.state import PairCache
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Patch STATE_DIR to use temp dir by replacing its path
@@ -275,7 +281,7 @@ class TestChainConfig:
         assert CHAIN_POLL_INTERVALS["ethereum"] == 12.0
 
     def test_all_chains_have_endpoints(self):
-        from lite_indexer.chains import GET_LOGS_ENDPOINTS, CHAIN_POLL_INTERVALS
+        from lite_indexer.chains import GET_LOGS_ENDPOINTS
 
         for chain in GET_LOGS_ENDPOINTS:
             assert len(GET_LOGS_ENDPOINTS[chain]) > 0, f"{chain} has no endpoints"
@@ -289,11 +295,11 @@ class TestConfig:
 
     def test_required_topics(self):
         from lite_indexer.config import (
-            TRANSFER_EVENT_TOPIC,
-            SWAP_V2_TOPIC,
-            SWAP_V3_TOPIC,
             PAIR_CREATED_TOPIC,
             POOL_CREATED_TOPIC,
+            SWAP_V2_TOPIC,
+            SWAP_V3_TOPIC,
+            TRANSFER_EVENT_TOPIC,
         )
 
         for topic in [
@@ -307,7 +313,7 @@ class TestConfig:
             assert len(topic) == 66  # 0x + 64 hex chars
 
     def test_disk_cap_sane(self):
-        from lite_indexer.config import DISK_CAP_BYTES, BATCH_SIZE
+        from lite_indexer.config import BATCH_SIZE, DISK_CAP_BYTES
 
         assert DISK_CAP_BYTES > 0
         assert 0 < BATCH_SIZE <= 10000

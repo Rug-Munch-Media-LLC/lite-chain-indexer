@@ -7,6 +7,7 @@ verify endpoints against eth_getLogs, and caches results.
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import httpx
@@ -174,3 +175,119 @@ def is_endpoint_healthy(endpoint: str) -> bool:
     if result is None:
         return True  # Not yet verified — assume healthy
     return result
+
+
+# ── Periodic Health Monitor ───────────────────────────────────────────
+
+
+async def _probe_endpoint(endpoint: str, timeout: float) -> bool:
+    """Light liveness probe for a single RPC endpoint (eth_blockNumber).
+
+    Kept deliberately light (one JSON-RPC call, short timeout) so the
+    monitor can sweep every configured endpoint without burning free-tier
+    rate limits. The per-cycle eth_getLogs verification in
+    ``verify_endpoints_for_chain`` remains the authoritative getLogs-level
+    check.
+
+    Args:
+        endpoint: RPC endpoint URL.
+        timeout: Probe timeout in seconds.
+
+    Returns:
+        True if the endpoint answered with a valid block number.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            resp = await client.post(
+                endpoint,
+                json={"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},
+            )
+            if resp.status_code != 200:
+                return False
+            data = resp.json()
+            return isinstance(data, dict) and bool(data.get("result"))
+    except Exception:
+        return False
+
+
+async def monitor_endpoint_health(
+    interval: float = 300.0,
+    chains: list[str] | None = None,
+    timeout: float = 8.0,
+) -> None:
+    """Periodically probe configured endpoints and log up/down status.
+
+    Runs forever (until cancelled). Each cycle probes every configured
+    EVM endpoint with a light ``eth_blockNumber`` call and feeds the
+    adaptive pool scoring:
+
+      - ``_endpoint_verified_ok[url]`` is updated so
+        :func:`is_endpoint_healthy` (used by ``get_best_endpoint``)
+        deprioritizes dead endpoints (+10000 penalty).
+      - Dead endpoints are recorded in the pool failure tracker via
+        :func:`lite_indexer.rpc.pool.record_endpoint_failure` so the
+        per-endpoint exponential backoff applies.
+
+    Endpoints with unresolved ``${ENV_VAR}`` placeholders are skipped —
+    they are only usable once the key is set in the environment, and
+    marking them dead would pollute the pool scoring.
+
+    Args:
+        interval: Seconds between probe cycles (default: 300 = 5 min).
+        chains: Chains to probe (default: all EVM chains in
+            GET_LOGS_ENDPOINTS). Non-EVM chains (solana/tron) use their
+            own RPC config and are not included.
+        timeout: Per-endpoint probe timeout in seconds.
+    """
+    from lite_indexer.chains import GET_LOGS_ENDPOINTS
+    from lite_indexer.rpc.pool import record_endpoint_failure
+
+    target_chains = chains if chains is not None else sorted(GET_LOGS_ENDPOINTS)
+    logger.info(
+        "endpoint_health_monitor_start",
+        chains=target_chains,
+        interval=interval,
+    )
+
+    while True:
+        cycle_start = time.monotonic()
+        up_total = 0
+        down_total = 0
+
+        for chain in target_chains:
+            endpoints = [ep for ep in GET_LOGS_ENDPOINTS.get(chain, []) if "${" not in ep]
+            if not endpoints:
+                continue
+
+            up: list[str] = []
+            down: list[str] = []
+            for url in endpoints:
+                ok = await _probe_endpoint(url, timeout)
+                _endpoint_verified_ok[url] = ok
+                if ok:
+                    up.append(url)
+                    up_total += 1
+                else:
+                    down.append(url)
+                    down_total += 1
+                    record_endpoint_failure(url)
+
+            if down:
+                logger.warning(
+                    "endpoint_health_down",
+                    chain=chain,
+                    up=len(up),
+                    down=len(down),
+                    endpoints=down,
+                )
+            else:
+                logger.info("endpoint_health_ok", chain=chain, endpoints=len(up))
+
+        logger.info(
+            "endpoint_health_cycle",
+            up=up_total,
+            down=down_total,
+            duration_s=round(time.monotonic() - cycle_start, 2),
+        )
+
+        await asyncio.sleep(interval)
