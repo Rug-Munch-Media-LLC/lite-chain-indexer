@@ -115,16 +115,6 @@ CHAIN_INDEXER_DIR = DATA_DIR
 
 # ── Solana Configuration ──────────────────────────────────────────────
 
-SOLANA_RPC_ENDPOINTS: list[str] = [
-    # T1 — Official Solana Foundation RPC
-    "https://api.mainnet-beta.solana.com",
-    # T2 — Verified free RPC with good uptime
-    "https://solana-rpc.publicnode.com",
-    # T3 — Fallbacks (may have lower rate limits or require API keys)
-    "https://rpc.ankr.com/solana",
-    "https://solana.drpc.org",
-]
-
 SOLANA_SPL_TOKEN_PROGRAM: str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 SOLANA_MAX_SIGNATURES_PER_TOKEN: int = 100
@@ -133,16 +123,6 @@ SOLANA_TX_CONCURRENCY: int = 10
 SOLANA_CH_TABLE: str = "wallet_memory.solana_spl_balance_changes"
 
 # ── Tron Configuration ────────────────────────────────────────────────
-
-TRON_RPC_ENDPOINTS: list[str] = [
-    # T1 — Official TronGrid (events API + full node)
-    "https://api.trongrid.io",
-    # T2 — Verified free endpoints (block queries only)
-    "https://api.tronstack.io",
-    "https://tron-rpc.publicnode.com",
-    # T3 — Fallback
-    "https://rpc.tronlink.org",
-]
 
 TRON_PAGE_SIZE: int = 200
 TRON_MAX_BLOCK_RANGE: int = 2000

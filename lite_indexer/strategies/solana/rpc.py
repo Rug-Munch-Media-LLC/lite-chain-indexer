@@ -11,20 +11,10 @@ from typing import Any
 
 import httpx
 
+from lite_indexer.chains.non_evm import SOLANA_ENDPOINTS
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
-
-# ── Solana RPC Endpoints (tiered fallback) ───────────────────────────
-SOLANA_ENDPOINTS: list[str] = [
-    # T1 — Official Solana Foundation RPC (most reliable, rate-limited per IP)
-    "https://api.mainnet-beta.solana.com",
-    # T2 — Verified free RPC with good uptime
-    "https://solana-rpc.publicnode.com",
-    # T3 — Fallbacks (may have lower rate limits or require API keys)
-    "https://rpc.ankr.com/solana",
-    "https://solana.drpc.org",
-]
 
 
 async def rpc_call(

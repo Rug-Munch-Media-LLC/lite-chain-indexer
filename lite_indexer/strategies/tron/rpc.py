@@ -16,30 +16,12 @@ from typing import Any
 
 import httpx
 
+from lite_indexer.chains.non_evm import TRON_ENDPOINTS
 from lite_indexer.logging import get_logger
 
 from .models import TRON_PAGE_SIZE
 
 logger = get_logger(__name__)
-
-# ── Tron RPC Endpoints (tiered fallback) ─────────────────────────────
-# T1 — Official TronGrid (only endpoint that supports contract events API)
-#           /v1/contracts/{address}/events?event_name=Transfer
-# T2 — Verified free endpoints (block queries only, no events API)
-# T3 — Best-effort fallbacks
-#
-# All endpoints tested 2026-07-30: /wallet/getnowblock works.
-# Only TronGrid (api.trongrid.io) supports the events API for TRC20 transfers.
-#
-TRON_ENDPOINTS: list[str] = [
-    # T1 — Official TronGrid (events API + full node)
-    "https://api.trongrid.io",
-    # T2 — Verified free endpoints (block queries only)
-    "https://api.tronstack.io",
-    "https://tron-rpc.publicnode.com",
-    # T3 — Fallback
-    "https://rpc.tronlink.org",
-]
 
 
 async def tron_get(
