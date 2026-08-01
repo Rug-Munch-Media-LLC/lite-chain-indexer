@@ -15,6 +15,8 @@ from typing import Any
 import httpx
 
 from lite_indexer.config import (
+    CHAIN_BLOCK_TIMES,
+    DEFAULT_BLOCK_TIME,
     GET_LOGS_SEMAPHORE_LIMIT,
     RPC_CALL_TIMEOUT,
     RPC_TIMEOUT,
@@ -26,6 +28,23 @@ from lite_indexer.rpc.pool import get_best_endpoint, record_endpoint_failure
 from lite_indexer.rpc.ratelimit import apply_provider_rate_limit
 
 logger = get_logger(__name__)
+
+# ── Pooled HTTP Clients ────────────────────────────────────────────────
+# Reuse a small set of AsyncClients across all RpcClient instances instead
+# of creating a brand-new httpx client per call. Clients are keyed by
+# timeout so callers with different timeouts don't fight over one value.
+# Safe under asyncio: creation is synchronous, so there is no await point
+# between the lookup and the assignment.
+_call_clients: dict[float, httpx.AsyncClient] = {}
+
+
+async def _get_call_client(timeout: float) -> httpx.AsyncClient:
+    """Get a pooled module-level httpx client for the given timeout."""
+    client = _call_clients.get(timeout)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(timeout=httpx.Timeout(timeout))
+        _call_clients[timeout] = client
+    return client
 
 
 # ── RPC Client ─────────────────────────────────────────────────────────
@@ -80,27 +99,27 @@ class RpcClient:
             "params": params or [],
         }
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(endpoint, json=payload)
+            client = await _get_call_client(timeout)
+            resp = await client.post(endpoint, json=payload)
 
-                # Empty response check
-                if not resp.text or len(resp.text) < 5:
-                    logger.debug("rpc_empty_response", endpoint=endpoint[:50], method=method)
-                    return None
+            # Empty response check
+            if not resp.text or len(resp.text) < 5:
+                logger.debug("rpc_empty_response", endpoint=endpoint[:50], method=method)
+                return None
 
-                resp.raise_for_status()
+            resp.raise_for_status()
 
-                # Malformed JSON protection
-                try:
-                    return resp.json()
-                except (json.JSONDecodeError, ValueError) as exc:
-                    logger.debug(
-                        "rpc_malformed_json",
-                        endpoint=endpoint[:50],
-                        method=method,
-                        error=str(exc)[:60],
-                    )
-                    return None
+            # Malformed JSON protection
+            try:
+                return resp.json()
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.debug(
+                    "rpc_malformed_json",
+                    endpoint=endpoint[:50],
+                    method=method,
+                    error=str(exc)[:60],
+                )
+                return None
 
         except httpx.TimeoutException:
             logger.debug("rpc_timeout", endpoint=endpoint[:50], method=method)
@@ -274,15 +293,20 @@ async def fetch_block_timestamps(
     client: RpcClient,
     endpoints: list[str],
     block_numbers: set[int],
+    chain: str = "ethereum",
 ) -> dict[int, str]:
     """Fetch timestamps for a set of block numbers in parallel.
 
-    Falls back to approximate timestamps if RPC fails.
+    Falls back to approximate timestamps if RPC fails, using the
+    chain's average block time (from CHAIN_BLOCK_TIMES) instead of a
+    hardcoded 12s value — fast chains like Base (2s) and Arbitrum
+    (0.25s) would otherwise get badly skewed estimates.
 
     Args:
         client: RpcClient instance.
         endpoints: List of RPC endpoints for the chain.
         block_numbers: Set of block numbers to resolve.
+        chain: Chain name used to look up the average block time.
 
     Returns:
         Dict of {block_number: ISO-8601 timestamp string}.
@@ -319,7 +343,7 @@ async def fetch_block_timestamps(
     if len(timestamps) < len(block_numbers):
         from datetime import datetime, timedelta
 
-        avg_block_time = 12
+        avg_block_time = CHAIN_BLOCK_TIMES.get(chain, DEFAULT_BLOCK_TIME)
         latest_block = max(block_numbers)
         latest_ts_str = timestamps.get(latest_block)
         if latest_ts_str:

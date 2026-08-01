@@ -18,7 +18,7 @@ from typing import Any
 
 import httpx
 
-from lite_indexer.chains import CHAIN_BLOCK_RANGE_LIMITS, GET_LOGS_ENDPOINTS
+from lite_indexer.chains import GET_LOGS_ENDPOINTS
 from lite_indexer.config import BATCH_SIZE, RPC_TIMEOUT
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
@@ -26,14 +26,16 @@ from lite_indexer.rpc import (
     get_best_endpoint,
     record_endpoint_failure,
     verify_endpoints_for_chain,
+)
+from lite_indexer.rpc import (
     fetch_block_timestamps as rpc_fetch_block_timestamps,
 )
 from lite_indexer.state import PairCache
 from lite_indexer.strategies.base import AbstractChainStrategy
 from lite_indexer.strategies.evm._helpers import detect_reorg, enforce_block_range
-from lite_indexer.strategies.evm.transfer_handler import fetch_transfers as _fetch_transfers
-from lite_indexer.strategies.evm.dex_handler import fetch_swap_events as _fetch_swap_events
 from lite_indexer.strategies.evm.deployer_handler import fetch_pair_created as _fetch_pair_created
+from lite_indexer.strategies.evm.dex_handler import fetch_swap_events as _fetch_swap_events
+from lite_indexer.strategies.evm.transfer_handler import fetch_transfers as _fetch_transfers
 
 logger = get_logger(__name__)
 
@@ -164,7 +166,7 @@ class EVMChainStrategy(AbstractChainStrategy):
             return None
 
         # Try multiple endpoints for redundancy
-        for attempt in range(3):
+        for _ in range(3):
             endpoint = get_best_endpoint(endpoints)
             try:
                 result = await self.rpc.eth_block_number(endpoint)
@@ -192,7 +194,7 @@ class EVMChainStrategy(AbstractChainStrategy):
         if not endpoints:
             return {}
 
-        return await rpc_fetch_block_timestamps(self.rpc, endpoints, block_numbers)
+        return await rpc_fetch_block_timestamps(self.rpc, endpoints, block_numbers, chain=self.chain)
 
     # ── Transfer Events (delegates to transfer_handler) ──────────────
 
