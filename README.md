@@ -175,7 +175,9 @@ DEX (eth_getLogs) → LiteIndexer.fetch_swap_events()
 
 ### RPC Endpoints
 
-Endpoints are defined in `config/endpoints.yaml` and `lite_indexer/chains.py`. Each chain has 3 tiers:
+Endpoints are defined in `lite_indexer/chains/endpoints.py` (EVM chains) and
+`lite_indexer/chains/non_evm.py` (Solana/Tron) — that is the source of truth.
+Each chain has 3 tiers:
 
 - **Tier 1** — Fast, reliable (drpc.org, official RPCs)
 - **Tier 2** — Fallbacks (1rpc.io, publicnode.com)

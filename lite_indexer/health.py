@@ -26,7 +26,6 @@ logger = get_logger(__name__)
 
 async def check_chain_health(
     chain_names: list[str] | None = None,
-    allow_paid: bool | None = None,
     timeout: float = 15.0,
 ) -> dict[str, dict[str, Any]]:
     """Health check for all configured chains.
@@ -38,8 +37,6 @@ async def check_chain_health(
     Args:
         chain_names: Optional list of chains to check. If None, checks
             all chains in SUPPORTED_CHAINS.
-        allow_paid: Whether to allow paid RPC endpoints. Passed to
-            strategy factory and get_chain_endpoints.
         timeout: Per-chain timeout in seconds (default: 15).
 
     Returns:
@@ -109,7 +106,6 @@ async def check_chain_health(
 
 async def print_health_report(
     chain_names: list[str] | None = None,
-    allow_paid: bool | None = None,
 ) -> str:
     """Run health checks and return a human-readable report string.
 
@@ -117,12 +113,11 @@ async def print_health_report(
 
     Args:
         chain_names: Optional list of chains to check.
-        allow_paid: Whether to allow paid RPC endpoints.
 
     Returns:
         Multi-line string with a formatted health report.
     """
-    results = await check_chain_health(chain_names, allow_paid)
+    results = await check_chain_health(chain_names)
 
     lines: list[str] = []
     lines.append("=" * 60)
@@ -168,15 +163,10 @@ async def main() -> None:
         default=None,
         help="Comma-separated chain names (default: all)",
     )
-    parser.add_argument(
-        "--use-paid-rpc",
-        action="store_true",
-        help="Allow paid RPC endpoints",
-    )
     args = parser.parse_args()
 
     chain_names = [c.strip() for c in args.chains.split(",")] if args.chains else None
-    report = await print_health_report(chain_names, allow_paid=args.use_paid_rpc)
+    report = await print_health_report(chain_names)
     print(report)  # noqa: T201
 
 

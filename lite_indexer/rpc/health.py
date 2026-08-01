@@ -130,18 +130,16 @@ async def verify_endpoints_for_chain(
     endpoints: list[str],
     chain: str,
     latest_block: int | None = None,
-    force: bool = False,
 ) -> list[str]:
     """Verify all endpoints for a chain, returning only healthy ones.
 
-    Skips endpoints that have been verified within ENDPOINT_VERIFY_INTERVAL
-    unless force=True. Falls through to all endpoints if no healthy ones exist.
+    Skips endpoints that have been verified within ENDPOINT_VERIFY_INTERVAL.
+    Falls through to all endpoints if no healthy ones exist.
 
     Args:
         endpoints: List of RPC URLs for this chain.
         chain: Chain name.
         latest_block: Optional latest block for range-based verification.
-        force: If True, re-verify even recently-verified endpoints.
 
     Returns:
         List of verified healthy endpoints (maintains original order).
@@ -150,9 +148,9 @@ async def verify_endpoints_for_chain(
     verified: list[str] = []
 
     for ep in endpoints:
-        # Skip if recently verified and not forced
+        # Skip if recently verified
         last_v = _endpoint_last_verified.get(ep, 0)
-        if not force and (now - last_v) < ENDPOINT_VERIFY_INTERVAL:
+        if (now - last_v) < ENDPOINT_VERIFY_INTERVAL:
             if _endpoint_verified_ok.get(ep, False):
                 verified.append(ep)
             continue

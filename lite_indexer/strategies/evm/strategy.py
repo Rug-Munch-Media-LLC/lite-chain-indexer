@@ -123,7 +123,21 @@ class EVMChainStrategy(AbstractChainStrategy):
     # ── Endpoint Verification ────────────────────────────────────────
 
     async def verify_endpoints(self) -> list[str]:
-        """Verify eth_getLogs endpoints are healthy for this chain."""
+        """[DEPRECATED] Verify eth_getLogs endpoints are healthy for this chain.
+
+        Deprecated: the indexer no longer calls this method — it verifies
+        endpoints directly via :func:`lite_indexer.rpc.verify_endpoints_for_chain`
+        during ``LiteIndexer.sync_loop``. Kept only for the public strategy
+        API and tests.
+        """
+        import warnings
+
+        warnings.warn(
+            "EVMChainStrategy.verify_endpoints() is deprecated; "
+            "use lite_indexer.rpc.verify_endpoints_for_chain instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         endpoints = GET_LOGS_ENDPOINTS.get(self.chain, [])
         if not endpoints:
             return []
