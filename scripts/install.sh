@@ -15,7 +15,7 @@ echo "==> Creating data directory..."
 mkdir -p "$DATA_DIR/state"
 
 echo "==> Installing systemd service..."
-cat > /etc/systemd/system/lite-indexer.service << SERVICE
+cat >/etc/systemd/system/lite-indexer.service <<SERVICE
 [Unit]
 Description=LiteChainIndexer — Lightweight multi-chain blockchain indexer
 After=network.target clickhouse-server.service
@@ -27,6 +27,14 @@ User=root
 WorkingDirectory=$DATA_DIR
 Environment=DATA_DIR=$DATA_DIR
 Environment=LOG_LEVEL=INFO
+# API-key free-tier RPC endpoints (${ENV_VAR} placeholders in
+# lite_indexer/chains/endpoints.py + non_evm.py are resolved from these).
+Environment=ALCHEMY_KEY=${ALCHEMY_KEY:-}
+Environment=GETBLOCK_KEY=${GETBLOCK_KEY:-}
+Environment=CHAINSTACK_KEY=${CHAINSTACK_KEY:-}
+Environment=QUICKNODE_ENDPOINT=${QUICKNODE_ENDPOINT:-}
+Environment=INFURA_KEY=${INFURA_KEY:-}
+Environment=HELIUS_KEY=${HELIUS_KEY:-}
 ExecStart=/usr/local/bin/lite-indexer --daemon --dex --deployers --start-from-head
 Restart=always
 RestartSec=30

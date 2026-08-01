@@ -2,237 +2,209 @@
 EVM chain RPC endpoints.
 
 Each EVM chain has a list of eth_getLogs-compatible RPC endpoints in tiers:
-  T1 (indices 0-1) — fastest, most reliable (drpc.org, official RPCs)
-  T2 (indices 2-4) — fallbacks (1rpc.io, publicnode.com, onfinality.io, etc.)
-  T3 (indices 5+)  — last resort (ankr.com, tatum.io, cloudflare-eth.com, etc.)
-  T4 (indices 12+) — API-key free tiers (${ALCHEMY_KEY}, ${GETBLOCK_KEY}, etc.)
+  T1 (indices 0-1) — fastest, most reliable (drpc.org, tenderly, official RPCs)
+  T2 (indices 2-4) — fallbacks (tatum, 48.club, blxrbdn, nodereal)
+  T3 (indices 5+)  — last resort (range-limited publics)
+  T4 (indices 5+)  — API-key free tiers (${ALCHEMY_KEY}, ${GETBLOCK_KEY}, etc.)
 
-All endpoints tested and verified to support eth_getLogs on free tier.
-Some require an API key from a free-tier provider (Alchemy, GetBlock, Chainstack, QuickNode).
-Set the corresponding ${ENV_VAR} in your environment to use them.
-Total: 130 endpoints across 14 chains (88 public + 42 API-key — expanded from 42).
+All endpoints were live-verified 2026-08-01 with a topic-only eth_getLogs
+probe (100-block range from tip) — the exact request shape the indexer uses.
+Providers that answer eth_blockNumber but reject topic-only eth_getLogs
+(publicnode → -32701 "specify an address", meowrpc → getLogs unsupported,
+binance seeds → limit exceeded, merkle → 429, ankr → unauthorized except
+celo) were removed. 1rpc.io, onfinality.io, blastapi (except bsc), tatum
+(except bsc/polygon), cloudflare-eth and polygon-rpc are confirmed dead and
+removed.
+
+Some endpoints require an API key from a free-tier provider (Alchemy,
+GetBlock, Chainstack, QuickNode, Infura). Set the corresponding ${ENV_VAR}
+in your environment — the indexer resolves placeholders via
+rpc.tiers._resolve_endpoint_url(). Unset keys leave the placeholder in
+place and the call fails safely (never a hard crash).
+
+Total: 51 endpoints across 14 chains (40 public + 11 API-key free tiers).
 """
 
 from __future__ import annotations
 
+import os
+import re
+
 GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
-    # ── Ethereum (17 endpoints) ──────────────────────────────────────────
-    # T1: bloxroute, meowrpc (fastest responders)
-    # T2: onfinality.io, 1rpc.io, drpc.org (proven reliable)
-    # T3: cloudflare, publicnode, blastapi, merkle, tatum, mevblocker, ankr
+    # ── Ethereum (7 endpoints) ────────────────────────────────────────
+    # T1: drpc.org, flashbots (verified eth_getLogs)
+    # T2: nodereal public demo key
     # T4: alchemy, getblock, chainstack, quicknode (free API-key tiers)
     "ethereum": [
-        "https://virginia.rpc.blxrbdn.com",  # T1 — bloxroute (fast)
-        "https://eth.meowrpc.com",  # T1 — meowrpc
-        "https://eth.api.onfinality.io/public",  # T2 — onfinality (verified)
-        "https://1rpc.io/eth",  # T2 — 1rpc
-        "https://eth.drpc.org",  # T2 — drpc.org
-        "https://cloudflare-eth.com",  # T3 — cloudflare
-        "https://ethereum-rpc.publicnode.com",  # T3 — publicnode
-        "https://eth-mainnet.public.blastapi.io",  # T3 — blastapi
-        "https://eth.merkle.io",  # T3 — merkle
-        "https://eth-mainnet.gateway.tatum.io",  # T3 — tatum
-        "https://rpc.mevblocker.io",  # T3 — mevblocker
-        "https://rpc.ankr.com/eth",  # T3 — ankr
+        "https://eth.drpc.org",  # T1 — drpc.org (verified, 0.5s)
+        "https://rpc.flashbots.net",  # T1 — flashbots (verified, MEV-protected)
+        "https://eth-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",  # T2 — nodereal public
         # T4: API-key free tiers (set env vars to activate)
         "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (300M CU/mo)
         "https://eth.getblock.io/mainnet/?api_key=${GETBLOCK_KEY}",  # T4 — GetBlock free (40K req/day)
         "https://ethereum-mainnet.core.chainstack.com/${CHAINSTACK_KEY}",  # T4 — Chainstack free
         "https://${QUICKNODE_ENDPOINT}",  # T4 — QuickNode free
     ],
-    # ── Base (4 endpoints) ──────────────────────────────────────────────
-    # T1: tenderly.co (the only reliable eth_getLogs at batch scale)
-    # T2: mainnet.base.org (official — 10-block range limit for eth_getLogs)
-    # T3: blastapi (10-block range, last-resort fallback)
-    # NOTE: Most free Base RPCs (publicnode, 1rpc, meowrpc, onfinality,
-    #       ankr, drpc, tatum) no longer support eth_getLogs on free tier.
-    #       They return auth/rate errors. mainnet.base.org also has a
-    #       "backend response too large" error beyond 10-block range.
+    # ── Base (4 endpoints) ────────────────────────────────────────────
+    # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
+    # T2: drpc.org
+    # T4: alchemy
+    # NOTE: publicnode (needs address filter) and blastapi (HTTP400) do not
+    #       serve topic-only eth_getLogs on free tier and were removed.
     "base": [
-        "https://base.gateway.tenderly.co",  # T1 — tenderly (reliable eth_getLogs, 3 req/s)
-        "https://mainnet.base.org",  # T2 — official (small-range fallback)
-        "https://base-mainnet.public.blastapi.io",  # T3 — blastapi (last resort)
+        "https://base.gateway.tenderly.co",  # T1 — tenderly (verified, fast)
+        "https://mainnet.base.org",  # T1 — official (verified)
+        "https://base.drpc.org",  # T2 — drpc.org (verified)
         "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── BSC (11 endpoints) ─────────────────────────────────────────────
-    # T1: publicnode, blastapi (fast)
-    # T2: meowrpc, drpc.org, tatum
-    # T3: blockrazor, binance-dataseed 1/2/3, ankr
-    # T4: alchemy (free API-key tier)
+    # ── BSC (5 endpoints) ─────────────────────────────────────────────
+    # T1: tatum (audit-verified on bsc), nodereal public
+    # T2: 48.club (verified)
+    # T3: blockrazor (25-block range cap — small-range fallback)
+    # T4: alchemy
     "bsc": [
-        "https://bsc-rpc.publicnode.com",  # T1 — publicnode (fast)
-        "https://bsc-mainnet.public.blastapi.io",  # T1 — blastapi
-        "https://bsc.meowrpc.com",  # T2 — meowrpc
-        "https://bsc.drpc.org",  # T2 — drpc.org
-        "https://bsc-mainnet.gateway.tatum.io",  # T2 — tatum
-        "https://bsc.blockrazor.xyz",  # T3 — blockrazor
-        "https://bsc-dataseed2.binance.org",  # T3 — binance seed
-        "https://bsc-dataseed3.binance.org",  # T3 — binance seed
-        "https://rpc.ankr.com/bsc",  # T3 — ankr
-        "https://bsc-dataseed1.binance.org",  # T3 — binance seed
+        "https://bsc-mainnet.gateway.tatum.io",  # T1 — tatum (audit-verified on bsc)
+        "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",  # T1 — nodereal public
+        "https://rpc-bsc.48.club",  # T2 — 48.club (verified)
+        "https://bsc.blockrazor.xyz",  # T3 — blockrazor (25-block range cap)
         "https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Polygon (9 endpoints) ──────────────────────────────────────────
-    # T1: 1rpc.io, blastapi (fast)
-    # T2: tatum, polygon-rpc.com, ankr
-    # T3: drpc.org, onfinality, tenderly
-    # T4: alchemy (free API-key tier)
+    # ── Polygon (5 endpoints) ─────────────────────────────────────────
+    # T1: tenderly, drpc.org (verified)
+    # T2: tatum (audit-verified on polygon), blxrbdn (verified)
+    # T4: alchemy
     "polygon": [
-        "https://1rpc.io/matic",  # T1 — 1rpc (fast)
-        "https://polygon-mainnet.public.blastapi.io",  # T1 — blastapi
-        "https://polygon-mainnet.gateway.tatum.io",  # T2 — tatum
-        "https://polygon-rpc.com",  # T2 — polygon-rpc
-        "https://rpc.ankr.com/polygon",  # T2 — ankr
-        "https://polygon.drpc.org",  # T3 — drpc.org
-        "https://polygon.api.onfinality.io/public",  # T3 — onfinality
-        "https://polygon.gateway.tenderly.co",  # T3 — tenderly
+        "https://polygon.gateway.tenderly.co",  # T1 — tenderly (verified)
+        "https://polygon.drpc.org",  # T1 — drpc.org (verified)
+        "https://polygon-mainnet.gateway.tatum.io",  # T2 — tatum (audit-verified on polygon)
+        "https://polygon-rpc.blxrbdn.com",  # T2 — bloxroute (verified eth_getLogs)
         "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Arbitrum (10 endpoints) ────────────────────────────────────────
-    # T1: onfinality.io, meowrpc (fast)
-    # T2: 1rpc.io, official arb1, publicnode
-    # T3: tatum, ankr, drpc.org (verified), tenderly
-    # T4: alchemy (free API-key tier)
+    # ── Arbitrum (4 endpoints) ────────────────────────────────────────
+    # T1: tenderly, drpc.org (verified)
+    # T2: official arb1.arbitrum.io (verified)
+    # T4: alchemy
     "arbitrum": [
-        "https://arbitrum.api.onfinality.io/public",  # T1 — onfinality (fast)
-        "https://arbitrum.meowrpc.com",  # T1 — meowrpc
-        "https://1rpc.io/arb",  # T2 — 1rpc
+        "https://arbitrum.gateway.tenderly.co",  # T1 — tenderly (verified, fast)
+        "https://arbitrum.drpc.org",  # T1 — drpc.org (verified)
         "https://arb1.arbitrum.io/rpc",  # T2 — official (verified)
-        "https://arbitrum-rpc.publicnode.com",  # T2 — publicnode
-        "https://arbitrum-mainnet.gateway.tatum.io",  # T3 — tatum
-        "https://rpc.ankr.com/arbitrum",  # T3 — ankr
-        "https://arbitrum.drpc.org",  # T3 — drpc.org (verified)
-        "https://arbitrum.gateway.tenderly.co",  # T3 — tenderly
         "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Optimism (10 endpoints) ────────────────────────────────────────
-    # T1: onfinality.io (verified), 1rpc.io (fast)
-    # T2: tatum, publicnode, blastapi
-    # T3: drpc.org, ankr, official (verified), tenderly
-    # T4: alchemy (free API-key tier)
+    # ── Optimism (3 endpoints) ────────────────────────────────────────
+    # T1: tenderly (verified)
+    # T2: official mainnet.optimism.io (verified, occasionally slow)
+    # T4: alchemy
     "optimism": [
-        "https://optimism.api.onfinality.io/public",  # T1 — onfinality (verified)
-        "https://1rpc.io/op",  # T1 — 1rpc (fast)
-        "https://optimism-mainnet.gateway.tatum.io",  # T2 — tatum
-        "https://optimism-rpc.publicnode.com",  # T2 — publicnode
-        "https://optimism-mainnet.public.blastapi.io",  # T2 — blastapi
-        "https://optimism.drpc.org",  # T3 — drpc.org
-        "https://rpc.ankr.com/optimism",  # T3 — ankr
-        "https://mainnet.optimism.io",  # T3 — official (verified)
-        "https://optimism.gateway.tenderly.co",  # T3 — tenderly
+        "https://optimism.gateway.tenderly.co",  # T1 — tenderly (verified)
+        "https://mainnet.optimism.io",  # T2 — official (verified)
         "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Avalanche (7 endpoints) ────────────────────────────────────────
-    # T1: official api.avax (verified), 1rpc.io (fast)
-    # T2: onfinality, publicnode, ankr
-    # T3: tatum, drpc.org
+    # ── Avalanche (3 endpoints) ───────────────────────────────────────
+    # T1: official api.avax.network, drpc.org (verified)
+    # T4: infura (free tier)
     "avalanche": [
         "https://api.avax.network/ext/bc/C/rpc",  # T1 — official (verified)
-        "https://1rpc.io/avax/c",  # T1 — 1rpc (fast)
-        "https://avalanche.api.onfinality.io/public",  # T2 — onfinality
-        "https://avalanche-rpc.publicnode.com",  # T2 — publicnode
-        "https://rpc.ankr.com/avalanche",  # T2 — ankr
-        "https://avalanche-mainnet.gateway.tatum.io",  # T3 — tatum
-        "https://avalanche.drpc.org",  # T3 — drpc.org
+        "https://avalanche.drpc.org",  # T1 — drpc.org (verified)
+        "https://avalanche-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
     ],
-    # ── Fantom (7 endpoints) ───────────────────────────────────────────
-    # T1: 1rpc.io, blastapi (fast)
-    # T2: tatum, ankr, rpc.fantom.network (verified)
-    # T3: rpcapi.fantom.network (verified), drpc.org (verified)
+    # ── Fantom (4 endpoints) ──────────────────────────────────────────
+    # T1: official rpc.fantom.network + rpcapi.fantom.network (verified)
+    # T2: drpc.org (verified)
+    # T4: alchemy
     "fantom": [
-        "https://1rpc.io/ftm",  # T1 — 1rpc (fast)
-        "https://fantom-mainnet.public.blastapi.io",  # T1 — blastapi
-        "https://fantom-mainnet.gateway.tatum.io",  # T2 — tatum
-        "https://rpc.ankr.com/fantom",  # T2 — ankr
-        "https://rpc.fantom.network",  # T2 — official (verified)
-        "https://rpcapi.fantom.network",  # T3 — official-alt (verified)
-        "https://fantom.drpc.org",  # T3 — drpc.org (verified)
+        "https://rpc.fantom.network",  # T1 — official (verified)
+        "https://rpcapi.fantom.network",  # T1 — official-alt (verified)
+        "https://fantom.drpc.org",  # T2 — drpc.org (verified)
+        "https://fantom-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Linea (6 endpoints) ────────────────────────────────────────────
-    # T1: publicnode, 1rpc.io (fast)
-    # T2: official rpc.linea.build (verified), tatum, ankr
-    # T3: drpc.org (verified)
+    # ── Linea (3 endpoints) ───────────────────────────────────────────
+    # T1: official rpc.linea.build, drpc.org (verified)
+    # T4: infura (free tier)
     "linea": [
-        "https://linea-rpc.publicnode.com",  # T1 — publicnode (fast)
-        "https://1rpc.io/linea",  # T1 — 1rpc
-        "https://rpc.linea.build",  # T2 — official (verified)
-        "https://linea-mainnet.gateway.tatum.io",  # T2 — tatum
-        "https://rpc.ankr.com/linea",  # T2 — ankr
-        "https://linea.drpc.org",  # T3 — drpc.org (verified)
+        "https://rpc.linea.build",  # T1 — official (verified)
+        "https://linea.drpc.org",  # T1 — drpc.org (verified)
+        "https://linea-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
     ],
-    # ── Scroll (7 endpoints) ───────────────────────────────────────────
-    # T1: 1rpc.io, blastapi (fast)
-    # T2: tatum, publicnode, ankr
-    # T3: official rpc.scroll.io (verified), drpc.org (verified)
+    # ── Scroll (3 endpoints) ──────────────────────────────────────────
+    # T1: official rpc.scroll.io, drpc.org (verified)
+    # T4: infura (free tier)
     "scroll": [
-        "https://1rpc.io/scroll",  # T1 — 1rpc (fast)
-        "https://scroll-mainnet.public.blastapi.io",  # T1 — blastapi
-        "https://scroll-mainnet.gateway.tatum.io",  # T2 — tatum
-        "https://scroll-rpc.publicnode.com",  # T2 — publicnode
-        "https://rpc.ankr.com/scroll",  # T2 — ankr
-        "https://rpc.scroll.io",  # T3 — official (verified)
-        "https://scroll.drpc.org",  # T3 — drpc.org (verified)
+        "https://rpc.scroll.io",  # T1 — official (verified)
+        "https://scroll.drpc.org",  # T1 — drpc.org (verified)
+        "https://scroll-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
     ],
-    # ── zkSync Era (6 endpoints) ───────────────────────────────────────
-    # T1: official mainnet.era (verified), blastapi
-    # T2: 1rpc.io, ankr, drpc.org
-    # T3: tatum
+    # ── zkSync Era (3 endpoints) ──────────────────────────────────────
+    # T1: official mainnet.era.zksync.io, drpc.org (verified)
+    # T4: alchemy (zksync-era)
     "zksync": [
         "https://mainnet.era.zksync.io",  # T1 — official (verified)
-        "https://zksync-mainnet.public.blastapi.io",  # T1 — blastapi
-        "https://1rpc.io/zksync2-era",  # T2 — 1rpc
-        "https://rpc.ankr.com/zksync",  # T2 — ankr
-        "https://zksync.drpc.org",  # T2 — drpc.org
-        "https://zksync-mainnet.gateway.tatum.io",  # T3 — tatum
+        "https://zksync.drpc.org",  # T1 — drpc.org (verified)
+        "https://zksync-era.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Mantle (7 endpoints) ───────────────────────────────────────────
-    # T1: publicnode, 1rpc.io (fast)
-    # T2: blastapi, tatum, ankr
-    # T3: drpc.org (verified), official rpc.mantle.xyz (verified)
+    # ── Mantle (2 endpoints) ──────────────────────────────────────────
+    # T1: official rpc.mantle.xyz (verified)
+    # T2: drpc.org (verified; free-plan usage limit under burst)
     "mantle": [
-        "https://mantle-rpc.publicnode.com",  # T1 — publicnode (fast)
-        "https://1rpc.io/mantle",  # T1 — 1rpc
-        "https://mantle-mainnet.public.blastapi.io",  # T2 — blastapi
-        "https://mantle-mainnet.gateway.tatum.io",  # T2 — tatum
-        "https://rpc.ankr.com/mantle",  # T2 — ankr
-        "https://mantle.drpc.org",  # T3 — drpc.org (verified)
-        "https://rpc.mantle.xyz",  # T3 — official (verified)
+        "https://rpc.mantle.xyz",  # T1 — official (verified)
+        "https://mantle.drpc.org",  # T2 — drpc.org (verified)
     ],
-    # ── Gnosis (7 endpoints) ───────────────────────────────────────────
-    # T1: 1rpc.io, tatum (fast)
-    # T2: publicnode, blastapi, official rpc.gnosischain.com (verified)
-    # T3: drpc.org (verified), ankr
+    # ── Gnosis (2 endpoints) ──────────────────────────────────────────
+    # T1: official rpc.gnosischain.com, drpc.org (verified)
     "gnosis": [
-        "https://1rpc.io/gnosis",  # T1 — 1rpc
-        "https://gnosis-mainnet.gateway.tatum.io",  # T1 — tatum
-        "https://gnosis-rpc.publicnode.com",  # T2 — publicnode
-        "https://gnosis-mainnet.public.blastapi.io",  # T2 — blastapi
-        "https://rpc.gnosischain.com",  # T2 — official (verified)
-        "https://gnosis.drpc.org",  # T3 — drpc.org (verified)
-        "https://rpc.ankr.com/gnosis",  # T3 — ankr
+        "https://rpc.gnosischain.com",  # T1 — official (verified)
+        "https://gnosis.drpc.org",  # T1 — drpc.org (verified)
     ],
-    # ── Celo (6 endpoints) ─────────────────────────────────────────────
-    # T1: 1rpc.io, ankr.com/celo (verified)
-    # T2: forno.celo.org, tatum, publicnode
-    # T3: drpc.org (verified)
+    # ── Celo (3 endpoints) ────────────────────────────────────────────
+    # T1: official forno.celo.org, ankr.com/celo (verified — only working ankr)
+    # T2: drpc.org (verified)
     "celo": [
-        "https://1rpc.io/celo",  # T1 — 1rpc
-        "https://rpc.ankr.com/celo",  # T1 — ankr (verified)
-        "https://forno.celo.org",  # T2 — official forno
-        "https://celo-mainnet.gateway.tatum.io",  # T2 — tatum
-        "https://celo-rpc.publicnode.com",  # T2 — publicnode
-        "https://celo.drpc.org",  # T3 — drpc.org (verified)
+        "https://forno.celo.org",  # T1 — official forno (verified)
+        "https://rpc.ankr.com/celo",  # T1 — ankr (verified — celo only)
+        "https://celo.drpc.org",  # T2 — drpc.org (verified)
     ],
 }
 
 # Summary of EVM endpoints per chain:
-#   ethereum: 16    base: 4     bsc: 11    polygon: 9
-#   arbitrum: 10    optimism: 10 avalanche: 7 fantom: 7
-#   linea: 6        scroll: 7   zksync: 6   mantle: 7
-#   gnosis: 7       celo: 6
+#   ethereum: 7     base: 4      bsc: 5      polygon: 5
+#   arbitrum: 4     optimism: 3  avalanche: 3 fantom: 4
+#   linea: 3        scroll: 3    zksync: 3   mantle: 2
+#   gnosis: 2       celo: 3
 # -------------------------------------------------------
-#   Total: 113 endpoints across 14 chains
-#   (88 free public + 25 API-key free tiers)
+#   Total: 51 endpoints across 14 chains
+#   (40 free public + 11 API-key free tiers)
 #
 #   Non-EVM: solana (6), tron (4)
-#   Grand total: 123 endpoints across 16 chains
+#   Grand total: 61 endpoints across 16 chains
+
+
+# ── Endpoint URL template resolution ───────────────────────────────
+# API-key free tiers use ${ENV_VAR} placeholders (${ALCHEMY_KEY},
+# ${GETBLOCK_KEY}, ...). Resolve them at import time so the main RPC
+# path never calls dead placeholder URLs. When the env var is unset the
+# placeholder is kept (the call fails naturally) — set the keys in the
+# service environment to activate those endpoints.
+
+_ENV_VAR_RE = re.compile(r"\$\{([^}]+)\}")
+
+
+def _resolve_endpoint_url(url: str) -> str:
+    """Resolve ${ENV_VAR} placeholders in an endpoint URL.
+
+    Args:
+        url: Endpoint URL potentially containing ${ENV_VAR} templates.
+
+    Returns:
+        URL with env vars resolved (placeholder kept if unset).
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        value = os.environ.get(var_name)
+        if not value:
+            return match.group(0)  # Keep placeholder — call fails safely
+        return value
+
+    return _ENV_VAR_RE.sub(_replace, url)
+
+
+GET_LOGS_ENDPOINTS = {chain: [_resolve_endpoint_url(url) for url in urls] for chain, urls in GET_LOGS_ENDPOINTS.items()}

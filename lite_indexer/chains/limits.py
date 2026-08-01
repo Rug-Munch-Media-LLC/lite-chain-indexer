@@ -41,6 +41,53 @@ PROVIDER_RATE_LIMITS: dict[str, dict[str, int]] = {
 # Default rate limit when provider isn't listed
 DEFAULT_RATE_LIMIT = {"req_per_sec": 5, "burst": 10}
 
+# ── Max block range per provider ───────────────────────────────────
+# Some free RPCs limit the eth_getLogs block range.
+# Keyed by domain pattern, value is max range in blocks.
+# None = unlimited (up to RPC timeout).
+# NOTE: These limits are enforced by enforce_block_range + the
+# eth_getLogs handlers — do not remove them as "dead" config.
+
+MAX_BLOCK_RANGE: dict[str, int | None] = {
+    # High range (10000+ or unlimited)
+    "drpc.org": 10000,
+    "binance.org": None,
+    "cloudflare-eth.com": 5000,
+    "ankr.com": 2000,
+    # Medium range (100-500)
+    "publicnode.com": 1000,
+    "onfinality.io": 2000,
+    "tatum.io": 100,
+    "mevblocker.io": 2000,
+    # Low range (10-50)
+    "1rpc.io": 10,
+    "blastapi.io": 10,
+    "blockrazor.xyz": 25,
+    "tenderly.co": 5000,
+    # Unlimited / unknown
+    "meowrpc.com": None,
+    "merkle.io": None,
+    "blxrbdn.com": None,
+    "fantom.network": None,
+    "linea.build": None,
+    "scroll.io": None,
+    "mantle.xyz": None,
+    "gnosischain.com": None,
+    "forno.celo.org": None,
+    "arbitrum.io": None,
+    "optimism.io": None,
+    "avax.network": None,
+    "base.org": 10,  # Returns "backend response too large" beyond 10 blocks
+    "zksync.io": None,
+    # API-key free tiers
+    "alchemy.com": 10000,
+    "getblock.io": 5000,
+    "chainstack.com": 10000,
+    "helius.xyz": None,
+}
+
+DEFAULT_MAX_RANGE = 500
+
 # ── Chain-specific Block Range Limits ──────────────────────────────
 # Some chains have RPCs that fail on large eth_getLogs ranges.
 # These cap the block range per chain regardless of provider.

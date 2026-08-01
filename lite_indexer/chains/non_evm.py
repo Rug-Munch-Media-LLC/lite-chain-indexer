@@ -14,6 +14,8 @@ Tested 2026-07-30: /wallet/getnowblock, /v1/contracts/*/events.
 
 from __future__ import annotations
 
+from .endpoints import _resolve_endpoint_url
+
 # ── Solana RPC Endpoints ─────────────────────────────────────────────
 
 SOLANA_ENDPOINTS: list[str] = [
@@ -40,3 +42,9 @@ TRON_ENDPOINTS: list[str] = [
     # T3 — Fallback
     "https://rpc.tronlink.org",
 ]
+
+# ── Endpoint URL template resolution ───────────────────────────────
+# Resolve ${ENV_VAR} placeholders (${ALCHEMY_KEY}, ${HELIUS_KEY}) so the
+# API-key free tiers are usable when keys are present in the environment.
+SOLANA_ENDPOINTS = [_resolve_endpoint_url(url) for url in SOLANA_ENDPOINTS]
+TRON_ENDPOINTS = [_resolve_endpoint_url(url) for url in TRON_ENDPOINTS]
