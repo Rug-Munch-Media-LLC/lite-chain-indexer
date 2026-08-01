@@ -64,7 +64,8 @@ SWAP_V2_TOPIC = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d
 SWAP_V3_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
 
 # keccak256("PairCreated(address,address,address,uint256)")
-PAIR_CREATED_TOPIC = "0x79b58832c15b09feb3df60e6992ac2bf90bb88a193b76dcf74a5529cfc6a96e2"
+# Verified on-chain: 0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9
+PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
 
 # keccak256("PoolCreated(address,address,uint24,int24,address)")
 POOL_CREATED_TOPIC = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118"
@@ -117,6 +118,9 @@ CHAIN_BLOCK_TIMES: dict[str, float] = {
 }
 
 # ── Known DEX Factory Addresses ───────────────────────────────────────
+# V2 factories emit PairCreated(address,address,address,uint256) (Uniswap
+# V2 topic). V3 factories emit PoolCreated(address,address,uint24,int24,address).
+# Addresses verified against official docs / block explorers 2026-08-01.
 
 FACTORY_ADDRESSES: dict[str, list[str]] = {
     "ethereum": ["0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"],  # Uniswap V2
@@ -124,6 +128,22 @@ FACTORY_ADDRESSES: dict[str, list[str]] = {
     "bsc": ["0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73"],  # PancakeSwap
     "polygon": ["0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32"],  # QuickSwap
     "arbitrum": ["0xf1D7CC64Fb4452F05c498126312eBE29f30Fbcf9"],
+    "avalanche": [
+        "0x9e5A52f57b3038F1B8EeE45F28b3C1967e22799C",  # Uniswap V2
+        "0x9Ad6C38BE94206cA50bb0d90783181662f0Cfa10",  # Trader Joe V1 (LFJ)
+    ],
+    "linea": ["0x02a84c1b3BBD7401a5f7fa98a384EBC70bB5749E"],  # PancakeSwap V2
+    "zksync": ["0xd03D8D566183F0086d8D09A84E1e30b58Dd5619d"],  # PancakeSwap V2
+    "mantle": ["0x5bEf015CA9424A7C07B68490616a4C1F094BEdEc"],  # Merchant Moe
+    "gnosis": ["0xc35DADB65012eC5796536bD9864eD8773aBc74C4"],  # SushiSwap V2
+    "celo": [
+        "0x62d5b84bE28a183aBB507E125B384122D2C25fAE",  # Ubeswap V2
+        "0xc35DADB65012eC5796536bD9864eD8773aBc74C4",  # SushiSwap V2
+    ],
+    "fantom": [
+        "0x152eE697f2E276fA89E96742e9bB9aB1F2E61bE3",  # SpookySwap V2
+        "0xc35DADB65012eC5796536bD9864eD8773aBc74C4",  # SushiSwap V2
+    ],
 }
 
 V3_FACTORY_ADDRESSES: dict[str, list[str]] = {
@@ -133,7 +153,15 @@ V3_FACTORY_ADDRESSES: dict[str, list[str]] = {
     "arbitrum": ["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
     "optimism": ["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
     "polygon": ["0x1F98431c8aD98523631AE4a59f267346ea31F984"],
+    "avalanche": ["0x1F98431c8aD98523631AE4a59f267346ea31F984"],  # Uniswap V3
+    "linea": ["0x31FAfd4889FA1269F7a13A66eE0fB458f27D72A9"],  # Uniswap V3
+    "scroll": ["0x70C62C8b8e801124A4Aa81ce07b637A3e83cb919"],  # Uniswap V3 (Scroll Foundation)
+    "zksync": ["0x8FdA5a7a8dCA67BBcDd10F02Fa0649A937215422"],  # Uniswap V3 (zkSync fork)
+    "mantle": ["0xEaD128BDF9Cff441eF401Ec8D18a96b4A2d25252"],  # Uniswap V3
+    "gnosis": ["0xe32F7dD7e3f098D518ff19A22d5f028e076489B1"],  # Uniswap V3
+    "celo": ["0xAfE208a311B21f13EF87E33A90049fC17A7acDEc"],  # Uniswap V3
 }
+
 
 # Alias for backward-compatibility in indexer imports
 CHAIN_INDEXER_DIR = DATA_DIR

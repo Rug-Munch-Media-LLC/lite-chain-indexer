@@ -25,9 +25,10 @@ from typing import Any
 import httpx
 
 from lite_indexer.logging import get_logger
+from lite_indexer.rpc import RpcFetchFailedError
 from lite_indexer.strategies.base import AbstractChainStrategy
 
-from .models import MAX_SIGNATURES_PER_TOKEN, SOLANA_TX_CONCURRENCY, SOLANA_TRACKED_TOKENS
+from .models import MAX_SIGNATURES_PER_TOKEN, SOLANA_TRACKED_TOKENS, SOLANA_TX_CONCURRENCY
 from .parsing import parse_solana_transfer_events
 from .rpc import rpc_call
 
@@ -157,18 +158,28 @@ class SolanaStrategy(AbstractChainStrategy):
             return []
 
         all_events: list[dict[str, Any]] = []
+        failures = 0
 
         for token in self.tracked_tokens:
             mint = token["mint"]
             try:
-                events = await self._fetch_mint_transfers(mint, from_slot, to_slot)
+                events, ok = await self._fetch_mint_transfers(mint, from_slot, to_slot)
+                if not ok:
+                    failures += 1
                 all_events.extend(events)
             except Exception as exc:
+                failures += 1
                 logger.warning(
                     "solana_mint_fetch_failed",
                     mint=mint[:20],
                     error=str(exc)[:80],
                 )
+
+        # Data-loss guard: if every tracked mint's RPC query failed, the
+        # empty result does NOT mean "no transfers" — raise so the indexer
+        # retries this slot range instead of advancing past it.
+        if self.tracked_tokens and failures == len(self.tracked_tokens):
+            raise RpcFetchFailedError(f"solana: all endpoints failed for slots {from_slot}-{to_slot}")
 
         return all_events
 
@@ -177,8 +188,14 @@ class SolanaStrategy(AbstractChainStrategy):
         mint: str,
         from_slot: int,
         to_slot: int,
-    ) -> list[dict[str, Any]]:
-        """Fetch transfers for a single token mint in a slot range."""
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Fetch transfers for a single token mint in a slot range.
+
+        Returns:
+            Tuple of (events, rpc_ok). rpc_ok is False only when the
+            signature-fetch RPC itself failed (all endpoints), which the
+            caller must distinguish from a legitimately empty result.
+        """
         events: list[dict[str, Any]] = []
         semaphore = asyncio.Semaphore(SOLANA_TX_CONCURRENCY)
 
@@ -188,11 +205,11 @@ class SolanaStrategy(AbstractChainStrategy):
             [mint, {"limit": MAX_SIGNATURES_PER_TOKEN}],
         )
         if not result or "result" not in result:
-            return []
+            return [], False
 
         sig_infos = result["result"]
         if not isinstance(sig_infos, list):
-            return []
+            return [], False
 
         # Step 2: Filter signatures by slot range
         relevant_sigs = [
@@ -205,7 +222,7 @@ class SolanaStrategy(AbstractChainStrategy):
         ]
 
         if not relevant_sigs:
-            return []
+            return [], True
 
         # Step 3: Fetch and parse each transaction
         async def _fetch_and_parse(sig_info: dict) -> list[dict[str, Any]]:
@@ -242,7 +259,7 @@ class SolanaStrategy(AbstractChainStrategy):
             if isinstance(outcome, list):
                 events.extend(outcome)
 
-        return events
+        return events, True
 
     # ── ClickHouse Write ─────────────────────────────────────────────
 

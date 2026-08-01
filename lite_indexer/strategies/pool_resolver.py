@@ -14,7 +14,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from lite_indexer.chains import GET_LOGS_ENDPOINTS
 from lite_indexer.config import MAX_CONCURRENT_POOL_RESOLVE, TOKEN0_SELECTOR, TOKEN1_SELECTOR

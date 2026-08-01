@@ -16,18 +16,18 @@ from typing import Any
 
 import httpx
 
-from lite_indexer.chains import GET_LOGS_ENDPOINTS
-from lite_indexer.config import TRANSFER_EVENT_TOPIC, RPC_TIMEOUT
+from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range
+from lite_indexer.config import RPC_TIMEOUT, TRANSFER_EVENT_TOPIC
 from lite_indexer.dex import parse_transfer_logs
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
     RpcClient,
+    RpcFetchFailedError,
     apply_endpoint_backoff,
     get_best_endpoint,
     handle_rate_limit,
     record_endpoint_failure,
 )
-
 from lite_indexer.strategies.evm._helpers import detect_reorg, enforce_block_range
 
 logger = get_logger(__name__)
@@ -74,13 +74,17 @@ async def fetch_transfers(
     if detect_reorg(from_block, to_block):
         return ["__CHAIN_REORG__"]
 
-    # Enforce chain-specific block range
-    from_block, to_block = enforce_block_range(chain, from_block, to_block, batch_size)
-
     endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
     if not endpoints:
         logger.error("no_endpoints_for_chain", chain=chain)
         return []
+
+    # Enforce chain-specific + per-provider block range limits, then drop
+    # endpoints that cannot serve the resulting range (free RPCs often cap
+    # eth_getLogs at 10-100 blocks). The effective range is capped to the
+    # largest provider limit, so at least one endpoint always remains.
+    from_block, to_block = enforce_block_range(chain, from_block, to_block, batch_size, endpoints)
+    endpoints = get_endpoints_for_range(endpoints, to_block - from_block)
 
     # Rotate starting endpoint for load distribution
     start_idx = endpoints.index(get_best_endpoint(endpoints))
@@ -195,7 +199,11 @@ async def fetch_transfers(
         to_block=to_block,
         last_error=last_error,
     )
-    return []
+    # Do NOT return [] here — an empty list would be indistinguishable
+    # from "no events in range" and the indexer would advance its state
+    # past this range, permanently losing data. Raise so the caller
+    # retries the range on the next cycle.
+    raise RpcFetchFailedError(f"all endpoints failed for {chain} range {from_block}-{to_block}: {last_error}")
 
 
 __all__ = [

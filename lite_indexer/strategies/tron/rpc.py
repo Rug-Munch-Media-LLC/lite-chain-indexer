@@ -114,29 +114,42 @@ async def tron_get_with_range(
     from_block: int,
     to_block: int,
     cursor: str | None = None,
+    *,
+    min_block_timestamp: int | None = None,
+    max_block_timestamp: int | None = None,
 ) -> dict[str, Any] | None:
-    """Make a GET request to TronGrid with block number range.
+    """Make a GET request to TronGrid filtered by block timestamp range.
 
-    TronGrid uses min_block_number and max_block_number for range queries.
-    We build the query string manually for custom parameter formatting.
+    TronGrid's /v1/contracts/*/events API does NOT accept
+    from_block_number/to_block_number — it filters on
+    min_block_timestamp/max_block_timestamp (epoch milliseconds).
+    We derive those timestamps from the requested block range in the
+    strategy and pass them here. only_confirmed=true excludes
+    unconfirmed (pending) events that would otherwise be ingested as
+    garbage.
 
     Args:
         client: Shared httpx AsyncClient.
         path: API path.
-        from_block: Start block.
-        to_block: End block.
-        cursor: Pagination cursor.
+        from_block: Start block (kept for logging/context).
+        to_block: End block (kept for logging/context).
+        cursor: Pagination cursor (fingerprint).
+        min_block_timestamp: Inclusive start timestamp (ms).
+        max_block_timestamp: Inclusive end timestamp (ms).
 
     Returns:
         Parsed JSON response dict, or None on failure.
     """
     query_parts = [
         "event_name=Transfer",
-        f"from_block_number={from_block}",
-        f"to_block_number={to_block}",
         f"limit={TRON_PAGE_SIZE}",
         "order_by=block_timestamp,desc",
     ]
+    if min_block_timestamp is not None:
+        query_parts.append(f"min_block_timestamp={min_block_timestamp}")
+    if max_block_timestamp is not None:
+        query_parts.append(f"max_block_timestamp={max_block_timestamp}")
+    query_parts.append("only_confirmed=true")
     if cursor:
         query_parts.append(f"fingerprint={cursor}")
 

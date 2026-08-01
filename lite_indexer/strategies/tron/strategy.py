@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from lite_indexer.logging import get_logger
+from lite_indexer.rpc import RpcFetchFailedError
 from lite_indexer.strategies.base import AbstractChainStrategy
 
 from .models import TRC20_TOKENS, TRON_MAX_BLOCK_RANGE
@@ -115,6 +116,43 @@ class TronStrategy(AbstractChainStrategy):
 
     # ── Block Timestamps ─────────────────────────────────────────────
 
+    async def _block_to_timestamp_ms(self, block_num: int) -> int | None:
+        """Resolve a Tron block number to its timestamp in milliseconds.
+
+        Uses /wallet/getblockbynum for the exact block header timestamp,
+        falling back to an estimate anchored at the chain tip (~3s blocks).
+        TronGrid's events API filters on min/max_block_timestamp, so we
+        must convert block numbers to timestamps before querying.
+
+        Args:
+            block_num: Tron block number.
+
+        Returns:
+            Epoch timestamp in milliseconds, or None if unresolvable.
+        """
+        try:
+            result = await self._post("/wallet/getblockbynum", {"num": int(block_num)})
+            if result and "block_header" in result:
+                raw_data = result["block_header"].get("raw_data", {})
+                ts = raw_data.get("timestamp")
+                if ts:
+                    return int(ts)
+        except Exception as exc:
+            logger.debug("tron_block_ts_failed", block=block_num, error=str(exc)[:60])
+
+        # Fallback: estimate from chain tip (~3s blocks)
+        try:
+            latest = await self.fetch_block_number()
+            now_res = await self._post("/wallet/getnowblock")
+            if latest and now_res and "block_header" in now_res:
+                latest_ts = now_res["block_header"].get("raw_data", {}).get("timestamp")
+                if latest_ts and block_num <= latest:
+                    return int(latest_ts) - (int(latest) - int(block_num)) * 3000
+        except Exception as exc:
+            logger.debug("tron_block_ts_estimate_failed", block=block_num, error=str(exc)[:60])
+
+        return None
+
     async def fetch_block_timestamps(self, block_numbers: set[int]) -> dict[int, str]:
         """Fetch block timestamps via TronGrid /wallet/getblockbyid or approximate.
 
@@ -173,24 +211,51 @@ class TronStrategy(AbstractChainStrategy):
         if to_block - from_block > TRON_MAX_BLOCK_RANGE:
             to_block = from_block + TRON_MAX_BLOCK_RANGE
 
+        # TronGrid's events API filters on block timestamps, not block
+        # numbers. Resolve the range once — timestamps are token-agnostic.
+        min_ts = await self._block_to_timestamp_ms(from_block)
+        max_ts = await self._block_to_timestamp_ms(to_block)
+        if min_ts is None or max_ts is None:
+            # Cannot constrain the query → do not advance state past it.
+            raise RpcFetchFailedError(f"tron: cannot resolve timestamps for blocks {from_block}-{to_block}")
+
         all_events: list[dict[str, Any]] = []
+        failures = 0
 
         for token in self.tokens:
             try:
-                events = await self._fetch_token_events(token, from_block, to_block)
+                events, ok = await self._fetch_token_events(
+                    token,
+                    from_block,
+                    to_block,
+                    min_ts,
+                    max_ts,
+                )
+                if not ok:
+                    failures += 1
                 all_events.extend(events)
             except Exception as exc:
+                failures += 1
                 logger.warning(
                     "tron_token_fetch_failed",
                     token=token["symbol"],
                     error=str(exc)[:80],
                 )
 
-        # Deduplicate by (txHash, logIndex)
+        # Data-loss guard: if every tracked token's query failed, the empty
+        # result does NOT mean "no events" — raise so the indexer retries
+        # this block range instead of advancing past it.
+        if self.tokens and failures == len(self.tokens):
+            raise RpcFetchFailedError(f"tron: all endpoints failed for blocks {from_block}-{to_block}")
+
+        # Deduplicate by (txID, logIndex) — TronGrid returns transaction_id
+        # (txID) and event_index; using them prevents duplicates from the
+        # per-token queries (a Transfer event touches two tracked tokens).
         seen_keys: set[str] = set()
         deduped: list[dict[str, Any]] = []
         for evt in all_events:
-            key = f"{evt['txHash']}:{evt['logIndex']}"
+            tx_id = evt.get("txID") or evt.get("txHash") or ""
+            key = f"{tx_id}:{evt.get('logIndex', 0)}"
             if key not in seen_keys:
                 seen_keys.add(key)
                 deduped.append(evt)
@@ -205,24 +270,30 @@ class TronStrategy(AbstractChainStrategy):
         token: dict[str, Any],
         from_block: int,
         to_block: int,
-    ) -> list[dict[str, Any]]:
+        min_ts: int,
+        max_ts: int,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Fetch TRC20 Transfer events for a single token.
 
         Uses TronGrid's paginated event API:
           GET /v1/contracts/{address}/events?
               event_name=Transfer&
-              block_number={from}&
-              block_number={to}&
+              min_block_timestamp={from_ts}&
+              max_block_timestamp={to_ts}&
+              only_confirmed=true&
               limit=200&
-              order_by=block_timestamp,asc
+              order_by=block_timestamp,desc
 
         Args:
             token: Token metadata dict with 'address' key.
-            from_block: Start block.
-            to_block: End block.
+            from_block: Start block (logging only).
+            to_block: End block (logging only).
+            min_ts: Inclusive start timestamp (ms).
+            max_ts: Inclusive end timestamp (ms).
 
         Returns:
-            List of parsed event dicts.
+            Tuple of (parsed event dicts, rpc_ok). rpc_ok is False when
+            the first-page query failed on every endpoint.
         """
         events: list[dict[str, Any]] = []
         address = token["address"]
@@ -231,15 +302,26 @@ class TronStrategy(AbstractChainStrategy):
         cursor = None
         max_pages = 5  # Safety limit per token per batch
         page = 0
+        rpc_ok = False
 
         path = f"/v1/contracts/{address}/events"
 
         while page < max_pages:
             client = await self._get_client()
-            result = await tron_get_with_range(client, path, from_block, to_block, cursor)
+            result = await tron_get_with_range(
+                client,
+                path,
+                from_block,
+                to_block,
+                cursor,
+                min_block_timestamp=min_ts,
+                max_block_timestamp=max_ts,
+            )
 
             if not result:
                 break
+
+            rpc_ok = True
 
             data_list = result.get("data") or []
             if not isinstance(data_list, list):
@@ -258,4 +340,4 @@ class TronStrategy(AbstractChainStrategy):
 
             page += 1
 
-        return events
+        return events, rpc_ok

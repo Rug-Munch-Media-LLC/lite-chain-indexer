@@ -14,7 +14,6 @@ from typing import Any
 from lite_indexer.config import CH_DEPLOYER_TABLE, CH_DEX_TABLE, CH_TABLE
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
-from lite_indexer.storage.disk import check_write_ok
 
 logger = get_logger(__name__)
 

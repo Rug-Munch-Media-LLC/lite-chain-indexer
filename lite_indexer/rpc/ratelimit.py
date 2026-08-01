@@ -77,9 +77,9 @@ async def apply_provider_rate_limit(endpoint: str) -> None:
     Args:
         endpoint: RPC URL to rate-limit.
     """
-    from lite_indexer.config import RATE_LIMIT_WAIT_CAP
-
     import asyncio
+
+    from lite_indexer.config import RATE_LIMIT_WAIT_CAP
 
     wait = _check_rate_limit(endpoint)
     if wait > 0:

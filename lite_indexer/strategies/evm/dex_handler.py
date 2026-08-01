@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from lite_indexer.chains import GET_LOGS_ENDPOINTS
+from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range
 from lite_indexer.config import RPC_TIMEOUT, SWAP_V2_TOPIC, SWAP_V3_TOPIC
 from lite_indexer.dex import parse_swap_logs
 from lite_indexer.logging import get_logger
@@ -74,6 +74,9 @@ async def _fetch_topic(
     endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
     if not endpoints:
         return []
+
+    # Only query endpoints that can serve this block range (provider limits).
+    endpoints = get_endpoints_for_range(endpoints, to_block - from_block)
 
     start_idx = endpoints.index(get_best_endpoint(endpoints))
     rotated = endpoints[start_idx:] + endpoints[:start_idx]
@@ -167,8 +170,14 @@ async def fetch_swap_events(
     if detect_reorg(from_block, to_block):
         return ["__CHAIN_REORG__"]
 
-    # Enforce chain-specific block range
-    from_block, to_block = enforce_block_range(chain, from_block, to_block, batch_size)
+    # Enforce chain-specific + per-provider block range limits
+    from_block, to_block = enforce_block_range(
+        chain,
+        from_block,
+        to_block,
+        batch_size,
+        GET_LOGS_ENDPOINTS.get(chain, []),
+    )
 
     # Build pair→tokens mapping from PairCreated events first
     try:

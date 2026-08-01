@@ -80,7 +80,7 @@ async def check_chain_health(
             else:
                 result["status"] = "error"
                 result["error"] = "fetch_block_number returned None"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             result["status"] = "error"
             result["error"] = f"timeout after {timeout}s"
         except Exception as exc:

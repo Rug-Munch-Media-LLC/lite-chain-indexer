@@ -23,7 +23,7 @@ from typing import Any
 
 from lite_indexer.config import DATA_DIR, DISK_CAP_BYTES, HEAD_BUFFER
 from lite_indexer.logging import get_logger
-from lite_indexer.rpc import RpcClient
+from lite_indexer.rpc import RpcClient, RpcFetchFailedError
 from lite_indexer.rpc.verify import (
     EndpointVerifyResult,
     apply_verified_endpoints,
@@ -94,6 +94,10 @@ class LiteIndexer:
         self.dex_enabled = False
         self.deployers_enabled = False
         self.start_from_head = start_from_head
+        # User-requested head mode (--start-from-head): never auto-cleared.
+        # Reorg-triggered head mode is cleared after a successful cycle.
+        self.start_from_head_user = start_from_head
+        self._reorg_recovery = False
         self.data_dir = data_dir or DATA_DIR
 
         # Chain type detection
@@ -380,6 +384,19 @@ class LiteIndexer:
         apply_verified_endpoints(result)
         return None  # Proceed to sync
 
+    def _clear_reorg_recovery(self) -> None:
+        """Clear the reorg-recovery head start after a successful sync.
+
+        A reorg flips ``start_from_head`` on to re-index from near the tip.
+        That override is one-shot: once the range is synced successfully it
+        is cleared so subsequent cycles resume from saved state. A head
+        start explicitly requested by the user (``--start-from-head``) is
+        preserved.
+        """
+        if self._reorg_recovery:
+            self.start_from_head = self.start_from_head_user
+            self._reorg_recovery = False
+
     async def _sync_loop_inner(
         self,
         summary: dict[str, Any],
@@ -392,14 +409,28 @@ class LiteIndexer:
           - DEX/deployer: strategy.supports_dex() / supports_deployers()
           - Timestamps: strategy.fetch_block_timestamps()
           - ClickHouse: strategy.write_clickhouse()
-        """
-        # Restore EVM endpoints after verification (if applicable)
-        try:
-            if self._is_evm() and self._verify_result is not None:
-                restore_original_endpoints(self._verify_result)
-        except Exception:
-            pass
 
+        The verified endpoint swap applied by ``_evm_verify_endpoints`` is
+        in effect for the whole cycle; the originals are restored on exit
+        (finally) so the next cycle starts from the configured list.
+        """
+        try:
+            return await self._sync_loop_body(summary, start_time)
+        finally:
+            # Restore EVM endpoints after the sync cycle (verified swap is
+            # only valid for one cycle).
+            try:
+                if self._is_evm() and self._verify_result is not None:
+                    restore_original_endpoints(self._verify_result)
+            except Exception:
+                pass
+
+    async def _sync_loop_body(
+        self,
+        summary: dict[str, Any],
+        start_time: float,
+    ) -> dict[str, Any]:
+        """Shared body of the inner sync loop (restore handled in finally)."""
         # 2. Determine block range
         block_range = await self._determine_block_range(summary)
         if block_range is None:
@@ -409,7 +440,23 @@ class LiteIndexer:
         # 3. Fetch transfer events via strategy
         logger.info("sync_start", chain=self.chain, from_block=from_block, to_block=to_block)
 
-        events = await self.fetch_transfers(from_block, to_block)
+        try:
+            events = await self.fetch_transfers(from_block, to_block)
+        except RpcFetchFailedError as exc:
+            # Data-loss guard: all endpoints failed for this range. Do NOT
+            # advance state — the range is retried on the next cycle.
+            logger.error(
+                "sync_aborted_fetch_failed",
+                chain=self.chain,
+                from_block=from_block,
+                to_block=to_block,
+                error=str(exc)[:120],
+            )
+            summary["status"] = "fetch_failed"
+            summary["errors"].append(f"all endpoints failed for range {from_block}-{to_block}")
+            summary["duration_seconds"] = time.monotonic() - start_time
+            return summary
+
         if events:
             summary["events_fetched"] = len(events)
 
@@ -417,6 +464,7 @@ class LiteIndexer:
         if _check_reorg(events):
             logger.warning("chain_reorg_during_sync", chain=self.chain)
             self.start_from_head = True
+            self._reorg_recovery = True
             summary["status"] = "reorg_detected"
             summary["duration_seconds"] = time.monotonic() - start_time
             return summary
@@ -428,6 +476,7 @@ class LiteIndexer:
             if _check_reorg(dex_events):
                 logger.warning("chain_reorg_during_dex_sync", chain=self.chain)
                 self.start_from_head = True
+                self._reorg_recovery = True
                 summary["status"] = "reorg_detected"
                 summary["duration_seconds"] = time.monotonic() - start_time
                 return summary
@@ -446,6 +495,7 @@ class LiteIndexer:
 
         # Check if we have any events or deployer tracking
         if not events and not dex_events and not self.deployers_enabled:
+            self._clear_reorg_recovery()
             self.state.save(to_block, 0)
             summary["status"] = "no_events"
             summary["duration_seconds"] = time.monotonic() - start_time
@@ -491,12 +541,8 @@ class LiteIndexer:
 
         # 8. Save state
         total_events = len(events) + len(dex_events) + deployer_written
+        self._clear_reorg_recovery()
         self.state.save(to_block, total_events)
-
-        # A reorg-triggered head start (or --start-from-head) is one-shot:
-        # clear the flag after a successful sync so subsequent cycles
-        # resume from saved state instead of re-indexing from the tip.
-        self.start_from_head = False
 
         summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
         logger.info(
