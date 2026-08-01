@@ -91,6 +91,31 @@ ENDPOINT_VERIFY_TIMEOUT = 10.0
 # Block range to use for endpoint health verification (small to avoid range errors)
 VERIFY_BLOCK_DELTA = 100  # Check 100 blocks back from tip
 
+# ── Average Block Times ─────────────────────────────────────────────
+# Per-chain average block time in seconds, used when estimating block
+# timestamps when RPC timestamp lookup fails. Hardcoding a single 12s
+# value badly skews estimates for fast chains (Base 2s, Arbitrum 0.25s).
+DEFAULT_BLOCK_TIME = 12.0
+
+CHAIN_BLOCK_TIMES: dict[str, float] = {
+    "ethereum": 12.0,
+    "base": 2.0,
+    "bsc": 3.0,
+    "polygon": 2.0,
+    "arbitrum": 0.25,
+    "optimism": 2.0,
+    "avalanche": 2.0,
+    "fantom": 1.0,
+    "linea": 2.0,
+    "scroll": 3.0,
+    "zksync": 2.0,
+    "mantle": 2.0,
+    "gnosis": 5.0,
+    "celo": 5.0,
+    "solana": 0.4,
+    "tron": 3.0,
+}
+
 # ── Known DEX Factory Addresses ───────────────────────────────────────
 
 FACTORY_ADDRESSES: dict[str, list[str]] = {
