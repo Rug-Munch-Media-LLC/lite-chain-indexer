@@ -13,15 +13,10 @@ from typing import Any
 
 from lite_indexer.config import CH_DEPLOYER_TABLE, CH_DEX_TABLE, CH_TABLE
 from lite_indexer.logging import get_logger
+from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.storage.disk import check_write_ok
 
 logger = get_logger(__name__)
-
-# ── Metrics ────────────────────────────────────────────────────────────
-_metrics: dict[str, int] = {
-    "clickhouse_inserts": 0,
-    "clickhouse_errors": 0,
-}
 
 
 class ClickHouseWriter:
@@ -135,10 +130,10 @@ class ClickHouseWriter:
                 rows,
             )
             logger.info("clickhouse_inserted", chain=chain, rows=len(rows))
-            _metrics["clickhouse_inserts"] += 1
+            metrics_incr("clickhouse_inserts")
             return len(rows)
         except Exception as exc:
-            _metrics["clickhouse_errors"] += 1
+            metrics_incr("clickhouse_errors")
             logger.error("clickhouse_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
             return 0
 
@@ -208,10 +203,10 @@ class ClickHouseWriter:
                 rows,
             )
             logger.info("dex_clickhouse_inserted", chain=chain, rows=len(rows))
-            _metrics["clickhouse_inserts"] += 1
+            metrics_incr("clickhouse_inserts")
             return len(rows)
         except Exception as exc:
-            _metrics["clickhouse_errors"] += 1
+            metrics_incr("clickhouse_errors")
             logger.error("dex_clickhouse_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
             return 0
 
@@ -267,9 +262,9 @@ class ClickHouseWriter:
                 rows,
             )
             logger.info("deployer_events_inserted", chain=chain, rows=len(rows))
-            _metrics["clickhouse_inserts"] += 1
+            metrics_incr("clickhouse_inserts")
             return len(rows)
         except Exception as exc:
-            _metrics["clickhouse_errors"] += 1
+            metrics_incr("clickhouse_errors")
             logger.error("deployer_events_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
             return 0

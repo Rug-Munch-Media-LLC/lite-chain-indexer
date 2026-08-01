@@ -13,15 +13,12 @@ import time
 
 from lite_indexer.config import BACKOFF_CAP, ENDPOINT_COOLDOWN, MAX_FAILURES, RATE_LIMIT_WAIT_CAP
 from lite_indexer.logging import get_logger
+from lite_indexer.metrics import incr as metrics_incr
 
 logger = get_logger(__name__)
 
 # ── State ──────────────────────────────────────────────────────────────
 _endpoint_failures: dict[str, list[float]] = {}
-_metrics: dict[str, int] = {
-    "rpc_errors": 0,
-    "rpc_rate_limits": 0,
-}
 
 
 # ── Best Endpoint Selection ──────────────────────────────────────────
@@ -89,7 +86,7 @@ async def apply_endpoint_backoff(url: str) -> None:
 async def handle_rate_limit(url: str) -> None:
     """Record a rate-limit failure and sleep with exponential backoff."""
     record_endpoint_failure(url)
-    _metrics["rpc_rate_limits"] += 1
+    metrics_incr("rpc_rate_limits")
     wait = min(2 ** len(_endpoint_failures.get(url, [])), RATE_LIMIT_WAIT_CAP)
     logger.debug("rpc_rate_limited", url=url[:50], backoff=wait)
     await asyncio.sleep(wait)

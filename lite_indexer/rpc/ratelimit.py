@@ -16,9 +16,6 @@ logger = get_logger(__name__)
 
 # ── Token Bucket Rate Limiters (per provider domain pattern) ─────────
 _token_buckets: dict[str, dict[str, float]] = {}  # pattern -> {tokens, last_refill}
-_metrics: dict[str, int] = {
-    "rpc_rate_limits": 0,
-}
 
 
 def _get_token_bucket(endpoint: str) -> dict[str, float]:

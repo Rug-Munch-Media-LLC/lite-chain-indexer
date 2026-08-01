@@ -21,15 +21,11 @@ from lite_indexer.config import (
     TIMESTAMP_FETCH_TIMEOUT,
 )
 from lite_indexer.logging import get_logger
+from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.rpc.pool import get_best_endpoint, record_endpoint_failure
 from lite_indexer.rpc.ratelimit import apply_provider_rate_limit
 
 logger = get_logger(__name__)
-
-# ── Metrics ────────────────────────────────────────────────────────────
-_metrics: dict[str, int] = {
-    "rpc_errors": 0,
-}
 
 
 # ── RPC Client ─────────────────────────────────────────────────────────
@@ -252,7 +248,7 @@ class RpcClient:
                     error=str(exc)[:60],
                 )
                 record_endpoint_failure(endpoint)
-                _metrics["rpc_errors"] += 1
+                metrics_incr("rpc_errors")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
                     continue

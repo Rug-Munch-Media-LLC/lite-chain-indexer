@@ -13,16 +13,13 @@ import httpx
 
 from lite_indexer.chains import ENDPOINT_VERIFY_INTERVAL, ENDPOINT_VERIFY_TIMEOUT, VERIFY_BLOCK_DELTA
 from lite_indexer.logging import get_logger
+from lite_indexer.metrics import incr as metrics_incr
 
 logger = get_logger(__name__)
 
 # ── State ──────────────────────────────────────────────────────────────
 _endpoint_last_verified: dict[str, float] = {}  # url -> last verify timestamp
 _endpoint_verified_ok: dict[str, bool] = {}  # url -> last verify result
-_metrics: dict[str, int] = {
-    "endpoints_verified": 0,
-    "endpoints_failed_verify": 0,
-}
 
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
@@ -79,14 +76,14 @@ async def verify_endpoint(
 
             if not isinstance(data, dict):
                 _endpoint_verified_ok[endpoint] = False
-                _metrics["endpoints_failed_verify"] += 1
+                metrics_incr("endpoints_failed_verify")
                 return False
 
             # Accept any valid result (list or null — both mean endpoint works)
             if "result" in data and not ("error" in data and data.get("error")):
                 _endpoint_verified_ok[endpoint] = True
                 _endpoint_last_verified[endpoint] = time.time()
-                _metrics["endpoints_verified"] += 1
+                metrics_incr("endpoints_verified")
                 return True
 
             if "error" in data:
@@ -102,17 +99,17 @@ async def verify_endpoint(
                     # Still accept — it may work with appropriate ranges
                     _endpoint_verified_ok[endpoint] = True
                     _endpoint_last_verified[endpoint] = time.time()
-                    _metrics["endpoints_verified"] += 1
+                    metrics_incr("endpoints_verified")
                     return True
 
             _endpoint_verified_ok[endpoint] = False
-            _metrics["endpoints_failed_verify"] += 1
+            metrics_incr("endpoints_failed_verify")
             return False
 
     except httpx.TimeoutException:
         logger.debug("verify_endpoint_timeout", endpoint=endpoint[:50], chain=chain)
         _endpoint_verified_ok[endpoint] = False
-        _metrics["endpoints_failed_verify"] += 1
+        metrics_incr("endpoints_failed_verify")
         return False
     except Exception as exc:
         logger.debug(
@@ -122,7 +119,7 @@ async def verify_endpoint(
             error=str(exc)[:80],
         )
         _endpoint_verified_ok[endpoint] = False
-        _metrics["endpoints_failed_verify"] += 1
+        metrics_incr("endpoints_failed_verify")
         return False
 
 

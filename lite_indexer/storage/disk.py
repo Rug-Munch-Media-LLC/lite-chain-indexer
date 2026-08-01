@@ -17,23 +17,6 @@ from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
 
-# ── Prometheus-style metrics counters ─────────────────────────────────
-_metrics: dict[str, int] = {
-    "transfers_written": 0,
-    "dex_swaps_written": 0,
-    "deployers_written": 0,
-    "clickhouse_inserts": 0,
-    "clickhouse_errors": 0,
-}
-
-
-def get_metrics() -> dict[str, int]:
-    """Get and reset metrics counters."""
-    result = dict(_metrics)
-    for k in _metrics:
-        _metrics[k] = 0
-    return result
-
 
 def check_disk_space(min_free_bytes: int = MIN_FREE_DISK_BYTES) -> bool:
     """Check if there's enough disk space to continue.
