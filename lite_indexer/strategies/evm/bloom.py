@@ -287,8 +287,15 @@ class BloomFilter:
         self._bitmap = bytearray(bytes.fromhex(hex_str))
 
     def _test_bit(self, position: int) -> bool:
-        """Return whether bit ``position`` (0-2047) is set."""
-        byte_idx = position >> 3
+        """Return whether bit ``position`` (0-2047) is set.
+
+        Ethereum block-header ``logsBloom`` is big-endian: geth's
+        ``bloom9.go`` stores bit ``p`` at byte ``255 - p//8`` (MSB-first,
+        byte 0 is the most significant end). Indexing byte ``p//8``
+        directly would test the wrong end of the 256-byte bloom and yield
+        false negatives for every block.
+        """
+        byte_idx = 255 - (position >> 3)
         bit_mask = 1 << (position & 0x07)
         return bool(self._bitmap[byte_idx] & bit_mask)
 
@@ -556,6 +563,9 @@ async def fetch_block_blooms(
 
     from lite_indexer.rpc import get_best_endpoint, record_endpoint_failure
 
+    # Bound concurrent bloom fetches. The semaphore caps in-flight HTTP
+    # requests; the bounded pool below additionally caps live coroutines so
+    # a multi-million-block range never materializes one coroutine per block.
     semaphore = asyncio.Semaphore(concurrency)
 
     async def _fetch_one(block: int) -> tuple[int, BloomFilter | None]:
@@ -587,13 +597,26 @@ async def fetch_block_blooms(
                 record_endpoint_failure(endpoint)
         return block, None
 
-    tasks = [_fetch_one(b) for b in blocks]
-    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
-
     result: dict[int, BloomFilter] = {}
-    for outcome in outcomes:
-        if isinstance(outcome, tuple) and outcome[1] is not None:
-            result[outcome[0]] = outcome[1]
+    in_flight: set[asyncio.Task[tuple[int, BloomFilter | None]]] = set()
+
+    def _collect(done: set[asyncio.Task[tuple[int, BloomFilter | None]]]) -> None:
+        for task in done:
+            try:
+                outcome = task.result()
+            except Exception:  # pragma: no cover - defensive; _fetch_one logs expected errors
+                continue
+            if outcome[1] is not None:
+                result[outcome[0]] = outcome[1]
+
+    for block in blocks:
+        in_flight.add(asyncio.create_task(_fetch_one(block)))
+        if len(in_flight) >= concurrency:
+            done, in_flight = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
+            _collect(done)
+    if in_flight:
+        done, _ = await asyncio.wait(in_flight)
+        _collect(done)
     return result
 
 
