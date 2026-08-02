@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from lite_indexer.config import DATA_DIR
+from lite_indexer.config import DATA_DIR, DISK_CAP_BYTES
 from lite_indexer.logging import get_logger
 from lite_indexer.storage.disk import check_write_ok
 
@@ -38,14 +38,19 @@ class NDJSONWriter:
     in-place to .zst and the raw .jsonl is removed.
     """
 
-    def __init__(self, data_dir: Path = DATA_DIR) -> None:
+    def __init__(self, data_dir: Path = DATA_DIR, disk_cap: int = DISK_CAP_BYTES) -> None:
         self.data_dir = data_dir
+        # Explicit disk cap so check_write_ok() honors the configured cap
+        # (e.g. --disk-cap 50000000000 = 50 GB) instead of falling back to
+        # the 10 GB DISK_CAP_BYTES default. Without this, NDJSON/parquet
+        # archive writes silently abort when usage exceeds 10 GB.
+        self.disk_cap = disk_cap
 
     def write_events(self, chain: str, events: list[dict[str, Any]]) -> int:
         """Append transfer events to NDJSON. Returns bytes written."""
         if not events:
             return 0
-        if not check_write_ok("ndjson"):
+        if not check_write_ok("ndjson", data_dir=self.data_dir, cap_bytes=self.disk_cap):
             return 0
 
         today = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -60,7 +65,7 @@ class NDJSONWriter:
         """Append DEX swap events to NDJSON. Returns bytes written."""
         if not events:
             return 0
-        if not check_write_ok("dex_ndjson"):
+        if not check_write_ok("dex_ndjson", data_dir=self.data_dir, cap_bytes=self.disk_cap):
             return 0
 
         today = datetime.now(UTC).strftime("%Y-%m-%d")

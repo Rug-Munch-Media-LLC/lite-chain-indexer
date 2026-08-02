@@ -60,6 +60,8 @@ def parse_pool_created_v3(
         "deployer_event": {
             "factory": log.get("address", ""),
             "pair_address": pair,
+            "token0": token0,
+            "token1": token1,
             "version": "v3",
             "blockNumber": bn,
             "transactionHash": log.get("transactionHash", ""),

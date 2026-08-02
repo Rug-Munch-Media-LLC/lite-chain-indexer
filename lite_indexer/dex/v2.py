@@ -63,6 +63,8 @@ def parse_pair_created_v2(
         "deployer_event": {
             "factory": log.get("address", ""),
             "pair_address": pair,
+            "token0": token0,
+            "token1": token1,
             "version": "v2",
             "blockNumber": bn,
             "transactionHash": log.get("transactionHash", ""),
