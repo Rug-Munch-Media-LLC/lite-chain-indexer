@@ -60,12 +60,15 @@ class _PlainCounter:
         self._value = 0.0
 
     def inc(self, amount: float = 1.0) -> None:
+        """Increment the counter by ``amount`` (default 1.0)."""
         self._value += amount
 
     def get(self) -> float:
+        """Return the current counter value."""
         return self._value
 
     def set(self, value: float) -> None:
+        """Set the counter to an absolute ``value``."""
         self._value = value
 
 

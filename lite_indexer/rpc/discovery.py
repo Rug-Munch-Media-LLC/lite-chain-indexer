@@ -199,7 +199,8 @@ async def validate_rpc_candidates(
                         return False
                     data = resp.json()
                     return isinstance(data, dict) and bool(data.get("result"))
-            except Exception:
+            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+                logger.debug("rpc_probe_failed", url=url[:60], error=str(exc)[:80])
                 return False
 
     outcomes = await asyncio.gather(*[_probe(c) for c in candidates], return_exceptions=True)

@@ -213,8 +213,9 @@ async def _fetch_range(
             last_error = f"protocol_error: {str(exc)[:40]}"
             record_endpoint_failure(url)
             continue
-        except Exception as exc:
+        except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
             last_error = str(exc)[:80]
+            logger.warning("transfer_fetch_unexpected", chain=chain, endpoint=url[:50], error=str(exc)[:80])
             record_endpoint_failure(url)
             continue
 

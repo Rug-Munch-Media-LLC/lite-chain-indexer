@@ -390,8 +390,8 @@ async def fetch_block_timestamps(
                         with contextlib.suppress(Exception):
                             await bloom_cache.set(chain, block_num, str(block["logsBloom"]))
                     return block_num, datetime.fromtimestamp(ts_int, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            except Exception:
-                pass
+            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+                logger.warning("block_ts_fetch_failed", block=block_num, error=str(exc)[:80])
             return block_num, None
 
     tasks = [_get_ts(bn) for bn in batch]

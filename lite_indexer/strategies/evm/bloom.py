@@ -582,8 +582,8 @@ async def fetch_block_blooms(
                         return block, bloom
                 if not (isinstance(data, dict) and "result" in data and data["result"] is None):
                     record_endpoint_failure(endpoint)
-            except Exception as exc:
-                logger.debug("bloom_fetch_failed", block=block, error=str(exc)[:60])
+            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+                logger.warning("bloom_fetch_failed", block=block, error=str(exc)[:60])
                 record_endpoint_failure(endpoint)
         return block, None
 

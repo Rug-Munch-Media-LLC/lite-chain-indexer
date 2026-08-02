@@ -321,16 +321,24 @@ CHAIN_PRIORITY: dict[str, int] = {
 }
 
 # ── Parquet Cold Storage Tier ─────────────────────────────────────────
-# Daily rollup of old ClickHouse rows into Parquet, uploaded to B2, then
-# deleted from ClickHouse to reclaim disk. Optional dependency: pyarrow.
+# Daily rollup of old ClickHouse rows into Parquet, uploaded to the B2
+# permanent tier, then deleted from ClickHouse to reclaim disk.
+# Optional dependency: pyarrow.
 PARQUET_DIR: Path = DATA_DIR / "parquet"
-PARQUET_REMOTE: str = os.environ.get("PARQUET_REMOTE", "b2-crypt:chain-data/parquet")
+# Remote root for the parquet archive. The daily script passes
+# ``--remote b2-crypt:lite-indexer-parquet`` explicitly.
+PARQUET_REMOTE: str = os.environ.get("PARQUET_REMOTE", "b2-crypt:lite-indexer-parquet")
 PARQUET_RCLONE_BIN: str = os.environ.get("PARQUET_RCLONE_BIN", "rclone")
 # Min age (days) of rows eligible for cold storage (keep hot window).
+# Used for the --days backfill mode; the daily job exports an explicit
+# date (--date) instead.
 PARQUET_COLD_DAYS: int = int(os.environ.get("PARQUET_COLD_DAYS", "7"))
 # State dir records which (chain, date) files were already exported so
-# the daily job is idempotent.
+# the daily job is idempotent even when ClickHouse is unavailable.
 PARQUET_STATE_DIR: Path = STATE_DIR / "parquet"
+# ClickHouse audit table recording every (chain, date) export attempt
+# and its status (pending / exporting / uploaded / deleted / failed).
+CH_PARQUET_STATE_TABLE: str = "wallet_memory.parquet_export_state"
 
 # ── Solana Configuration ──────────────────────────────────────────────
 

@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import httpx
+
 from lite_indexer.logging import get_logger
 from lite_indexer.strategies import SUPPORTED_CHAINS, create_strategy
 
@@ -83,10 +85,10 @@ async def check_chain_health(
         except TimeoutError:
             result["status"] = "error"
             result["error"] = f"timeout after {timeout}s"
-        except Exception as exc:
+        except (httpx.HTTPError, ConnectionError, OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
             result["status"] = "error"
             result["error"] = str(exc)[:200]
-            logger.debug("health_check_failed", chain=chain, error=str(exc)[:100])
+            logger.warning("health_check_failed", chain=chain, error=str(exc)[:100])
 
         return chain, result
 

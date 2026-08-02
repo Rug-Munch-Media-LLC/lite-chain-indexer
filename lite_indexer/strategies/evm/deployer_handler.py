@@ -125,8 +125,8 @@ async def fetch_pair_created(
             except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError):
                 record_endpoint_failure(url)
                 continue
-            except Exception as exc:
-                logger.debug("factory_events_error", factory=factory_addr[:20], error=str(exc)[:60])
+            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+                logger.warning("factory_events_error", factory=factory_addr[:20], error=str(exc)[:60])
                 record_endpoint_failure(url)
                 continue
 

@@ -260,8 +260,16 @@ class SolanaStrategy(AbstractChainStrategy):
                         slot,
                         {mint},
                     )
-                except Exception as exc:
-                    logger.debug("solana_tx_parse_failed", sig=sig[:20], error=str(exc)[:60])
+                except (
+                    httpx.HTTPError,
+                    ConnectionError,
+                    OSError,
+                    TimeoutError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                ) as exc:
+                    logger.warning("solana_tx_parse_failed", sig=sig[:20], error=str(exc)[:60])
                     return []
 
         tasks = [_fetch_and_parse(s) for s in relevant_sigs]

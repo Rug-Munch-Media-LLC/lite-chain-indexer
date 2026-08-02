@@ -2,6 +2,57 @@
 
 All notable changes to Lite Chain Indexer will be documented in this file.
 
+## [1.2.0] — 2026-08-02
+
+### Performance
+
+- **Bloom pre-filtering** (`strategies/evm/bloom.py`) — address-indexed
+  log queries warm a per-block logs-bloom cache from fetched block
+  headers, letting transfer scanning pre-filter candidate blocks without
+  extra RPC round trips. LRU-cached with an optional Redis backing store;
+  falls back gracefully when Redis is unavailable.
+- **Chunked indexing** (`chunks.py`) — block/slot ranges are split into
+  configurable chunks (50 EVM blocks, 500 Solana slots) so each chunk is
+  one `eth_getLogs` call, fetched in parallel. Cuts RPC round trips by
+  the chunk-size factor and avoids "response too large" errors from
+  restrictive free RPCs.
+- **Chain parallelism** (`chains/parallelism.py`) — per-chain resource
+  guidance: CPU affinity (Linux best-effort), memory budgets (Solana
+  gets the most headroom), and priorities that scale polling frequency
+  for high-value chains (Ethereum, Solana).
+
+### Storage
+
+- **Column TTL** (`storage/clickhouse.py`) — configurable column-level
+  TTL (`CH_TTL_ENABLED` / `RETENTION_DAYS`) degrades heavy detail
+  columns to their type defaults while summary columns are retained,
+  cutting storage 30-50% while keeping every scanner query answerable.
+- **Parquet cold tier** (`storage/parquet.py` +
+  `scripts/lite-indexer-parquet-daily.sh`) — daily rollup exports rows
+  older than `PARQUET_COLD_DAYS` from ClickHouse into per-chain/per-date
+  Parquet files, uploads them to B2, then deletes them from ClickHouse to
+  reclaim disk. Queries via `storage/duckdb_query.py`.
+- **F0 deployer EOA fix** — deployer events now resolve the real deployer
+  EOA (the transaction `from` address) via `eth_getTransactionByHash`
+  instead of recording the factory address. Batched with a bounded
+  semaphore so RPC overhead stays low; falls back gracefully when
+  resolution is unavailable.
+
+### RPC & Reliability
+
+- **RPC routing** (`rpc/routing.py`) — per-method endpoint selection:
+  heavy `eth_getLogs` calls prefer free public tiers, latency-sensitive
+  calls (`eth_getTransactionReceipt`, `eth_call`) prefer dedicated
+  API-key nodes. Adds a usage/cost ledger and per-endpoint circuit
+  breaker (open on failure bursts, half-open probe, close on success).
+- **Narrowed exception handling** — 12 broad `except Exception` clauses
+  narrowed to specific transport/parse exception tuples
+  (`httpx.HTTPError`, `ConnectionError`, `OSError`, `TimeoutError`,
+  `ValueError`, `KeyError`, `TypeError`), and silent `pass`/`logger.debug`
+  failure paths upgraded to `logger.warning` so operators can see
+  suppressed failures.
+- **Version fix** — package version bumped to 1.2.0 in `pyproject.toml`.
+
 ## [1.1.0] — 2026-08-01
 
 ### Docs (this release)

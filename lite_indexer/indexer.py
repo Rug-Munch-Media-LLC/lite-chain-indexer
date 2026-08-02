@@ -429,8 +429,8 @@ class LiteIndexer:
             try:
                 if self._is_evm() and self._verify_result is not None:
                     restore_original_endpoints(self._verify_result)
-            except Exception:
-                pass
+            except (KeyError, TypeError) as exc:
+                logger.warning("endpoint_restore_failed", chain=self.chain, error=str(exc)[:80])
 
     async def _sync_loop_body(
         self,

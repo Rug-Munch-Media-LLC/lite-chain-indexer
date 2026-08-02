@@ -6,7 +6,8 @@ Usage:
     lite-indexer --chain ethereum --from-block 25645000
     lite-indexer --daemon --chains ethereum,base,bsc
     lite-indexer --daemon --dex --deployers --start-from-head
-    lite-indexer export-parquet --chain ethereum --days 7 --upload --delete
+    lite-indexer export-parquet --chain ethereum --date 2026-07-30 --upload --delete-after-upload
+    lite-indexer export-parquet --chain all --date 2026-07-30 --upload --delete-after-upload
 """
 
 from __future__ import annotations
@@ -17,8 +18,11 @@ import json
 import signal
 import sys
 import time
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
 from lite_indexer.config import BATCH_SIZE, DATA_DIR, DISK_CAP_BYTES
@@ -109,24 +113,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # ── export-parquet subcommand ────────────────────────────────────
     export_parser = sub.add_parser(
         "export-parquet",
-        help="Export old ClickHouse rows to Parquet (cold storage tier)",
+        help="Export ClickHouse rows to Parquet (cold storage tier)",
         description=(
-            "Aggregate rows older than --days into per-chain/per-date Parquet files, "
-            "optionally upload them to B2 and delete them from ClickHouse. "
+            "Export a (chain, date) into per-chain/per-date Parquet files, "
+            "optionally upload them to the B2 permanent tier and delete them "
+            "from ClickHouse only after the upload is verified. "
             "Idempotent: dates already exported are skipped."
         ),
     )
     export_parser.add_argument(
         "--chain",
-        default="ethereum",
-        choices=sorted(SUPPORTED_CHAINS.keys()),
-        help="Chain to export (default: ethereum)",
+        default="all",
+        choices=sorted(SUPPORTED_CHAINS.keys()) + ["all"],
+        help="Chain to export or 'all' (default: all)",
+    )
+    export_parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="Date to export as YYYY-MM-DD (default: yesterday)",
     )
     export_parser.add_argument(
         "--days",
         type=int,
         default=None,
-        help="Min row age in days before export (default: PARQUET_COLD_DAYS env or 7)",
+        help="Backfill mode: min row age in days before export (default: PARQUET_COLD_DAYS env or 7). "
+        "Mutually exclusive with --date.",
     )
     export_parser.add_argument(
         "--upload",
@@ -134,14 +146,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Upload Parquet files to the B2 remote via rclone",
     )
     export_parser.add_argument(
-        "--delete",
+        "--delete-after-upload",
+        dest="delete_after_upload",
         action="store_true",
-        help="Delete exported rows from ClickHouse (reclaim disk)",
+        help="Delete exported rows from ClickHouse only after the upload is verified",
+    )
+    export_parser.add_argument(
+        "--delete",
+        dest="delete_after_upload",
+        action="store_true",
+        help=argparse.SUPPRESS,  # legacy alias for --delete-after-upload
     )
     export_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview eligible dates without writing, uploading, or deleting",
+        help="Preview the export without writing, uploading, or deleting",
+    )
+    export_parser.add_argument(
+        "--remote",
+        type=str,
+        default=None,
+        help="rclone remote root (default: PARQUET_REMOTE env or b2-crypt:lite-indexer-parquet)",
     )
     export_parser.add_argument(
         "--data-dir",
@@ -297,9 +322,17 @@ async def _discovery_and_usage_loop(chains: list[str]) -> None:
                 for chain in evm_chains:
                     try:
                         await auto_discover(chain, add_to_pool=True, validate=True)
-                    except Exception as exc:
-                        logger.debug("rpc_discovery_failed", chain=chain, error=str(exc)[:80])
-        except Exception as exc:
+                    except (
+                        httpx.HTTPError,
+                        ConnectionError,
+                        OSError,
+                        TimeoutError,
+                        ValueError,
+                        KeyError,
+                        TypeError,
+                    ) as exc:
+                        logger.warning("rpc_discovery_failed", chain=chain, error=str(exc)[:80])
+        except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
             logger.warning("discovery_loop_error", error=str(exc)[:100])
         await asyncio.sleep(interval)
 
@@ -357,27 +390,58 @@ def run_export_parquet(args: argparse.Namespace) -> int:
     """Run the export-parquet cold-storage subcommand (synchronous).
 
     Args:
-        args: Parsed CLI args (chain, days, upload, delete, dry_run).
+        args: Parsed CLI args (chain, date, days, upload,
+            delete_after_upload, dry_run, remote, data_dir).
 
     Returns:
-        Process exit code (0 = success).
+        Process exit code (0 = success, 2 = usage error).
     """
-    from lite_indexer.config import PARQUET_COLD_DAYS, PARQUET_DIR
+    from lite_indexer.config import PARQUET_COLD_DAYS, PARQUET_DIR, PARQUET_REMOTE
     from lite_indexer.storage.parquet import ParquetExporter
+    from lite_indexer.strategies import SUPPORTED_CHAINS
 
-    days = args.days if args.days and args.days > 0 else PARQUET_COLD_DAYS
+    if args.delete_after_upload and not args.upload:
+        print("error: --delete-after-upload requires --upload", file=sys.stderr)  # noqa: T201
+        return 2
+    if args.date and args.days:
+        print("error: --date and --days are mutually exclusive", file=sys.stderr)  # noqa: T201
+        return 2
+
+    day: date | None = None
+    if args.date:
+        try:
+            day = date.fromisoformat(args.date)
+        except ValueError:
+            print(f"error: invalid --date {args.date!r}; expected YYYY-MM-DD", file=sys.stderr)  # noqa: T201
+            return 2
+    elif not args.days:
+        # Default: yesterday.
+        day = datetime.now(UTC).date() - timedelta(days=1)
+
     data_dir = Path(args.data_dir) if args.data_dir else PARQUET_DIR
-    exporter = ParquetExporter(data_dir=data_dir)
+    remote = args.remote or PARQUET_REMOTE
+    exporter = ParquetExporter(data_dir=data_dir, remote=remote)
 
-    summary = exporter.export_chain(
-        args.chain,
-        cold_days=days,
-        upload=args.upload,
-        delete=args.delete,
-        dry_run=args.dry_run,
-    )
-    print(json.dumps(summary.to_dict(), default=str))  # noqa: T201
-    return 0 if not summary.errors else 1
+    chains = sorted(SUPPORTED_CHAINS.keys()) if args.chain == "all" else [args.chain]
+
+    summaries: list[dict[str, Any]] = []
+    failed = False
+    for chain in chains:
+        summary = exporter.export_chain(
+            chain,
+            dates=[day] if day is not None else None,
+            cold_days=args.days if args.days and args.days > 0 else PARQUET_COLD_DAYS,
+            upload=args.upload,
+            delete=args.delete_after_upload,
+            dry_run=args.dry_run,
+        )
+        summaries.append(summary.to_dict())
+        if summary.errors:
+            failed = True
+
+    out: dict[str, Any] | list[dict[str, Any]] = summaries[0] if len(summaries) == 1 else {"chains": summaries}
+    print(json.dumps(out, default=str))  # noqa: T201
+    return 1 if failed else 0
 
 
 def main() -> None:

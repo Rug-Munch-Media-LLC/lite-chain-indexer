@@ -3,7 +3,7 @@
 **The free, open-source, multi-chain blockchain indexer.** Index transfers, DEX swaps, and deployer activity across **16 chains (14 EVM + Solana + Tron)** using **only free public RPCs** — zero infrastructure cost, zero API keys required, and DuckDB-queryable parquet archives on B2. No node. No gateway. No bill.
 
 [![CI](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml/badge.svg?branch=main)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-v1.1.0-blue.svg)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/tags)
+[![Version](https://img.shields.io/badge/version-v1.2.0-blue.svg)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/tags)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
@@ -29,6 +29,23 @@ It's the **free blockchain indexer** for anyone who wants **blockchain data with
 - **Honest footprint** — ~2 GB RAM for all 16 chains concurrently. Runs on a $5 VPS.
 
 > This is an **open source blockchain indexer** (MIT) — the community reference implementation. The RugMunch production instance layers proprietary analytics on top; the OSS code here is a complete, self-contained starting point.
+
+---
+
+## Quickstart
+
+The fastest way to try Lite Chain Indexer — one chain, one command:
+
+```bash
+pip install lite-chain-indexer
+export CLICKHOUSE_HOST=localhost
+lite-indexer --chain ethereum --dex
+```
+
+This installs the package, points the ClickHouse writer at a local server
+(optional — events are always written to NDJSON even without ClickHouse),
+and indexes Ethereum transfer + DEX swap events from the current head.
+See [Quick Start](#quick-start) below for the full walkthrough.
 
 ---
 
@@ -143,7 +160,7 @@ LiteIndexer: fetch → parse → enrich (block timestamps, token resolution)
         ├───────────► ClickHouse    wallet_memory.evm_transfers / dex_events
         │                             (live, hot, sub-second queries)
         ▼
-Parquet export → B2  (every 6 hours, cron: lite-indexer-parquet-daily.sh)
+Parquet export → B2  (daily 03:30 UTC, cron: lite-indexer-parquet-daily.sh)
         │
         ▼
 DuckDB queries (storage/duckdb_query.py)  — no node, no server, no bill

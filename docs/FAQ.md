@@ -49,7 +49,7 @@ See the [detailed comparison](COMPARISON.md) for a row-by-row breakdown.
 
 1. **NDJSON files** — every event is written to `{data_dir}/{chain}/{date}/events.jsonl` (auto-compressed to `.zst` after 15 minutes). Portable, append-only, ready for any pipeline.
 2. **ClickHouse** — live inserts into `wallet_memory.*` tables (`evm_transfers`, `dex_events`, `deployer_events`, `solana_spl_balance_changes`). Millisecond queries over billions of rows. Ideal for hot, real-time analytics.
-3. **Parquet on B2 + DuckDB** — parquet snapshots are exported to B2 every 6 hours (`lite-indexer-parquet-daily.sh`). Query them with plain SQL using the included `duckdb_query` module — no node, no server, no ClickHouse round-trip:
+3. **Parquet on B2 + DuckDB** — parquet snapshots are exported to B2 daily at 03:30 UTC (`lite-indexer-parquet-daily.sh`). Query them with plain SQL using the included `duckdb_query` module — no node, no server, no ClickHouse round-trip:
 
 ```python
 from lite_indexer.storage.duckdb_query import query_parquet

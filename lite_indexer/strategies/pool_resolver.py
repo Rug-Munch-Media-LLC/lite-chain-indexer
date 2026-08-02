@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
+
 from lite_indexer.chains import GET_LOGS_ENDPOINTS
 from lite_indexer.config import MAX_CONCURRENT_POOL_RESOLVE, TOKEN0_SELECTOR, TOKEN1_SELECTOR
 from lite_indexer.logging import get_logger
@@ -57,8 +59,8 @@ async def resolve_single_pool(
 
         if token0 and token1:
             return (token0, token1)
-    except Exception as exc:
-        logger.debug("pool_resolve_failed", pair=pair_address[:20], error=str(exc)[:60])
+    except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+        logger.warning("pool_resolve_failed", pair=pair_address[:20], error=str(exc)[:60])
 
     return ("", "")
 

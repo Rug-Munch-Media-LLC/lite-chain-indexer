@@ -83,6 +83,7 @@ class EVMChainStrategy(AbstractChainStrategy):
 
     @property
     def pair_cache(self) -> PairCache:
+        """The persistent pair→(token0, token1) cache for this chain."""
         return self._pair_cache
 
     # ── Block Range Enforcement ──────────────────────────────────────
@@ -116,9 +117,11 @@ class EVMChainStrategy(AbstractChainStrategy):
     # ── Feature Flags ────────────────────────────────────────────────
 
     def supports_dex(self) -> bool:
+        """Whether this chain indexes DEX swap events (always True for EVM)."""
         return True
 
     def supports_deployers(self) -> bool:
+        """Whether this chain tracks factory deployers (always True for EVM)."""
         return True
 
     # ── HTTP Client ──────────────────────────────────────────────────
