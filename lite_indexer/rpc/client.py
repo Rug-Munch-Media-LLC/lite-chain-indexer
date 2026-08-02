@@ -9,6 +9,7 @@ fetch_block_timestamps utility function.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -83,6 +84,9 @@ class RpcClient:
     ) -> dict[str, Any] | None:
         """Make a JSON-RPC call to an endpoint.
 
+        Records per-endpoint usage/cost in the shared RPC usage ledger
+        (which endpoints actually serve data vs. error).
+
         Args:
             endpoint: RPC endpoint URL.
             method: JSON-RPC method (e.g., 'eth_blockNumber').
@@ -92,6 +96,8 @@ class RpcClient:
         Returns:
             Parsed JSON response dict, or None on failure.
         """
+        from lite_indexer.rpc.routing import record_rpc_usage
+
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -101,17 +107,19 @@ class RpcClient:
         try:
             client = await _get_call_client(timeout)
             resp = await client.post(endpoint, json=payload)
+            bytes_received = len(resp.content or b"")
 
             # Empty response check
             if not resp.text or len(resp.text) < 5:
                 logger.debug("rpc_empty_response", endpoint=endpoint[:50], method=method)
+                record_rpc_usage(endpoint, method, ok=False, error="empty_response")
                 return None
 
             resp.raise_for_status()
 
             # Malformed JSON protection
             try:
-                return resp.json()
+                data = resp.json()
             except (json.JSONDecodeError, ValueError) as exc:
                 logger.debug(
                     "rpc_malformed_json",
@@ -119,19 +127,37 @@ class RpcClient:
                     method=method,
                     error=str(exc)[:60],
                 )
+                record_rpc_usage(endpoint, method, ok=False, error="malformed_json", bytes_received=bytes_received)
                 return None
+
+            ok = bool("error" not in data or data.get("error") is None)
+            if ok:
+                record_rpc_usage(endpoint, method, ok=True, bytes_received=bytes_received)
+            else:
+                record_rpc_usage(
+                    endpoint,
+                    method,
+                    ok=False,
+                    error=str(data.get("error", ""))[:120],
+                    bytes_received=bytes_received,
+                )
+            return data
 
         except httpx.TimeoutException:
             logger.debug("rpc_timeout", endpoint=endpoint[:50], method=method)
+            record_rpc_usage(endpoint, method, ok=False, error="timeout")
             return None
         except (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as exc:
             logger.debug("rpc_connection_error", endpoint=endpoint[:50], method=method, error=str(exc)[:60])
+            record_rpc_usage(endpoint, method, ok=False, error="connection_error")
             return None
         except httpx.HTTPStatusError as exc:
             logger.debug("rpc_http_error", endpoint=endpoint[:50], method=method, status=exc.response.status_code)
+            record_rpc_usage(endpoint, method, ok=False, error=f"http_{exc.response.status_code}")
             return None
-        except Exception as exc:
-            logger.debug("rpc_call_failed", endpoint=endpoint[:50], method=method, error=str(exc)[:80])
+        except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
+            logger.warning("rpc_call_failed", endpoint=endpoint[:50], method=method, error=str(exc)[:80])
+            record_rpc_usage(endpoint, method, ok=False, error=str(exc)[:120])
             return None
 
     async def eth_block_number(self, endpoint: str) -> int | None:
@@ -163,6 +189,31 @@ class RpcClient:
             "eth_getBlockByNumber",
             [hex(block_number), full_tx],
             timeout=TIMESTAMP_FETCH_TIMEOUT,
+        )
+        if result and "result" in result:
+            return result["result"]
+        return None
+
+    async def eth_get_transaction_receipt(self, endpoint: str, tx_hash: str) -> dict[str, Any] | None:
+        """Get a transaction receipt.
+
+        Routed to dedicated (API-key) nodes by default — receipts are
+        small, latency-sensitive calls better served by a dedicated node
+        than by a heavily-loaded public tier. See
+        :func:`lite_indexer.rpc.routing.select_endpoint_for_method`.
+
+        Args:
+            endpoint: RPC endpoint URL.
+            tx_hash: 0x-prefixed transaction hash.
+
+        Returns:
+            Receipt dict, or None on failure.
+        """
+        result = await self.call(
+            endpoint,
+            "eth_getTransactionReceipt",
+            [tx_hash],
+            timeout=RPC_CALL_TIMEOUT,
         )
         if result and "result" in result:
             return result["result"]
@@ -272,8 +323,8 @@ class RpcClient:
                     await asyncio.sleep(1)
                     continue
                 return None
-            except Exception as exc:
-                logger.debug(
+            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+                logger.warning(
                     "rpc_unexpected_error",
                     endpoint=endpoint[:40],
                     error=str(exc)[:60],
@@ -294,6 +345,7 @@ async def fetch_block_timestamps(
     endpoints: list[str],
     block_numbers: set[int],
     chain: str = "ethereum",
+    bloom_cache: Any = None,
 ) -> dict[int, str]:
     """Fetch timestamps for a set of block numbers in parallel.
 
@@ -302,11 +354,17 @@ async def fetch_block_timestamps(
     hardcoded 12s value — fast chains like Base (2s) and Arbitrum
     (0.25s) would otherwise get badly skewed estimates.
 
+    When a ``bloom_cache`` is provided, the ``logsBloom`` from each
+    fetched block header is stored in it — this warms the TrueBlocks
+    pre-filter cache for free (headers are already being fetched).
+
     Args:
         client: RpcClient instance.
         endpoints: List of RPC endpoints for the chain.
         block_numbers: Set of block numbers to resolve.
         chain: Chain name used to look up the average block time.
+        bloom_cache: Optional :class:`BloomCache` to populate with
+            header logsBloom values.
 
     Returns:
         Dict of {block_number: ISO-8601 timestamp string}.
@@ -327,6 +385,10 @@ async def fetch_block_timestamps(
                     ts_int = int(block["timestamp"], 16)
                     from datetime import UTC, datetime
 
+                    # Warm the bloom cache from the header we already have.
+                    if bloom_cache is not None and block.get("logsBloom"):
+                        with contextlib.suppress(Exception):
+                            await bloom_cache.set(chain, block_num, str(block["logsBloom"]))
                     return block_num, datetime.fromtimestamp(ts_int, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             except Exception:
                 pass

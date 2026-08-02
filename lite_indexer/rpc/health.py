@@ -112,8 +112,8 @@ async def verify_endpoint(
         _endpoint_verified_ok[endpoint] = False
         metrics_incr("endpoints_failed_verify")
         return False
-    except Exception as exc:
-        logger.debug(
+    except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
+        logger.warning(
             "verify_endpoint_failed",
             endpoint=endpoint[:50],
             chain=chain,
@@ -206,7 +206,12 @@ async def _probe_endpoint(endpoint: str, timeout: float) -> bool:
                 return False
             data = resp.json()
             return isinstance(data, dict) and bool(data.get("result"))
-    except Exception:
+    except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
+        logger.warning(
+            "rpc_probe_failed",
+            endpoint=endpoint[:50],
+            error=str(exc)[:80],
+        )
         return False
 
 

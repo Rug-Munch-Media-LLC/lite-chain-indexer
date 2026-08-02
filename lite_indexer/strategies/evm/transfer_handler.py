@@ -1,9 +1,22 @@
 """
 ERC-20 Transfer event handler for EVM chains.
 
-Provides fetch_transfers() — fetches ERC-20 Transfer events via
-eth_getLogs with only the Transfer event topic filter (no address
-filter) so it catches every transfer on the chain.
+Provides ``fetch_transfers()`` — fetches ERC-20 Transfer events via
+``eth_getLogs`` with the Transfer event topic filter (optionally scoped
+to a specific token address), using chunked parallel fetching.
+
+Two optimizations over per-block polling:
+
+1. **Bloom pre-filtering (TrueBlocks approach)** — when an ``address``
+   filter is requested with a :class:`BloomCache`, block headers for the
+   range are fetched (and cached), and only blocks whose ``logsBloom``
+   may contain the address are queried for logs. Rarely-traded tokens
+   skip the ``eth_getLogs`` call entirely when no block can match.
+
+2. **Chunk-based indexing** — the range is split into configurable
+   chunks (default 50 blocks) and each chunk is fetched with one
+   ``eth_getLogs`` call, up to ``CHUNK_PARALLELISM`` at a time. This
+   cuts RPC round trips and avoids "response too large" errors.
 
 Uses a curated list of endpoints known to support eth_getLogs.
 Falls through errors to try the next endpoint.
@@ -11,13 +24,15 @@ Falls through errors to try the next endpoint.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
 import httpx
 
 from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range
-from lite_indexer.config import RPC_TIMEOUT, TRANSFER_EVENT_TOPIC
+from lite_indexer.chunks import CHUNK_PARALLELISM, chunk_range, merge_chunked_results
+from lite_indexer.config import BLOOM_ENABLED, CHUNK_SIZE_EVM, RPC_TIMEOUT, TRANSFER_EVENT_TOPIC
 from lite_indexer.dex import parse_transfer_logs
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
@@ -29,78 +44,92 @@ from lite_indexer.rpc import (
     record_endpoint_failure,
 )
 from lite_indexer.strategies.evm._helpers import detect_reorg, enforce_block_range
+from lite_indexer.strategies.evm.bloom import (
+    BloomCache,
+    candidate_blocks_for_address,
+    fetch_block_blooms,
+)
 
 logger = get_logger(__name__)
 
 
-async def fetch_transfers(
+def _contiguous_ranges(blocks: set[int]) -> list[tuple[int, int]]:
+    """Group a set of block numbers into minimal contiguous ranges.
+
+    Used to build the smallest set of ``eth_getLogs`` ranges covering
+    only blocks that passed the bloom pre-filter.
+
+    Args:
+        blocks: Block numbers.
+
+    Returns:
+        List of ``(start, end)`` inclusive ranges.
+    """
+    if not blocks:
+        return []
+    ordered = sorted(blocks)
+    ranges: list[tuple[int, int]] = []
+    start = prev = ordered[0]
+    for block in ordered[1:]:
+        if block == prev + 1:
+            prev = block
+            continue
+        ranges.append((start, prev))
+        start = prev = block
+    ranges.append((start, prev))
+    return ranges
+
+
+async def _fetch_range(
     chain: str,
     from_block: int,
     to_block: int,
     *,
     client: httpx.AsyncClient,
-    rpc: RpcClient,
-    batch_size: int,
+    topic: str,
+    address: str | None = None,
+    endpoints: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch ERC-20 Transfer events via eth_getLogs.
+    """Fetch logs for one contiguous range via a single eth_getLogs call.
 
-    Calls eth_getLogs with only the Transfer event topic filter
-    (no address filter) so we catch every transfer on the chain.
-
-    Uses a curated list of endpoints known to support eth_getLogs.
-    Falls through errors to try the next endpoint.
-
-    Error handling:
-    - Chain reorg: from_block > to_block returns ["__CHAIN_REORG__"]
-    - Empty RPC response: returns []
-    - Malformed JSON: caught by generic except, logs + continues
-    - Rate limit (429): exponential backoff
-    - Block range too large: capped by enforce_block_range
-    - Network timeout: caught, logs + tries next endpoint
+    Tries every suitable endpoint in rotation, keeping the most complete
+    result. Raises :class:`RpcFetchFailedError` when every endpoint fails
+    (data-loss guard — the caller must not advance state past the range).
 
     Args:
-        chain: Chain name (e.g. "ethereum", "base").
-        from_block: Start block number (inclusive).
-        to_block: End block number (inclusive).
+        chain: Chain name.
+        from_block: Start block (inclusive).
+        to_block: End block (inclusive).
         client: Shared HTTP client.
-        rpc: RPC client instance.
-        batch_size: Max blocks per batch for range enforcement.
+        topic: Event topic hash to filter on.
+        address: Optional contract address to filter on.
+        endpoints: Endpoint list to use (defaults to chain config).
 
     Returns:
-        List of parsed transfer event dicts, or ["__CHAIN_REORG__"]
-        if a chain reorg was detected.
+        Parsed transfer event dicts for the range.
     """
-    # Chain reorg detection
-    if detect_reorg(from_block, to_block):
-        return ["__CHAIN_REORG__"]
-
-    endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
+    endpoints = endpoints or GET_LOGS_ENDPOINTS.get(chain, [])
     if not endpoints:
-        logger.error("no_endpoints_for_chain", chain=chain)
         return []
 
-    # Enforce chain-specific + per-provider block range limits, then drop
-    # endpoints that cannot serve the resulting range (free RPCs often cap
-    # eth_getLogs at 10-100 blocks). The effective range is capped to the
-    # largest provider limit, so at least one endpoint always remains.
-    from_block, to_block = enforce_block_range(chain, from_block, to_block, batch_size, endpoints)
-    endpoints = get_endpoints_for_range(endpoints, to_block - from_block)
-
-    # Rotate starting endpoint for load distribution
-    start_idx = endpoints.index(get_best_endpoint(endpoints))
-    rotated = endpoints[start_idx:] + endpoints[:start_idx]
-
-    filter_params = {
+    filter_params: dict[str, Any] = {
         "fromBlock": hex(from_block),
         "toBlock": hex(to_block),
-        "topics": [TRANSFER_EVENT_TOPIC],
+        "topics": [topic],
     }
+    if address:
+        filter_params["address"] = address
+
     body = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "eth_getLogs",
         "params": [filter_params],
     }
+
+    # Rotate starting endpoint for load distribution
+    start_idx = endpoints.index(get_best_endpoint(endpoints))
+    rotated = endpoints[start_idx:] + endpoints[:start_idx]
 
     best_result: list[dict[str, Any]] | None = None
     last_error: str | None = None
@@ -206,6 +235,159 @@ async def fetch_transfers(
     raise RpcFetchFailedError(f"all endpoints failed for {chain} range {from_block}-{to_block}: {last_error}")
 
 
+async def fetch_transfers(
+    chain: str,
+    from_block: int,
+    to_block: int,
+    *,
+    client: httpx.AsyncClient,
+    rpc: RpcClient,
+    batch_size: int,
+    chunk_size: int | None = None,
+    address: str | None = None,
+    bloom_cache: BloomCache | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch ERC-20 Transfer events via eth_getLogs.
+
+    Fetches all Transfer events for the range (topic-only filter) or for
+    a specific token address, using chunked parallel fetching and,
+    optionally, bloom pre-filtering.
+
+    Error handling:
+    - Chain reorg: from_block > to_block returns ["__CHAIN_REORG__"]
+    - Empty RPC response: returns []
+    - Malformed JSON: caught by generic except, logs + continues
+    - Rate limit (429): exponential backoff
+    - Block range too large: capped by enforce_block_range
+    - Network timeout: caught, logs + tries next endpoint
+    - All endpoints fail for a chunk: raises RpcFetchFailedError
+
+    Args:
+        chain: Chain name (e.g. "ethereum", "base").
+        from_block: Start block number (inclusive).
+        to_block: End block number (inclusive).
+        client: Shared HTTP client.
+        rpc: RPC client instance.
+        batch_size: Max blocks per batch for range enforcement.
+        chunk_size: Max blocks per eth_getLogs chunk. When None, the
+            whole range is fetched in a single call (legacy behavior).
+        address: Optional 0x-prefixed token address to filter on.
+        bloom_cache: Optional bloom cache for pre-filtering. Only used
+            when ``address`` is provided (TrueBlocks-style address
+            queries) and bloom filtering is enabled.
+
+    Returns:
+        List of parsed transfer event dicts, or ["__CHAIN_REORG__"]
+        if a chain reorg was detected.
+    """
+    # Chain reorg detection
+    if detect_reorg(from_block, to_block):
+        return ["__CHAIN_REORG__"]
+
+    endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
+    if not endpoints:
+        logger.error("no_endpoints_for_chain", chain=chain)
+        return []
+
+    # Enforce chain-specific + per-provider block range limits, then drop
+    # endpoints that cannot serve the resulting range (free RPCs often cap
+    # eth_getLogs at 10-100 blocks). The effective range is capped to the
+    # largest provider limit, so at least one endpoint always remains.
+    from_block, to_block = enforce_block_range(chain, from_block, to_block, batch_size, endpoints)
+    endpoints = get_endpoints_for_range(endpoints, to_block - from_block)
+
+    effective_chunk = chunk_size if chunk_size and chunk_size > 0 else CHUNK_SIZE_EVM
+    # A chunk must never exceed the batch size.
+    effective_chunk = min(effective_chunk, max(1, to_block - from_block + 1))
+    if chunk_size is None:
+        # Legacy single-call behavior — no chunking.
+        return await _fetch_range(
+            chain,
+            from_block,
+            to_block,
+            client=client,
+            topic=TRANSFER_EVENT_TOPIC,
+            address=address,
+            endpoints=endpoints,
+        )
+
+    use_bloom = BLOOM_ENABLED and address is not None and bloom_cache is not None
+    ranges: list[tuple[int, int]] = [(from_block, to_block)]
+
+    if use_bloom:
+        # TrueBlocks-style pre-filter: warm the bloom cache for the range,
+        # then only query blocks whose logsBloom may contain the address.
+        blocks = set(range(from_block, to_block + 1))
+        blooms = await fetch_block_blooms(
+            chain,
+            blocks,
+            client=client,
+            endpoints=endpoints,
+            cache=bloom_cache,
+        )
+        if not blooms:
+            # No blooms could be fetched — fall through to the unfiltered
+            # address query (never skip data on an unknown bloom).
+            logger.debug("bloom_cache_empty_fallback", chain=chain, range_size=len(blocks))
+        else:
+            candidates = await candidate_blocks_for_address(chain, blocks, address, bloom_cache)
+            if not candidates:
+                logger.info(
+                    "bloom_prefilter_skipped",
+                    chain=chain,
+                    address=address[:12],
+                    blocks=len(blocks),
+                )
+                return []  # No block can contain this address — zero RPC log calls.
+            ranges = _contiguous_ranges(candidates)
+            logger.info(
+                "bloom_prefilter_candidates",
+                chain=chain,
+                address=address[:12],
+                blocks=len(blocks),
+                candidates=len(candidates),
+                ranges=len(ranges),
+            )
+
+    # Chunked parallel fetch: one eth_getLogs per chunk, bounded concurrency.
+    semaphore = asyncio.Semaphore(CHUNK_PARALLELISM)
+
+    async def _fetch_chunk(chunk_start: int, chunk_end: int) -> list[dict[str, Any]]:
+        async with semaphore:
+            return await _fetch_range(
+                chain,
+                chunk_start,
+                chunk_end,
+                client=client,
+                topic=TRANSFER_EVENT_TOPIC,
+                address=address,
+                endpoints=endpoints,
+            )
+
+    tasks: list[asyncio.Task[list[dict[str, Any]]]] = []
+    for range_start, range_end in ranges:
+        for chunk_start, chunk_end in chunk_range(range_start, range_end, effective_chunk):
+            tasks.append(asyncio.ensure_future(_fetch_chunk(chunk_start, chunk_end)))
+
+    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+
+    chunk_results: list[list[dict[str, Any]]] = []
+    for outcome in outcomes:
+        if isinstance(outcome, Exception):
+            # Data-loss guard: propagate — the caller must not advance
+            # state past a range that was not fully fetched.
+            if isinstance(outcome, RpcFetchFailedError):
+                raise outcome
+            logger.error("chunk_fetch_failed", chain=chain, error=str(outcome)[:120])
+            raise RpcFetchFailedError(f"chunk fetch failed for {chain}: {str(outcome)[:120]}")
+        if isinstance(outcome, list):
+            chunk_results.append(outcome)
+
+    return merge_chunked_results(chunk_results)
+
+
 __all__ = [
     "fetch_transfers",
+    "_fetch_range",
+    "_contiguous_ranges",
 ]

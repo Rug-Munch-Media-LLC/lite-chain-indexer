@@ -5,15 +5,18 @@ Provides the RPC layer for LiteIndexer with:
   - Tracks endpoint health with exponential backoff
   - Rotates across multiple endpoints for load distribution
   - Provides eth_getLogs, eth_blockNumber, eth_getBlockByNumber,
-    and eth_call methods
+    eth_getTransactionReceipt, and eth_call methods
   - Verifies endpoint health before adding to rotation
   - Per-provider token bucket rate limiting
+  - Per-method routing, cost tracking, and circuit breakers
 
 Split into sub-modules:
   - client.py: RpcClient class + fetch_block_timestamps
   - health.py: Endpoint verification + health state
   - ratelimit.py: Token-bucket rate limiting per provider
   - pool.py: Endpoint selection, failure tracking, backoff
+  - routing.py: Per-method routing, usage tracking, circuit breakers
+  - discovery.py: chainlist.org free-RPC auto-discovery
 """
 
 from __future__ import annotations
@@ -25,7 +28,25 @@ from lite_indexer.rpc.health import (
     verify_endpoint,
     verify_endpoints_for_chain,
 )
-from lite_indexer.rpc.pool import apply_endpoint_backoff, get_best_endpoint, handle_rate_limit, record_endpoint_failure
+from lite_indexer.rpc.pool import (
+    apply_endpoint_backoff,
+    get_best_endpoint,
+    handle_rate_limit,
+    record_endpoint_failure,
+    record_endpoint_success,
+)
+from lite_indexer.rpc.routing import (
+    CIRCUIT_BREAKER,
+    USAGE_TRACKER,
+    RpcCircuitBreaker,
+    RpcUsageTracker,
+    endpoint_tier,
+    is_circuit_open,
+    log_rpc_usage,
+    preferred_tier_for_method,
+    record_rpc_usage,
+    select_endpoint_for_method,
+)
 
 
 class RpcFetchFailedError(RuntimeError):
@@ -48,6 +69,18 @@ __all__ = [
     "is_endpoint_healthy",
     "monitor_endpoint_health",
     "record_endpoint_failure",
+    "record_endpoint_success",
     "verify_endpoint",
     "verify_endpoints_for_chain",
+    # routing
+    "RpcUsageTracker",
+    "RpcCircuitBreaker",
+    "USAGE_TRACKER",
+    "CIRCUIT_BREAKER",
+    "endpoint_tier",
+    "preferred_tier_for_method",
+    "select_endpoint_for_method",
+    "record_rpc_usage",
+    "log_rpc_usage",
+    "is_circuit_open",
 ]

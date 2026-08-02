@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from lite_indexer.chunks import chunk_size_for_chain
 from lite_indexer.config import DATA_DIR, DISK_CAP_BYTES, HEAD_BUFFER
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcClient, RpcFetchFailedError
@@ -87,6 +88,7 @@ class LiteIndexer:
         disk_cap: int = DISK_CAP_BYTES,
         start_from_head: bool = False,
         data_dir: Path | None = None,
+        chunk_size: int | None = None,
     ) -> None:
         self.chain = chain
         self.batch_size = batch_size
@@ -104,6 +106,10 @@ class LiteIndexer:
         chain_info = SUPPORTED_CHAINS.get(chain, {"type": "evm"})
         self._chain_type: str = chain_info.get("type", "evm")
 
+        # Chunk-based indexing: batch ranges into chunk_size-wide chunks
+        # fetched in parallel. Defaults per chain type (50 EVM, 500 Solana).
+        self.chunk_size = chunk_size if chunk_size and chunk_size > 0 else chunk_size_for_chain(chain)
+
         # State manager (generic — works for all chain types)
         self.state = StateManager(chain)
 
@@ -118,7 +124,7 @@ class LiteIndexer:
         self._verify_result: EndpointVerifyResult | None = None
 
         # Storage writers
-        self._ndjson_writer = NDJSONWriter(data_dir=self.data_dir)
+        self._ndjson_writer = NDJSONWriter(data_dir=self.data_dir, disk_cap=self.disk_cap)
         self._ch_writer: ClickHouseWriter | None = None
 
         # Strategy — chain-specific logic
@@ -140,6 +146,7 @@ class LiteIndexer:
                 chain=self.chain,
                 rpc_client=self.rpc,
                 batch_size=self.batch_size,
+                chunk_size=self.chunk_size,
             )
         return self._strategy
 
@@ -487,6 +494,14 @@ class LiteIndexer:
         # events to build its token cache, but deployer events are only
         # written from the strategy's _last_pair_events, which is populated
         # here.
+        #
+        # FIXED (2026-08-02, commit 835a9ff): the guard previously read
+        #   `if self.deployers_enabled and not self.dex_enabled`
+        # which silently disabled deployer tracking whenever DEX indexing
+        # was on (production runs `--dex --deployers`). That caused a
+        # ~2.9-day deployer-event gap. The guard below is correct: deployer
+        # events must run whenever deployers are enabled, independent of the
+        # DEX flag. Do NOT re-add `and not self.dex_enabled`.
         if self.deployers_enabled and self.strategy.supports_deployers():
             try:
                 await self._fetch_pair_created_events(from_block, to_block)
@@ -508,11 +523,14 @@ class LiteIndexer:
             dex_events = await self._enrich_timestamps(dex_events)
 
         # 5b. Write deployer events (EVM only)
+        # write_deployer_events resolves the real deployer EOA (tx `from`)
+        # via eth_getTransactionByHash before inserting, so the async await
+        # is required.
         deployer_written = 0
         evm_strategy = self.strategy if isinstance(self.strategy, EVMChainStrategy) else None
         if self.deployers_enabled and evm_strategy and evm_strategy._last_pair_events:
             evm_strategy._last_pair_events = await self._enrich_timestamps(evm_strategy._last_pair_events)
-            deployer_written = self.ch_writer.write_deployer_events(self.chain, evm_strategy._last_pair_events)
+            deployer_written = await self.ch_writer.write_deployer_events(self.chain, evm_strategy._last_pair_events)
             if deployer_written:
                 summary["deployer_events_written"] = deployer_written
 

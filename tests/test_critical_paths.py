@@ -84,7 +84,7 @@ async def test_deployers_with_dex(tmp_path, monkeypatch):
 
     # Avoid real ClickHouse / NDJSON writes
     ch = Mock()
-    ch.write_deployer_events.return_value = 1
+    ch.write_deployer_events = AsyncMock(return_value=1)
     ch.write_dex_events.return_value = 0
     indexer._ch_writer = ch
     indexer._ndjson_writer.write_events = Mock(return_value=0)
@@ -94,7 +94,7 @@ async def test_deployers_with_dex(tmp_path, monkeypatch):
     summary = await indexer._sync_loop_inner({"status": "ok", "errors": []}, time.monotonic())
 
     assert summary["deployer_events_written"] == 1
-    ch.write_deployer_events.assert_called_once()
+    ch.write_deployer_events.assert_awaited_once()
 
 
 @pytest.mark.asyncio

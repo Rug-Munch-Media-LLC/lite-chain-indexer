@@ -7,6 +7,7 @@ Split by concern:
   - limits:    provider rate limits and chain block-range caps
   - polling:   chain poll intervals and health-check config
   - helpers:   endpoint selection helper functions
+  - parallelism: per-chain CPU affinity, memory budgets, priorities
 
 All public names are re-exported here so `from lite_indexer.chains import X`
 keeps working after the split.
@@ -22,6 +23,14 @@ from .limits import (
     PROVIDER_RATE_LIMITS,
 )
 from .non_evm import SOLANA_ENDPOINTS, TRON_ENDPOINTS
+from .parallelism import (
+    apply_chain_affinity,
+    chain_affinity,
+    chain_priority,
+    effective_poll_interval,
+    log_chain_resources,
+    memory_budget_mb,
+)
 from .polling import (
     CHAIN_POLL_INTERVALS,
     ENDPOINT_VERIFY_INTERVAL,
@@ -45,4 +54,11 @@ __all__ = [
     "get_provider_rate_limit",
     "get_max_block_range",
     "get_endpoints_for_range",
+    # parallelism
+    "chain_affinity",
+    "memory_budget_mb",
+    "chain_priority",
+    "effective_poll_interval",
+    "apply_chain_affinity",
+    "log_chain_resources",
 ]

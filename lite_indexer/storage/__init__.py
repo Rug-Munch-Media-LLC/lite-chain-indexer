@@ -1,9 +1,12 @@
 """
-Storage writers — NDJSON and ClickHouse output.
+Storage writers — NDJSON, ClickHouse, and Parquet cold-tier output.
 
 Provides:
   - NDJSONWriter: Appends events as JSONL files organized by chain/date.
-  - ClickHouseWriter: Inserts events via ClickHouse native protocol.
+  - ClickHouseWriter: Inserts events via ClickHouse native protocol
+    (with column-level TTL pruning for old rows).
+  - ParquetExporter: Rolls old ClickHouse rows into Parquet, uploads to
+    B2, and deletes them from ClickHouse to reclaim disk.
   - Disk space management: check_disk_cap, check_disk_space, check_write_ok.
 
 Disk cap and free-space checks are included before writes.
@@ -15,10 +18,13 @@ from lite_indexer.metrics import get_metrics
 from lite_indexer.storage.clickhouse import ClickHouseWriter
 from lite_indexer.storage.disk import check_disk_cap, check_disk_space, check_write_ok
 from lite_indexer.storage.ndjson import NDJSONWriter
+from lite_indexer.storage.parquet import ExportSummary, ParquetExporter
 
 __all__ = [
     "ClickHouseWriter",
     "NDJSONWriter",
+    "ParquetExporter",
+    "ExportSummary",
     "check_disk_cap",
     "check_disk_space",
     "check_write_ok",

@@ -23,6 +23,7 @@ from lite_indexer.chains import (
 from lite_indexer.cli import async_main, main, main_daemon, parse_args
 from lite_indexer.config import BATCH_SIZE, DISK_CAP_BYTES
 from lite_indexer.indexer import LiteIndexer
+from lite_indexer.storage import ClickHouseWriter, NDJSONWriter, ParquetExporter
 from lite_indexer.strategies import (
     SUPPORTED_CHAINS,
     AbstractChainStrategy,
@@ -44,6 +45,10 @@ __all__ = [
     "DISK_CAP_BYTES",
     "PROVIDER_RATE_LIMITS",
     "get_provider_rate_limit",
+    # Storage exports
+    "ClickHouseWriter",
+    "NDJSONWriter",
+    "ParquetExporter",
     # Strategy exports
     "SUPPORTED_CHAINS",
     "AbstractChainStrategy",

@@ -17,7 +17,8 @@ from typing import Any
 import httpx
 
 from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range
-from lite_indexer.config import RPC_TIMEOUT, SWAP_V2_TOPIC, SWAP_V3_TOPIC
+from lite_indexer.chunks import CHUNK_PARALLELISM, chunk_range, merge_chunked_results
+from lite_indexer.config import CHUNK_SIZE_EVM, RPC_TIMEOUT, SWAP_V2_TOPIC, SWAP_V3_TOPIC
 from lite_indexer.dex import parse_swap_logs
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
@@ -44,8 +45,13 @@ async def _fetch_topic(
     *,
     client: httpx.AsyncClient,
     pair_cache: PairCache,
+    chunk_size: int = CHUNK_SIZE_EVM,
 ) -> list[dict[str, Any]]:
     """Fetch logs for a single event topic across all endpoints.
+
+    Splits the range into ``chunk_size``-wide chunks and fetches each
+    with one ``eth_getLogs`` call, up to :data:`CHUNK_PARALLELISM` at a
+    time, then merges and de-duplicates the results.
 
     Args:
         topic: Event topic hash.
@@ -55,22 +61,11 @@ async def _fetch_topic(
         to_block: End block (inclusive).
         client: Shared HTTP client.
         pair_cache: Pair cache for token resolution.
+        chunk_size: Max blocks per eth_getLogs chunk.
 
     Returns:
         List of parsed swap event dicts.
     """
-    filter_params = {
-        "fromBlock": hex(from_block),
-        "toBlock": hex(to_block),
-        "topics": [topic],
-    }
-    body = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "eth_getLogs",
-        "params": [filter_params],
-    }
-
     endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
     if not endpoints:
         return []
@@ -78,58 +73,91 @@ async def _fetch_topic(
     # Only query endpoints that can serve this block range (provider limits).
     endpoints = get_endpoints_for_range(endpoints, to_block - from_block)
 
-    start_idx = endpoints.index(get_best_endpoint(endpoints))
-    rotated = endpoints[start_idx:] + endpoints[:start_idx]
+    async def _fetch_one_range(range_start: int, range_end: int) -> list[dict[str, Any]]:
+        filter_params = {
+            "fromBlock": hex(range_start),
+            "toBlock": hex(range_end),
+            "topics": [topic],
+        }
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_getLogs",
+            "params": [filter_params],
+        }
 
-    best_result: list[dict[str, Any]] | None = None
-    for url in rotated:
-        await apply_endpoint_backoff(url)
-        try:
-            resp = await client.post(url, json=body, timeout=RPC_TIMEOUT)
-            if resp.status_code == 200:
-                # Empty response check
-                if not resp.text or len(resp.text) < 10:
+        start_idx = endpoints.index(get_best_endpoint(endpoints))
+        rotated = endpoints[start_idx:] + endpoints[:start_idx]
+
+        best_result: list[dict[str, Any]] | None = None
+        for url in rotated:
+            await apply_endpoint_backoff(url)
+            try:
+                resp = await client.post(url, json=body, timeout=RPC_TIMEOUT)
+                if resp.status_code == 200:
+                    # Empty response check
+                    if not resp.text or len(resp.text) < 10:
+                        record_endpoint_failure(url)
+                        continue
+
+                    try:
+                        data = resp.json()
+                    except (json.JSONDecodeError, ValueError):
+                        record_endpoint_failure(url)
+                        continue
+
+                    if isinstance(data, dict) and "result" in data:
+                        logs = data["result"]
+                        if isinstance(logs, list):
+                            parsed = parse_swap_logs(
+                                logs,
+                                chain,
+                                range_start,
+                                range_end,
+                                topic,
+                                pair_cache.all,
+                            )
+                            if best_result is None or len(parsed) > len(best_result):
+                                best_result = parsed
+                                if len(parsed) == len(logs):
+                                    break
+                elif resp.status_code == 429:
+                    await handle_rate_limit(url)
+                    continue
+                else:
                     record_endpoint_failure(url)
                     continue
-
-                try:
-                    data = resp.json()
-                except (json.JSONDecodeError, ValueError):
-                    record_endpoint_failure(url)
-                    continue
-
-                if isinstance(data, dict) and "result" in data:
-                    logs = data["result"]
-                    if isinstance(logs, list):
-                        parsed = parse_swap_logs(
-                            logs,
-                            chain,
-                            from_block,
-                            to_block,
-                            topic,
-                            pair_cache.all,
-                        )
-                        if best_result is None or len(parsed) > len(best_result):
-                            best_result = parsed
-                            if len(parsed) == len(logs):
-                                break
-            elif resp.status_code == 429:
-                await handle_rate_limit(url)
-                continue
-            else:
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError):
                 record_endpoint_failure(url)
                 continue
-        except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError):
-            record_endpoint_failure(url)
-            continue
-        except (httpx.RemoteProtocolError, httpx.LocalProtocolError):
-            record_endpoint_failure(url)
-            continue
-        except Exception:
-            record_endpoint_failure(url)
-            continue
+            except (httpx.RemoteProtocolError, httpx.LocalProtocolError):
+                record_endpoint_failure(url)
+                continue
+            except Exception:
+                record_endpoint_failure(url)
+                continue
 
-    return best_result or []
+        return best_result or []
+
+    effective_chunk = min(chunk_size, max(1, to_block - from_block + 1))
+    semaphore = asyncio.Semaphore(CHUNK_PARALLELISM)
+
+    async def _fetch_chunk(chunk_start: int, chunk_end: int) -> list[dict[str, Any]]:
+        async with semaphore:
+            return await _fetch_one_range(chunk_start, chunk_end)
+
+    tasks: list[asyncio.Task[list[dict[str, Any]]]] = []
+    for chunk_start, chunk_end in chunk_range(from_block, to_block, effective_chunk):
+        tasks.append(asyncio.ensure_future(_fetch_chunk(chunk_start, chunk_end)))
+
+    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+
+    chunk_results: list[list[dict[str, Any]]] = []
+    for outcome in outcomes:
+        if isinstance(outcome, list):
+            chunk_results.append(outcome)
+
+    return merge_chunked_results(chunk_results)
 
 
 async def fetch_swap_events(
@@ -141,6 +169,7 @@ async def fetch_swap_events(
     rpc: RpcClient,
     pair_cache: PairCache,
     batch_size: int,
+    chunk_size: int = CHUNK_SIZE_EVM,
 ) -> list[dict[str, Any]]:
     """Fetch DEX Swap events (V2 + V3) via eth_getLogs.
 
@@ -161,6 +190,7 @@ async def fetch_swap_events(
         rpc: RPC client instance.
         pair_cache: Pair cache for token resolution.
         batch_size: Max blocks per batch.
+        chunk_size: Max blocks per eth_getLogs chunk (default: EVM chunk).
 
     Returns:
         List of parsed swap event dicts with token0/token1 resolved,
@@ -186,9 +216,27 @@ async def fetch_swap_events(
         logger.warning("pair_created_fetch_failed", chain=chain, error=str(exc)[:100])
         return []
 
-    # Fetch V2 and V3 swaps in parallel
-    v2_task = _fetch_topic(SWAP_V2_TOPIC, "v2", chain, from_block, to_block, client=client, pair_cache=pair_cache)
-    v3_task = _fetch_topic(SWAP_V3_TOPIC, "v3", chain, from_block, to_block, client=client, pair_cache=pair_cache)
+    # Fetch V2 and V3 swaps in parallel (each topic is chunked internally)
+    v2_task = _fetch_topic(
+        SWAP_V2_TOPIC,
+        "v2",
+        chain,
+        from_block,
+        to_block,
+        client=client,
+        pair_cache=pair_cache,
+        chunk_size=chunk_size,
+    )
+    v3_task = _fetch_topic(
+        SWAP_V3_TOPIC,
+        "v3",
+        chain,
+        from_block,
+        to_block,
+        client=client,
+        pair_cache=pair_cache,
+        chunk_size=chunk_size,
+    )
     v2_results, v3_results = await asyncio.gather(v2_task, v3_task)
 
     # Merge and deduplicate

@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 
 from lite_indexer.chains import GET_LOGS_ENDPOINTS
-from lite_indexer.config import BATCH_SIZE, RPC_TIMEOUT
+from lite_indexer.config import BATCH_SIZE, BLOOM_ENABLED, CHUNK_SIZE_EVM, RPC_TIMEOUT
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
     RpcClient,
@@ -33,6 +33,7 @@ from lite_indexer.rpc import (
 from lite_indexer.state import PairCache
 from lite_indexer.strategies.base import AbstractChainStrategy
 from lite_indexer.strategies.evm._helpers import detect_reorg, enforce_block_range
+from lite_indexer.strategies.evm.bloom import BloomCache
 from lite_indexer.strategies.evm.deployer_handler import fetch_pair_created as _fetch_pair_created
 from lite_indexer.strategies.evm.dex_handler import fetch_swap_events as _fetch_swap_events
 from lite_indexer.strategies.evm.transfer_handler import fetch_transfers as _fetch_transfers
@@ -54,17 +55,31 @@ class EVMChainStrategy(AbstractChainStrategy):
         rpc: RpcClient | None = None,
         batch_size: int = BATCH_SIZE,
         pair_cache: PairCache | None = None,
+        chunk_size: int | None = None,
+        bloom_cache: BloomCache | None = None,
     ) -> None:
         super().__init__(chain)
         self.rpc = rpc or RpcClient()
         self.batch_size = batch_size
+        # Chunk-based indexing: split ranges into chunk_size-wide chunks
+        # fetched in parallel. Defaults to the chain-agnostic EVM chunk.
+        self.chunk_size = chunk_size if chunk_size and chunk_size > 0 else CHUNK_SIZE_EVM
         self._pair_cache = pair_cache or PairCache(chain)
+
+        # Bloom pre-filter cache (TrueBlocks approach) for address-indexed
+        # queries. Created lazily when bloom filtering is enabled.
+        self._bloom_cache = bloom_cache if bloom_cache is not None else (BloomCache() if BLOOM_ENABLED else None)
 
         # Latest batch of pair creation events for deployer tracking
         self._last_pair_events: list[dict[str, Any]] = []
 
         # HTTP client for eth_getLogs batch calls
         self._client: httpx.AsyncClient | None = None
+
+    @property
+    def bloom_cache(self) -> BloomCache | None:
+        """The bloom cache used for address pre-filtering (may be None)."""
+        return self._bloom_cache
 
     @property
     def pair_cache(self) -> PairCache:
@@ -172,8 +187,8 @@ class EVMChainStrategy(AbstractChainStrategy):
                 result = await self.rpc.eth_block_number(endpoint)
                 if result is not None:
                     return result
-            except Exception as exc:
-                logger.debug(
+            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
+                logger.warning(
                     "fetch_block_number_failed",
                     chain=self.chain,
                     endpoint=endpoint[:50],
@@ -189,12 +204,23 @@ class EVMChainStrategy(AbstractChainStrategy):
     # ── Block Timestamps ─────────────────────────────────────────────
 
     async def fetch_block_timestamps(self, block_numbers: set[int]) -> dict[int, str]:
-        """Fetch ISO-8601 timestamps for a set of EVM block numbers."""
+        """Fetch ISO-8601 timestamps for a set of EVM block numbers.
+
+        Also warms the bloom cache from the fetched block headers so
+        later address-indexed queries can pre-filter without extra RPC
+        calls.
+        """
         endpoints = GET_LOGS_ENDPOINTS.get(self.chain, [])
         if not endpoints:
             return {}
 
-        return await rpc_fetch_block_timestamps(self.rpc, endpoints, block_numbers, chain=self.chain)
+        return await rpc_fetch_block_timestamps(
+            self.rpc,
+            endpoints,
+            block_numbers,
+            chain=self.chain,
+            bloom_cache=self._bloom_cache,
+        )
 
     # ── Transfer Events (delegates to transfer_handler) ──────────────
 
@@ -205,7 +231,15 @@ class EVMChainStrategy(AbstractChainStrategy):
     ) -> list[dict[str, Any]]:
         """Fetch ERC-20 Transfer events via eth_getLogs.
 
-        Delegates to :func:`transfer_handler.fetch_transfers`.
+        Delegates to :func:`transfer_handler.fetch_transfers` with the
+        strategy's chunk size and bloom cache.
+
+        Args:
+            from_block: Start block (inclusive).
+            to_block: End block (inclusive).
+
+        Returns:
+            List of parsed transfer event dicts.
         """
         client = await self._get_client()
         return await _fetch_transfers(
@@ -215,6 +249,43 @@ class EVMChainStrategy(AbstractChainStrategy):
             client=client,
             rpc=self.rpc,
             batch_size=self.batch_size,
+            chunk_size=self.chunk_size,
+            bloom_cache=self._bloom_cache,
+        )
+
+    async def fetch_transfers_for_address(
+        self,
+        address: str,
+        from_block: int,
+        to_block: int,
+    ) -> list[dict[str, Any]]:
+        """Fetch ERC-20 Transfer events for a specific token address.
+
+        Uses TrueBlocks-style bloom pre-filtering when a bloom cache is
+        available: block headers are checked for the address first and
+        blocks that cannot contain it are skipped before any
+        ``eth_getLogs`` call. Rarely-traded tokens over a cold range
+        short-circuit with zero log queries.
+
+        Args:
+            address: 0x-prefixed token contract address.
+            from_block: Start block (inclusive).
+            to_block: End block (inclusive).
+
+        Returns:
+            List of parsed transfer event dicts for the address.
+        """
+        client = await self._get_client()
+        return await _fetch_transfers(
+            self.chain,
+            from_block,
+            to_block,
+            client=client,
+            rpc=self.rpc,
+            batch_size=self.batch_size,
+            chunk_size=self.chunk_size,
+            address=address,
+            bloom_cache=self._bloom_cache,
         )
 
     # ── DEX Swap Events (delegates to dex_handler) ───────────────────
@@ -237,6 +308,7 @@ class EVMChainStrategy(AbstractChainStrategy):
             rpc=self.rpc,
             pair_cache=self._pair_cache,
             batch_size=self.batch_size,
+            chunk_size=self.chunk_size,
         )
 
     # ── PairCreated Fetch (delegates to deployer_handler) ────────────

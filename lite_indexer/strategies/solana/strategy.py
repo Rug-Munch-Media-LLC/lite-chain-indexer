@@ -115,8 +115,20 @@ class SolanaStrategy(AbstractChainStrategy):
                             if isinstance(bt, (int, float)) and bt > 0:
                                 ts = datetime.fromtimestamp(bt, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
                                 return slot, ts
-                except Exception:
-                    pass
+                except (
+                    httpx.HTTPError,
+                    ConnectionError,
+                    OSError,
+                    TimeoutError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                ) as exc:
+                    logger.warning(
+                        "solana_block_time_failed",
+                        slot=slot,
+                        error=str(exc)[:80],
+                    )
                 return slot, None
 
         tasks = [_get_block_time(s) for s in block_numbers]

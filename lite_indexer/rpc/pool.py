@@ -2,7 +2,9 @@
 RPC endpoint pool — best-endpoint selection, failure tracking, backoff.
 
 Provides load-balanced endpoint selection, exponential backoff on
-failures, and reactive rate-limit handling after 429 responses.
+failures, reactive rate-limit handling after 429 responses, and a
+per-endpoint circuit breaker (open after a failure burst) layered on
+top of the classic scoring.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ def get_best_endpoint(endpoints: list[str]) -> str:
     """Return the healthiest endpoint with load-balanced rotation.
 
     Scoring:
+      - Circuit open: +20000 penalty (skip — breaker tripped)
       - Failed verification: +10000 penalty (worst)
       - Each recent failure adds 1000 penalty
       - Original list position adds 1..N penalty (prefers earlier tiers)
@@ -38,12 +41,18 @@ def get_best_endpoint(endpoints: list[str]) -> str:
     """
     now = time.time()
 
+    from lite_indexer.rpc.routing import is_circuit_open
+
     scored: list[tuple[int, str]] = []
     for i, ep in enumerate(endpoints):
         failures = [t for t in _endpoint_failures.get(ep, []) if now - t < ENDPOINT_COOLDOWN]
         _endpoint_failures[ep] = failures
 
         penalty = len(failures) * 1000 + i
+
+        # Circuit breaker: an open circuit fully skips the endpoint.
+        if is_circuit_open(ep):
+            penalty += 20000
 
         # Add verification penalty (unverified endpoints deprioritized)
         from lite_indexer.rpc.health import is_endpoint_healthy
@@ -71,8 +80,18 @@ def get_best_endpoint(endpoints: list[str]) -> str:
 
 
 def record_endpoint_failure(endpoint: str) -> None:
-    """Record a failure for this endpoint."""
+    """Record a failure for this endpoint (feeds backoff + circuit breaker)."""
     _endpoint_failures.setdefault(endpoint, []).append(time.time())
+    from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+
+    CIRCUIT_BREAKER.record_failure(endpoint)
+
+
+def record_endpoint_success(endpoint: str) -> None:
+    """Record a success for this endpoint (closes its circuit)."""
+    from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+
+    CIRCUIT_BREAKER.record_success(endpoint)
 
 
 async def apply_endpoint_backoff(url: str) -> None:

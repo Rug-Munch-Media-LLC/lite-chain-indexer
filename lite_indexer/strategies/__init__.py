@@ -50,6 +50,7 @@ def create_strategy(
     chain: str,
     rpc_client=None,
     batch_size: int = 1000,
+    chunk_size: int | None = None,
 ) -> AbstractChainStrategy:
     """Factory: create the appropriate strategy for a chain.
 
@@ -57,6 +58,8 @@ def create_strategy(
         chain: Chain name (e.g., 'ethereum', 'solana', 'tron').
         rpc_client: Optional RpcClient instance (used by EVM strategy).
         batch_size: Max blocks per batch.
+        chunk_size: Optional chunk size for chunk-based indexing
+            (EVM chains only; defaults to :data:`CHUNK_SIZE_EVM`).
 
     Returns:
         Strategy instance conforming to AbstractChainStrategy.
@@ -74,7 +77,7 @@ def create_strategy(
     elif chain_type == "tron":
         return TronStrategy(chain=chain)
     else:
-        return EVMChainStrategy(chain=chain, rpc=rpc_client, batch_size=batch_size)
+        return EVMChainStrategy(chain=chain, rpc=rpc_client, batch_size=batch_size, chunk_size=chunk_size)
 
 
 __all__ = [

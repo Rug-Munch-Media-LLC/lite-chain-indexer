@@ -80,7 +80,6 @@ def check_disk_cap(data_dir: Path = DATA_DIR, cap_bytes: int = DISK_CAP_BYTES) -
 
 
 def check_write_ok(label: str = "", data_dir: Path = DATA_DIR, cap_bytes: int = DISK_CAP_BYTES) -> bool:
-    _ = cap_bytes  # used via DISK_CAP_BYTES default
     """Combined disk cap + free space check before a write operation."""
     if not check_disk_cap(data_dir, cap_bytes):
         logger.error("write_aborted_disk_cap", label=label)

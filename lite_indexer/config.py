@@ -166,6 +166,172 @@ V3_FACTORY_ADDRESSES: dict[str, list[str]] = {
 # Alias for backward-compatibility in indexer imports
 CHAIN_INDEXER_DIR = DATA_DIR
 
+# ── Chunk-Based Indexing ───────────────────────────────────────────────
+# Instead of per-block polling, block ranges are split into configurable
+# chunks and fetched as one eth_getLogs call per chunk, processed in
+# parallel. Defaults: 50 blocks for EVM, 500 slots for Solana.
+CHUNK_SIZE_EVM: int = 50
+CHUNK_SIZE_SOLANA: int = 500
+
+# Max concurrent chunk fetches per range (parallelism cap).
+CHUNK_PARALLELISM: int = 4
+
+# ── Bloom Filter Pre-Filtering ────────────────────────────────────────
+# Adopts the TrueBlocks approach: use each block header's built-in
+# logsBloom to skip blocks that cannot contain a queried address/topic
+# BEFORE issuing the (expensive) eth_getLogs call.
+BLOOM_ENABLED: bool = os.environ.get("BLOOM_ENABLED", "1") != "0"
+
+# Max bloom filters cached in memory (LRU). Each bloom is 256 bytes.
+BLOOM_CACHE_MAX: int = 200_000
+
+# How long a cached bloom filter is trusted (seconds) before refetch.
+BLOOM_CACHE_TTL: int = 7 * 24 * 3600  # 7 days
+
+# Optional Redis bloom cache. When set (redis://...), blooms are also
+# mirrored to Redis so multiple indexer processes share the cache.
+REDIS_URL: str = os.environ.get("REDIS_URL", "")
+
+# Max concurrent eth_getBlockByNumber header fetches for bloom warming.
+BLOOM_FETCH_CONCURRENCY: int = 8
+
+# ── ClickHouse Retention / Column Pruning ─────────────────────────────
+# Keep full-precision rows for N days, then degrade non-summary columns
+# to their type defaults via column-level TTL and (optionally) delete
+# expired rows. Cuts storage 30-50% while keeping summary queries fast.
+CH_TTL_ENABLED: bool = os.environ.get("CH_TTL_ENABLED", "1") != "0"
+
+# Retention (days) per table before column-level degradation.
+RETENTION_DAYS: dict[str, int] = {
+    "evm_transfers": 30,
+    "dex_events": 90,
+    "deployer_events": 365,
+}
+
+# Columns to KEEP (summary) for old rows — everything else degrades.
+# evm_transfers summary: from, to, token, value, block_ts (plus row keys)
+# dex_events summary: swap identity + pair + tokens (details degrade)
+EVT_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "chain",
+    "block_number",
+    "tx_hash",
+    "from_address",
+    "to_address",
+    "token_address",
+    "value",
+    "block_timestamp",
+    "log_index",
+)
+DEX_SUMMARY_COLUMNS: tuple[str, ...] = (
+    "type",
+    "chain",
+    "block_number",
+    "block_timestamp",
+    "tx_hash",
+    "log_index",
+    "contract_address",
+    "dex",
+    "version",
+    "token0",
+    "token1",
+)
+
+# ── Intelligent RPC Routing ───────────────────────────────────────────
+# Per-method routing: eth_getLogs is heavy and free-tier friendly; go to
+# public RPCs. Transaction receipts are small and latency-sensitive; go
+# to dedicated (API-key) nodes first.
+RPC_METHOD_ROUTING: dict[str, str] = {
+    "eth_getLogs": "public",
+    "eth_blockNumber": "public",
+    "eth_getBlockByNumber": "public",
+    "eth_getTransactionReceipt": "dedicated",
+    "eth_call": "dedicated",
+}
+
+# Circuit breaker per RPC endpoint: after N failures inside a window the
+# endpoint is skipped for COOLDOWN seconds, then half-open probes resume.
+CIRCUIT_FAILURE_THRESHOLD: int = 5
+CIRCUIT_WINDOW_SECONDS: int = 60
+CIRCUIT_COOLDOWN_SECONDS: int = 30
+
+# RPC usage/cost tracking: keep a bounded per-endpoint usage ledger.
+RPC_USAGE_MAX_ENDPOINTS: int = 512
+
+# RPC auto-discovery: how often (seconds) to scan chainlist.org for new
+# free endpoints. 0 disables. Default: daily.
+RPC_DISCOVERY_INTERVAL: int = int(os.environ.get("RPC_DISCOVERY_INTERVAL", "86400"))
+
+# ── Multi-Chain Parallelism ───────────────────────────────────────────
+# Per-chain CPU affinity (Linux only, best-effort). Used when running a
+# single chain per process; the multi-chain daemon uses priorities.
+CHAIN_AFFINITY_ENABLED: bool = os.environ.get("CHAIN_AFFINITY_ENABLED", "0") == "1"
+
+CHAIN_CPU_AFFINITY: dict[str, list[int]] = {
+    "solana": [0, 1],
+    "tron": [8, 9],
+    # EVM chains (default affinity 2-7)
+    "ethereum": [2, 3, 4, 5],
+    "base": [2, 3, 4, 5],
+    "bsc": [2, 3, 4, 5],
+    "polygon": [2, 3, 4, 5],
+    "arbitrum": [2, 3, 4, 5],
+    "optimism": [2, 3, 4, 5],
+}
+
+# Per-chain memory budget (MB) — Solana's large getBlock responses need
+# the most headroom. Used for logging and optional resource capping.
+CHAIN_MEMORY_BUDGET_MB: dict[str, int] = {
+    "solana": 2048,
+    "tron": 1024,
+    "ethereum": 768,
+    "base": 512,
+    "bsc": 512,
+    "polygon": 512,
+    "arbitrum": 512,
+    "optimism": 512,
+    "avalanche": 512,
+    "fantom": 384,
+    "linea": 384,
+    "scroll": 384,
+    "zksync": 384,
+    "mantle": 384,
+    "gnosis": 384,
+    "celo": 384,
+}
+
+# Priority (1-10): high-value chains poll more frequently. Ethereum and
+# Solana are the highest-value chains.
+CHAIN_PRIORITY: dict[str, int] = {
+    "ethereum": 10,
+    "solana": 10,
+    "base": 8,
+    "arbitrum": 8,
+    "polygon": 8,
+    "bsc": 7,
+    "optimism": 7,
+    "tron": 7,
+    "avalanche": 6,
+    "linea": 6,
+    "scroll": 6,
+    "zksync": 6,
+    "mantle": 6,
+    "fantom": 5,
+    "gnosis": 5,
+    "celo": 5,
+}
+
+# ── Parquet Cold Storage Tier ─────────────────────────────────────────
+# Daily rollup of old ClickHouse rows into Parquet, uploaded to B2, then
+# deleted from ClickHouse to reclaim disk. Optional dependency: pyarrow.
+PARQUET_DIR: Path = DATA_DIR / "parquet"
+PARQUET_REMOTE: str = os.environ.get("PARQUET_REMOTE", "b2-crypt:chain-data/parquet")
+PARQUET_RCLONE_BIN: str = os.environ.get("PARQUET_RCLONE_BIN", "rclone")
+# Min age (days) of rows eligible for cold storage (keep hot window).
+PARQUET_COLD_DAYS: int = int(os.environ.get("PARQUET_COLD_DAYS", "7"))
+# State dir records which (chain, date) files were already exported so
+# the daily job is idempotent.
+PARQUET_STATE_DIR: Path = STATE_DIR / "parquet"
+
 # ── Solana Configuration ──────────────────────────────────────────────
 
 SOLANA_SPL_TOKEN_PROGRAM: str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"

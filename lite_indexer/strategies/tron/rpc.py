@@ -58,8 +58,9 @@ async def tron_get(
         except (httpx.TimeoutException, httpx.ConnectError) as exc:
             last_error = str(exc)[:60]
             continue
-        except Exception as exc:
+        except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
             last_error = str(exc)[:60]
+            logger.warning("tron_get_failed", url=url[:80], error=last_error)
             continue
 
     logger.debug("tron_request_failed", path=path, error=last_error)
@@ -100,8 +101,9 @@ async def tron_post(
         except (httpx.TimeoutException, httpx.ConnectError) as exc:
             last_error = str(exc)[:60]
             continue
-        except Exception as exc:
+        except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
             last_error = str(exc)[:60]
+            logger.warning("tron_post_failed", url=url[:80], error=last_error)
             continue
 
     logger.debug("tron_request_failed", path=path, error=last_error)
@@ -175,8 +177,9 @@ async def tron_get_with_range(
         except (httpx.TimeoutException, httpx.ConnectError) as exc:
             last_error = str(exc)[:60]
             continue
-        except Exception as exc:
+        except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
             last_error = str(exc)[:60]
+            logger.warning("tron_get_range_failed", url=url[:80], error=last_error)
             continue
 
     logger.debug("tron_get_range_failed", path=path[:50], error=last_error)

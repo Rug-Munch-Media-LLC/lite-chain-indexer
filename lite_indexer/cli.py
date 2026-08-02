@@ -6,6 +6,7 @@ Usage:
     lite-indexer --chain ethereum --from-block 25645000
     lite-indexer --daemon --chains ethereum,base,bsc
     lite-indexer --daemon --dex --deployers --start-from-head
+    lite-indexer export-parquet --chain ethereum --days 7 --upload --delete
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from lite_indexer.chains import CHAIN_POLL_INTERVALS
+from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
 from lite_indexer.config import BATCH_SIZE, DATA_DIR, DISK_CAP_BYTES
 from lite_indexer.indexer import LiteIndexer
 from lite_indexer.logging import get_logger, setup_logging
@@ -103,6 +104,51 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Log level (default: INFO from LOG_LEVEL env var)",
     )
+    sub = parser.add_subparsers(dest="command")
+
+    # ── export-parquet subcommand ────────────────────────────────────
+    export_parser = sub.add_parser(
+        "export-parquet",
+        help="Export old ClickHouse rows to Parquet (cold storage tier)",
+        description=(
+            "Aggregate rows older than --days into per-chain/per-date Parquet files, "
+            "optionally upload them to B2 and delete them from ClickHouse. "
+            "Idempotent: dates already exported are skipped."
+        ),
+    )
+    export_parser.add_argument(
+        "--chain",
+        default="ethereum",
+        choices=sorted(SUPPORTED_CHAINS.keys()),
+        help="Chain to export (default: ethereum)",
+    )
+    export_parser.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="Min row age in days before export (default: PARQUET_COLD_DAYS env or 7)",
+    )
+    export_parser.add_argument(
+        "--upload",
+        action="store_true",
+        help="Upload Parquet files to the B2 remote via rclone",
+    )
+    export_parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="Delete exported rows from ClickHouse (reclaim disk)",
+    )
+    export_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview eligible dates without writing, uploading, or deleting",
+    )
+    export_parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Data directory for local Parquet output + state (default: DATA_DIR)",
+    )
     return parser.parse_args(argv)
 
 
@@ -153,7 +199,13 @@ async def main_daemon(
             signal.signal(sig, _handle_signal)
 
     async def _chain_loop(chain: str) -> None:
-        """Independent per-chain polling loop with its own poll interval."""
+        """Independent per-chain polling loop with its own poll interval.
+
+        The poll interval is priority-aware: high-value chains (Ethereum,
+        Solana) poll at their base interval while lower-value chains poll
+        less often, cutting wasted RPC calls. The per-chain memory budget
+        and (optionally) CPU affinity are logged for observability.
+        """
         nonlocal error_count
         indexer = LiteIndexer(
             chain=chain,
@@ -164,7 +216,9 @@ async def main_daemon(
         indexer.dex_enabled = dex_enabled
         indexer.deployers_enabled = deployers_enabled
 
-        poll_interval = CHAIN_POLL_INTERVALS.get(chain, 15.0)
+        base_interval = CHAIN_POLL_INTERVALS.get(chain, 15.0)
+        poll_interval = effective_poll_interval(chain, base_interval)
+        log_chain_resources(chain, poll_interval=base_interval)
 
         while not shutdown_event.is_set():
             loop_start = time.monotonic()
@@ -198,17 +252,56 @@ async def main_daemon(
         name="endpoint-health-monitor",
     )
 
+    # Periodic free-RPC auto-discovery (chainlist.org) + usage logging.
+    discovery_task = asyncio.create_task(
+        _discovery_and_usage_loop(chains),
+        name="rpc-discovery-monitor",
+    )
+
     # Wait for shutdown signal
     await shutdown_event.wait()
 
-    # Cancel the health monitor and all chain tasks
+    # Cancel the health monitor, discovery loop, and all chain tasks
     health_task.cancel()
+    discovery_task.cancel()
     for task in chain_tasks:
         task.cancel()
-    await asyncio.gather(health_task, *chain_tasks, return_exceptions=True)
+    await asyncio.gather(health_task, discovery_task, *chain_tasks, return_exceptions=True)
 
     logger.info("daemon_shutdown")
     return 0 if error_count == 0 else 1
+
+
+async def _discovery_and_usage_loop(chains: list[str]) -> None:
+    """Periodically log RPC usage and auto-discover new free endpoints.
+
+    Scans chainlist.org for new free RPCs for each EVM chain at
+    ``RPC_DISCOVERY_INTERVAL`` (default: daily) and appends healthy
+    endpoints to the in-memory pool. Also emits a periodic usage/cost
+    summary so operators can see which endpoints actually serve data.
+
+    Args:
+        chains: Chains to keep discovering for.
+    """
+    from lite_indexer.config import RPC_DISCOVERY_INTERVAL
+    from lite_indexer.rpc.discovery import auto_discover
+    from lite_indexer.rpc.routing import log_rpc_usage
+
+    interval = max(300, RPC_DISCOVERY_INTERVAL)
+    evm_chains = [c for c in chains if c != "solana" and c != "tron"]
+
+    while True:
+        try:
+            log_rpc_usage()
+            if interval and evm_chains:
+                for chain in evm_chains:
+                    try:
+                        await auto_discover(chain, add_to_pool=True, validate=True)
+                    except Exception as exc:
+                        logger.debug("rpc_discovery_failed", chain=chain, error=str(exc)[:80])
+        except Exception as exc:
+            logger.warning("discovery_loop_error", error=str(exc)[:100])
+        await asyncio.sleep(interval)
 
 
 async def async_main(args: argparse.Namespace) -> int:
@@ -217,6 +310,10 @@ async def async_main(args: argparse.Namespace) -> int:
         setup_logging(args.log_level)
 
     data_path = Path(args.data_dir) if args.data_dir else None
+
+    # ── export-parquet subcommand ────────────────────────────────────
+    if args.command == "export-parquet":
+        return run_export_parquet(args)
 
     if args.daemon:
         chains_list = [c.strip() for c in args.chains.split(",") if c.strip()]
@@ -254,6 +351,33 @@ async def async_main(args: argparse.Namespace) -> int:
 
     print(json.dumps(summary, default=str))  # noqa: T201
     return 0 if summary["status"] in ("ok", "no_events", "caught_up") else 1
+
+
+def run_export_parquet(args: argparse.Namespace) -> int:
+    """Run the export-parquet cold-storage subcommand (synchronous).
+
+    Args:
+        args: Parsed CLI args (chain, days, upload, delete, dry_run).
+
+    Returns:
+        Process exit code (0 = success).
+    """
+    from lite_indexer.config import PARQUET_COLD_DAYS, PARQUET_DIR
+    from lite_indexer.storage.parquet import ParquetExporter
+
+    days = args.days if args.days and args.days > 0 else PARQUET_COLD_DAYS
+    data_dir = Path(args.data_dir) if args.data_dir else PARQUET_DIR
+    exporter = ParquetExporter(data_dir=data_dir)
+
+    summary = exporter.export_chain(
+        args.chain,
+        cold_days=days,
+        upload=args.upload,
+        delete=args.delete,
+        dry_run=args.dry_run,
+    )
+    print(json.dumps(summary.to_dict(), default=str))  # noqa: T201
+    return 0 if not summary.errors else 1
 
 
 def main() -> None:
