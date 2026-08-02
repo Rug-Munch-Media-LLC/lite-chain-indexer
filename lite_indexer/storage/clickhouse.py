@@ -24,16 +24,27 @@ from datetime import UTC, datetime
 from typing import Any
 
 from lite_indexer.config import (
+    BALANCE_CACHE_ENABLED,
     CH_DEPLOYER_TABLE,
     CH_DEX_TABLE,
     CH_TABLE,
     CH_TTL_ENABLED,
     DEX_SUMMARY_COLUMNS,
     EVT_SUMMARY_COLUMNS,
+    HOLDER_BALANCES_MV_ENABLED,
     RETENTION_DAYS,
+    TOKEN_META_ENABLED,
+    WALLET_PROJECTION_ENABLED,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.storage.balance_cache import (
+    ensure_balance_cache_table,
+    ensure_holder_balances_mv,
+    update_holder_balance,
+)
+from lite_indexer.storage.projections import ensure_wallet_projection
+from lite_indexer.storage.token_meta import ensure_token_meta_table, upsert_token_meta
 
 logger = get_logger(__name__)
 
@@ -102,6 +113,13 @@ class ClickHouseWriter:
 
     def __init__(self) -> None:
         self._client: Any = None
+        # Wallet-access DDL is applied once per process, only after the
+        # corresponding ensure_*() call reports success (so a table that
+        # appears later is picked up on the next cycle).
+        self._wallet_projection_ready = False
+        self._token_meta_ready = False
+        self._balance_cache_ready = False
+        self._holder_mv_ready = False
 
     def _connect(self) -> Any | None:
         """Lazy-init ClickHouse native protocol client."""
@@ -338,8 +356,12 @@ class ClickHouseWriter:
                     event["value"],
                     ts,
                     event["logIndex"],
-                    event.get("tokenSymbol"),
-                    event.get("tokenName"),
+                    # Token metadata moved to the reference table
+                    # (wallet_memory.token_meta_ref) when TOKEN_META_ENABLED
+                    # — one row per token instead of ~60 bytes on every
+                    # transfer row. Symbol/name stay inline when disabled.
+                    "" if TOKEN_META_ENABLED else event.get("tokenSymbol"),
+                    "" if TOKEN_META_ENABLED else event.get("tokenName"),
                     now,
                     event.get("source", "lite_indexer"),
                 )
@@ -527,3 +549,109 @@ class ClickHouseWriter:
             metrics_incr("clickhouse_errors")
             logger.error("deployer_events_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
             return 0
+
+    # ── Wallet Access Path (competitive features) ──────────────────────
+    # Address-first projections, token metadata reference table, and the
+    # per-token incremental balance cache. Each is gated by its own config
+    # flag and independently usable; every DDL is idempotent and non-fatal.
+    # Called from the indexer's async sync loop right after transfer
+    # writes succeed, so the caches never diverge from evm_transfers.
+
+    async def write_wallet_features(self, chain: str, events: list[dict[str, Any]]) -> dict[str, int]:
+        """Apply wallet-access optimizations for a batch of transfers.
+
+        Runs only when the corresponding config flag is enabled:
+
+        1. ``WALLET_PROJECTION_ENABLED`` — address-first projections on
+           evm_transfers (electrs key-as-record pattern).
+        2. ``TOKEN_META_ENABLED`` — upsert one row per unique token into
+           ``wallet_memory.token_meta_ref`` (cryo reference table).
+        3. ``BALANCE_CACHE_ENABLED`` — incrementally update holder balances
+           (electrs lazy cache); deltas are accumulated per holder so each
+           holder gets at most one read-modify-write per batch.
+        4. ``HOLDER_BALANCES_MV_ENABLED`` — auto-maintained SummingMergeTree
+           materialized view over evm_transfers.
+
+        Best-effort: when ClickHouse is unreachable or a DDL fails, the
+        method degrades gracefully and returns whatever stats were
+        collected (callers surface them in the sync summary).
+
+        Args:
+            chain: Chain name.
+            events: Parsed transfer event dicts (must match the events
+                already inserted into evm_transfers).
+
+        Returns:
+            Stats dict, e.g. ``{"token_meta_upserted": 3,
+            "holder_balance_updates": 5}``. Empty when ClickHouse is down.
+        """
+        client = self._connect()
+        if not client:
+            return {}
+
+        stats: dict[str, int] = {}
+
+        # 1. Address-first projections (once per process, on success).
+        if WALLET_PROJECTION_ENABLED and not self._wallet_projection_ready and await ensure_wallet_projection(client):
+            self._wallet_projection_ready = True
+            stats["wallet_projection_ready"] = 1
+
+        # 2. Token metadata reference table — once per unique token per
+        # batch (ReplacingMergeTree makes re-upserts across batches a
+        # harmless no-op, so no existence check is needed).
+        if TOKEN_META_ENABLED:
+            if not self._token_meta_ready and await ensure_token_meta_table(client):
+                self._token_meta_ready = True
+            seen_tokens: dict[str, dict[str, Any]] = {}
+            for event in events:
+                token_address = event.get("tokenAddress") or ""
+                if token_address and token_address not in seen_tokens:
+                    seen_tokens[token_address] = {
+                        "symbol": event.get("tokenSymbol"),
+                        "name": event.get("tokenName"),
+                        "block": event.get("blockNumber") or 0,
+                    }
+            for token_address, meta in seen_tokens.items():
+                await upsert_token_meta(
+                    client,
+                    chain,
+                    token_address,
+                    meta["symbol"],
+                    meta["name"],
+                    first_seen_block=meta["block"],
+                )
+            if seen_tokens:
+                stats["token_meta_upserted"] = len(seen_tokens)
+
+        # 3. Manual incremental balance cache — accumulate deltas per
+        # holder so each (chain, token, holder) is written at most once.
+        if BALANCE_CACHE_ENABLED:
+            if not self._balance_cache_ready and await ensure_balance_cache_table(client):
+                self._balance_cache_ready = True
+            deltas: dict[tuple[str, str], int] = {}
+            for event in events:
+                try:
+                    amount = int(event.get("value") or "0")
+                except (ValueError, TypeError):
+                    continue
+                token_address = event.get("tokenAddress") or ""
+                to_address = event.get("to") or ""
+                from_address = event.get("from") or ""
+                if to_address:
+                    deltas[(token_address, to_address)] = deltas.get((token_address, to_address), 0) + amount
+                if from_address:
+                    deltas[(token_address, from_address)] = deltas.get((token_address, from_address), 0) - amount
+            balance_updates = 0
+            for (token_address, address), delta in deltas.items():
+                if delta:
+                    balance_updates += 1
+                    await update_holder_balance(client, chain, token_address, address, delta)
+            if balance_updates:
+                stats["holder_balance_updates"] = balance_updates
+
+        # 4. Auto-maintained materialized view (once per process).
+        if HOLDER_BALANCES_MV_ENABLED and not self._holder_mv_ready and await ensure_holder_balances_mv(client):
+            self._holder_mv_ready = True
+            stats["holder_balances_mv_ready"] = 1
+
+        return stats

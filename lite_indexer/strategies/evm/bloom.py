@@ -27,7 +27,7 @@ import asyncio
 import time
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -167,7 +167,7 @@ def _load_keccak() -> _KeccakFunc:
     Preference: pycryptodome → pysha3 → eth-hash → pure-Python fallback.
     """
     try:  # pycryptodome
-        from Crypto.Hash import keccak  # type: ignore[import-untyped]
+        from Crypto.Hash import keccak
 
         def _via_crypto(data: bytes) -> bytes:
             h = keccak.new(digest_bits=256)
@@ -178,16 +178,16 @@ def _load_keccak() -> _KeccakFunc:
     except ImportError:
         pass
     try:  # pysha3
-        import sha3 as _sha3  # type: ignore[import-untyped]
+        import sha3 as _sha3
 
         def _via_pysha3(data: bytes) -> bytes:
-            return _sha3.keccak_256(data).digest()
+            return cast(bytes, _sha3.keccak_256(data).digest())
 
         return _via_pysha3
     except ImportError:
         pass
     try:  # eth-hash
-        from eth_hash.auto import keccak as _eth_hash_keccak  # type: ignore[import-untyped]
+        from eth_hash.auto import keccak as _eth_hash_keccak
 
         return _eth_hash_keccak
     except ImportError:
@@ -393,7 +393,7 @@ class BloomCache:
         if not self._redis_url:
             return None
         try:
-            import redis.asyncio as aioredis  # type: ignore[import-untyped]
+            import redis.asyncio as aioredis
 
             self._redis = aioredis.from_url(self._redis_url, socket_connect_timeout=1)
             return self._redis

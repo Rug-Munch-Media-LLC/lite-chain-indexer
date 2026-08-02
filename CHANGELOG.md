@@ -2,6 +2,45 @@
 
 All notable changes to Lite Chain Indexer will be documented in this file.
 
+## [1.3.0] — 2026-08-02
+
+### Performance
+
+- **Address-first wallet access path** (`storage/projections.py`) —
+  electrs-inspired projections on `evm_transfers` ordered by
+  `(chain, address, block_number, log_index)` so "all transfers for
+  wallet X" is served from an address-keyed projection instead of a full
+  table scan. ClickHouse projections cannot `UNION ALL`, so the wallet
+  history is split into `wallet_out_proj` (from_address, 'out') and
+  `wallet_in_proj` (to_address, 'in'), each carrying a direction label.
+  Projections are maintained for new inserts automatically; pass
+  `materialize_existing=True` once to backfill the existing 264M rows.
+  Gated by `WALLET_PROJECTION_ENABLED`.
+
+### Storage
+
+- **Token metadata reference table** (`storage/token_meta.py`) —
+  cryo-inspired `wallet_memory.token_meta_ref`: one row per token instead
+  of `token_symbol`/`token_name` on every transfer row (~60 bytes x 264M
+  rows). When `TOKEN_META_ENABLED`, transfer rows store empty
+  symbol/name and the reference table is upserted once per unique token
+  per batch (ReplacingMergeTree makes re-upserts idempotent).
+- **Per-token incremental balance cache** (`storage/balance_cache.py`) —
+  electrs lazy cache: `wallet_memory.holder_balances` (ReplacingMergeTree)
+  is read-modify-written per holder per batch so holder queries never
+  aggregate the full `evm_transfers` table. `get_token_holders()` serves
+  top-holder queries from the pre-computed answer. Gated by
+  `BALANCE_CACHE_ENABLED`.
+- **Auto-maintained holder balances** (`storage/balance_cache.py`) —
+  `wallet_memory.holder_balances_mv`, a SummingMergeTree materialized
+  view fed by `evm_transfers` inserts, so ClickHouse maintains balances
+  itself (query the inner table via `get_auto_holders()`). Gated by
+  `HOLDER_BALANCES_MV_ENABLED`.
+- **Indexer wiring** — `ClickHouseWriter.write_wallet_features()` runs
+  after transfer inserts succeed (so caches never diverge from
+  `evm_transfers`); each feature is independently gated by its own env
+  flag and all DDL is idempotent and non-fatal.
+
 ## [1.2.0] — 2026-08-02
 
 ### Performance

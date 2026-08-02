@@ -12,7 +12,7 @@ import fcntl
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lite_indexer.config import STATE_DIR
 from lite_indexer.logging import get_logger
@@ -46,7 +46,7 @@ class StateManager:
                 chain=self.chain,
                 last_block=data.get("last_block"),
             )
-            return data
+            return cast(dict[str, Any], data)
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("state_load_failed", chain=self.chain, error=str(exc))
             return {}

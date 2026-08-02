@@ -126,6 +126,7 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
     strategy.write_clickhouse = AsyncMock(return_value=1)
     ch = Mock()
     ch.write_dex_events.return_value = 0
+    ch.write_wallet_features = AsyncMock(return_value={})
     indexer._ch_writer = ch
 
     summary2 = await indexer._sync_loop_inner({"status": "ok", "errors": []}, time.monotonic())

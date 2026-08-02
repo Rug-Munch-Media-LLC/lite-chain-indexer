@@ -36,8 +36,8 @@ def parse_solana_transfer_events(
     if not meta:
         return []
 
-    pre_balances: list[dict] = meta.get("preTokenBalances") or []
-    post_balances: list[dict] = meta.get("postTokenBalances") or []
+    pre_balances: list[dict[str, Any]] = meta.get("preTokenBalances") or []
+    post_balances: list[dict[str, Any]] = meta.get("postTokenBalances") or []
 
     if not pre_balances and not post_balances:
         return []

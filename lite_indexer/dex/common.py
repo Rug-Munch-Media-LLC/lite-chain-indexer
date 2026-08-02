@@ -7,6 +7,8 @@ used by both V2 and V3 decoders.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 def unpad_address(padded_hex: str) -> str:
     """Unpad a 32-byte hex address to 20-byte.
@@ -21,7 +23,7 @@ def unpad_address(padded_hex: str) -> str:
     return "0x" + raw.lower()
 
 
-def parse_block_number(log: dict) -> int:
+def parse_block_number(log: dict[str, Any]) -> int:
     """Extract and normalize the blockNumber from a raw log entry.
 
     Args:
@@ -37,7 +39,7 @@ def parse_block_number(log: dict) -> int:
         return 0
 
 
-def parse_log_index(log: dict) -> int:
+def parse_log_index(log: dict[str, Any]) -> int:
     """Extract and normalize the logIndex from a raw log entry.
 
     Args:

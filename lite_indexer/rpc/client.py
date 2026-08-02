@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -141,7 +141,7 @@ class RpcClient:
                     error=str(data.get("error", ""))[:120],
                     bytes_received=bytes_received,
                 )
-            return data
+            return cast(dict[str, Any], data)
 
         except httpx.TimeoutException:
             logger.debug("rpc_timeout", endpoint=endpoint[:50], method=method)
@@ -191,7 +191,7 @@ class RpcClient:
             timeout=TIMESTAMP_FETCH_TIMEOUT,
         )
         if result and "result" in result:
-            return result["result"]
+            return cast(dict[str, Any], result["result"])
         return None
 
     async def eth_get_transaction_receipt(self, endpoint: str, tx_hash: str) -> dict[str, Any] | None:
@@ -216,7 +216,7 @@ class RpcClient:
             timeout=RPC_CALL_TIMEOUT,
         )
         if result and "result" in result:
-            return result["result"]
+            return cast(dict[str, Any], result["result"])
         return None
 
     async def eth_call(self, endpoint: str, to: str, data: str) -> str | None:

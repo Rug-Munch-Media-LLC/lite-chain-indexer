@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -283,7 +283,7 @@ async def fetch_transfers(
     """
     # Chain reorg detection
     if detect_reorg(from_block, to_block):
-        return ["__CHAIN_REORG__"]
+        return cast(list[dict[str, Any]], ["__CHAIN_REORG__"])
 
     endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
     if not endpoints:
@@ -315,7 +315,7 @@ async def fetch_transfers(
     use_bloom = BLOOM_ENABLED and address is not None and bloom_cache is not None
     ranges: list[tuple[int, int]] = [(from_block, to_block)]
 
-    if use_bloom:
+    if use_bloom and bloom_cache is not None and address is not None:
         # TrueBlocks-style pre-filter: warm the bloom cache for the range,
         # then only query blocks whose logsBloom may contain the address.
         blocks = set(range(from_block, to_block + 1))

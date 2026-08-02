@@ -6,9 +6,10 @@ configuration (models), event parsing (parsing), and TronGrid RPC
 helpers (rpc).
 """
 
+from lite_indexer.chains.non_evm import TRON_ENDPOINTS
 from .models import TRC20_TOKENS, TRON_MAX_BLOCK_RANGE, TRON_PAGE_SIZE
 from .parsing import _parse_tron_transfer_event, parse_tron_transfer_event
-from .rpc import TRON_ENDPOINTS, tron_get, tron_get_with_range, tron_post
+from .rpc import tron_get, tron_get_with_range, tron_post
 from .strategy import TronStrategy
 
 __all__ = [

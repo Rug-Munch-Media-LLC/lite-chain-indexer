@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from lite_indexer.logging import get_logger
 
@@ -72,14 +72,14 @@ def _normalize_tron_address(addr: Any) -> str:
         return ""
     # Already base58check (34 chars, starts with 'T')
     if len(addr) == 34 and addr.startswith("T"):
-        return addr
+        return cast(str, addr)
     # Hex form: 0x41... / 41... (version byte + 20-byte address)
     hex_addr = addr[2:] if addr.startswith("0x") else addr
     if len(hex_addr) == 42 and hex_addr.startswith("41"):
         converted = _hex_to_base58check(hex_addr)
         if converted:
             return converted
-    return addr
+    return cast(str, addr)
 
 
 def parse_tron_transfer_event(

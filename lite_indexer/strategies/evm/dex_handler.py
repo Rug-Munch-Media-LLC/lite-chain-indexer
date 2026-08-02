@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -199,7 +199,7 @@ async def fetch_swap_events(
     """
     # Chain reorg detection
     if detect_reorg(from_block, to_block):
-        return ["__CHAIN_REORG__"]
+        return cast(list[dict[str, Any]], ["__CHAIN_REORG__"])
 
     # Enforce chain-specific + per-provider block range limits
     from_block, to_block = enforce_block_range(

@@ -201,6 +201,44 @@ BLOOM_FETCH_CONCURRENCY: int = 8
 # expired rows. Cuts storage 30-50% while keeping summary queries fast.
 CH_TTL_ENABLED: bool = os.environ.get("CH_TTL_ENABLED", "1") != "0"
 
+# ── Wallet Access Path Optimizations ──────────────────────────────────
+# Each competitive feature below is independently usable and gated by
+# its own env flag (default: on). All DDL is idempotent and non-fatal —
+# a missing table or missing privileges degrades to a debug log, exactly
+# like the retention policies.
+
+# 1. Address-first access path (electrs-inspired): add projections on
+#    evm_transfers ordered by (chain, address, block_number, log_index)
+#    so "all transfers for wallet X" is served by an address-keyed
+#    projection instead of a full table scan. ClickHouse projections
+#    cannot UNION ALL, so the wallet history is split into two
+#    projections: one keyed on from_address (out), one on to_address (in).
+WALLET_PROJECTION_ENABLED: bool = os.environ.get("WALLET_PROJECTION_ENABLED", "1") != "0"
+
+# 2. Token metadata reference table (cryo-inspired): one row per token in
+#    wallet_memory.token_meta_ref instead of token_symbol/token_name on
+#    every transfer row (~60 bytes x 264M rows). When enabled, transfer
+#    rows store empty symbol/name and the reference table is upserted
+#    once per unique token per batch.
+TOKEN_META_ENABLED: bool = os.environ.get("TOKEN_META_ENABLED", "1") != "0"
+
+# 3. Per-token incremental balance cache (electrs lazy cache): maintain
+#    wallet_memory.holder_balances incrementally per transfer so holder
+#    queries never aggregate the full evm_transfers table.
+BALANCE_CACHE_ENABLED: bool = os.environ.get("BALANCE_CACHE_ENABLED", "1") != "0"
+
+# 4. Auto-maintained holder balances: a SummingMergeTree materialized
+#    view fed by evm_transfers inserts. The answer is pre-computed and
+#    maintained by ClickHouse itself (no indexer-side read-modify-write).
+HOLDER_BALANCES_MV_ENABLED: bool = os.environ.get("HOLDER_BALANCES_MV_ENABLED", "1") != "0"
+
+# Wallet-access table / projection names.
+CH_TOKEN_META_TABLE: str = "wallet_memory.token_meta_ref"
+CH_HOLDER_BALANCES_TABLE: str = "wallet_memory.holder_balances"
+CH_HOLDER_BALANCES_MV: str = "wallet_memory.holder_balances_mv"
+WALLET_OUT_PROJECTION: str = "wallet_out_proj"
+WALLET_IN_PROJECTION: str = "wallet_in_proj"
+
 # Retention (days) per table before column-level degradation.
 RETENTION_DAYS: dict[str, int] = {
     "evm_transfers": 30,

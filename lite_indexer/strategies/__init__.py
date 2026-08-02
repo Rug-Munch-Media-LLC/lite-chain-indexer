@@ -12,6 +12,10 @@ Usage:
     events = await strategy.fetch_transfers(from_slot, to_slot)
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 from lite_indexer.strategies.base import AbstractChainStrategy
 from lite_indexer.strategies.evm import EVMChainStrategy
 from lite_indexer.strategies.solana import SolanaStrategy
@@ -48,7 +52,7 @@ SUPPORTED_CHAINS: dict[str, dict[str, str]] = {
 
 def create_strategy(
     chain: str,
-    rpc_client=None,
+    rpc_client: Any = None,
     batch_size: int = 1000,
     chunk_size: int | None = None,
 ) -> AbstractChainStrategy:

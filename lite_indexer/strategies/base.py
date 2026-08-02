@@ -14,7 +14,7 @@ Optionally override:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, cast
 
 from lite_indexer.logging import get_logger
 
@@ -119,4 +119,4 @@ class AbstractChainStrategy(ABC):
         Returns:
             Number of rows inserted.
         """
-        return ch_writer.write_transfers(self.chain, events)
+        return cast(int, ch_writer.write_transfers(self.chain, events))

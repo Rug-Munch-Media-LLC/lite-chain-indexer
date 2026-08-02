@@ -553,6 +553,18 @@ class LiteIndexer:
             ch_inserted = self.strategy.write_clickhouse(events, self.ch_writer)
             summary["events_written_ch"] = ch_inserted
 
+            # 7a. Wallet-access optimizations — address-first projections,
+            # token metadata reference table, incremental balance cache,
+            # and the auto-maintained holder-balances materialized view.
+            # Each is gated by its own config flag; only run after the
+            # transfer insert succeeded so the caches never diverge from
+            # evm_transfers. Stats land in the sync summary (e.g.
+            # token_meta_upserted / holder_balance_updates).
+            if ch_inserted:
+                wallet_stats = await self.ch_writer.write_wallet_features(self.chain, events)
+                if wallet_stats:
+                    summary.update(wallet_stats)
+
         if dex_events:
             dex_ch_inserted = self.ch_writer.write_dex_events(self.chain, dex_events)
             summary["dex_events_written_ch"] = dex_ch_inserted

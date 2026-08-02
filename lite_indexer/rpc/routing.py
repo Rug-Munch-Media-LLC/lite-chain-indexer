@@ -27,7 +27,9 @@ loop, no locks required).
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from lite_indexer.config import (
     CIRCUIT_COOLDOWN_SECONDS,
@@ -95,7 +97,7 @@ def select_endpoint_for_method(
     endpoints: list[str],
     *,
     chain: str | None = None,
-    base_select=None,
+    base_select: Callable[[list[str]], str] | None = None,
 ) -> str:
     """Pick the best endpoint for ``method`` using per-method routing.
 
@@ -220,7 +222,7 @@ class RpcUsageTracker:
         """Return the ledger entry for an endpoint, or None."""
         return self._ledger.get(endpoint)
 
-    def snapshot(self) -> dict[str, dict]:
+    def snapshot(self) -> dict[str, dict[str, Any]]:
         """Return the full ledger as plain dicts (for logging/metrics)."""
         return {
             ep: {
@@ -289,7 +291,7 @@ def record_rpc_usage(
     )
 
 
-def log_rpc_usage(limit: int = 10) -> dict[str, dict]:
+def log_rpc_usage(limit: int = 10) -> dict[str, dict[str, Any]]:
     """Log a summary of RPC usage (worst error ratios first) and return it.
 
     Args:

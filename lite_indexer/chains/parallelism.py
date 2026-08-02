@@ -137,7 +137,7 @@ def apply_chain_affinity(chain: str) -> bool:
         return False
 
     try:
-        os.sched_setaffinity(0, cores)  # type: ignore[attr-defined]  # Linux-only
+        os.sched_setaffinity(0, cores)
         logger.info("chain_affinity_applied", chain=chain, cores=cores)
         return True
     except (AttributeError, OSError, ValueError) as exc:

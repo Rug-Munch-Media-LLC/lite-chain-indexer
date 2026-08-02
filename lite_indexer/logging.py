@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from typing import cast
 
 import structlog
 
@@ -21,7 +22,7 @@ def setup_logging(level: str | None = None) -> None:
         level: Log level string (DEBUG, INFO, WARNING, ERROR).
                Defaults to the LOG_LEVEL env var or INFO.
     """
-    log_level = (level or os.getenv("LOG_LEVEL", "INFO")).upper()
+    log_level = (level or os.getenv("LOG_LEVEL") or "INFO").upper()
 
     # Standard library logging — capture warnings too
     logging.basicConfig(
@@ -58,4 +59,4 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     Returns:
         A structlog BoundLogger.
     """
-    return structlog.get_logger(name or __name__)
+    return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name or __name__))

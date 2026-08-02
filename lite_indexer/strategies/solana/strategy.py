@@ -237,7 +237,7 @@ class SolanaStrategy(AbstractChainStrategy):
             return [], True
 
         # Step 3: Fetch and parse each transaction
-        async def _fetch_and_parse(sig_info: dict) -> list[dict[str, Any]]:
+        async def _fetch_and_parse(sig_info: dict[str, Any]) -> list[dict[str, Any]]:
             sig = sig_info["signature"]
             slot = int(sig_info["slot"])
             async with semaphore:
@@ -304,7 +304,7 @@ class SolanaStrategy(AbstractChainStrategy):
             return 0
 
         now = datetime.now(UTC)
-        rows: list[tuple] = []
+        rows: list[tuple[Any, ...]] = []
 
         for event in events:
             ts_str = event.get("blockTimestamp", "")
