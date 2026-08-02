@@ -19,7 +19,13 @@ from typing import Any
 import httpx
 
 from lite_indexer.chains import GET_LOGS_ENDPOINTS
-from lite_indexer.config import BATCH_SIZE, BLOOM_ENABLED, CHUNK_SIZE_EVM, RPC_TIMEOUT
+from lite_indexer.config import (
+    BATCH_SIZE,
+    BLOOM_ENABLED,
+    CHUNK_SIZE_EVM,
+    REORG_PROTECTION_ENABLED,
+    RPC_TIMEOUT,
+)
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
     RpcClient,
@@ -36,6 +42,15 @@ from lite_indexer.strategies.evm._helpers import detect_reorg, enforce_block_ran
 from lite_indexer.strategies.evm.bloom import BloomCache
 from lite_indexer.strategies.evm.deployer_handler import fetch_pair_created as _fetch_pair_created
 from lite_indexer.strategies.evm.dex_handler import fetch_swap_events as _fetch_swap_events
+from lite_indexer.strategies.evm.reorg import (
+    checkpoint_block,
+    ensure_checkpoint_table,
+    reorg_depth,
+    rollback_to_block,
+)
+from lite_indexer.strategies.evm.reorg import (
+    detect_reorg as reorg_detect_reorg,
+)
 from lite_indexer.strategies.evm.transfer_handler import fetch_transfers as _fetch_transfers
 
 logger = get_logger(__name__)
@@ -334,6 +349,87 @@ class EVMChainStrategy(AbstractChainStrategy):
             client=client,
             pair_cache=self._pair_cache,
         )
+
+    # ── Reorg Staging (Envio/TrueBlocks) ─────────────────────────────
+
+    async def reorg_stage(
+        self,
+        from_block: int,
+        to_block: int,
+        ch_client: Any | None = None,
+    ) -> int | None:
+        """Checkpoint block hashes and roll back deep reorgs for a batch.
+
+        Envio/TrueBlocks-style reorg-safe staging, gated by
+        ``REORG_PROTECTION_ENABLED`` (default on for EVM). Called after a
+        block batch is processed:
+
+        1. Save the batch tip block hash to the checkpoint table (the
+           last ``MAX_REORG_DEPTH`` blocks are "unripe").
+        2. For ``to_block - MAX_REORG_DEPTH[chain]``, verify the current
+           hash matches the checkpointed hash.
+        3. On mismatch: log a warning, roll back ``evm_transfers`` +
+           ``dex_events`` above the fork point, and return the fork block
+           so the caller can re-fetch from it.
+
+        The verify step returns False (no reorg) for blocks that have no
+        checkpoint yet — it only fires once a block has been checkpointed
+        as an earlier batch tip and has since advanced past the
+        confirmation depth.
+
+        Args:
+            from_block: Start block of the processed batch.
+            to_block: Tip block of the processed batch (checkpointed).
+            ch_client: ClickHouse client (raw, from ClickHouseWriter).
+
+        Returns:
+            The fork block number when a reorg was detected and rolled
+            back, otherwise None.
+        """
+        if not REORG_PROTECTION_ENABLED or ch_client is None:
+            return None
+
+        if not await ensure_checkpoint_table(ch_client):
+            return None
+
+        endpoints = GET_LOGS_ENDPOINTS.get(self.chain, [])
+        if not endpoints:
+            logger.debug("reorg_no_endpoints", chain=self.chain)
+            return None
+        endpoint = get_best_endpoint(endpoints)
+
+        # 1. Checkpoint the batch tip hash.
+        tip_block = await self.rpc.eth_get_block_by_number(endpoint, to_block)
+        if not tip_block or not isinstance(tip_block, dict) or not tip_block.get("hash"):
+            logger.debug("reorg_tip_hash_missing", chain=self.chain, block=to_block)
+            return None
+        tip_hash = str(tip_block["hash"])
+        await checkpoint_block(self.chain, to_block, tip_hash, ch_client)
+
+        # 2. Verify the block that should now be deep-confirmed.
+        depth = reorg_depth(self.chain)
+        verify_block = to_block - depth
+        if verify_block < 0:
+            return None
+
+        current = await self.rpc.eth_get_block_by_number(endpoint, verify_block)
+        if not current or not isinstance(current, dict) or not current.get("hash"):
+            logger.debug("reorg_verify_hash_missing", chain=self.chain, block=verify_block)
+            return None
+        current_hash = str(current["hash"])
+
+        if not await reorg_detect_reorg(self.chain, verify_block, current_hash, ch_client):
+            return None
+
+        # 3. Reorg detected — log, roll back to the fork point, re-fetch.
+        logger.warning(
+            "chain_reorg_deep",
+            chain=self.chain,
+            fork_block=verify_block,
+            depth=depth,
+        )
+        await rollback_to_block(self.chain, verify_block, ch_client)
+        return verify_block
 
 
 __all__ = [

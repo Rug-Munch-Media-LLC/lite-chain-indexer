@@ -2,6 +2,44 @@
 
 All notable changes to Lite Chain Indexer will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- **Balance reconciliation** (`storage/reconciliation.py`) — TrueBlocks-style
+  completeness check: computes each sampled wallet's balance from
+  `evm_transfers` deltas (incoming minus outgoing via
+  `sum(toInt128(value))`) and compares it against on-chain
+  `eth_getBalance`. Status `MATCH` (delta == 0), `APPROXIMATE` (<1%), or
+  `MISMATCH` (with the gap). Results are cached in
+  `wallet_memory.reconciliation_results` (MergeTree, one row per
+  (chain, address, checked_at)). Lightweight + non-blocking: runs on a
+  random sample of 100 wallets per chain (configurable
+  `RECONCILIATION_SAMPLE_SIZE`), concurrency-capped RPC calls, and is
+  gated by `RECONCILIATION_ENABLED`. Exposed as the `reconcile`
+  subcommand for a daily cron.
+- **Reorg staging** (`strategies/evm/reorg.py`) — Envio/TrueBlocks-style
+  reorg-safe block confirmation. Tracks the last N blocks as "unripe"
+  using `wallet_memory.block_checkpoints` (ReplacingMergeTree keyed by
+  (chain, block_number)); after `MAX_REORG_DEPTH[chain]` blocks
+  (ethereum/bsc/arbitrum/optimism/base/avalanche/gnosis: 12,
+  polygon: 32) the stored hash is compared against the current chain
+  hash. On mismatch, `evm_transfers` + `dex_events` above the fork
+  point are DELETEd and the indexer re-fetches from the fork. Wired
+  into `EVMChainStrategy.reorg_stage` after each block batch and gated
+  by `REORG_PROTECTION_ENABLED` (default on for EVM, off for
+  Solana/Tron).
+
+### Fixes
+
+- **Restore `pair_address` in deployer_events** — the F0 deployer EOA fix
+  repurposed `token_address` to hold token0 and dropped the pair/pool
+  address, breaking scanner joins on `pair_address`. `pair_address` is
+  added back as its own column (`String DEFAULT '' AFTER token1`), the
+  insert now writes all address columns (`deployer`, `token_address`,
+  `token0`, `token1`, `pair_address`, `factory`, `deployer_eoa`), and
+  `_ensure_deployer_columns()` migrates existing tables idempotently.
+
 ## [1.3.0] — 2026-08-02
 
 ### Performance

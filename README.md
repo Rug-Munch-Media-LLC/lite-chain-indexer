@@ -224,7 +224,7 @@ Sub-2-minute latency from chain tip. Adaptive polling intervals per chain (respe
 Automatically decodes Uniswap V2/V3 style swap events with token0/token1 resolution. Supports PancakeSwap (BSC), QuickSwap (Polygon), and all standard V2/V3 forks. Builds a persistent pair→tokens cache that survives restarts, with `eth_call` fallback resolution.
 
 ### 🏭 Deployer tracking
-Tracks every PairCreated/PoolCreated event from known DEX factories. Records factory address, deployer, and pair address — perfect for building deployer reputation scores.
+Tracks every PairCreated/PoolCreated event from known DEX factories. Records factory address, deployer EOA, token0/token1, and pair address (in a dedicated `pair_address` column) — perfect for building deployer reputation scores.
 
 ### 🌐 Three chain types
 - **EVM (14)** — ERC-20 transfers, DEX swaps, pair/pool creation via `eth_getLogs`

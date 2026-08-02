@@ -25,7 +25,7 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
-from lite_indexer.rpc.pool import get_best_endpoint, record_endpoint_failure
+from lite_indexer.rpc.pool import get_best_endpoint, record_endpoint_failure, record_endpoint_success
 from lite_indexer.rpc.ratelimit import apply_provider_rate_limit
 
 logger = get_logger(__name__)
@@ -133,6 +133,11 @@ class RpcClient:
             ok = bool("error" not in data or data.get("error") is None)
             if ok:
                 record_rpc_usage(endpoint, method, ok=True, bytes_received=bytes_received)
+                # Actual successful response — close the circuit breaker for
+                # this endpoint so it doesn't stay open forever (it only ever
+                # opens via record_endpoint_failure; without this it would
+                # oscillate open↔half-open via cooldown and never re-close).
+                record_endpoint_success(endpoint)
             else:
                 record_rpc_usage(
                     endpoint,

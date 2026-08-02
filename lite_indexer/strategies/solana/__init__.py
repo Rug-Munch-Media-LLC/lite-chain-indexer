@@ -3,6 +3,7 @@ Solana strategy — SPL token transfer indexing via getSignaturesForAddress.
 """
 
 from lite_indexer.chains.non_evm import SOLANA_ENDPOINTS
+
 from .models import (
     MAX_SIGNATURES_PER_TOKEN,
     SOLANA_TRACKED_TOKENS,

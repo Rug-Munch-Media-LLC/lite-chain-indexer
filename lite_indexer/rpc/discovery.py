@@ -23,6 +23,7 @@ Design notes:
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -60,6 +61,12 @@ _NON_FREE_MARKERS = ("${", "api-key", "api_key", "apikey", "key=", "token=")
 
 # Default request timeout for the registry fetch.
 _REGISTRY_TIMEOUT = 15.0
+
+# Registry cache: chains.json is a multi-MB download and is identical for
+# every chain, so cache it per-URL for an hour instead of re-fetching it
+# once per chain per discovery cycle (up to 14 downloads per cycle).
+_registry_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_REGISTRY_CACHE_TTL_SECONDS = 3600.0
 
 
 def chain_id_for(chain: str) -> int | None:
@@ -100,12 +107,19 @@ async def fetch_chain_registry(
     Returns:
         List of chain entries (dicts), or [] on any failure.
     """
+    now = time.monotonic()
+    cached = _registry_cache.get(url)
+    if cached is not None and now - cached[0] < _REGISTRY_CACHE_TTL_SECONDS:
+        logger.debug("chain_registry_cache_hit", url=url)
+        return cached[1]
+
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout), follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
         if isinstance(data, list):
+            _registry_cache[url] = (time.monotonic(), data)
             return data
         logger.warning("chain_registry_unexpected_shape", type=type(data).__name__)
     except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:

@@ -30,6 +30,12 @@ from lite_indexer.storage.disk import check_disk_cap, check_disk_space, check_wr
 from lite_indexer.storage.ndjson import NDJSONWriter
 from lite_indexer.storage.parquet import ExportSummary, ParquetExporter
 from lite_indexer.storage.projections import ensure_wallet_projection
+from lite_indexer.storage.reconciliation import (
+    ensure_reconciliation_table,
+    run_reconciliation,
+    select_random_wallets,
+    verify_transfer_completeness,
+)
 from lite_indexer.storage.token_meta import (
     ensure_token_meta_table,
     resolve_token_meta,
@@ -55,4 +61,9 @@ __all__ = [
     "get_token_holders",
     "ensure_holder_balances_mv",
     "get_auto_holders",
+    # Balance reconciliation (TrueBlocks)
+    "ensure_reconciliation_table",
+    "select_random_wallets",
+    "verify_transfer_completeness",
+    "run_reconciliation",
 ]

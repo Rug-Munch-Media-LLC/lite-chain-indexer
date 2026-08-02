@@ -25,9 +25,11 @@ from typing import Any
 import httpx
 
 from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
-from lite_indexer.config import BATCH_SIZE, DATA_DIR, DISK_CAP_BYTES
+from lite_indexer.config import BATCH_SIZE, DATA_DIR, DISK_CAP_BYTES, RECONCILIATION_SAMPLE_SIZE
 from lite_indexer.indexer import LiteIndexer
 from lite_indexer.logging import get_logger, setup_logging
+from lite_indexer.storage.clickhouse import ClickHouseWriter
+from lite_indexer.storage.reconciliation import run_reconciliation
 from lite_indexer.strategies import SUPPORTED_CHAINS
 
 logger = get_logger(__name__)
@@ -109,6 +111,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Log level (default: INFO from LOG_LEVEL env var)",
     )
     sub = parser.add_subparsers(dest="command")
+
+    # ── reconcile subcommand (TrueBlocks-style balance reconciliation) ─
+    # Runs a balance-completeness check on a random sample of wallets
+    # (default 100 per chain) and caches results in
+    # wallet_memory.reconciliation_results. Intended for a daily cron.
+    reconcile_parser = sub.add_parser(
+        "reconcile",
+        help="Run balance reconciliation on a random wallet sample",
+        description=(
+            "TrueBlocks-style reconciliation: compare computed balances "
+            "from indexed evm_transfers deltas against on-chain "
+            "eth_getBalance for a random sample of wallets, then cache "
+            "results in wallet_memory.reconciliation_results. "
+            "Gated by RECONCILIATION_ENABLED (default on)."
+        ),
+    )
+    reconcile_parser.add_argument(
+        "--chain",
+        default="ethereum",
+        choices=sorted(SUPPORTED_CHAINS.keys()),
+        help="Chain to reconcile (default: ethereum)",
+    )
+    reconcile_parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=RECONCILIATION_SAMPLE_SIZE,
+        help=f"Wallets to sample per run (default: {RECONCILIATION_SAMPLE_SIZE})",
+    )
 
     # ── export-parquet subcommand ────────────────────────────────────
     export_parser = sub.add_parser(
@@ -347,6 +377,27 @@ async def async_main(args: argparse.Namespace) -> int:
     # ── export-parquet subcommand ────────────────────────────────────
     if args.command == "export-parquet":
         return run_export_parquet(args)
+
+    # ── reconcile subcommand (TrueBlocks-style) ──────────────────────
+    if args.command == "reconcile":
+        from lite_indexer.rpc import RpcClient
+
+        writer = ClickHouseWriter()
+        ch_client = writer.client()
+        if ch_client is None:
+            print(json.dumps({"status": "error", "error": "clickhouse_unavailable"}))  # noqa: T201
+            return 1
+        results = await run_reconciliation(
+            args.chain,
+            RpcClient(),
+            ch_client,
+            limit=args.sample_size,
+        )
+        status = "ok"
+        if results and any(i["status"] == "MISMATCH" for i in results.values()):
+            status = "mismatches_found"
+        print(json.dumps({"status": status, "checked": len(results), "results": results}, default=str))  # noqa: T201
+        return 0 if status == "ok" else 2
 
     if args.daemon:
         chains_list = [c.strip() for c in args.chains.split(",") if c.strip()]

@@ -151,6 +151,18 @@ class ClickHouseWriter:
             logger.warning("clickhouse_unavailable", error=str(exc)[:100])
             return None
 
+    def client(self) -> Any | None:
+        """Return the underlying ClickHouse client (lazily connected).
+
+        Exposes the raw client for modules that need direct SQL access
+        (reconciliation, reorg staging). Returns None when ClickHouse is
+        unavailable.
+
+        Returns:
+            ClickHouse client, or None when unavailable.
+        """
+        return self._connect()
+
     def _ensure_source_column(self, client: Any, table: str) -> None:
         """Ensure source column exists in ClickHouse table."""
         try:
@@ -172,11 +184,12 @@ class ClickHouseWriter:
             logger.debug("source_column_skip", error=str(exc)[:80])
 
     def _ensure_deployer_columns(self, client: Any) -> None:
-        """Ensure deployer_events has token0/token1/deployer_eoa columns.
+        """Ensure deployer_events has token0/token1/pair_address/deployer_eoa columns.
 
         F0 data-quality fix: deployer_events must store the resolved EOA
-        (deployer / deployer_eoa) plus the pair's token0/token1 so the
-        table no longer mislabels factory→deployer and pair→token_address.
+        (deployer / deployer_eoa) plus the pair's token0/token1 and the
+        pair/pool address itself (pair_address) so the table no longer
+        mislabels factory→deployer and pair→token_address.
         """
         try:
             result = client.execute(
@@ -187,7 +200,12 @@ class ClickHouseWriter:
                 },
             )
             existing = {r[0] for r in result}
-            for column, after in (("token0", "token_address"), ("token1", "token0"), ("deployer_eoa", "deployer")):
+            for column, after in (
+                ("token0", "token_address"),
+                ("token1", "token0"),
+                ("pair_address", "token1"),
+                ("deployer_eoa", "deployer"),
+            ):
                 if column not in existing:
                     client.execute(
                         f"ALTER TABLE {CH_DEPLOYER_TABLE} "
@@ -465,11 +483,12 @@ class ClickHouseWriter:
         ``eth_getTransactionByHash`` (batched per unique tx hash) and maps:
 
           deployer       ← tx `from` (the EOA)      [was: factory]
-          deployer_eoa   ← tx `from` (the EOA)      [new column]
-          token_address  ← token0 (first token)     [was: pair_address]
-          token0         ← token0                    [new column]
-          token1         ← token1                    [new column]
-          factory        ← factory                   [unchanged]
+          deployer_eoa   ← tx `from` (the EOA)
+          token_address  ← token0 (first token)
+          pair_address   ← pair/pool address        [restored column]
+          token0         ← token0
+          token1         ← token1
+          factory        ← factory
 
         If EOA resolution fails the deployer fields stay empty rather than
         being mislabeled with the factory address.
@@ -509,12 +528,15 @@ class ClickHouseWriter:
             pool_type = f"{version}_pool"
             factory = e.get("factory", "")
 
-            # Correct mapping: deployer ← tx `from` (EOA); token_address ← token0
+            # Correct mapping: deployer ← tx `from` (EOA); token_address ←
+            # token0; pair_address ← pair/pool address (kept separate so
+            # scanners can join on the pair without mislabeling).
             tx_hash = e.get("transactionHash", "")
             deployer = eoa_map.get(tx_hash, "")
             token0 = e.get("token0", "") or ""
             token1 = e.get("token1", "") or ""
-            token_address = token0 or e.get("pair_address", "")
+            token_address = token0
+            pair_address = e.get("pair_address", "") or ""
 
             rows.append(
                 (
@@ -523,6 +545,7 @@ class ClickHouseWriter:
                     token_address,
                     token0,
                     token1,
+                    pair_address,
                     chain,
                     e.get("blockNumber", 0),
                     ts,
@@ -537,7 +560,7 @@ class ClickHouseWriter:
         try:
             client.execute(
                 f"INSERT INTO {CH_DEPLOYER_TABLE} "
-                "(deployer, deployer_eoa, token_address, token0, token1, "
+                "(deployer, deployer_eoa, token_address, token0, token1, pair_address, "
                 "chain, block_number, block_timestamp, tx_hash, type, "
                 "factory, ingested_at, source) VALUES",
                 rows,

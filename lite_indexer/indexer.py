@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from lite_indexer.chunks import chunk_size_for_chain
-from lite_indexer.config import DATA_DIR, DISK_CAP_BYTES, HEAD_BUFFER
+from lite_indexer.config import DATA_DIR, DISK_CAP_BYTES, HEAD_BUFFER, REORG_PROTECTION_ENABLED
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcClient, RpcFetchFailedError
 from lite_indexer.rpc.verify import (
@@ -568,6 +568,34 @@ class LiteIndexer:
         if dex_events:
             dex_ch_inserted = self.ch_writer.write_dex_events(self.chain, dex_events)
             summary["dex_events_written_ch"] = dex_ch_inserted
+
+        # 7b. Reorg staging (EVM only, gated by REORG_PROTECTION_ENABLED):
+        # checkpoint the batch tip block hash, then verify the block at
+        # to_block - MAX_REORG_DEPTH[chain] against its checkpoint. On
+        # mismatch the chain reorganized underneath us: roll back
+        # evm_transfers + dex_events above the fork point and re-fetch
+        # from the fork on the next cycle (state is rewound to the fork).
+        if self._is_evm() and REORG_PROTECTION_ENABLED and isinstance(self.strategy, EVMChainStrategy):
+            try:
+                ch_client = self.ch_writer.client()
+            except Exception as exc:  # noqa: BLE001 — staging is best-effort
+                ch_client = None
+                logger.debug("reorg_ch_client_failed", chain=self.chain, error=str(exc)[:80])
+
+            if ch_client is not None:
+                fork_block = await self.strategy.reorg_stage(from_block, to_block, ch_client)
+                if fork_block is not None:
+                    logger.warning(
+                        "reorg_rollback_scheduled",
+                        chain=self.chain,
+                        fork_block=fork_block,
+                    )
+                    summary["status"] = "reorg_rollback"
+                    summary["reorg_fork_block"] = fork_block
+                    # Re-fetch from fork: next cycle starts at fork_block.
+                    self.state.save(fork_block - 1, 0)
+                    summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
+                    return summary
 
         # 8. Save state
         total_events = len(events) + len(dex_events) + deployer_written

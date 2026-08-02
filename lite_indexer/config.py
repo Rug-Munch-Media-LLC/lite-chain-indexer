@@ -378,6 +378,26 @@ PARQUET_STATE_DIR: Path = STATE_DIR / "parquet"
 # and its status (pending / exporting / uploaded / deleted / failed).
 CH_PARQUET_STATE_TABLE: str = "wallet_memory.parquet_export_state"
 
+# ── Balance Reconciliation (TrueBlocks) ────────────────────────────────
+# Compare computed balances from indexed evm_transfers deltas against
+# on-chain state (eth_getBalance). Optional + non-blocking: only runs on
+# a random sample of wallets (default 100 per chain) and caches results
+# in wallet_memory.reconciliation_results.
+RECONCILIATION_ENABLED: bool = os.environ.get("RECONCILIATION_ENABLED", "1") != "0"
+RECONCILIATION_SAMPLE_SIZE: int = int(os.environ.get("RECONCILIATION_SAMPLE_SIZE", "100"))
+CH_RECONCILIATION_TABLE: str = "wallet_memory.reconciliation_results"
+
+# ── Reorg Staging (Envio/TrueBlocks) ──────────────────────────────────
+# Track the last N blocks per chain as "unripe" using a ClickHouse
+# checkpoint table (wallet_memory.block_checkpoints). On hash mismatch,
+# roll back evm_transfers + dex_events above the fork point.
+#
+# Default ON for EVM chains. Solana/Tron never invoke the EVM reorg
+# module (the staging lives under strategies/evm/), so protection is
+# inherently off for non-EVM chains.
+REORG_PROTECTION_ENABLED: bool = os.environ.get("REORG_PROTECTION_ENABLED", "1") != "0"
+CH_BLOCK_CHECKPOINTS_TABLE: str = "wallet_memory.block_checkpoints"
+
 # ── Solana Configuration ──────────────────────────────────────────────
 
 SOLANA_SPL_TOKEN_PROGRAM: str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"

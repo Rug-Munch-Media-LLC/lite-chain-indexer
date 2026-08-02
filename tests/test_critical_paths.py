@@ -86,6 +86,7 @@ async def test_deployers_with_dex(tmp_path, monkeypatch):
     ch = Mock()
     ch.write_deployer_events = AsyncMock(return_value=1)
     ch.write_dex_events.return_value = 0
+    ch.client.return_value = None  # ClickHouse unavailable → reorg staging skipped
     indexer._ch_writer = ch
     indexer._ndjson_writer.write_events = Mock(return_value=0)
     indexer._ndjson_writer.write_dex_events = Mock(return_value=0)
@@ -127,6 +128,7 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
     ch = Mock()
     ch.write_dex_events.return_value = 0
     ch.write_wallet_features = AsyncMock(return_value={})
+    ch.client.return_value = None  # ClickHouse unavailable → reorg staging skipped
     indexer._ch_writer = ch
 
     summary2 = await indexer._sync_loop_inner({"status": "ok", "errors": []}, time.monotonic())
