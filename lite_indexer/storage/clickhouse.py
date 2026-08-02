@@ -337,7 +337,27 @@ class ClickHouseWriter:
         self._ensure_summary_projection(client, CH_DEX_TABLE, DEX_SUMMARY_COLUMNS)
 
     def write_transfers(self, chain: str, events: list[dict[str, Any]]) -> int:
-        """Insert transfer events into ClickHouse. Returns rows inserted."""
+        """Insert transfer events into ClickHouse. Returns rows inserted.
+
+        Only the hot-path transfer columns are written: chain, block_number,
+        tx_hash, from_address, to_address, token_address, value,
+        block_timestamp, log_index, ingested_at.
+
+        ``token_symbol``/``token_name`` and ``source`` are deliberately NOT
+        part of the INSERT — the columns stay in the schema (with DEFAULT '')
+        for backward compatibility, but every new row stores empty strings.
+        Token metadata lives in ``wallet_memory.token_meta_ref`` (one row per
+        token, populated once per new token per batch in
+        ``write_wallet_features``). ``source`` was always ``'lite_indexer'``
+        — constant dead weight across 278M rows.
+
+        Args:
+            chain: Chain name.
+            events: Parsed transfer event dicts.
+
+        Returns:
+            Number of rows inserted (0 on failure/unavailable).
+        """
         if not events:
             return 0
 
@@ -346,6 +366,9 @@ class ClickHouseWriter:
             logger.warning("clickhouse_skipped", chain=chain)
             return 0
 
+        # Backward compatibility: older deployments may lack the `source`
+        # column. The INSERT no longer names it (so it defaults to ''), but
+        # ensure the column exists for any scanner that still reads it.
         self._ensure_source_column(client, CH_TABLE)
         if CH_TTL_ENABLED:
             self.ensure_ttl_policies(client)
@@ -374,14 +397,7 @@ class ClickHouseWriter:
                     event["value"],
                     ts,
                     event["logIndex"],
-                    # Token metadata moved to the reference table
-                    # (wallet_memory.token_meta_ref) when TOKEN_META_ENABLED
-                    # — one row per token instead of ~60 bytes on every
-                    # transfer row. Symbol/name stay inline when disabled.
-                    "" if TOKEN_META_ENABLED else event.get("tokenSymbol"),
-                    "" if TOKEN_META_ENABLED else event.get("tokenName"),
                     now,
-                    event.get("source", "lite_indexer"),
                 )
             )
 
@@ -390,7 +406,7 @@ class ClickHouseWriter:
                 f"INSERT INTO {CH_TABLE} "
                 "(chain, block_number, tx_hash, from_address, to_address, "
                 "token_address, value, block_timestamp, log_index, "
-                "token_symbol, token_name, ingested_at, source) VALUES",
+                "ingested_at) VALUES",
                 rows,
             )
             logger.info("clickhouse_inserted", chain=chain, rows=len(rows))
@@ -587,7 +603,8 @@ class ClickHouseWriter:
 
         1. ``WALLET_PROJECTION_ENABLED`` — address-first projections on
            evm_transfers (electrs key-as-record pattern).
-        2. ``TOKEN_META_ENABLED`` — upsert one row per unique token into
+        2. Token metadata reference table — always enabled
+           (``TOKEN_META_ENABLED``), upserts one row per unique token into
            ``wallet_memory.token_meta_ref`` (cryo reference table).
         3. ``BALANCE_CACHE_ENABLED`` — incrementally update holder balances
            (electrs lazy cache); deltas are accumulated per holder so each

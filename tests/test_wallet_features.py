@@ -329,12 +329,17 @@ async def test_write_wallet_features_full(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_write_wallet_features_all_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_write_wallet_features_other_features_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the configurable features off, token meta still runs.
+
+    ``TOKEN_META_ENABLED`` is always on (non-configurable), so the token
+    metadata reference table is upserted even when every other wallet
+    feature is disabled.
+    """
     import lite_indexer.storage.clickhouse as chmod
 
     for flag in (
         "WALLET_PROJECTION_ENABLED",
-        "TOKEN_META_ENABLED",
         "BALANCE_CACHE_ENABLED",
         "HOLDER_BALANCES_MV_ENABLED",
     ):
@@ -347,8 +352,13 @@ async def test_write_wallet_features_all_disabled(monkeypatch: pytest.MonkeyPatc
     stats = await writer.write_wallet_features(
         "ethereum", [_transfer(token="0xaaa", from_addr="0xX", to_addr="0xY", value="100")]
     )
-    assert stats == {}
-    assert client.queries == []  # nothing issued at all
+    assert stats == {"token_meta_upserted": 1}
+    queries = client.queries
+    assert any("CREATE TABLE IF NOT EXISTS wallet_memory.token_meta_ref" in q for q in queries)
+    assert any("INSERT INTO wallet_memory.token_meta_ref" in q for q in queries)
+    # The other wallet features must not issue any DDL or inserts.
+    assert not any(q.startswith("ALTER TABLE") for q in queries)
+    assert not any(q.startswith("INSERT INTO wallet_memory.holder_balances") for q in queries)
 
 
 @pytest.mark.asyncio
@@ -361,10 +371,16 @@ async def test_write_wallet_features_no_client() -> None:
 # ── Integration: write_transfers + token meta behavior ────────────────
 
 
-def test_write_transfers_empty_symbols_when_token_meta_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_write_transfers_strips_enrichment_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """transfer rows never carry token_symbol/token_name/source.
+
+    ``TOKEN_META_ENABLED`` is always on (non-configurable): the INSERT
+    names only the 10 hot-path columns and the row tuple matches — the
+    enrichment columns stay in the schema (DEFAULT '') but are never
+    populated.
+    """
     import lite_indexer.storage.clickhouse as chmod
 
-    monkeypatch.setattr(chmod, "TOKEN_META_ENABLED", True)
     monkeypatch.setattr(chmod, "CH_TTL_ENABLED", False)
 
     writer = ClickHouseWriter()
@@ -382,30 +398,13 @@ def test_write_transfers_empty_symbols_when_token_meta_enabled(monkeypatch: pyte
     assert inserted == 1
     insert_q = [q for q in client.queries if q.startswith("INSERT INTO wallet_memory.evm_transfers")]
     assert len(insert_q) == 1
+    assert "token_symbol" not in insert_q[0]
+    assert "token_name" not in insert_q[0]
+    assert "source" not in insert_q[0]
+
     row = client.params[-1][0]
-    # symbol/name columns (indexes 9, 10) are empty — moved to ref table.
-    assert row[9] == ""
-    assert row[10] == ""
-
-
-def test_write_transfers_keeps_symbols_when_token_meta_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    import lite_indexer.storage.clickhouse as chmod
-
-    monkeypatch.setattr(chmod, "TOKEN_META_ENABLED", False)
-    monkeypatch.setattr(chmod, "CH_TTL_ENABLED", False)
-
-    writer = ClickHouseWriter()
-    client = FakeClient()
-    writer._client = client
-
-    events = [
-        {
-            **_transfer(token="0xaaa", from_addr="0xX", to_addr="0xY", value="100"),
-            "tokenSymbol": "RUG",
-            "tokenName": "Rug Coin",
-        }
-    ]
-    writer.write_transfers("ethereum", events)
-    row = client.params[-1][0]
-    assert row[9] == "RUG"
-    assert row[10] == "Rug Coin"
+    assert len(row) == 10  # chain..ingested_at only
+    assert row[:7] == ("ethereum", 100, "0x100", "0xX", "0xY", "0xaaa", "100")
+    assert row[7] is not None  # block_timestamp parsed from the event
+    assert row[8] == 0  # log_index
+    assert row[9] is not None  # ingested_at timestamp

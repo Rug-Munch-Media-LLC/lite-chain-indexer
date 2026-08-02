@@ -14,10 +14,11 @@ transfer.
 * :func:`resolve_token_meta` — read a token's metadata back (used by
   consumers that join the reference table).
 
-Gated by ``TOKEN_META_ENABLED`` (see :mod:`lite_indexer.config`). When
-enabled, ``ClickHouseWriter.write_transfers`` stops writing symbol/name
-to every transfer row and the reference table is upserted once per
-unique token per batch instead. All DDL is idempotent and non-fatal.
+Always enabled: ``TOKEN_META_ENABLED`` is a hard-coded ``True`` (see
+:mod:`lite_indexer.config`), so ``ClickHouseWriter.write_transfers`` never
+writes symbol/name to transfer rows and this reference table is upserted
+once per unique token per batch instead. All DDL is idempotent and
+non-fatal.
 """
 
 from __future__ import annotations

@@ -217,10 +217,12 @@ WALLET_PROJECTION_ENABLED: bool = os.environ.get("WALLET_PROJECTION_ENABLED", "1
 
 # 2. Token metadata reference table (cryo-inspired): one row per token in
 #    wallet_memory.token_meta_ref instead of token_symbol/token_name on
-#    every transfer row (~60 bytes x 264M rows). When enabled, transfer
-#    rows store empty symbol/name and the reference table is upserted
-#    once per unique token per batch.
-TOKEN_META_ENABLED: bool = os.environ.get("TOKEN_META_ENABLED", "1") != "0"
+#    every transfer row (~60 bytes x 278M rows). Always enabled and
+#    non-configurable — the reference table approach is proven correct and
+#    enrichment is never written to transfer rows anymore. Transfer rows
+#    store empty symbol/name; the reference table is upserted once per
+#    unique token per batch.
+TOKEN_META_ENABLED: bool = True
 
 # 3. Per-token incremental balance cache (electrs lazy cache): maintain
 #    wallet_memory.holder_balances incrementally per transfer so holder
@@ -378,6 +380,18 @@ PARQUET_STATE_DIR: Path = STATE_DIR / "parquet"
 # and its status (pending / exporting / uploaded / deleted / failed).
 CH_PARQUET_STATE_TABLE: str = "wallet_memory.parquet_export_state"
 
+# ── NDJSON Write-Ahead Log ─────────────────────────────────────────────
+# Redundant local replay buffer (events.jsonl per chain/date). The durable
+# store is ClickHouse, so this is DISABLED by default — it costs ~15% CPU
+# (zstd compression every 15 min, rglob disk scans per write, per-write
+# disk-cap checks) plus a separate cron rotation. The code is retained
+# behind this flag for rollback.
+#
+# Recovery path WITHOUT NDJSON: restart from state.to_block. On crash we
+# lose at most one sync cycle (~30s of data), which the next cycle
+# re-fetches from RPC. No replay buffer is required.
+NDJSON_ENABLED: bool = os.environ.get("NDJSON_ENABLED", "0") == "1"
+
 # ── Balance Reconciliation (TrueBlocks) ────────────────────────────────
 # Compare computed balances from indexed evm_transfers deltas against
 # on-chain state (eth_getBalance). Optional + non-blocking: only runs on
@@ -397,6 +411,22 @@ CH_RECONCILIATION_TABLE: str = "wallet_memory.reconciliation_results"
 # inherently off for non-EVM chains.
 REORG_PROTECTION_ENABLED: bool = os.environ.get("REORG_PROTECTION_ENABLED", "1") != "0"
 CH_BLOCK_CHECKPOINTS_TABLE: str = "wallet_memory.block_checkpoints"
+
+# ── Lazy Indexing (per-chain event type gating) ─────────────────────────
+# When enabled (default), every chain starts with transfer events only.
+# DEX swap and deployer event indexing is enabled by default for top
+# chains (see lite_indexer.chains.demand.TOP_CHAINS) and for long-tail
+# chains only after the scanner (rmi-backend) signals demand via a file
+# touch. Setting LAZY_INDEXING_ENABLED=0 restores the legacy behavior of
+# indexing all event types equally (CLI flags are the authority).
+LAZY_INDEXING_ENABLED: bool = os.environ.get("LAZY_INDEXING_ENABLED", "1") != "0"
+
+# Directory where the scanner writes demand signal files:
+#   {INDEXER_DEMAND_DIR}/{chain}/dex
+#   {INDEXER_DEMAND_DIR}/{chain}/deployer
+# The indexer polls these files each sync cycle and enables the requested
+# event type for that chain. A file touch avoids cross-service imports.
+INDEXER_DEMAND_DIR: Path = Path(os.environ.get("INDEXER_DEMAND_DIR", "/tmp/indexer-demand"))
 
 # ── Solana Configuration ──────────────────────────────────────────────
 
