@@ -146,6 +146,12 @@ async def verify_endpoints_for_chain(
     verified: list[str] = []
 
     for ep in endpoints:
+        # Skip unresolved ${ENV_VAR} placeholders — they can never be dialed
+        # (DNS/JSON errors) and would otherwise retry every sync cycle.
+        if "${" in ep:
+            logger.debug("verify_skip_unresolved_env", endpoint=ep[:50], chain=chain)
+            continue
+
         # Skip if recently verified
         last_v = _endpoint_last_verified.get(ep, 0)
         if (now - last_v) < ENDPOINT_VERIFY_INTERVAL:

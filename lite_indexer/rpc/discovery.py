@@ -198,6 +198,18 @@ async def validate_rpc_candidates(
 
     import httpx as _httpx
 
+    # Defense-in-depth: never probe URLs that still contain an unresolved
+    # ${ENV_VAR} placeholder. They can never be dialed (DNS/JSON errors)
+    # and would only add retry noise. extract_rpc_candidates already skips
+    # them via _is_free_url; this guards direct callers of this function.
+    filtered: list[str] = []
+    for url in candidates:
+        if "${" in url:
+            logger.debug(f"Skipping unexpanded env var in URL: {url}")
+            continue
+        filtered.append(url)
+    candidates = filtered
+
     healthy: list[str] = []
     semaphore = asyncio.Semaphore(concurrency)
 

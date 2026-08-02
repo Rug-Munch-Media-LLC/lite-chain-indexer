@@ -18,9 +18,11 @@ removed.
 
 Some endpoints require an API key from a free-tier provider (Alchemy,
 GetBlock, Chainstack, QuickNode, Infura). Set the corresponding ${ENV_VAR}
-in your environment — the indexer resolves placeholders via
-rpc.tiers._resolve_endpoint_url(). Unset keys leave the placeholder in
-place and the call fails safely (never a hard crash).
+in your environment — the indexer resolves placeholders at import time via
+os.path.expandvars (chains.endpoints._resolved_endpoints()). Endpoints
+whose key is NOT set are excluded from the active pool (they can never be
+dialed — a literal ``${...}`` in a URL only produces DNS/JSON verification
+retries). Restart the service after setting a key to activate the endpoint.
 
 Total: 51 endpoints across 14 chains (40 public + 11 API-key free tiers).
 """
@@ -28,7 +30,10 @@ Total: 51 endpoints across 14 chains (40 public + 11 API-key free tiers).
 from __future__ import annotations
 
 import os
-import re
+
+from lite_indexer.logging import get_logger
+
+logger = get_logger(__name__)
 
 GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # ── Ethereum (7 endpoints) ────────────────────────────────────────
@@ -179,16 +184,21 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 
 # ── Endpoint URL template resolution ───────────────────────────────
 # API-key free tiers use ${ENV_VAR} placeholders (${ALCHEMY_KEY},
-# ${GETBLOCK_KEY}, ...). Resolve them at import time so the main RPC
-# path never calls dead placeholder URLs. When the env var is unset the
-# placeholder is kept (the call fails naturally) — set the keys in the
-# service environment to activate those endpoints.
-
-_ENV_VAR_RE = re.compile(r"\$\{([^}]+)\}")
+# ${GETBLOCK_KEY}, ...). They are resolved at import time so the main
+# RPC path never dials dead placeholder URLs. Endpoints whose env var is
+# NOT set are excluded from the active pool entirely — a URL containing a
+# literal ``${...}`` can never be dialed (DNS/JSON errors) and only
+# produces verification retry noise (verify_endpoint_failed storms). Set
+# the corresponding env var in the service environment and restart to
+# activate those endpoints.
 
 
 def _resolve_endpoint_url(url: str) -> str:
     """Resolve ${ENV_VAR} placeholders in an endpoint URL.
+
+    Uses :func:`os.path.expandvars` so both ``${VAR}`` and ``$VAR`` forms
+    are handled. An unset variable leaves the placeholder in the returned
+    URL so callers can detect and skip it.
 
     Args:
         url: Endpoint URL potentially containing ${ENV_VAR} templates.
@@ -196,15 +206,32 @@ def _resolve_endpoint_url(url: str) -> str:
     Returns:
         URL with env vars resolved (placeholder kept if unset).
     """
-
-    def _replace(match: re.Match[str]) -> str:
-        var_name = match.group(1)
-        value = os.environ.get(var_name)
-        if not value:
-            return match.group(0)  # Keep placeholder — call fails safely
-        return value
-
-    return _ENV_VAR_RE.sub(_replace, url)
+    return os.path.expandvars(url)
 
 
-GET_LOGS_ENDPOINTS = {chain: [_resolve_endpoint_url(url) for url in urls] for chain, urls in GET_LOGS_ENDPOINTS.items()}
+def _resolved_endpoints(urls: list[str]) -> list[str]:
+    """Resolve env-var placeholders and drop endpoints that could not expand.
+
+    Endpoints whose ``${ENV_VAR}`` placeholder is not set in the
+    environment are excluded from the active pool: a URL containing a
+    literal ``${...}`` can never be dialed (DNS/JSON errors) and only
+    produces verification retry noise. Set the env var (and restart) to
+    activate the endpoint.
+
+    Args:
+        urls: Raw endpoint URL templates.
+
+    Returns:
+        URLs with env vars expanded, minus unresolved placeholders.
+    """
+    resolved: list[str] = []
+    for url in urls:
+        expanded = os.path.expandvars(url)
+        if "${" in expanded:
+            logger.debug("endpoint_unresolved_env_skipped", url=url)
+            continue
+        resolved.append(expanded)
+    return resolved
+
+
+GET_LOGS_ENDPOINTS = {chain: _resolved_endpoints(urls) for chain, urls in GET_LOGS_ENDPOINTS.items()}
