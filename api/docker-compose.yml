@@ -1,0 +1,48 @@
+# Chain Query API — Docker Compose service.
+#
+# Builds the api/Dockerfile (build context = repo root) and runs the
+# public read-only query API on 127.0.0.1:8101.
+#
+# ClickHouse connectivity: the API reads the warehouse with a dedicated
+# read-only user. Point CH_API_HOST at your ClickHouse:
+#
+#   - ClickHouse on the host:   CH_API_HOST=127.0.0.1  (bridge network
+#     cannot reach the host loopback — see the network_mode comment)
+#   - ClickHouse container:     CH_API_HOST=clickhouse  (join its network)
+#
+# Start:
+#   docker compose -f api/docker-compose.yml up -d --build
+#
+# Secrets come from the environment / .env — never hardcode credentials.
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+    image: lite-indexer-api:latest
+    container_name: lite-indexer-api
+    restart: unless-stopped
+    # Bind to loopback only; expose publicly through nginx/cloudflared.
+    ports:
+      - "127.0.0.1:8101:8101"
+    environment:
+      CH_API_HOST: ${CH_API_HOST:-clickhouse}
+      CH_API_PORT: ${CH_API_PORT:-9000}
+      CH_API_USER: ${CH_API_USER:-chain_api}
+      CH_API_PASSWORD: ${CH_API_PASSWORD:-}
+      CH_API_DATABASE: ${CH_API_DATABASE:-wallet_memory}
+      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-100}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # When ClickHouse runs on the host (not in a container), uncomment
+    # host networking so CH_API_HOST=127.0.0.1 works — note this also
+    # binds the API on all host interfaces (keep nginx-side access
+    # control tight):
+    # network_mode: host
+    # ports: []
