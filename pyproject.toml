@@ -17,6 +17,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+api = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "slowapi>=0.1.9",
+    "pydantic>=2.0.0",
+]
 dev = [
     "ruff>=0.13.0",
     "mypy>=1.18.0",
