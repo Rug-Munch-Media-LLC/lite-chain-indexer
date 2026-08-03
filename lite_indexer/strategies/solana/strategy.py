@@ -422,6 +422,14 @@ class SolanaStrategy(AbstractChainStrategy):
             logger.warning("solana_clickhouse_skipped")
             return 0
 
+        # F1 wallet resolution: ensure the owner column exists (idempotent)
+        # before inserting. Old deployments degrade gracefully — the DDL
+        # helper reports success once the column is in place, historical
+        # rows keep DEFAULT '' until backfilled.
+        ensure_owner = getattr(ch_writer, "_ensure_solana_owner_column", None)
+        if ensure_owner is not None:
+            ensure_owner(client)
+
         now = datetime.now(UTC)
         rows: list[tuple[Any, ...]] = []
 
@@ -442,6 +450,7 @@ class SolanaStrategy(AbstractChainStrategy):
                     event.get("signature", ""),
                     event.get("token_account", ""),
                     event.get("mint", ""),
+                    event.get("owner", ""),
                     event.get("amount_pre", "0"),
                     event.get("amount_post", "0"),
                     event.get("change", "0"),
@@ -458,7 +467,7 @@ class SolanaStrategy(AbstractChainStrategy):
             client.execute(
                 f"INSERT INTO {solana_table} "
                 "(slot, block_timestamp, tx_hash, token_account, "
-                "mint, pre_amount, post_amount, delta, "
+                "mint, owner, pre_amount, post_amount, delta, "
                 "decimals, token_symbol, token_name, "
                 "ingested_at) VALUES",
                 rows,

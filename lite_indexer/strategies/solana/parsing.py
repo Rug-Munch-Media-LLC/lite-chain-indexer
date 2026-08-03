@@ -64,6 +64,24 @@ def parse_solana_transfer_events(
     tx_signature = signatures[0] if signatures else ""
     block_time = tx_data.get("blockTime")
 
+    # Resolve token account addresses from the transaction's account keys.
+    # In jsonParsed encoding each key is a dict with a ``pubkey`` field, and
+    # balance entries reference them by ``accountIndex``. The token account
+    # is a PDA whose on-chain data carries the wallet ``owner`` — having the
+    # address lets scanners resolve who holds each token.
+    message = transaction.get("message") or {}
+    account_keys = message.get("accountKeys") or []
+
+    def _account_pubkey(account_index: int) -> str:
+        try:
+            key = account_keys[account_index]
+        except (IndexError, TypeError):
+            return ""
+        if isinstance(key, dict):
+            pubkey = key.get("pubkey")
+            return str(pubkey) if pubkey is not None else ""
+        return str(key)
+
     # Process all account indices that appear in either pre or post
     all_indices = set(pre_map.keys()) | set(post_map.keys())
 
@@ -119,7 +137,7 @@ def parse_solana_transfer_events(
                 "signature": tx_signature,
                 "mint": mint,
                 "owner": owner,
-                "token_account": "",  # Would need accountKeys resolution
+                "token_account": _account_pubkey(idx),
                 "amount_pre": str(pre_val),
                 "amount_post": str(post_val),
                 "change": str(change),

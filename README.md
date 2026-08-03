@@ -21,11 +21,11 @@ It's the **free blockchain indexer** for anyone who wants **blockchain data with
 
 ## Why It's Different
 
-- **$0/month forever** — runs entirely on free public RPC endpoints (123 verified endpoints across 16 chains). No paid APIs, no gateway fees, no infrastructure bill.
+- **$0/month forever** — runs entirely on free public RPC endpoints (61 curated endpoints across 16 chains; ~45 active by default, more when optional free-tier API keys are set). No paid APIs, no gateway fees, no infrastructure bill.
 - **16 chains, one process** — Ethereum, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, Fantom, Linea, Scroll, zkSync Era, Mantle, Gnosis, Celo **+ Solana + Tron**. One Python process, `asyncio`-parallel daemon.
 - **DuckDB-queryable parquet archive** — ClickHouse for live data, **parquet snapshots exported to B2 on a scheduled cron** (daily in-repo script, 6-hourly on the fleet), queryable with DuckDB. No vendor lock-in, no proprietary formats.
-- **Self-hosted** — your data, your server, your control. No centralized gateway, no API keys, no rate-limit anxiety.
-- **Production-proven** — **278M+ transfer events** and **58M+ DEX events** indexed in production, ~3M events/hour sustained, ~30s freshness from chain tip on free RPCs.
+- **Self-hosted** — your data, your server, your control. No centralized gateway, no paid API keys, no rate-limit anxiety.
+- **Production-proven** — **285M+ transfer events** and **13M+ DEX events** in the live hot store (90-day TTL window for `dex_events`, older rows in the Parquet/B2 cold tier) indexed in production, ~3M events/hour sustained, ~30s freshness from chain tip on free RPCs.
 - **Honest footprint** — ~2 GB RAM for all 16 chains concurrently. Runs on a $5 VPS.
 - **Demand-aware** — lazy per-chain DEX/deployer indexing: long-tail chains only index extra event types when your scanner actually queries them (file-touch signaling, persisted in state).
 
@@ -35,10 +35,10 @@ It's the **free blockchain indexer** for anyone who wants **blockchain data with
 
 ## Quickstart
 
-The fastest way to try Lite Chain Indexer — one chain, one command:
+The fastest way to try Lite Chain Indexer — install from source, then one chain, one command:
 
 ```bash
-pip install lite-chain-indexer
+pip install "git+https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer.git"
 export CH_HOST=localhost CH_PORT=9000 CH_DATABASE=wallet_memory
 lite-indexer --chain ethereum --dex
 ```
@@ -118,29 +118,29 @@ pip install -e ".[query]"
 
 ## Chains Covered
 
-16 chains, 123 free RPC endpoints (113 EVM + 6 Solana + 4 Tron), all verified for the methods this indexer needs. Per-chain stats below are a **snapshot from the production ClickHouse store** (`wallet_memory`), captured 2026-08-01; the production total has since grown past **278M transfer events**.
+16 chains, 61 raw RPC endpoints (51 EVM + 6 Solana + 4 Tron), all verified for the methods this indexer needs. **~45 endpoints are active by default** (37 public EVM + 4 public Solana + 4 public Tron); the other 16 are optional free-tier API-key placeholders (`${ALCHEMY_KEY}`, `${GETBLOCK_KEY}`, `${CHAINSTACK_KEY}`, `${QUICKNODE_ENDPOINT}`, `${INFURA_KEY}`, `${HELIUS_KEY}`) that activate when their env var is set — so the active count varies with configuration. Per-chain stats below are a **snapshot from the production ClickHouse store** (`wallet_memory`), captured 2026-08-03; `evm_transfers` totals **285M+** rows and `dex_events` hot storage is a **90-day TTL window** (older DEX rows live in the Parquet/B2 cold tier).
 
 | Chain | Type | Block time | RPCs | Transfers indexed | DEX events indexed |
 |-------|------|:----------:|:----:|------------------:|-------------------:|
-| Polygon | EVM | 2s | 9 | 77,700,942 | 12,772,044 |
-| Base | EVM | 2s | 4 | 49,920,147 | 20,787,390 |
-| Ethereum | EVM | 12s | 16 | 39,702,256 | 6,250,437 |
-| BSC | EVM | 3s | 11 | 24,467,187 | 8,148,525 |
-| Avalanche | EVM | 2s | 7 | 12,102,565 | 306,176 |
-| Arbitrum | EVM | 0.25s | 10 | 9,186,233 | 8,801,642 |
-| Optimism | EVM | 2s | 10 | 6,951,275 | 304,540 |
-| Tron | Tron | 3s | 4 | 6,311,669 | — |
-| Gnosis | EVM | 5s | 7 | 2,242,706 | 393,227 |
-| zkSync Era | EVM | 2s | 6 | 1,821,364 | 51,816 |
-| Linea | EVM | 2s | 6 | 735,155 | 169,721 |
-| Scroll | EVM | 3s | 7 | 599,266 | 133,230 |
-| Mantle | EVM | 2s | 7 | 164,369 | 25,554 |
-| Solana | Solana | 0.4s | 6 | 841,478 (SPL changes) | — |
-| Fantom | EVM | 1s | 7 | *add via `--chains`* | *add via `--chains`* |
-| Celo | EVM | 5s | 6 | *add via `--chains`* | *add via `--chains`* |
-| **Total** | | | **123** | **278,000,000+** | **58,143,706+** |
+| Polygon | EVM | 2s | 5 | 102,783,790 | 2,947,092 |
+| Base | EVM | 2s | 4 | 57,894,669 | 4,903,140 |
+| Ethereum | EVM | 12s | 7 | 42,451,053 | 2,088,845 |
+| BSC | EVM | 3s | 5 | 27,279,812 | 1,147,162 |
+| Avalanche | EVM | 2s | 3 | 17,707,142 | 437,695 |
+| Optimism | EVM | 2s | 3 | 11,001,767 | 427,458 |
+| Arbitrum | EVM | 0.25s | 4 | 10,718,201 | 294,638 |
+| Tron | Tron | 3s | 4 | 9,034,358 | — |
+| Gnosis | EVM | 5s | 2 | 2,596,248 | 472,437 |
+| zkSync Era | EVM | 2s | 3 | 1,903,488 | 49,004 |
+| Linea | EVM | 2s | 3 | 759,750 | 122,822 |
+| Scroll | EVM | 3s | 3 | 618,665 | 127,388 |
+| Mantle | EVM | 2s | 2 | 177,121 | 20,565 |
+| Solana | Solana | 0.4s | 6 | 1,349,767 (SPL changes) | — |
+| Fantom | EVM | 1s | 4 | *add via `--chains`* | *add via `--chains`* |
+| Celo | EVM | 5s | 3 | *add via `--chains`* | *add via `--chains`* |
+| **Total** | | | **61** | **285,000,000+** | **13,000,000+** |
 
-*Totals don't include the ~0.9M deployer events and ~0.8M Solana SPL balance changes — roughly **338M+ events** indexed in total. Fantom and Celo are fully supported in code; they're simply not in the default daemon chain list — add them with `--chains`.*
+*Totals don't include the ~0.9M deployer events or the 1.35M Solana SPL balance changes — roughly **300M+ rows** in the live hot store. `dex_events` hot storage is a **90-day TTL window**; older DEX rows are exported to the Parquet/B2 cold tier, so the all-time cumulative DEX count is higher than the hot-store total. Fantom and Celo are fully supported in code; they're simply not in the default daemon chain list — add them with `--chains`.*
 
 ---
 
@@ -167,7 +167,7 @@ pip install -e ".[query]"
 │               │                  │  parquet cold tier + disk cap │
 ├───────────────┴──────────────────┴───────────────────────────────┤
 │   chains/  (endpoints · limits · demand · polling · non-evm)     │
-│            123 free RPC endpoints · 16 chains · event topics     │
+│            61 raw RPC endpoints · 16 chains · event topics       │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -206,11 +206,11 @@ Honest numbers from the production deployment (2-core VPS, free public RPCs):
 
 | Metric | Value |
 |--------|-------|
-| Events indexed | **278M+ transfer events** + 58M+ DEX events + ~0.9M deployer events in production |
+| Events indexed | **285M+ transfer events** + 13M+ DEX events (90-day hot window; older rows in Parquet/B2 cold tier) + ~0.9M deployer events in production |
 | Memory | **~2 GB** for all 16 chains in a single process |
 | Throughput | **~3M+ events/hour** sustained (≈77M rows/day to ClickHouse) |
 | Freshness | **~30s** from chain tip on free RPCs (adaptive per-chain polling, chunked fetches) |
-| RPC cost | **$0** — free public endpoints only (123 verified), no API keys required |
+| RPC cost | **$0** — free public endpoints only (61 curated; ~45 active by default, optional free-tier API keys), no paid API keys required |
 | Disk | Configurable hard cap (default 10 GB); Parquet cold tier moves old rows to B2 |
 
 Typical sustained catch-up (backfill) rates per chain on a 2-core VPS using free public RPCs — *actual rates vary with free-tier rate limits and network conditions*:
@@ -260,14 +260,14 @@ Tracks every PairCreated/PoolCreated event from known DEX factories. Records fac
 
 ### 🌐 Three chain types
 - **EVM (14)** — ERC-20 transfers, DEX swaps, pair/pool creation via `eth_getLogs`
-- **Solana** — SPL token balance changes via `getSignaturesForAddress` + `getTransaction`
+- **Solana** — SPL token balance changes via `getSignaturesForAddress` + `getTransaction`. Each row captures the token account address plus its on-chain `owner` (the wallet that holds the token) in the `owner` column — so scanners can answer *who* holds each token, not just *what* changed.
 - **Tron** — TRC-20 transfers via the TronGrid event API
 
 ### 🎯 Demand-aware indexing
 Lazy per-chain event gating: every chain starts with transfer events only. Top chains (ethereum, bsc, polygon, arbitrum, base, solana) always index DEX + deployer events; long-tail chains (scroll, mantle, linea, fantom, avalanche, gnosis) enable them only after the scanner signals demand via a file touch (`{INDEXER_DEMAND_DIR}/{chain}/dex`). Enabled event types persist in the state file. Set `LAZY_INDEXING_ENABLED=0` for the legacy all-events behavior.
 
 ### 🧹 Enrichment stripping
-Transfer rows carry only the 10 hot-path columns — `token_symbol` / `token_name` (~60 bytes × 278M rows) moved out of `evm_transfers` into a single `token_meta_ref` reference table. Queries `JOIN` the reference for metadata; the hot table stays lean.
+Transfer rows carry only the 10 hot-path columns — `token_symbol` / `token_name` (~60 bytes × 285M rows) moved out of `evm_transfers` into a single `token_meta_ref` reference table. Queries `JOIN` the reference for metadata; the hot table stays lean.
 
 ### 🛡️ Reorg staging + reconciliation
 - **Reorg staging** — the last N blocks per chain are held "unripe" in `wallet_memory.block_checkpoints`; on hash mismatch the indexer DELETEs `evm_transfers` + `dex_events` above the fork point and re-fetches from the fork (`REORG_PROTECTION_ENABLED`, EVM default on).
@@ -280,7 +280,7 @@ Transfer rows carry only the 10 hot-path columns — `token_symbol` / `token_nam
 
 ### 🔒 Production hardening
 - **Disk cap enforcement** — configurable hard limit on data directory (default 10 GB)
-- **Self-healing RPC pool** — 123 endpoints with automatic health verification, tiered rotation, and exponential backoff
+- **Self-healing RPC pool** — 61 endpoints with automatic health verification, tiered rotation, and exponential backoff
 - **Per-method RPC routing** — heavy `eth_getLogs` goes to free public tiers; latency-sensitive calls (receipts, `eth_call`) prefer dedicated nodes
 - **Circuit breakers** — per-endpoint open/half-open/close protection with success-based recovery
 - **Per-provider token buckets** — fine-grained rate limiting that never trips free-tier caps

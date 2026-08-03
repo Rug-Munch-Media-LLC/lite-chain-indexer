@@ -33,6 +33,7 @@ from lite_indexer.config import (
     EVT_SUMMARY_COLUMNS,
     HOLDER_BALANCES_MV_ENABLED,
     RETENTION_DAYS,
+    SOLANA_CH_TABLE,
     TOKEN_META_ENABLED,
     WALLET_PROJECTION_ENABLED,
 )
@@ -242,6 +243,33 @@ class ClickHouseWriter:
             if "privileges" in str(exc).lower():
                 return
             logger.debug("deployer_columns_skip", error=str(exc)[:80])
+
+    def _ensure_solana_owner_column(self, client: Any) -> None:
+        """Ensure solana_spl_balance_changes has the owner column.
+
+        F1 wallet resolution: the SPL token account's on-chain ``owner``
+        (the wallet that holds the token) is captured from the pre/post
+        token balances of each transaction. Old deployments predate the
+        column, so add it idempotently with ``DEFAULT ''`` — historical
+        rows stay valid (empty owner) and every new row carries the real
+        wallet address.
+        """
+        try:
+            result = client.execute(
+                "SELECT name FROM system.columns WHERE database = %(database)s AND table = %(table)s AND name = 'owner'",
+                {
+                    "database": SOLANA_CH_TABLE.split(".")[0],
+                    "table": SOLANA_CH_TABLE.split(".")[-1],
+                },
+            )
+            if result:
+                return
+            client.execute(f"ALTER TABLE {SOLANA_CH_TABLE} ADD COLUMN IF NOT EXISTS owner String DEFAULT '' AFTER mint")
+            logger.info("solana_owner_column_added", table=SOLANA_CH_TABLE)
+        except Exception as exc:
+            if "already exists" in str(exc) or "privileges" in str(exc).lower():
+                return
+            logger.debug("solana_owner_column_skip", error=str(exc)[:80])
 
     # ── Column Pruning (TTL) ─────────────────────────────────────────
 

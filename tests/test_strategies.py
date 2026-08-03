@@ -49,6 +49,7 @@ class TestSolanaParseTransferEvents:
     def test_spl_balance_change_detected(self):
         """A tracked token balance change should be detected."""
         usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        token_account = "8YkS2BfQ3nW7dKfWQzQkZu9eLtH8mXqR4tK7kPn2aBvC"
         tx_data: dict[str, Any] = {
             "meta": {
                 "preTokenBalances": [
@@ -76,7 +77,14 @@ class TestSolanaParseTransferEvents:
                     },
                 ],
             },
-            "transaction": {"signatures": ["sig1"]},
+            "transaction": {
+                "signatures": ["sig1"],
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": token_account, "signer": True, "writable": True},
+                    ]
+                },
+            },
             "blockTime": 1700000000,
         }
         events = _parse_solana_transfer_events(tx_data, 200, {usdc_mint})
@@ -87,6 +95,8 @@ class TestSolanaParseTransferEvents:
         assert event["slot"] == 200
         assert event["signature"] == "sig1"
         assert event["mint"] == usdc_mint
+        assert event["owner"] == "0xowner1"
+        assert event["token_account"] == token_account
         assert event["amount_pre"] == "1000000"
         assert event["amount_post"] == "500000"
         assert event["change"] == "-500000"
@@ -94,6 +104,78 @@ class TestSolanaParseTransferEvents:
         assert event["symbol"] == "USDC"
         assert event["token_name"] == "USD Coin"
         assert event["source"] == "lite_indexer"
+
+    def test_token_account_resolved_from_account_keys(self):
+        """token_account should resolve via accountIndex into accountKeys.
+
+        F1 wallet resolution: the token account address maps to the
+        balance entry's accountIndex; its on-chain data carries the
+        wallet owner. Without resolvable keys, token_account stays empty.
+        """
+        usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        token_account = "5o5P3mE7rYwQzGtNkXcVbJhLfDsAaQwRrTtYyUuIiOoPp"
+        tx_data: dict[str, Any] = {
+            "meta": {
+                "preTokenBalances": [
+                    {
+                        "accountIndex": 1,
+                        "mint": usdc_mint,
+                        "owner": "wallet123",
+                        "uiTokenAmount": {"amount": "100", "decimals": 6},
+                    },
+                ],
+                "postTokenBalances": [
+                    {
+                        "accountIndex": 1,
+                        "mint": usdc_mint,
+                        "owner": "wallet123",
+                        "uiTokenAmount": {"amount": "0", "decimals": 6},
+                    },
+                ],
+            },
+            "transaction": {
+                "signatures": ["sig2"],
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "feePayerPubkey", "signer": True, "writable": True},
+                        {"pubkey": token_account, "signer": False, "writable": True},
+                    ]
+                },
+            },
+        }
+        events = _parse_solana_transfer_events(tx_data, 300, {usdc_mint})
+        assert len(events) == 1
+        assert events[0]["owner"] == "wallet123"
+        assert events[0]["token_account"] == token_account
+
+    def test_token_account_empty_when_keys_missing(self):
+        """token_account should stay empty when accountKeys are unavailable."""
+        usdc_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        tx_data: dict[str, Any] = {
+            "meta": {
+                "preTokenBalances": [
+                    {
+                        "accountIndex": 3,
+                        "mint": usdc_mint,
+                        "owner": "wallet123",
+                        "uiTokenAmount": {"amount": "100", "decimals": 6},
+                    },
+                ],
+                "postTokenBalances": [
+                    {
+                        "accountIndex": 3,
+                        "mint": usdc_mint,
+                        "owner": "wallet123",
+                        "uiTokenAmount": {"amount": "0", "decimals": 6},
+                    },
+                ],
+            },
+            "transaction": {"signatures": ["sig3"]},
+        }
+        events = _parse_solana_transfer_events(tx_data, 300, {usdc_mint})
+        assert len(events) == 1
+        assert events[0]["owner"] == "wallet123"
+        assert events[0]["token_account"] == ""
 
     def test_zero_change_skipped(self):
         """Balance changes of zero should be skipped."""
