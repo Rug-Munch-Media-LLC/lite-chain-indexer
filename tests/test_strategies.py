@@ -613,7 +613,11 @@ class TestEVMStrategy:
         strategy = EVMChainStrategy("unsupported_evm")
         import asyncio
 
-        result = asyncio.run(strategy.verify_endpoints())
+        # The strategy-level wrapper is deprecated; the new API is
+        # lite_indexer.rpc.verify_endpoints_for_chain. The wrapper is kept
+        # for the public strategy API, so the deprecation is expected here.
+        with pytest.warns(DeprecationWarning, match="verify_endpoints"):
+            result = asyncio.run(strategy.verify_endpoints())
         assert result == []
 
     def test_fetch_swap_events_reorg_detected(self):
