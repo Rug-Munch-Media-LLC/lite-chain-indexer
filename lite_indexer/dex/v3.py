@@ -18,6 +18,21 @@ from typing import Any
 from .common import unpad_address
 
 
+def _decode_int256_magnitude(hex_str: str) -> int:
+    """Decode a 32-byte two's-complement int256 and return its magnitude.
+
+    Uniswap V3 Swap events carry amount0/amount1 as *signed* int256: one
+    leg is the input (positive) and the other the output (negative). The
+    trade size of a leg is the absolute value. Without this, negative
+    amounts decode to ~2^256 — a value that would make every V3 swap look
+    like a whale.
+    """
+    value = int(hex_str, 16)
+    if value >= 2**255:
+        value -= 2**256
+    return abs(value)
+
+
 def parse_pool_created_v3(
     log: dict[str, Any],
     chain: str,
@@ -123,8 +138,10 @@ def parse_swap_v3(
     amount1_out = "0"
 
     if len(raw) >= 256:  # amount0 + amount1 + sqrtPriceX96 + liquidity + tick
-        amount0_in = str(int(raw[0:64], 16))
-        amount1_in = str(int(raw[64:128], 16))
+        # Signed int256: one leg is negative (the output side). Store the
+        # magnitude so whale detection and USD notional see the true size.
+        amount0_in = str(_decode_int256_magnitude(raw[0:64]))
+        amount1_in = str(_decode_int256_magnitude(raw[64:128]))
 
     # Resolve token0/token1 from pair→tokens mapping
     pair = log.get("address", "").lower()

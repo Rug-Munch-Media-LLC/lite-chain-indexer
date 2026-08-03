@@ -7,6 +7,7 @@ disk caps, event topics, and factory addresses.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -444,3 +445,123 @@ TRON_PAGE_SIZE: int = 200
 TRON_MAX_BLOCK_RANGE: int = 2000
 
 TRC20_CH_TABLE: str = "wallet_memory.evm_transfers"
+
+# ── Whale Detection ───────────────────────────────────────────────────
+# A DEX swap is a "whale" when:
+#   1. USD notional of either leg >= WHALE_THRESHOLD_USD (requires a price
+#      from the token_prices feed — see lite_indexer/pricing.py), OR
+#   2. The raw token amount of either leg exceeds the per-chain
+#      WHALE_AMOUNT_THRESHOLDS heuristic (used when no price is available;
+#      base units, so the value assumes a typical 18-decimal EVM token —
+#      Solana/Tron thresholds are scaled for 9/6 decimals).
+# The `whale` column in wallet_memory.dex_events is UInt8 (0/1).
+WHALE_THRESHOLD_USD: float = float(os.environ.get("WHALE_THRESHOLD_USD", "100000"))
+
+# Per-chain raw-amount (base-unit) heuristic thresholds. These are a
+# fallback for tokens without a USD price; USD-based detection (Fix 3) is
+# the accurate path. Defaults approximate a $100K swap for a token priced
+# near $1.00: 1e5 tokens x 10^decimals. Override wholesale with a JSON
+# object in WHALE_AMOUNT_THRESHOLDS_JSON, e.g.
+#   WHALE_AMOUNT_THRESHOLDS_JSON='{"ethereum": 1000000000000000000000000}'
+WHALE_AMOUNT_THRESHOLDS_DEFAULT: dict[str, int] = {
+    "ethereum": 10**23,
+    "base": 10**23,
+    "bsc": 10**23,
+    "polygon": 10**23,
+    "arbitrum": 10**23,
+    "optimism": 10**23,
+    "avalanche": 10**23,
+    "linea": 10**23,
+    "scroll": 10**23,
+    "zksync": 10**23,
+    "mantle": 10**23,
+    "gnosis": 10**23,
+    "celo": 10**23,
+    "fantom": 10**23,
+    "solana": 10**14,  # 9 decimals → 1e5 tokens
+    "tron": 10**11,  # 6 decimals → 1e5 tokens
+}
+
+_whale_amounts_json = os.environ.get("WHALE_AMOUNT_THRESHOLDS_JSON", "")
+WHALE_AMOUNT_THRESHOLDS: dict[str, int] = (
+    {str(k): int(v) for k, v in json.loads(_whale_amounts_json).items()}
+    if _whale_amounts_json
+    else dict(WHALE_AMOUNT_THRESHOLDS_DEFAULT)
+)
+
+# Top-quantile per-pair raw amount marking (backfill only): a swap is a
+# whale when its max leg amount is >= the 99.9th percentile for that pair
+# over the scan window (i.e. the top 0.1%).
+WHALE_TOP_QUANTILE: float = float(os.environ.get("WHALE_TOP_QUANTILE", "0.999"))
+
+# ── USD Price Feed (CoinGecko / DefiLlama) ────────────────────────────
+# Free tiers only — no API keys. Prices are cached in memory and mirrored
+# to wallet_memory.token_prices (ReplacingMergeTree). On startup and every
+# PRICING_REFRESH_INTERVAL seconds the indexer refreshes prices for the
+# tokens recently seen in dex_events and uses them to (a) compute the
+# whale flag at ingestion and (b) populate price_usd / volume_usd on DEX
+# rows. Any provider failure degrades to the previous cached price —
+# ingestion never blocks on the price feed.
+PRICING_ENABLED: bool = os.environ.get("PRICING_ENABLED", "1") != "0"
+PRICING_REFRESH_INTERVAL: int = int(os.environ.get("PRICING_REFRESH_INTERVAL", "900"))  # 15 min
+
+CH_TOKEN_PRICES_TABLE: str = "wallet_memory.token_prices"
+
+COINGECKO_BASE_URL: str = "https://api.coingecko.com/api/v3"
+DEFILLAMA_BASE_URL: str = "https://coins.llama.fi"
+
+# Min seconds between requests per provider (free-tier pacing).
+COINGECKO_MIN_INTERVAL: float = float(os.environ.get("COINGECKO_MIN_INTERVAL", "12.0"))
+DEFILLAMA_MIN_INTERVAL: float = float(os.environ.get("DEFILLAMA_MIN_INTERVAL", "2.0"))
+
+# CoinGecko supports contract-address lookups per EVM/Tron platform. Map
+# our internal chain names to CoinGecko asset platform ids.
+COINGECKO_PLATFORMS: dict[str, str] = {
+    "ethereum": "ethereum",
+    "base": "base",
+    "bsc": "binance-smart-chain",
+    "polygon": "polygon-pos",
+    "arbitrum": "arbitrum-one",
+    "optimism": "optimistic-ethereum",
+    "avalanche": "avalanche",
+    "linea": "linea",
+    "scroll": "scroll",
+    "zksync": "zksync",
+    "mantle": "mantle",
+    "gnosis": "xdai",
+    "celo": "celo",
+    "fantom": "fantom",
+    "tron": "tron",
+}
+
+# Max token addresses batched per provider request (free-tier URL length).
+PRICING_BATCH_SIZE: int = int(os.environ.get("PRICING_BATCH_SIZE", "50"))
+
+# Cap on distinct tokens fetched per refresh cycle (bounds API load on
+# the free tiers; the highest-traffic tokens are sampled first).
+PRICING_MAX_TRACKED_TOKENS: int = int(os.environ.get("PRICING_MAX_TRACKED_TOKENS", "2500"))
+
+# How far back to scan dex_events for "recently seen" tokens.
+PRICING_TOKEN_WINDOW_DAYS: int = int(os.environ.get("PRICING_TOKEN_WINDOW_DAYS", "7"))
+
+# Default decimals when the price feed has no decimals info: EVM ERC-20s
+# default to 18, Solana SPL to 9, Tron TRC-20 to 6. Overridable per token
+# via KNOWN_DECIMALS in pricing.py (stablecoins are pre-seeded).
+DEFAULT_DECIMALS_BY_CHAIN: dict[str, int] = {
+    "ethereum": 18,
+    "base": 18,
+    "bsc": 18,
+    "polygon": 18,
+    "arbitrum": 18,
+    "optimism": 18,
+    "avalanche": 18,
+    "linea": 18,
+    "scroll": 18,
+    "zksync": 18,
+    "mantle": 18,
+    "gnosis": 18,
+    "celo": 18,
+    "fantom": 18,
+    "solana": 9,
+    "tron": 6,
+}

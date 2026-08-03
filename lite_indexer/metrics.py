@@ -48,6 +48,9 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "transfers_written",
     "dex_swaps_written",
     "deployers_written",
+    "pricing_refreshes",
+    "pricing_upserts",
+    "whale_backfills",
 )
 
 

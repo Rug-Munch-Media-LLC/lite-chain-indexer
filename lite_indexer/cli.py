@@ -26,7 +26,13 @@ from typing import Any
 import httpx
 
 from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
-from lite_indexer.config import BATCH_SIZE, DATA_DIR, DISK_CAP_BYTES, RECONCILIATION_SAMPLE_SIZE
+from lite_indexer.config import (
+    BATCH_SIZE,
+    DATA_DIR,
+    DISK_CAP_BYTES,
+    PRICING_ENABLED,
+    RECONCILIATION_SAMPLE_SIZE,
+)
 from lite_indexer.indexer import LiteIndexer
 from lite_indexer.logging import get_logger, setup_logging
 from lite_indexer.storage.clickhouse import ClickHouseWriter
@@ -205,6 +211,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Data directory for local Parquet output + state (default: DATA_DIR)",
     )
+    # ── backfill-whales subcommand ───────────────────────────────────
+    # Re-scans recent dex_events and marks whale rows retroactively using
+    # the token_prices USD feed + per-chain raw thresholds + top-0.1%
+    # per-pair amounts. Intended for an operator cron after the whale
+    # feature ships (existing rows all have whale=0).
+    backfill_parser = sub.add_parser(
+        "backfill-whales",
+        help="Re-scan recent dex_events and mark whale rows retroactively",
+        description=(
+            "Recomputes the whale flag for recent dex_events rows using "
+            "token_prices USD values, per-chain raw amount thresholds, and "
+            "the top-0.1% per-pair amount, then issues ALTER TABLE UPDATE "
+            "mutations for the rows that changed. Idempotent — re-running "
+            "is a no-op. Use --dry-run to preview counts without mutating."
+        ),
+    )
+    backfill_parser.add_argument(
+        "--chain",
+        default=None,
+        choices=sorted(SUPPORTED_CHAINS.keys()),
+        help="Restrict to a single chain (default: all chains)",
+    )
+    backfill_parser.add_argument(
+        "--days",
+        type=int,
+        default=90,
+        help="How many days back to scan (default: 90, matches dex_events retention)",
+    )
+    backfill_parser.add_argument(
+        "--limit",
+        type=int,
+        default=500_000,
+        help="Max rows to scan (default: 500000)",
+    )
+    backfill_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview whale_up/whale_down counts without issuing mutations",
+    )
     return parser.parse_args(argv)
 
 
@@ -314,15 +359,31 @@ async def main_daemon(
         name="rpc-discovery-monitor",
     )
 
+    # Periodic USD price refresh (CoinGecko/DefiLlama free tiers): keeps the
+    # token_prices feed + in-memory cache current so the whale flag and USD
+    # columns on DEX rows are computed with prices. Best-effort — a failed
+    # refresh keeps the previous cached prices.
+    price_task: asyncio.Task[Any] | None = None
+    if PRICING_ENABLED:
+        price_task = asyncio.create_task(
+            _price_refresh_loop(chains),
+            name="price-refresh",
+        )
+
     # Wait for shutdown signal
     await shutdown_event.wait()
 
-    # Cancel the health monitor, discovery loop, and all chain tasks
+    # Cancel the health monitor, discovery loop, price refresh, and all
+    # chain tasks
     health_task.cancel()
     discovery_task.cancel()
+    if price_task is not None:
+        price_task.cancel()
     for task in chain_tasks:
         task.cancel()
     await asyncio.gather(health_task, discovery_task, *chain_tasks, return_exceptions=True)
+    if price_task is not None:
+        await asyncio.gather(price_task, return_exceptions=True)
 
     logger.info("daemon_shutdown")
     return 0 if error_count == 0 else 1
@@ -368,6 +429,35 @@ async def _discovery_and_usage_loop(chains: list[str]) -> None:
         await asyncio.sleep(interval)
 
 
+async def _price_refresh_loop(chains: list[str]) -> None:
+    """Periodically refresh USD prices for tracked DEX tokens.
+
+    Refreshes the ``token_prices`` feed (CoinGecko + DefiLlama free tiers)
+    on startup and every ``PRICING_REFRESH_INTERVAL`` seconds (min 5 min).
+    The in-memory price cache feeds the whale flag + USD columns written
+    on DEX rows. Best-effort: provider failures keep the previous cache.
+
+    Args:
+        chains: Chains to refresh prices for (tracked-token scan filter).
+    """
+    from lite_indexer.config import PRICING_REFRESH_INTERVAL
+    from lite_indexer.pricing import refresh_prices
+
+    interval = max(300, PRICING_REFRESH_INTERVAL)
+    while True:
+        try:
+            writer = ClickHouseWriter()
+            ch_client = writer.client()
+            if ch_client is not None:
+                stats = await refresh_prices(ch_client, chains=chains)
+                logger.info("prices_refreshed", stats=stats)
+            else:
+                logger.warning("price_refresh_skipped_no_ch")
+        except Exception as exc:  # noqa: BLE001 — refresh is best-effort
+            logger.warning("price_refresh_failed", error=str(exc)[:100])
+        await asyncio.sleep(interval)
+
+
 async def async_main(args: argparse.Namespace) -> int:
     """Async entry point."""
     if args.log_level:
@@ -378,6 +468,10 @@ async def async_main(args: argparse.Namespace) -> int:
     # ── export-parquet subcommand ────────────────────────────────────
     if args.command == "export-parquet":
         return run_export_parquet(args)
+
+    # ── backfill-whales subcommand ───────────────────────────────────
+    if args.command == "backfill-whales":
+        return run_backfill_whales(args)
 
     # ── reconcile subcommand (TrueBlocks-style) ──────────────────────
     if args.command == "reconcile":
@@ -423,6 +517,20 @@ async def async_main(args: argparse.Namespace) -> int:
     )
     indexer.dex_enabled = args.dex
     indexer.deployers_enabled = args.deployers
+
+    # Startup USD price refresh (best-effort, non-blocking): populate the
+    # token_prices feed + cache so the whale flag and USD columns on the
+    # first batch are computed with prices instead of raw-amount fallbacks.
+    if PRICING_ENABLED:
+        try:
+            from lite_indexer.pricing import refresh_prices
+
+            startup_client = ClickHouseWriter().client()
+            if startup_client is not None:
+                stats = await refresh_prices(startup_client, chains=[args.chain])
+                logger.info("prices_refreshed_startup", stats=stats)
+        except Exception as exc:  # noqa: BLE001 — refresh is best-effort
+            logger.warning("price_refresh_startup_failed", error=str(exc)[:100])
 
     try:
         summary = await indexer.sync_loop()
@@ -494,6 +602,34 @@ def run_export_parquet(args: argparse.Namespace) -> int:
     out: dict[str, Any] | list[dict[str, Any]] = summaries[0] if len(summaries) == 1 else {"chains": summaries}
     print(json.dumps(out, default=str))  # noqa: T201
     return 1 if failed else 0
+
+
+def run_backfill_whales(args: argparse.Namespace) -> int:
+    """Run the backfill-whales subcommand (synchronous).
+
+    Args:
+        args: Parsed CLI args (chain, days, limit, dry_run).
+
+    Returns:
+        Process exit code (0 = success, 1 = ClickHouse unavailable).
+    """
+    from lite_indexer.pricing import backfill_whales
+
+    writer = ClickHouseWriter()
+    ch_client = writer.client()
+    if ch_client is None:
+        print(json.dumps({"status": "error", "error": "clickhouse_unavailable"}))  # noqa: T201
+        return 1
+
+    result = backfill_whales(
+        ch_client,
+        days=args.days,
+        chain=args.chain,
+        limit=args.limit,
+        dry_run=args.dry_run,
+    )
+    print(json.dumps(result, default=str))  # noqa: T201
+    return 0
 
 
 def main() -> None:
