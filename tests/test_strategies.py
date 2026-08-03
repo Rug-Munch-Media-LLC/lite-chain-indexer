@@ -18,6 +18,7 @@ from lite_indexer.strategies import (
     create_strategy,
 )
 from lite_indexer.strategies.solana import _parse_solana_transfer_events
+from lite_indexer.strategies.solana.models import MAX_SIGNATURES_PER_TOKEN
 from lite_indexer.strategies.tron import _parse_tron_transfer_event
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -238,10 +239,146 @@ class TestSolanaStrategy:
         strategy = SolanaStrategy()
         assert strategy.supports_dex() is False
 
-    def test_supports_deployers_false(self):
-        """Solana strategy should not support deployer tracking."""
+    def test_supports_deployers_true(self):
+        """Solana strategy captures deployer events structurally (creation fee payer)."""
         strategy = SolanaStrategy()
-        assert strategy.supports_deployers() is False
+        assert strategy.supports_deployers() is True
+
+    def test_capture_deployer_event_fee_payer(self):
+        """The creation tx fee payer (accountKeys[0]) becomes the deployer EOA."""
+        import asyncio
+
+        from lite_indexer.strategies.solana.strategy import SolanaStrategy
+
+        strategy = SolanaStrategy()
+        mint = "HnT9nFrJkYfLxYQhKfJ8S6aQkR9XyZ2WmTn4cVdEaBcD"
+        creator = "7GVW8rU9NqJhYzVpLf3kQxWmAbCdEfGhIjKlMnOpQrStU"
+        tx_payload = {
+            "result": {
+                "transaction": {
+                    "message": {
+                        "accountKeys": [
+                            {"pubkey": creator, "signer": True, "writable": True},
+                            {"pubkey": "pumpfunprogramid", "signer": False, "writable": False},
+                        ]
+                    }
+                },
+                "blockTime": 1700000000,
+            }
+        }
+        semaphore = asyncio.Semaphore(1)
+
+        async def fake_rpc(method: str, params: list | None = None, endpoint: str | None = None):
+            return tx_payload
+
+        strategy._rpc_call = fake_rpc  # type: ignore[method-assign]
+        event = asyncio.run(
+            strategy._capture_deployer_event(
+                mint,
+                {"signature": "sig123", "slot": 100, "err": None},
+                semaphore,
+            )
+        )
+        assert event is not None
+        assert event["deployer"] == creator
+        assert event["deployer_eoa"] == creator
+        assert event["token_address"] == mint
+        assert event["chain"] == "solana"
+        assert event["tx_hash"] == "sig123"
+        assert event["type"] == "solana_token"
+
+    def test_capture_deployer_event_missing_tx_returns_none(self):
+        """A failed tx fetch produces no deployer event (best-effort)."""
+        import asyncio
+
+        strategy = SolanaStrategy()
+        semaphore = asyncio.Semaphore(1)
+
+        async def fake_rpc(method: str, params: list | None = None, endpoint: str | None = None):
+            return None
+
+        strategy._rpc_call = fake_rpc  # type: ignore[method-assign]
+        event = asyncio.run(
+            strategy._capture_deployer_event(
+                "mint1",
+                {"signature": "sig123", "slot": 100, "err": None},
+                semaphore,
+            )
+        )
+        assert event is None
+
+    def test_deployer_capture_skips_established_tokens(self):
+        """Tokens with a full signature window are NOT falsely attributed.
+
+        The deployer is only captured when the mint's entire history fits in
+        the fetch window (fewer signatures than the limit) — established
+        tokens like USDC have far more, so no deployer event is emitted.
+        """
+        import asyncio
+
+        strategy = SolanaStrategy()
+        mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"  # USDC — huge history
+
+        # Simulate a full window (>= limit) — creation tx NOT in window.
+        full_sigs = [{"signature": f"sig{i}", "slot": 1000 + i, "err": None} for i in range(MAX_SIGNATURES_PER_TOKEN)]
+
+        async def fake_rpc(method: str, params: list | None = None, endpoint: str | None = None):
+            return {"result": full_sigs}
+
+        async def run():
+            strategy._rpc_call = fake_rpc  # type: ignore[method-assign]
+            events, ok = await strategy._fetch_mint_transfers(mint, 100, 2000)
+            return events, ok
+
+        events, ok = asyncio.run(run())
+        assert ok is True
+        assert events == []
+        assert strategy._last_deployer_events == []  # never captured
+
+    def test_deployer_capture_new_mint_full_history(self):
+        """A new mint whose full history fits in the window captures its creator."""
+        import asyncio
+
+        strategy = SolanaStrategy()
+        mint = "HnT9nFrJkYfLxYQhKfJ8S6aQkR9XyZ2WmTn4cVdEaBcD"
+        creator = "7GVW8rU9NqJhYzVpLf3kQxWmAbCdEfGhIjKlMnOpQrStU"
+
+        # New mint: only a few signatures, oldest is the creation tx.
+        partial_sigs = [
+            {"signature": "newest_sig", "slot": 200, "err": None},
+            {"signature": "creation_sig", "slot": 100, "err": None},
+        ]
+        tx_payload = {
+            "result": {
+                "transaction": {
+                    "message": {
+                        "accountKeys": [
+                            {"pubkey": creator, "signer": True, "writable": True},
+                        ]
+                    }
+                },
+                "blockTime": 1700000000,
+            }
+        }
+
+        async def fake_rpc(method: str, params: list | None = None, endpoint: str | None = None):
+            if method == "getSignaturesForAddress":
+                return {"result": partial_sigs}
+            return tx_payload
+
+        async def run():
+            strategy._rpc_call = fake_rpc  # type: ignore[method-assign]
+            events, ok = await strategy._fetch_mint_transfers(mint, 100, 2000)
+            return events, ok
+
+        events, ok = asyncio.run(run())
+        assert ok is True
+        assert events == []
+        # Deployer captured: fee payer = creator, once per mint.
+        assert len(strategy._last_deployer_events) == 1
+        assert strategy._last_deployer_events[0]["deployer_eoa"] == creator
+        assert strategy._last_deployer_events[0]["token_address"] == mint
+        assert mint in strategy._deployer_captured_mints
 
     def test_fetch_block_number_returns_none_without_rpc(self):
         """Without RPC, fetch_block_number should return None (no crash)."""

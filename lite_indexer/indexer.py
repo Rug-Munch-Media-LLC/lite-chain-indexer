@@ -59,6 +59,7 @@ from lite_indexer.storage import (
 from lite_indexer.strategies import (
     SUPPORTED_CHAINS,
     EVMChainStrategy,
+    SolanaStrategy,
     create_strategy,
 )
 from lite_indexer.strategies.base import AbstractChainStrategy
@@ -629,15 +630,23 @@ class LiteIndexer:
         if dex_events and not _check_reorg(dex_events):
             dex_events = await self._enrich_timestamps(dex_events)
 
-        # 5b. Write deployer events (EVM only)
+        # 5b. Write deployer events (EVM + Solana)
         # write_deployer_events resolves the real deployer EOA (tx `from`)
         # via eth_getTransactionByHash before inserting, so the async await
-        # is required.
+        # is required. Solana deployer events are captured structurally by
+        # the strategy (creation tx fee payer) and written as-is.
         deployer_written = 0
         evm_strategy = self.strategy if isinstance(self.strategy, EVMChainStrategy) else None
+        solana_strategy = self.strategy if isinstance(self.strategy, SolanaStrategy) else None
         if self.deployers_enabled and evm_strategy and evm_strategy._last_pair_events:
             evm_strategy._last_pair_events = await self._enrich_timestamps(evm_strategy._last_pair_events)
             deployer_written = await self.ch_writer.write_deployer_events(self.chain, evm_strategy._last_pair_events)
+            if deployer_written:
+                summary["deployer_events_written"] = deployer_written
+        elif self.deployers_enabled and solana_strategy and solana_strategy._last_deployer_events:
+            deployer_written = await self.ch_writer.write_solana_deployer_events(
+                self.chain, solana_strategy._last_deployer_events
+            )
             if deployer_written:
                 summary["deployer_events_written"] = deployer_written
 

@@ -50,15 +50,29 @@ logger = get_logger(__name__)
 
 # Max concurrent eth_getTransactionByHash calls while resolving deployer
 # EOAs (keeps RPC overhead low while batching unique tx hashes).
-_DEPLOYER_RPC_CONCURRENCY = 5
+_DEPLOYER_RPC_CONCURRENCY = 8
+
+# How many endpoints to try per tx hash before giving up on it. The
+# previous implementation queried only the single best endpoint — when that
+# node was down or rate-limited, every deployer event in the batch landed
+# with an empty deployer_eoa. Trying the whole pool (bounded) recovers the
+# rows that a transient best-endpoint failure would otherwise lose.
+_DEPLOYER_RPC_MAX_ENDPOINTS = 3
 
 
 async def _resolve_deployer_eoas(chain: str, events: list[dict[str, Any]]) -> dict[str, str]:
     """Resolve the deployer EOA (tx `from`) for each unique tx hash.
 
     Groups deployer events by unique ``transactionHash`` so each tx is
-    queried exactly once via ``eth_getTransactionByHash``, then maps
-    tx_hash → from address. Returns {} if resolution is unavailable.
+    queried via ``eth_getTransactionByHash``, then maps tx_hash → from
+    address. Returns {} if resolution is unavailable.
+
+    Endpoint resilience: instead of a single ``get_best_endpoint`` call, the
+    pool is rotated so each tx hash is retried against up to
+    ``_DEPLOYER_RPC_MAX_ENDPOINTS`` endpoints. A transient failure on the
+    healthiest node no longer blanks the whole batch — the fallback nodes
+    recover the rows. Failure feedback (``record_endpoint_failure``) flows
+    back into the shared pool so future batches prefer healthier endpoints.
 
     Args:
         chain: Chain name (used to pick RPC endpoints).
@@ -73,7 +87,7 @@ async def _resolve_deployer_eoas(chain: str, events: list[dict[str, Any]]) -> di
 
     # Deferred imports avoid any import-cycle risk with the storage package.
     from lite_indexer.chains import GET_LOGS_ENDPOINTS
-    from lite_indexer.rpc import RpcClient, get_best_endpoint
+    from lite_indexer.rpc import RpcClient, get_best_endpoint, record_endpoint_failure
 
     endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
     if not endpoints:
@@ -81,20 +95,31 @@ async def _resolve_deployer_eoas(chain: str, events: list[dict[str, Any]]) -> di
         return {}
 
     rpc = RpcClient()
-    endpoint = get_best_endpoint(endpoints)
     semaphore = asyncio.Semaphore(_DEPLOYER_RPC_CONCURRENCY)
 
+    async def _try_endpoint(endpoint: str, tx_hash: str) -> str | None:
+        try:
+            result = await rpc.call(endpoint, "eth_getTransactionByHash", [tx_hash])
+            if result and isinstance(result.get("result"), dict):
+                from_addr = result["result"].get("from")
+                if from_addr:
+                    return str(from_addr).lower()
+        except Exception as exc:  # noqa: BLE001 — resolution is best-effort
+            logger.debug("deployer_eoa_fetch_failed", tx=tx_hash[:16], error=str(exc)[:60])
+        record_endpoint_failure(endpoint)
+        return None
+
     async def _get_from(tx_hash: str) -> tuple[str, str]:
-        async with semaphore:
-            try:
-                result = await rpc.call(endpoint, "eth_getTransactionByHash", [tx_hash])
-                if result and isinstance(result.get("result"), dict):
-                    from_addr = result["result"].get("from")
-                    if from_addr:
-                        return tx_hash, str(from_addr).lower()
-            except Exception as exc:  # noqa: BLE001 — resolution is best-effort
-                logger.debug("deployer_eoa_fetch_failed", tx=tx_hash[:16], error=str(exc)[:60])
-            return tx_hash, ""
+        # Rotate the pool starting from the best endpoint so healthy nodes
+        # are preferred, but the batch survives a dead best node.
+        start_idx = endpoints.index(get_best_endpoint(endpoints))
+        rotated = endpoints[start_idx:] + endpoints[:start_idx]
+        for endpoint in rotated[:_DEPLOYER_RPC_MAX_ENDPOINTS]:
+            async with semaphore:
+                from_addr = await _try_endpoint(endpoint, tx_hash)
+            if from_addr:
+                return tx_hash, from_addr
+        return tx_hash, ""
 
     results = await asyncio.gather(*(_get_from(h) for h in tx_hashes), return_exceptions=True)
 
@@ -588,6 +613,83 @@ class ClickHouseWriter:
         except Exception as exc:
             metrics_incr("clickhouse_errors")
             logger.error("deployer_events_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
+            return 0
+
+    async def write_solana_deployer_events(self, chain: str, events: list[dict[str, Any]]) -> int:
+        """Insert Solana deployer events into ClickHouse. Returns rows inserted.
+
+        Solana deployer events are captured structurally by the Solana
+        strategy: the fee payer of the mint's creation transaction is the real
+        creator EOA. The strategy already resolved ``deployer`` /
+        ``deployer_eoa`` (no ``eth_getTransactionByHash`` round-trip needed),
+        so this method inserts the rows as-is.
+
+        Args:
+            chain: Chain name (``solana``).
+            events: Deployer event dicts (see SolanaStrategy._capture_deployer_event).
+
+        Returns:
+            Number of rows inserted (0 on failure/unavailable).
+        """
+        if not events:
+            return 0
+
+        client = self._connect()
+        if not client:
+            logger.warning("deployer_clickhouse_skipped", chain=chain)
+            return 0
+
+        self._ensure_source_column(client, CH_DEPLOYER_TABLE)
+        self._ensure_deployer_columns(client)
+
+        now = datetime.now(UTC)
+        rows: list[tuple[Any, ...]] = []
+
+        for e in events:
+            ts_str = e.get("block_timestamp", "") or e.get("blockTimestamp", "")
+            if ts_str:
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    ts = now
+            else:
+                ts = now
+
+            deployer = e.get("deployer", "") or ""
+            token_address = e.get("token_address", "") or e.get("token0", "") or ""
+            rows.append(
+                (
+                    deployer,
+                    deployer,  # deployer_eoa — already resolved by the strategy
+                    token_address,
+                    e.get("token0", "") or token_address,
+                    e.get("token1", "") or "",
+                    e.get("pair_address", "") or "",
+                    e.get("chain", chain),
+                    int(e.get("block_number", 0) or 0),
+                    ts,
+                    e.get("tx_hash", "") or "",
+                    e.get("type", "solana_token"),
+                    e.get("factory", "") or "",
+                    now,
+                    "lite_indexer",
+                )
+            )
+
+        try:
+            client.execute(
+                f"INSERT INTO {CH_DEPLOYER_TABLE} "
+                "(deployer, deployer_eoa, token_address, token0, token1, pair_address, "
+                "chain, block_number, block_timestamp, tx_hash, type, "
+                "factory, ingested_at, source) VALUES",
+                rows,
+            )
+            logger.info("solana_deployer_events_inserted", chain=chain, rows=len(rows))
+            metrics_incr("clickhouse_inserts")
+            return len(rows)
+        except Exception as exc:
+            metrics_incr("clickhouse_errors")
+            logger.error("solana_deployer_events_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
             return 0
 
     # ── Wallet Access Path (competitive features) ──────────────────────

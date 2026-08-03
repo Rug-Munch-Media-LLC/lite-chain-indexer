@@ -51,6 +51,12 @@ class SolanaStrategy(AbstractChainStrategy):
         self.tracked_tokens = tracked_tokens or SOLANA_TRACKED_TOKENS
         self._mint_set: set[str] = {t["mint"] for t in self.tracked_tokens}
         self._client: httpx.AsyncClient | None = None
+        # Deployer events: the fee payer of each tracked mint's creation
+        # transaction (the oldest signature the strategy has seen for the
+        # mint). Captured at most once per mint per process via
+        # ``_deployer_captured_mints``.
+        self._last_deployer_events: list[dict[str, Any]] = []
+        self._deployer_captured_mints: set[str] = set()
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -74,6 +80,93 @@ class SolanaStrategy(AbstractChainStrategy):
         """Make a JSON-RPC call using the shared client."""
         client = await self._get_client()
         return await rpc_call(client, method, params, endpoint)
+
+    # ── Feature Flags ─────────────────────────────────────────────────
+
+    def supports_deployers(self) -> bool:
+        """Whether this chain tracks deployer events (True for Solana).
+
+        Solana deployer events are captured structurally: the fee payer of
+        the mint's creation transaction (oldest signature when the full
+        history fits in the fetch window) is the real creator EOA.
+        """
+        return True
+
+    async def _capture_deployer_event(
+        self,
+        mint: str,
+        creation_sig: dict[str, Any],
+        semaphore: asyncio.Semaphore,
+    ) -> dict[str, Any] | None:
+        """Capture a deployer event for a mint's creation transaction.
+
+        Fetches the creation signature (oldest in the window) via
+        ``getTransaction`` (jsonParsed) and records the fee payer
+        (``transaction.message.accountKeys[0]``) as the deployer EOA. The
+        deployer event dict matches the ``deployer_events`` schema so the
+        ClickHouse writer can insert it directly (fee payer is already
+        resolved — no ``eth_getTransactionByHash`` round-trip needed).
+
+        Args:
+            mint: Token mint address.
+            creation_sig: Signature info dict (with ``signature`` / ``slot``).
+            semaphore: Shared concurrency limiter.
+
+        Returns:
+            Deployer event dict, or None when the tx cannot be fetched or the
+            fee payer is missing.
+        """
+        sig = creation_sig.get("signature", "")
+        if not sig:
+            return None
+
+        async with semaphore:
+            tx_result = await self._rpc_call(
+                "getTransaction",
+                [
+                    sig,
+                    {
+                        "encoding": "jsonParsed",
+                        "maxSupportedTransactionVersion": 0,
+                        "commitment": "finalized",
+                    },
+                ],
+            )
+        if not tx_result or not isinstance(tx_result, dict) or not isinstance(tx_result.get("result"), dict):
+            return None
+
+        tx_data = tx_result["result"]
+        message = (tx_data.get("transaction") or {}).get("message") or {}
+        account_keys = message.get("accountKeys") or []
+        if not account_keys:
+            return None
+        first = account_keys[0]
+        fee_payer = first.get("pubkey") if isinstance(first, dict) else str(first)
+        if not fee_payer:
+            return None
+
+        block_time = tx_data.get("blockTime")
+        try:
+            ts = datetime.fromtimestamp(int(block_time), tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except (ValueError, TypeError, OverflowError):
+            ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        return {
+            "deployer": str(fee_payer),
+            "deployer_eoa": str(fee_payer),
+            "token_address": mint,
+            "token0": mint,
+            "token1": "",
+            "pair_address": "",
+            "chain": "solana",
+            "block_number": int(creation_sig.get("slot") or 0),
+            "block_timestamp": ts,
+            "tx_hash": sig,
+            "type": "solana_token",
+            "factory": "",
+            "ingested_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source": "lite_indexer",
+        }
 
     # ── Block Number ─────────────────────────────────────────────────
 
@@ -222,6 +315,32 @@ class SolanaStrategy(AbstractChainStrategy):
         sig_infos = result["result"]
         if not isinstance(sig_infos, list):
             return [], False
+
+        # Deployer capture (universal — no factory list): when a mint's full
+        # signature history fits in the window (fewer than the fetch limit),
+        # the OLDEST signature is the creation transaction. The fee payer of
+        # that transaction is the real creator EOA. Captured once per mint per
+        # process. Established tokens (USDC/BONK/...) have far more than the
+        # limit of signatures, so this never falsely attributes them.
+        if (
+            mint not in self._deployer_captured_mints
+            and len(sig_infos) < MAX_SIGNATURES_PER_TOKEN
+            and sig_infos
+            and isinstance(sig_infos[-1], dict)
+            and sig_infos[-1].get("err") is None
+        ):
+            creation_sig = sig_infos[-1]
+            try:
+                deployer_event = await self._capture_deployer_event(mint, creation_sig, semaphore)
+                if deployer_event is not None:
+                    self._last_deployer_events.append(deployer_event)
+                    self._deployer_captured_mints.add(mint)
+            except Exception as exc:  # noqa: BLE001 — best-effort capture
+                logger.warning(
+                    "solana_deployer_capture_failed",
+                    mint=mint[:16],
+                    error=str(exc)[:80],
+                )
 
         # Step 2: Filter signatures by slot range
         relevant_sigs = [
