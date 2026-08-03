@@ -96,7 +96,8 @@ async def test_deployers_with_dex(tmp_path, monkeypatch):
     indexer._ch_writer = ch
     indexer._ndjson_writer.write_events = Mock(return_value=0)
     indexer._ndjson_writer.write_dex_events = Mock(return_value=0)
-    strategy.write_clickhouse = AsyncMock(return_value=0)
+    # write_clickhouse is a sync method (called without await) → plain Mock
+    strategy.write_clickhouse = Mock(return_value=0)
 
     summary = await indexer._sync_loop_inner({"status": "ok", "errors": []}, time.monotonic())
 
@@ -136,7 +137,8 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
     indexer._enrich_timestamps = AsyncMock(side_effect=fake_enrich)
     indexer._ndjson_writer.write_events = Mock(return_value=100)
     indexer._ndjson_writer.write_dex_events = Mock(return_value=0)
-    strategy.write_clickhouse = AsyncMock(return_value=1)
+    # write_clickhouse is a sync method (called without await) → plain Mock
+    strategy.write_clickhouse = Mock(return_value=1)
     ch = Mock()
     ch.write_dex_events.return_value = 0
     ch.write_wallet_features = AsyncMock(return_value={})
