@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 from lite_indexer.storage.reconciliation import (
+    _classify,
     ensure_reconciliation_table,
     run_reconciliation,
     select_random_wallets,
@@ -133,6 +134,49 @@ def test_select_random_wallets_zero_limit_returns_empty() -> None:
     assert select_random_wallets(client, "ethereum", limit=0) == []
 
 
+def test_select_random_wallets_query_failure_returns_empty() -> None:
+    """A ClickHouse failure during sampling degrades to an empty sample."""
+
+    class BrokenClient:
+        def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
+            raise RuntimeError("connection refused")
+
+    assert select_random_wallets(BrokenClient(), "ethereum", limit=5) == []
+
+
+class TestClassify:
+    """_classify — MATCH / APPROXIMATE / MISMATCH with zero-guard."""
+
+    def test_zero_on_chain_balance_is_absolute_mismatch(self) -> None:
+        """on_chain=0 with nonzero delta → MISMATCH (no divide-by-zero)."""
+        status, delta_pct = _classify(delta=500, on_chain=0)
+        assert status == "MISMATCH"
+        # Denominator floors at 1 wei: gap = |delta| * 100.
+        assert delta_pct == pytest.approx(50000.0)
+
+    def test_zero_delta_matches_any_balance(self) -> None:
+        status, delta_pct = _classify(delta=0, on_chain=0)
+        assert status == "MATCH"
+        assert delta_pct == pytest.approx(0.0)
+
+    def test_approximate_boundary(self) -> None:
+        # delta_pct just under 1.0 → APPROXIMATE
+        status, delta_pct = _classify(delta=999, on_chain=100_000)
+        assert delta_pct == pytest.approx(0.999)
+        assert status == "APPROXIMATE"
+
+    def test_mismatch_boundary(self) -> None:
+        # delta_pct >= 1.0 → MISMATCH
+        status, delta_pct = _classify(delta=1_000, on_chain=100_000)
+        assert delta_pct == pytest.approx(1.0)
+        assert status == "MISMATCH"
+
+    def test_small_on_chain_amplifies_delta(self) -> None:
+        status, delta_pct = _classify(delta=2, on_chain=100)
+        assert status == "MISMATCH"  # 2% gap
+        assert delta_pct == pytest.approx(2.0)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Feature 1: Balance comparison + classification
 # ═══════════════════════════════════════════════════════════════════════════
@@ -206,6 +250,45 @@ async def test_verify_rpc_failure_skips_wallet() -> None:
     results = await verify_transfer_completeness("ethereum", [WALLET], rpc, client)
     assert results == {}
     # No row was cached for the failed wallet.
+    assert client.inserted == []
+
+
+@pytest.mark.asyncio
+async def test_verify_non_hex_balance_result_skips() -> None:
+    """A non-hex eth_getBalance result skips the wallet (no crash)."""
+    client = FakeCH()
+    client.sum_rows = {("to", WALLET): 5}
+    rpc = FakeRPC(balance_hex="not-a-number")
+
+    results = await verify_transfer_completeness("ethereum", [WALLET], rpc, client)
+    assert results == {}
+    assert client.inserted == []
+
+
+@pytest.mark.asyncio
+async def test_verify_chain_without_endpoints_returns_empty() -> None:
+    """A chain with no configured RPC endpoints is skipped entirely."""
+    client = FakeCH()
+    client.sum_rows = {("to", WALLET): 5}
+    rpc = FakeRPC(balance_hex=hex(5))
+
+    results = await verify_transfer_completeness("not-a-real-chain", [WALLET], rpc, client)
+    assert results == {}
+    assert client.inserted == []  # nothing cached
+
+
+@pytest.mark.asyncio
+async def test_verify_rpc_exception_skips_wallet() -> None:
+    """An RPC exception (not just a bad result) skips the wallet."""
+
+    class ExplodingRPC:
+        async def call(self, endpoint: str, method: str, params: list[Any] | None = None, timeout: float = 15.0):
+            raise ConnectionError("boom")
+
+    client = FakeCH()
+    client.sum_rows = {("to", WALLET): 5}
+    results = await verify_transfer_completeness("ethereum", [WALLET], ExplodingRPC(), client)
+    assert results == {}
     assert client.inserted == []
 
 

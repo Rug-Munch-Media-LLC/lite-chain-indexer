@@ -163,6 +163,43 @@ async def test_detect_reorg_no_checkpoint_false() -> None:
 
 
 @pytest.mark.asyncio
+async def test_detect_reorg_empty_hash_false() -> None:
+    """An empty current hash cannot be compared → False (no reorg)."""
+    client = FakeCH()
+    client.checkpoints[("ethereum", 1_000_000)] = HASH_A
+    assert await detect_reorg("ethereum", 1_000_000, "", client) is False
+    assert client.queries == []  # no CH lookup attempted
+
+
+@pytest.mark.asyncio
+async def test_detect_reorg_lookup_failure_false() -> None:
+    """A ClickHouse lookup failure degrades to 'no reorg' (never raises)."""
+
+    class BrokenClient:
+        def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
+            raise RuntimeError("connection refused")
+
+    assert await detect_reorg("ethereum", 1_000_000, HASH_B, BrokenClient()) is False
+
+
+@pytest.mark.asyncio
+async def test_detect_reorg_hash_comparison_is_case_insensitive() -> None:
+    """Stored vs current hashes are compared lowercased."""
+    client = FakeCH()
+    client.checkpoints[("ethereum", 1_000_000)] = HASH_A.upper()
+    assert await detect_reorg("ethereum", 1_000_000, HASH_A, client) is False
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_block_failure_returns_false() -> None:
+    class BrokenClient:
+        def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
+            raise RuntimeError("table missing")
+
+    assert await checkpoint_block("ethereum", 100, HASH_A, BrokenClient()) is False
+
+
+@pytest.mark.asyncio
 async def test_rollback_to_block_deletes_above_fork() -> None:
     client = FakeCH()
     client.checkpoints[("ethereum", 100)] = HASH_A
@@ -175,6 +212,29 @@ async def test_rollback_to_block_deletes_above_fork() -> None:
     assert ("dex_events", 120) in client.deletes
     # Checkpoints above the fork were pruned; the fork point stays.
     assert client.checkpoints == {("ethereum", 100): HASH_A}
+
+
+@pytest.mark.asyncio
+async def test_rollback_partial_table_failure_counts_survivors() -> None:
+    """A failing table is logged; the surviving tables still count."""
+
+    class PartialClient(FakeCH):
+        def execute(
+            self,
+            query: str,
+            params: Any = None,
+            with_column_types: bool = False,
+        ) -> Any:
+            if "DELETE FROM wallet_memory.evm_transfers" in query:
+                raise RuntimeError("privileges")
+            return super().execute(query, params, with_column_types=with_column_types)
+
+    client = PartialClient()
+    deleted = await rollback_to_block("ethereum", 120, client)
+    # dex_events (3) + checkpoint prune path; evm_transfers failed.
+    assert deleted == 3
+    assert ("dex_events", 120) in client.deletes
+    assert ("evm_transfers", 120) not in client.deletes
 
 
 def test_max_reorg_depth_per_chain() -> None:

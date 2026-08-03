@@ -23,7 +23,10 @@ from lite_indexer.strategies.evm.bloom import (
     BloomFilter,
     _address_bytes,
     _bloom_bit_positions,
+    _parse_bloom_hex,
     _topic_bytes,
+    candidate_blocks_for_address,
+    candidate_blocks_for_topic,
     fetch_block_blooms,
 )
 
@@ -146,3 +149,147 @@ class TestFetchBlockBloomsConcurrency:
                 )
 
         assert asyncio.run(run()) == {}
+
+
+class TestBloomConstruction:
+    """BloomFilter construction and parsing edge cases."""
+
+    def test_hex_property_roundtrip(self):
+        bloom = BloomFilter("0x" + _reference_logs_bloom(_address_bytes(USDT)))
+        # Re-parse the canonical hex; membership is stable.
+        reparsed = BloomFilter(bloom.hex)
+        assert reparsed.contains_address(USDT)
+        assert reparsed.hex == bloom.hex
+
+    def test_prefix_optional(self):
+        raw = _reference_logs_bloom(_address_bytes(USDT))
+        with_prefix = BloomFilter("0x" + raw)
+        without_prefix = BloomFilter(raw)
+        assert with_prefix.hex == without_prefix.hex
+
+    def test_empty_bloom_matches_nothing(self):
+        empty = BloomFilter("0x" + "00" * 256)
+        assert not empty.contains_address(USDT)
+        assert not empty.contains_topic(TRANSFER_TOPIC)
+
+    def test_parse_bloom_hex_rejects_invalid(self):
+        assert _parse_bloom_hex(None) is None
+        assert _parse_bloom_hex(12345) is None
+        assert _parse_bloom_hex("0x00") is None  # too short
+        assert _parse_bloom_hex("0x" + "zz" * 256) is None  # not hex
+        valid = _parse_bloom_hex("0x" + _reference_logs_bloom(_address_bytes(USDT)))
+        assert isinstance(valid, BloomFilter)
+
+
+class TestBloomCache:
+    """BloomCache LRU + TTL semantics."""
+
+    def _usdt_bloom_hex(self) -> str:
+        return "0x" + _reference_logs_bloom(_address_bytes(USDT))
+
+    async def _roundtrip(self) -> tuple[BloomCache, BloomFilter]:
+        cache = BloomCache(max_size=8, ttl_seconds=60)
+        await cache.set("ethereum", 1, self._usdt_bloom_hex())
+        bloom = await cache.get("ethereum", 1)
+        assert bloom is not None
+        assert bloom.contains_address(USDT)
+        return cache, bloom
+
+    def test_set_get_roundtrip(self):
+        cache, bloom = asyncio.run(self._roundtrip())
+        assert cache.hits == 1  # the get() was a hit
+        assert cache.misses == 0
+
+    def test_miss_increments_counter(self):
+        async def run() -> BloomCache:
+            cache = BloomCache()
+            bloom = await cache.get("ethereum", 999)
+            assert bloom is None
+            return cache
+
+        cache = asyncio.run(run())
+        assert cache.misses == 1
+
+    def test_invalid_bloom_not_cached(self):
+        async def run() -> BloomCache:
+            cache = BloomCache()
+            await cache.set("ethereum", 1, "0xnothex")
+            assert cache.size == 0
+            assert await cache.get("ethereum", 1) is None
+            return cache
+
+        asyncio.run(run())
+
+    def test_ttl_expiry_evicts(self, monkeypatch):
+        import lite_indexer.strategies.evm.bloom as bloom_mod
+
+        now = 1000.0
+        monkeypatch.setattr(bloom_mod.time, "monotonic", lambda: now)
+
+        async def run() -> BloomCache:
+            cache = BloomCache(max_size=8, ttl_seconds=60)
+            await cache.set("ethereum", 1, self._usdt_bloom_hex())
+            assert await cache.get("ethereum", 1) is not None
+            return cache
+
+        cache = asyncio.run(run())
+
+        # Advance the clock past the TTL, then re-read: the entry must be
+        # evicted (a get() after expiry returns None and drops the entry).
+        now = 1100.0
+        monkeypatch.setattr(bloom_mod.time, "monotonic", lambda: now)
+        assert asyncio.run(cache.get("ethereum", 1)) is None
+        assert cache.size == 0
+        assert cache.misses >= 1
+
+    def test_lru_eviction_when_over_max(self):
+        async def run() -> BloomCache:
+            cache = BloomCache(max_size=2)
+            await cache.set("ethereum", 1, self._usdt_bloom_hex())
+            await cache.set("ethereum", 2, self._usdt_bloom_hex())
+            await cache.set("ethereum", 3, self._usdt_bloom_hex())
+            assert cache.size == 2  # block 1 evicted (LRU)
+            assert await cache.get("ethereum", 1) is None
+            assert await cache.get("ethereum", 3) is not None
+            return cache
+
+        asyncio.run(run())
+
+    def test_contains_address_returns_none_on_malformed_address(self):
+        async def run() -> bool:
+            cache = BloomCache()
+            await cache.set("ethereum", 1, self._usdt_bloom_hex())
+            return await cache.contains_address("ethereum", 1, "0x1234") is None
+
+        assert asyncio.run(run())
+
+
+class TestCandidateBlocks:
+    """candidate_blocks_for_address/topic conservative policy."""
+
+    def _seed_cache(self) -> BloomCache:
+        cache = BloomCache()
+        bloom_hex = "0x" + _reference_logs_bloom(_address_bytes(USDT))
+
+        async def _seed() -> BloomCache:
+            await cache.set("ethereum", 10, bloom_hex)  # contains USDT
+            await cache.set("ethereum", 20, "0x" + "00" * 256)  # contains nothing
+            return cache
+
+        return asyncio.run(_seed())
+
+    def test_address_keeps_match_and_unknown_drops_nonmatch(self):
+        cache = self._seed_cache()
+        blocks = {10, 20, 30}  # 30 has no cached bloom → conservative keep
+        candidates = asyncio.run(candidate_blocks_for_address("ethereum", blocks, USDT, cache))
+        assert candidates == {10, 30}
+        assert 20 not in candidates  # bloom provably has no USDT bits
+
+    def test_topic_unknown_bloom_conservative(self):
+        cache = self._seed_cache()
+        blocks = {10, 30}
+        candidates = asyncio.run(candidate_blocks_for_topic("ethereum", blocks, TRANSFER_TOPIC, cache))
+        # block 10's bloom has USDT address bits (not topic bits) → likely excluded;
+        # block 30 (uncached) is always kept.
+        assert 30 in candidates
+        assert 20 not in candidates

@@ -97,6 +97,20 @@ class TestDemandFiles:
         monkeypatch.setattr(demand_mod, "INDEXER_DEMAND_DIR", tmp_path / "does-not-exist")
         assert demand_mod.read_demand_files("scroll") == set()
 
+    def test_read_demand_files_ignores_directories(self, monkeypatch, tmp_path: Path):
+        """A directory named 'dex' is NOT a demand signal (only files count)."""
+        from lite_indexer.chains import demand as demand_mod
+
+        demand_dir = tmp_path / "indexer-demand"
+        monkeypatch.setattr(demand_mod, "INDEXER_DEMAND_DIR", demand_dir)
+        (demand_dir / "scroll").mkdir(parents=True)
+        (demand_dir / "scroll" / "dex").mkdir()  # directory, not a file
+
+        assert demand_mod.read_demand_files("scroll") == set()
+
+        (demand_dir / "scroll" / "deployer").touch()
+        assert demand_mod.read_demand_files("scroll") == {"deployer"}
+
 
 class TestDefaultEnabledEvents:
     """Default event types per chain under the lazy policy."""
@@ -121,6 +135,20 @@ class TestDefaultEnabledEvents:
         monkeypatch.setattr(demand_mod, "LAZY_INDEXING_ENABLED", False)
         assert demand_mod.default_enabled_events("scroll") == {"dex", "deployer"}
         assert demand_mod.default_enabled_events("ethereum") == {"dex", "deployer"}
+
+    def test_default_enabled_events_case_insensitive_chain(self, monkeypatch):
+        from lite_indexer.chains import demand as demand_mod
+
+        monkeypatch.setattr(demand_mod, "LAZY_INDEXING_ENABLED", True)
+        assert demand_mod.default_enabled_events("Ethereum") == {"dex", "deployer"}
+        assert demand_mod.default_enabled_events("SCROLL") == set()
+
+    def test_default_enabled_events_unknown_chain_is_lazy(self, monkeypatch):
+        from lite_indexer.chains import demand as demand_mod
+
+        monkeypatch.setattr(demand_mod, "LAZY_INDEXING_ENABLED", True)
+        # A chain not in TOP_CHAINS is treated as long-tail (transfers only).
+        assert demand_mod.default_enabled_events("newchain") == set()
 
     def test_top_chains_and_lazy_chains_are_known(self):
         from lite_indexer.chains.demand import LAZY_CHAINS, TOP_CHAINS

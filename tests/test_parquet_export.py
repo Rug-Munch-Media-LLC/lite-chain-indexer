@@ -78,6 +78,7 @@ class FakeClickHouse:
         self.dex = dex or []
         self.state_inserts: list[list[tuple[Any, ...]]] = []
         self.deletes: list[str] = []
+        self.queries: list[str] = []
 
     def execute(
         self,
@@ -85,6 +86,7 @@ class FakeClickHouse:
         params: Any = None,
         with_column_types: bool = False,
     ) -> Any:
+        self.queries.append(query)
         if query.startswith("CREATE TABLE IF NOT EXISTS wallet_memory.parquet_export_state"):
             return []
         if query.startswith("INSERT INTO wallet_memory.parquet_export_state"):
@@ -350,6 +352,80 @@ def test_delete_without_upload_is_skipped(tmp_path: Path) -> None:
     assert client.deletes == []
     assert summary.dates_exported == 1  # local archive still succeeds
     assert client.last_status() == "uploaded"
+
+
+# ── smoke: dry-run + full pipeline safety ───────────────────────────
+
+
+def test_parquet_export_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Smoke: dry-run with mocked ClickHouse + B2 touches nothing.
+
+    Even with --upload/--delete requested, a dry run must not: connect to
+    ClickHouse, write parquet files, invoke rclone, mark state, or
+    delete rows — it only previews the plan.
+    """
+    client = FakeClickHouse(transfers=[_transfer_row() for _ in range(3)], dex=[_dex_row()])
+    exporter = FakeExporter(client, data_dir=tmp_path / "parquet", state_dir=tmp_path / "state")
+
+    rclone_calls: list[list[str]] = []
+    monkeypatch.setattr("lite_indexer.storage.parquet.shutil.which", lambda _bin: "/usr/bin/rclone")
+    monkeypatch.setattr(
+        "lite_indexer.storage.parquet.subprocess.run",
+        lambda cmd, **_: (
+            rclone_calls.append(list(cmd)) or subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+        ),
+    )
+
+    summary = exporter.export_chain("ethereum", dates=[DAY], upload=True, delete=True, dry_run=True)
+
+    # Summary reports the planned dates without executing.
+    assert summary.dates_attempted == 1
+    assert summary.dates_exported == 1
+    assert summary.bytes_written == 0
+    assert summary.uploaded == 0
+    assert summary.deleted_rows == 0
+    assert summary.errors == []
+    # Nothing touched: no CH queries, no rclone, no files, no marker.
+    assert client.queries == []
+    assert rclone_calls == []
+    assert not (tmp_path / "parquet" / "ethereum" / "2026-07-30").exists()
+    assert not (tmp_path / "state" / "ethereum" / "2026-07-30.done").exists()
+
+
+def test_parquet_export_skips_existing_markers(tmp_path: Path) -> None:
+    """A (chain, date) already exported is filtered out — never re-exported."""
+    marker = tmp_path / "state" / "ethereum" / "2026-07-30.done"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"day": "2026-07-30"}))
+
+    client = FakeClickHouse(transfers=[_transfer_row()], dex=[_dex_row()])
+    exporter = FakeExporter(client, data_dir=tmp_path / "parquet", state_dir=tmp_path / "state")
+
+    summary = exporter.export_chain("ethereum", dates=[DAY])
+
+    # The marked date is excluded before the run: nothing to attempt.
+    assert summary.dates_attempted == 0
+    assert summary.dates_exported == 0
+    assert client.queries == []  # never even connected to CH
+    assert client.state_inserts == []  # no state written
+
+
+def test_parquet_export_over_cap_fails_safely(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A day over the row cap is marked failed — rows are never deleted."""
+    import lite_indexer.storage.parquet as parquet_mod
+
+    monkeypatch.setattr(parquet_mod, "_MAX_ROWS_PER_DAY", 2)
+
+    client = FakeClickHouse(transfers=[_transfer_row() for _ in range(3)], dex=[_dex_row()])
+    exporter = FakeExporter(client, data_dir=tmp_path / "parquet", state_dir=tmp_path / "state")
+
+    summary = exporter.export_chain("ethereum", dates=[DAY])
+
+    assert summary.dates_exported == 0
+    assert summary.errors and "exceeds export cap" in summary.errors[0]
+    assert client.last_status() == "failed"
+    assert client.deletes == []
+    assert not (tmp_path / "state" / "ethereum" / "2026-07-30.done").exists()
 
 
 # ── CLI ─────────────────────────────────────────────────────────────
