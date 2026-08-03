@@ -6,12 +6,17 @@ Orchestrates the complete index cycle using the strategy pattern:
   2. Fetch Transfer events via chain-specific strategy
   3. Fetch DEX Swap events (EVM only, if enabled)
   4. Fetch PairCreated/PoolCreated events (EVM only, if enabled)
-  5. Enrich with block timestamps
-  6. Write NDJSON + ClickHouse (if configured)
-  7. Save state
+   5. Enrich with block timestamps
+   6. Write NDJSON (gated by NDJSON_ENABLED, default off) + ClickHouse (if configured)
+   7. Save state
 
 Each chain gets its own LiteIndexer instance with independent state tracking.
 Non-EVM chains (Solana, Tron) use their own strategy with chain-specific RPC.
+
+Recovery: the durable store is ClickHouse. The NDJSON write-ahead log is
+redundant and disabled by default (NDJSON_ENABLED=false). Without NDJSON,
+crash recovery is restart-from-state: ``state.to_block`` is the resume
+point, so at most one sync cycle (~30s) is lost and re-fetched from RPC.
 """
 
 from __future__ import annotations
@@ -21,8 +26,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from lite_indexer.chains.demand import (
+    default_enabled_events,
+    get_chain_demand,
+    read_demand_files,
+    record_scan_demand,
+)
 from lite_indexer.chunks import chunk_size_for_chain
-from lite_indexer.config import DATA_DIR, DISK_CAP_BYTES, HEAD_BUFFER, REORG_PROTECTION_ENABLED
+from lite_indexer.config import (
+    DATA_DIR,
+    DISK_CAP_BYTES,
+    HEAD_BUFFER,
+    LAZY_INDEXING_ENABLED,
+    NDJSON_ENABLED,
+    REORG_PROTECTION_ENABLED,
+)
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcClient, RpcFetchFailedError
 from lite_indexer.rpc.verify import (
@@ -89,18 +107,31 @@ class LiteIndexer:
         start_from_head: bool = False,
         data_dir: Path | None = None,
         chunk_size: int | None = None,
+        ndjson_enabled: bool | None = None,
+        lazy_indexing: bool | None = None,
     ) -> None:
         self.chain = chain
         self.batch_size = batch_size
         self.disk_cap = disk_cap
         self.dex_enabled = False
         self.deployers_enabled = False
+        # Lazy indexing: per-chain event type gating. When enabled (default),
+        # top chains always index DEX + deployer and long-tail chains only
+        # after the scanner signals demand (see chains/demand.py). When
+        # disabled, CLI flags are the sole authority (legacy behavior).
+        self.lazy_indexing_enabled = lazy_indexing if lazy_indexing is not None else LAZY_INDEXING_ENABLED
         self.start_from_head = start_from_head
         # User-requested head mode (--start-from-head): never auto-cleared.
         # Reorg-triggered head mode is cleared after a successful cycle.
         self.start_from_head_user = start_from_head
         self._reorg_recovery = False
         self.data_dir = data_dir or DATA_DIR
+
+        # NDJSON write-ahead log (redundant with ClickHouse). Defaults to
+        # the NDJSON_ENABLED env flag (default off); an explicit value
+        # overrides it. When disabled the writer is never constructed and
+        # step 6 of the sync loop is skipped entirely.
+        self.ndjson_enabled = NDJSON_ENABLED if ndjson_enabled is None else ndjson_enabled
 
         # Chain type detection
         chain_info = SUPPORTED_CHAINS.get(chain, {"type": "evm"})
@@ -113,6 +144,11 @@ class LiteIndexer:
         # State manager (generic — works for all chain types)
         self.state = StateManager(chain)
 
+        # Event types persisted as enabled in the state file (lazy indexing).
+        # DEX/deployer stay enabled across restarts once demand is observed.
+        persisted_events = self.state.load().get("enabled_events") or []
+        self._persisted_enabled_events: set[str] = {str(event_type) for event_type in persisted_events}
+
         # Optional override blocks (for testing / backfill)
         self._override_from = from_block
         self._override_to = to_block
@@ -124,7 +160,9 @@ class LiteIndexer:
         self._verify_result: EndpointVerifyResult | None = None
 
         # Storage writers
-        self._ndjson_writer = NDJSONWriter(data_dir=self.data_dir, disk_cap=self.disk_cap)
+        self._ndjson_writer: NDJSONWriter | None = (
+            NDJSONWriter(data_dir=self.data_dir, disk_cap=self.disk_cap) if self.ndjson_enabled else None
+        )
         self._ch_writer: ClickHouseWriter | None = None
 
         # Strategy — chain-specific logic
@@ -155,6 +193,64 @@ class LiteIndexer:
     def _is_evm(self) -> bool:
         """Check if this chain uses EVM strategy."""
         return self._chain_type == "evm"
+
+    # ── Lazy Indexing ────────────────────────────────────────────────
+
+    def _enable_event_type(self, event_type: str) -> None:
+        """Enable an event type flag (sticky — never disabled once on).
+
+        Args:
+            event_type: ``'dex'`` or ``'deployer'``. Unknown types ignored.
+        """
+        if event_type == "dex":
+            self.dex_enabled = True
+        elif event_type == "deployer":
+            self.deployers_enabled = True
+
+    def _enabled_event_types(self) -> list[str]:
+        """Event types currently enabled for this chain (for state persistence)."""
+        enabled: list[str] = []
+        if self.dex_enabled:
+            enabled.append("dex")
+        if self.deployers_enabled:
+            enabled.append("deployer")
+        return enabled
+
+    def _refresh_demand_enabled(self) -> None:
+        """Apply lazy-indexing defaults + scanner demand signals.
+
+        Called at the start of each sync cycle, after transfers are
+        fetched. Under lazy indexing:
+
+          - Top chains (ethereum, bsc, polygon, arbitrum, base, solana)
+            always get DEX + deployer enabled (high traffic).
+          - Long-tail chains get DEX/deployer enabled when the scanner
+            touched the demand file (``{INDEXER_DEMAND_DIR}/{chain}/dex``
+            or ``deployer``).
+          - Event types persisted as enabled in the state file stay
+            enabled across restarts.
+
+        Flags are sticky: once enabled they are never disabled for the
+        process lifetime, satisfying "once enabled, keep enabled". The
+        enabled set is persisted to the state file at the end of the
+        cycle via :meth:`_enabled_event_types`.
+
+        No-op when lazy indexing is disabled (legacy: CLI flags are the
+        sole authority).
+        """
+        if not self.lazy_indexing_enabled:
+            return
+
+        for event_type in default_enabled_events(self.chain):
+            self._enable_event_type(event_type)
+        for event_type in self._persisted_enabled_events:
+            self._enable_event_type(event_type)
+        for event_type in read_demand_files(self.chain):
+            record_scan_demand(self.chain, event_type)
+            self._enable_event_type(event_type)
+        demand = get_chain_demand(self.chain)
+        if demand:
+            logger.debug("demand_enabled", chain=self.chain, events=sorted(demand))
 
     @property
     def ch_writer(self) -> ClickHouseWriter:
@@ -343,7 +439,12 @@ class LiteIndexer:
         }
 
         # 1. Disk cap + disk space checks (generic — all chains)
-        if not check_disk_cap(self.data_dir, self.disk_cap):
+        # When NDJSON is disabled, exclude its files (*.jsonl / *.jsonl.zst)
+        # from the cap so it only counts the durable Parquet/state data.
+        disk_excludes: tuple[str, ...] = ()
+        if not self.ndjson_enabled:
+            disk_excludes = ("*.jsonl", "*.jsonl.zst")
+        if not check_disk_cap(self.data_dir, self.disk_cap, exclude_patterns=disk_excludes):
             summary["status"] = "disk_cap_exceeded"
             summary["errors"].append("disk cap exceeded")
             return summary
@@ -476,6 +577,12 @@ class LiteIndexer:
             summary["duration_seconds"] = time.monotonic() - start_time
             return summary
 
+        # 3b. Lazy indexing: apply top-chain defaults + scanner demand
+        # signals before deciding whether to fetch DEX/deployer events.
+        # Runs after transfers so demand files touched this cycle (by the
+        # rmi-backend scanner) are observed. Flags are sticky once enabled.
+        self._refresh_demand_enabled()
+
         # 4. Fetch DEX swap events (EVM only, if enabled)
         dex_events: list[dict[str, Any]] = []
         if self.dex_enabled and self.strategy.supports_dex():
@@ -511,7 +618,7 @@ class LiteIndexer:
         # Check if we have any events or deployer tracking
         if not events and not dex_events and not self.deployers_enabled:
             self._clear_reorg_recovery()
-            self.state.save(to_block, 0)
+            self.state.save(to_block, 0, enabled_events=self._enabled_event_types())
             summary["status"] = "no_events"
             summary["duration_seconds"] = time.monotonic() - start_time
             return summary
@@ -534,19 +641,23 @@ class LiteIndexer:
             if deployer_written:
                 summary["deployer_events_written"] = deployer_written
 
-        # 6. Write NDJSON
+        # 6. Write NDJSON (gated by NDJSON_ENABLED — redundant with
+        # ClickHouse, which is the durable store). When disabled, recovery
+        # is restart-from-state: at most one sync cycle is lost on crash
+        # and re-fetched from RPC on the next cycle.
         bytes_written = 0
-        if events:
-            bytes_written = self._ndjson_writer.write_events(self.chain, events)
-            if bytes_written:
-                summary["events_written_ndjson"] = len(events)
-                summary["bytes_written"] = bytes_written
+        if self.ndjson_enabled and self._ndjson_writer is not None:
+            if events:
+                bytes_written = self._ndjson_writer.write_events(self.chain, events)
+                if bytes_written:
+                    summary["events_written_ndjson"] = len(events)
+                    summary["bytes_written"] = bytes_written
 
-        if dex_events:
-            dex_bytes = self._ndjson_writer.write_dex_events(self.chain, dex_events)
-            if dex_bytes:
-                summary["dex_events_written_ndjson"] = len(dex_events)
-                summary["dex_bytes_written"] = dex_bytes
+            if dex_events:
+                dex_bytes = self._ndjson_writer.write_dex_events(self.chain, dex_events)
+                if dex_bytes:
+                    summary["dex_events_written_ndjson"] = len(dex_events)
+                    summary["dex_bytes_written"] = dex_bytes
 
         # 7. Write ClickHouse via strategy
         if events:
@@ -593,14 +704,14 @@ class LiteIndexer:
                     summary["status"] = "reorg_rollback"
                     summary["reorg_fork_block"] = fork_block
                     # Re-fetch from fork: next cycle starts at fork_block.
-                    self.state.save(fork_block - 1, 0)
+                    self.state.save(fork_block - 1, 0, enabled_events=self._enabled_event_types())
                     summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
                     return summary
 
         # 8. Save state
         total_events = len(events) + len(dex_events) + deployer_written
         self._clear_reorg_recovery()
-        self.state.save(to_block, total_events)
+        self.state.save(to_block, total_events, enabled_events=self._enabled_event_types())
 
         summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
         logger.info(

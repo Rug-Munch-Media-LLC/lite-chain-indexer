@@ -13,6 +13,17 @@ All public names are re-exported here so `from lite_indexer.chains import X`
 keeps working after the split.
 """
 
+from .demand import (
+    CHAIN_EVENT_DEMAND,
+    DEMANDABLE_EVENT_TYPES,
+    LAZY_CHAINS,
+    TOP_CHAINS,
+    default_enabled_events,
+    demand_file_path,
+    get_chain_demand,
+    read_demand_files,
+    record_scan_demand,
+)
 from .endpoints import GET_LOGS_ENDPOINTS
 from .helpers import get_endpoints_for_range, get_max_block_range, get_provider_rate_limit
 from .limits import (
@@ -61,4 +72,14 @@ __all__ = [
     "effective_poll_interval",
     "apply_chain_affinity",
     "log_chain_resources",
+    # lazy-indexing demand tracking
+    "CHAIN_EVENT_DEMAND",
+    "DEMANDABLE_EVENT_TYPES",
+    "TOP_CHAINS",
+    "LAZY_CHAINS",
+    "record_scan_demand",
+    "get_chain_demand",
+    "demand_file_path",
+    "read_demand_files",
+    "default_enabled_events",
 ]

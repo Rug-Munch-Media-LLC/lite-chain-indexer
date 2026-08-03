@@ -6,6 +6,17 @@ All notable changes to Lite Chain Indexer will be documented in this file.
 
 ### Features
 
+- **NDJSON write-ahead log now optional (default off)** — the NDJSON
+  replay buffer is redundant with ClickHouse (the durable store), so it is
+  gated behind the `NDJSON_ENABLED` env flag (default `false`). When
+  disabled: the `NDJSONWriter` is never constructed, sync step 6 skips the
+  NDJSON writes, and the disk-cap check excludes `*.jsonl` /
+  `*.jsonl.zst` files so the cap only counts Parquet/state data. Recovery
+  without NDJSON is restart-from-state (`state.to_block`): at most one
+  sync cycle (~30s) is lost on crash and re-fetched from RPC. The NDJSON
+  code is retained behind the flag for rollback; the fleet rotation cron
+  (`rotate-lite-indexer-data.sh`, `compress-stale-ndjson.sh`) no-ops when
+  the flag is off.
 - **Balance reconciliation** (`storage/reconciliation.py`) — TrueBlocks-style
   completeness check: computes each sampled wallet's balance from
   `evm_transfers` deltas (incoming minus outgoing via

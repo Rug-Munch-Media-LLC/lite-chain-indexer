@@ -61,7 +61,13 @@ async def test_deployers_with_dex(tmp_path, monkeypatch):
 
     monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
 
-    indexer = LiteIndexer(chain="ethereum", from_block=100, to_block=200, data_dir=tmp_path)
+    indexer = LiteIndexer(
+        chain="ethereum",
+        from_block=100,
+        to_block=200,
+        data_dir=tmp_path,
+        ndjson_enabled=True,
+    )
     indexer.dex_enabled = True
     indexer.deployers_enabled = True
 
@@ -105,7 +111,13 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
 
     monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
 
-    indexer = LiteIndexer(chain="ethereum", from_block=100, to_block=200, data_dir=tmp_path)
+    indexer = LiteIndexer(
+        chain="ethereum",
+        from_block=100,
+        to_block=200,
+        data_dir=tmp_path,
+        ndjson_enabled=True,
+    )
     strategy = indexer.strategy
     strategy.fetch_block_number = AsyncMock(return_value=500)
 

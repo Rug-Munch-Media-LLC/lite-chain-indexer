@@ -51,8 +51,24 @@ class StateManager:
             logger.warning("state_load_failed", chain=self.chain, error=str(exc))
             return {}
 
-    def save(self, last_block: int, events_count: int, source: str = "lite_indexer") -> None:
-        """Save last indexed block to state file (with file locking)."""
+    def save(
+        self,
+        last_block: int,
+        events_count: int,
+        source: str = "lite_indexer",
+        enabled_events: list[str] | None = None,
+    ) -> None:
+        """Save last indexed block to state file (with file locking).
+
+        Args:
+            last_block: Last indexed block number.
+            events_count: Number of events indexed in the cycle.
+            source: Who wrote the state (default ``"lite_indexer"``).
+            enabled_events: Event types enabled for this chain under
+                lazy indexing (e.g. ``["dex", "deployer"]``). Persisted so
+                DEX/deployer stay enabled across restarts once demand is
+                observed.
+        """
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         state: dict[str, Any] = {
             "last_block": last_block,
@@ -61,6 +77,8 @@ class StateManager:
             "source": source,
             "chain": self.chain,
         }
+        if enabled_events:
+            state["enabled_events"] = sorted(enabled_events)
         try:
             path = self._state_path()
             with open(path, "w") as f:

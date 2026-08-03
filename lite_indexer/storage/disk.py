@@ -41,8 +41,21 @@ def check_disk_space(min_free_bytes: int = MIN_FREE_DISK_BYTES) -> bool:
         return True  # Fail open
 
 
-def check_disk_cap(data_dir: Path = DATA_DIR, cap_bytes: int = DISK_CAP_BYTES) -> bool:
+def check_disk_cap(
+    data_dir: Path = DATA_DIR,
+    cap_bytes: int = DISK_CAP_BYTES,
+    exclude_patterns: tuple[str, ...] = (),
+) -> bool:
     """Check if data directory is under the disk cap.
+
+    Args:
+        data_dir: Directory to measure.
+        cap_bytes: Maximum allowed bytes.
+        exclude_patterns: Glob patterns to exclude from the size
+            calculation (passed to ``du --exclude``). Used to omit the
+            NDJSON replay buffer (``*.jsonl`` / ``*.jsonl.zst``) when
+            ``NDJSON_ENABLED`` is off so the cap only counts the durable
+            Parquet/state data.
 
     Returns True if we can write, False if cap exceeded.
     """
@@ -50,8 +63,11 @@ def check_disk_cap(data_dir: Path = DATA_DIR, cap_bytes: int = DISK_CAP_BYTES) -
         return True
 
     try:
+        cmd = ["/usr/bin/du", "-sb", str(data_dir)]
+        for pattern in exclude_patterns:
+            cmd += ["--exclude", pattern]
         result = subprocess.run(
-            ["/usr/bin/du", "-sb", str(data_dir)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=10,

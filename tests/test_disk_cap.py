@@ -24,8 +24,45 @@ def test_indexer_passes_disk_cap_to_ndjson_writer(tmp_path) -> None:
     """LiteIndexer must construct NDJSONWriter with its own disk_cap."""
     from lite_indexer.indexer import LiteIndexer
 
-    indexer = LiteIndexer(chain="ethereum", data_dir=tmp_path, disk_cap=12345)
+    indexer = LiteIndexer(chain="ethereum", data_dir=tmp_path, disk_cap=12345, ndjson_enabled=True)
+    assert indexer._ndjson_writer is not None
     assert indexer._ndjson_writer.disk_cap == 12345
+
+
+def test_ndjson_writer_disabled_by_default(tmp_path, monkeypatch) -> None:
+    """NDJSON writer must NOT be constructed when NDJSON_ENABLED is off."""
+    import lite_indexer.indexer as indexer_mod
+
+    monkeypatch.setattr(indexer_mod, "NDJSON_ENABLED", False)
+    from lite_indexer.indexer import LiteIndexer
+
+    indexer = LiteIndexer(chain="ethereum", data_dir=tmp_path)
+    assert indexer.ndjson_enabled is False
+    assert indexer._ndjson_writer is None
+
+
+def test_ndjson_writer_explicit_enable(tmp_path, monkeypatch) -> None:
+    """Explicit ndjson_enabled=True must construct the writer even if env is off."""
+    import lite_indexer.indexer as indexer_mod
+
+    monkeypatch.setattr(indexer_mod, "NDJSON_ENABLED", False)
+    from lite_indexer.indexer import LiteIndexer
+
+    indexer = LiteIndexer(chain="ethereum", data_dir=tmp_path, ndjson_enabled=True)
+    assert indexer.ndjson_enabled is True
+    assert indexer._ndjson_writer is not None
+
+
+def test_ndjson_writer_explicit_disable(tmp_path, monkeypatch) -> None:
+    """Explicit ndjson_enabled=False must skip the writer even if env is on."""
+    import lite_indexer.indexer as indexer_mod
+
+    monkeypatch.setattr(indexer_mod, "NDJSON_ENABLED", True)
+    from lite_indexer.indexer import LiteIndexer
+
+    indexer = LiteIndexer(chain="ethereum", data_dir=tmp_path, ndjson_enabled=False)
+    assert indexer.ndjson_enabled is False
+    assert indexer._ndjson_writer is None
 
 
 def test_write_events_forwards_cap_to_check_write_ok(tmp_path, monkeypatch) -> None:
