@@ -29,6 +29,7 @@ manual cache and logged; the auto MV follows the same conversion.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
@@ -132,7 +133,12 @@ async def update_holder_balance(
         return False
 
     try:
-        current = ch_client.execute(
+        # clickhouse_driver is a SYNCHRONOUS client — running it inline
+        # blocks the asyncio event loop (this exact call froze the whole
+        # daemon for 1.5h on 2026-08-03 when ClickHouse was restarting).
+        # to_thread keeps the loop responsive for the other 13 chains.
+        current = await asyncio.to_thread(
+            ch_client.execute,
             f"SELECT balance, transfer_count FROM {CH_HOLDER_BALANCES_TABLE} "
             f"WHERE chain = %(chain)s AND token_address = %(token)s AND address = %(address)s "
             f"LIMIT 1",
@@ -163,7 +169,8 @@ async def update_holder_balance(
 
     try:
         version = int(datetime.now(UTC).timestamp() * 1_000_000)
-        ch_client.execute(
+        await asyncio.to_thread(
+            ch_client.execute,
             f"INSERT INTO {CH_HOLDER_BALANCES_TABLE} "
             f"(chain, token_address, address, balance, transfer_count, last_updated, version) VALUES",
             [

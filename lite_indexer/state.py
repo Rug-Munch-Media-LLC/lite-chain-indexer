@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -81,10 +82,21 @@ class StateManager:
             state["enabled_events"] = sorted(enabled_events)
         try:
             path = self._state_path()
-            with open(path, "w") as f:
+            # Atomic write: write to a temp file in the same directory then
+            # os.replace() it into place. A plain open("w") + write can be
+            # torn by an OOM kill mid-write, truncating the JSON and causing
+            # the next load to fall back to {} → restart from block ~0
+            # (observed 08/03: ethereum state reset to block 100 while the
+            # ClickHouse max was 25.6M, triggering a genesis backfill).
+            tmp_path = path.with_suffix(".json.tmp")
+            payload = json.dumps(state, indent=2)
+            with open(tmp_path, "w") as f:
                 fcntl.flock(f, fcntl.LOCK_EX)
-                f.write(json.dumps(state, indent=2))
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
                 fcntl.flock(f, fcntl.LOCK_UN)
+            os.replace(tmp_path, path)
             logger.info("state_saved", chain=self.chain, last_block=last_block)
         except OSError as exc:
             logger.error("state_save_failed", chain=self.chain, error=str(exc))

@@ -26,10 +26,13 @@ from typing import Any
 import httpx
 
 from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
+from lite_indexer.chains.parallelism import chain_priority
 from lite_indexer.config import (
     BATCH_SIZE,
     DATA_DIR,
     DISK_CAP_BYTES,
+    GC_EVERY_N_CYCLES,
+    MAX_CONCURRENT_CHAINS,
     PRICING_ENABLED,
     RECONCILIATION_SAMPLE_SIZE,
 )
@@ -87,6 +90,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=str,
         default="ethereum,base,bsc,polygon,arbitrum,optimism,avalanche,linea,scroll,zksync,mantle,gnosis,solana,tron",
         help="Comma-separated list of chains to index in daemon mode",
+    )
+    parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=None,
+        help=f"Max chains syncing concurrently in daemon mode (default: {MAX_CONCURRENT_CHAINS}). "
+        "Caps peak memory — 14 parallel chains is what caused the 08/03 OOM kills.",
     )
     parser.add_argument(
         "--dex",
@@ -260,6 +270,7 @@ async def main_daemon(
     disk_cap: int = DISK_CAP_BYTES,
     start_from_head: bool = False,
     data_dir: str | None = None,
+    max_concurrent: int = MAX_CONCURRENT_CHAINS,
 ) -> int:
     """Daemon mode: continuously index all configured chains in PARALLEL with
     PER-CHAIN independent polling intervals.
@@ -268,6 +279,14 @@ async def main_daemon(
     tracking AND its own asyncio task polling at its own optimal interval.
     This prevents fast chains (Base 2s, Mantle 2s) from being throttled
     by slow chains (Ethereum 12s, Linea 12s).
+
+    Concurrency is capped at ``max_concurrent`` chains syncing at once
+    (default 6, see ``MAX_CONCURRENT_CHAINS``): every chain task shares
+    one semaphore, so at most that many ``sync_loop`` calls run in
+    parallel. High-priority chains are scheduled first (tasks are created
+    in descending priority order); lower-priority chains rotate in as
+    slots free. This bounds peak RSS — 14 chains running simultaneously
+    caused repeated cgroup OOM kills on 2026-08-03.
 
     Previously, ALL chains shared a single max_poll_interval which caused
     65min lag on Base and 20min lag on Mantle when Ethereum backlogged.
@@ -279,6 +298,7 @@ async def main_daemon(
         dex=dex_enabled,
         deployers=deployers_enabled,
         start_from_head=start_from_head,
+        max_concurrent=max_concurrent,
     )
 
     data_path = Path(data_dir) if data_dir else DATA_DIR
@@ -299,6 +319,9 @@ async def main_daemon(
         except (NotImplementedError, RuntimeError):
             signal.signal(sig, _handle_signal)
 
+    # Shared concurrency cap: at most `max_concurrent` chains sync at once.
+    concurrency_slot = asyncio.Semaphore(max_concurrent) if max_concurrent and max_concurrent > 0 else None
+
     async def _chain_loop(chain: str) -> None:
         """Independent per-chain polling loop with its own poll interval.
 
@@ -306,6 +329,12 @@ async def main_daemon(
         Solana) poll at their base interval while lower-value chains poll
         less often, cutting wasted RPC calls. The per-chain memory budget
         and (optionally) CPU affinity are logged for observability.
+
+        The shared semaphore is acquired around each sync cycle, so at
+        most ``max_concurrent`` chains hold event batches in memory at
+        once. When the semaphore is contended, lower-priority chains wait
+        for a free slot instead of piling up parallel fetches — this is
+        what prevents the cgroup OOM kills.
         """
         nonlocal error_count
         indexer = LiteIndexer(
@@ -321,12 +350,28 @@ async def main_daemon(
         poll_interval = effective_poll_interval(chain, base_interval)
         log_chain_resources(chain, poll_interval=base_interval)
 
+        cycles_since_gc = 0
         while not shutdown_event.is_set():
             loop_start = time.monotonic()
             try:
-                result = await indexer.sync_loop()
+                if concurrency_slot is not None:
+                    async with concurrency_slot:
+                        result = await indexer.sync_loop()
+                else:
+                    result = await indexer.sync_loop()
                 if isinstance(result, dict) and result.get("status") == "error":
                     error_count += 1
+
+                # Periodic GC: release reference cycles (event dicts, bloom
+                # filters, httpx responses) that cyclic GC misses under
+                # cgroup memory pressure.
+                cycles_since_gc += 1
+                if cycles_since_gc >= GC_EVERY_N_CYCLES:
+                    cycles_since_gc = 0
+                    import gc
+
+                    collected = gc.collect()
+                    logger.debug("gc_collected", chain=chain, objects=collected)
             except Exception as exc:
                 error_count += 1
                 logger.error("daemon_chain_failed", chain=chain, error=str(exc))
@@ -340,8 +385,10 @@ async def main_daemon(
                 except asyncio.CancelledError:
                     break
 
-    # Launch one independent task per chain
-    chain_tasks = [asyncio.create_task(_chain_loop(c), name=f"daemon-chain-{c}") for c in chains]
+    # Launch one independent task per chain, high-priority chains first so
+    # they claim concurrency slots before low-priority chains.
+    ordered_chains = sorted(chains, key=lambda c: chain_priority(c), reverse=True)
+    chain_tasks = [asyncio.create_task(_chain_loop(c), name=f"daemon-chain-{c}") for c in ordered_chains]
 
     # Periodic endpoint health monitor — probes every configured EVM RPC,
     # logs up/down, and feeds the adaptive pool scoring so dead endpoints
@@ -503,6 +550,7 @@ async def async_main(args: argparse.Namespace) -> int:
             disk_cap=args.disk_cap,
             start_from_head=args.start_from_head,
             data_dir=args.data_dir,
+            max_concurrent=args.max_concurrent or MAX_CONCURRENT_CHAINS,
         )
 
     # Single-chain mode

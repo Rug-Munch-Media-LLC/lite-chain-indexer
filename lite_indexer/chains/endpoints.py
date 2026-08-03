@@ -24,7 +24,7 @@ whose key is NOT set are excluded from the active pool (they can never be
 dialed — a literal ``${...}`` in a URL only produces DNS/JSON verification
 retries). Restart the service after setting a key to activate the endpoint.
 
-Total: 51 endpoints across 14 chains (40 public + 11 API-key free tiers).
+Total: 61 endpoints across 14 chains (49 public + 12 API-key free tiers).
 """
 
 from __future__ import annotations
@@ -50,9 +50,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://ethereum-mainnet.core.chainstack.com/${CHAINSTACK_KEY}",  # T4 — Chainstack free
         "https://${QUICKNODE_ENDPOINT}",  # T4 — QuickNode free
     ],
-    # ── Base (4 endpoints) ────────────────────────────────────────────
+    # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
-    # T2: drpc.org
+    # T2: drpc.org, 1rpc.io (50-block cap — matches EVM chunk size, verified 2026-08-03)
     # T4: alchemy
     # NOTE: publicnode (needs address filter) and blastapi (HTTP400) do not
     #       serve topic-only eth_getLogs on free tier and were removed.
@@ -60,6 +60,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://base.gateway.tenderly.co",  # T1 — tenderly (verified, fast)
         "https://mainnet.base.org",  # T1 — official (verified)
         "https://base.drpc.org",  # T2 — drpc.org (verified)
+        "https://1rpc.io/base",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
     # ── BSC (5 endpoints) ─────────────────────────────────────────────
@@ -95,21 +96,25 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://arb1.arbitrum.io/rpc",  # T2 — official (verified)
         "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Optimism (3 endpoints) ────────────────────────────────────────
+    # ── Optimism (4 endpoints) ────────────────────────────────────────
     # T1: tenderly (verified)
-    # T2: official mainnet.optimism.io (verified, occasionally slow)
+    # T2: official mainnet.optimism.io (verified, occasionally slow),
+    #     drpc.org (verified 2026-08-03)
     # T4: alchemy
     "optimism": [
         "https://optimism.gateway.tenderly.co",  # T1 — tenderly (verified)
         "https://mainnet.optimism.io",  # T2 — official (verified)
+        "https://optimism.drpc.org",  # T2 — drpc.org (verified 2026-08-03)
         "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Avalanche (3 endpoints) ───────────────────────────────────────
+    # ── Avalanche (4 endpoints) ───────────────────────────────────────
     # T1: official api.avax.network, drpc.org (verified)
+    # T2: tenderly gateway (verified 2026-08-03)
     # T4: infura (free tier)
     "avalanche": [
         "https://api.avax.network/ext/bc/C/rpc",  # T1 — official (verified)
         "https://avalanche.drpc.org",  # T1 — drpc.org (verified)
+        "https://avalanche.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://avalanche-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
     ],
     # ── Fantom (4 endpoints) ──────────────────────────────────────────
@@ -122,42 +127,56 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://fantom.drpc.org",  # T2 — drpc.org (verified)
         "https://fantom-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Linea (3 endpoints) ───────────────────────────────────────────
+    # ── Linea (5 endpoints) ───────────────────────────────────────────
     # T1: official rpc.linea.build, drpc.org (verified)
+    # T2: tenderly gateway (verified 2026-08-03), 1rpc.io (50-block cap —
+    #     matches EVM chunk size, verified 2026-08-03)
     # T4: infura (free tier)
     "linea": [
         "https://rpc.linea.build",  # T1 — official (verified)
         "https://linea.drpc.org",  # T1 — drpc.org (verified)
+        "https://linea.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
+        "https://1rpc.io/linea",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://linea-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
     ],
-    # ── Scroll (3 endpoints) ──────────────────────────────────────────
+    # ── Scroll (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.scroll.io, drpc.org (verified)
+    # T2: 1rpc.io (50-block cap — matches EVM chunk size, verified 2026-08-03)
     # T4: infura (free tier)
     "scroll": [
         "https://rpc.scroll.io",  # T1 — official (verified)
         "https://scroll.drpc.org",  # T1 — drpc.org (verified)
+        "https://1rpc.io/scroll",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://scroll-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
     ],
-    # ── zkSync Era (3 endpoints) ──────────────────────────────────────
+    # ── zkSync Era (4 endpoints) ──────────────────────────────────────
     # T1: official mainnet.era.zksync.io, drpc.org (verified)
+    # T2: tenderly gateway (verified 2026-08-03)
     # T4: alchemy (zksync-era)
     "zksync": [
         "https://mainnet.era.zksync.io",  # T1 — official (verified)
         "https://zksync.drpc.org",  # T1 — drpc.org (verified)
+        "https://zksync.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://zksync-era.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Mantle (2 endpoints) ──────────────────────────────────────────
+    # ── Mantle (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.mantle.xyz (verified)
-    # T2: drpc.org (verified; free-plan usage limit under burst)
+    # T2: drpc.org (verified; free-plan usage limit under burst),
+    #     tenderly gateway (verified 2026-08-03), 1rpc.io (50-block cap,
+    #     verified 2026-08-03)
     "mantle": [
         "https://rpc.mantle.xyz",  # T1 — official (verified)
         "https://mantle.drpc.org",  # T2 — drpc.org (verified)
+        "https://mantle.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
+        "https://1rpc.io/mantle",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
     ],
-    # ── Gnosis (2 endpoints) ──────────────────────────────────────────
+    # ── Gnosis (3 endpoints) ──────────────────────────────────────────
     # T1: official rpc.gnosischain.com, drpc.org (verified)
+    # T2: tenderly gateway (verified 2026-08-03)
     "gnosis": [
         "https://rpc.gnosischain.com",  # T1 — official (verified)
         "https://gnosis.drpc.org",  # T1 — drpc.org (verified)
+        "https://gnosis.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
     ],
     # ── Celo (3 endpoints) ────────────────────────────────────────────
     # T1: official forno.celo.org, ankr.com/celo (verified — only working ankr)
@@ -170,16 +189,16 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 }
 
 # Summary of EVM endpoints per chain:
-#   ethereum: 7     base: 4      bsc: 5      polygon: 5
-#   arbitrum: 4     optimism: 3  avalanche: 3 fantom: 4
-#   linea: 3        scroll: 3    zksync: 3   mantle: 2
-#   gnosis: 2       celo: 3
+#   ethereum: 7     base: 5      bsc: 5      polygon: 5
+#   arbitrum: 4     optimism: 4  avalanche: 4 fantom: 4
+#   linea: 5        scroll: 4    zksync: 4   mantle: 4
+#   gnosis: 3       celo: 3
 # -------------------------------------------------------
-#   Total: 51 endpoints across 14 chains
-#   (40 free public + 11 API-key free tiers)
+#   Total: 61 endpoints across 14 chains
+#   (49 free public + 12 API-key free tiers)
 #
-#   Non-EVM: solana (6), tron (4)
-#   Grand total: 61 endpoints across 16 chains
+#   Non-EVM: solana (4), tron (3)
+#   Grand total: 68 endpoints across 16 chains
 
 
 # ── Endpoint URL template resolution ───────────────────────────────

@@ -23,13 +23,14 @@ SOLANA_ENDPOINTS: list[str] = [
     "https://api.mainnet-beta.solana.com",
     # T2 — Verified free RPC with good uptime
     "https://solana-rpc.publicnode.com",
-    # T3 — Fallbacks (may have lower rate limits or require API keys)
-    "https://rpc.ankr.com/solana",
-    "https://solana.drpc.org",
     # T4 — API-key free tiers (set env vars to activate)
     "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # Alchemy free
     "https://rpc.helius.xyz/?api-key=${HELIUS_KEY}",  # Helius free (25K req/mo)
 ]
+# NOTE: solana.drpc.org and rpc.ankr.com/solana were removed 2026-08-03 —
+# confirmed unusable on the free plan ("chain is not available on free
+# plan" / "API key is not allowed"). The two public endpoints above are
+# verified alive via getSlot.
 
 # ── Tron RPC Endpoints ───────────────────────────────────────────────
 
@@ -39,9 +40,10 @@ TRON_ENDPOINTS: list[str] = [
     # T2 — Verified free endpoints (block queries only)
     "https://api.tronstack.io",
     "https://tron-rpc.publicnode.com",
-    # T3 — Fallback
-    "https://rpc.tronlink.org",
 ]
+# NOTE: rpc.tronlink.org was removed 2026-08-03 — confirmed dead (empty
+# response on /wallet/getnowblock). The remaining three endpoints are
+# verified alive.
 
 # ── Endpoint URL template resolution ───────────────────────────────
 # Resolve ${ENV_VAR} placeholders (${ALCHEMY_KEY}, ${HELIUS_KEY}) so the

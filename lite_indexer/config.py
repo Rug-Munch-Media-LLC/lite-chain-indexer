@@ -307,6 +307,21 @@ RPC_DISCOVERY_INTERVAL: int = int(os.environ.get("RPC_DISCOVERY_INTERVAL", "8640
 # single chain per process; the multi-chain daemon uses priorities.
 CHAIN_AFFINITY_ENABLED: bool = os.environ.get("CHAIN_AFFINITY_ENABLED", "0") == "1"
 
+# Max number of chains that sync CONCURRENTLY in daemon mode. 14 chains
+# running at once is what caused the 08/03 OOM kills (56 cgroup kills,
+# 63 service restarts): each chain holds its batch + event lists in
+# memory while fetching. Capping concurrency bounds peak RSS to roughly
+# `MAX_CONCURRENT_CHAINS × per-chain budget`. High-priority chains get
+# slots first (task creation order); lower-priority chains rotate in as
+# slots free. Set MAX_CONCURRENT_CHAINS=14 to restore old behavior.
+MAX_CONCURRENT_CHAINS: int = int(os.environ.get("MAX_CONCURRENT_CHAINS", "6"))
+
+# Run gc.collect() after every N sync cycles per chain. Python's cyclic
+# GC does not collect aggressively under cgroup memory pressure; event
+# dicts, bloom filters, and httpx response objects form reference cycles
+# that a manual collect reclaims between cycles.
+GC_EVERY_N_CYCLES: int = int(os.environ.get("GC_EVERY_N_CYCLES", "5"))
+
 CHAIN_CPU_AFFINITY: dict[str, list[int]] = {
     "solana": [0, 1],
     "tron": [8, 9],
