@@ -292,6 +292,35 @@ Transfer rows carry only the 10 hot-path columns — `token_symbol` / `token_nam
 ### 🧪 Thread-safe state management
 File-locked state files allow safe concurrent runs. Pair cache and per-chain progress persist across restarts.
 
+### 🤖 AI-vector-ready chain indexing (LanceDB)
+
+Chain data is vectorized into an embedded LanceDB store for semantic
+queries — RAG, fraud detection, wallet similarity, contract clone
+detection. LanceDB is embedded (no server process), columnar, disk-based,
+and zero-cost; it complements ClickHouse (analytics) with ANN + full-text
+search. Requires the `vectors` extra: `pip install -e ".[vectors]"`.
+
+Pre-built collections:
+
+| Collection | Contents | Use case |
+|-----------|----------|----------|
+| `wallet_embeddings` | Wallet behavior patterns | Semantic wallet search, similar-wallet discovery |
+| `contract_embeddings` | Deployed contract/bytecode signatures | Clone & fork detection, rug screening |
+| `transaction_embeddings` | Transaction patterns | Fraud / anomaly detection |
+| `token_embeddings` | Token metadata + holder patterns | Token similarity, scam screening |
+
+Query API endpoints (when `VECTOR_SEARCH_ENABLED=1`):
+
+```
+GET /api/v1/search/wallets?q=rug+pull+pattern
+GET /api/v1/search/contracts?q=uniswap+v3+clone
+GET /api/v1/similar/wallets/{address}
+GET /api/v1/similar/contracts/{contract_address}
+```
+
+Demo: `python scripts/vectorize_demo.py 0x1234...` finds the top-10
+wallets with behavior most similar to an address.
+
 ---
 
 ## Configuration
@@ -324,6 +353,14 @@ File-locked state files allow safe concurrent runs. Pair cache and per-chain pro
 | `CH_TTL_ENABLED` | `1` | Column-level ClickHouse TTL / retention |
 | `PARQUET_COLD_DAYS` | `7` | Min age (days) of rows eligible for Parquet cold tier |
 | `PARQUET_REMOTE` | `b2-crypt:lite-indexer-parquet` | rclone remote for Parquet uploads |
+| `LANCE_DIR` | `/var/data/lance` | LanceDB vector database directory (embedded, no server) |
+| `EMBEDDING_PROVIDER` | `ollama` | Embedding provider: `ollama` (local/free) or `openai` (compatible) |
+| `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name |
+| `EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama / OpenAI-compatible base URL |
+| `EMBEDDING_API_KEY` | `""` | API key for OpenAI-compatible providers |
+| `EMBEDDING_BATCH_SIZE` | `32` | Texts per embedding request |
+| `EMBEDDING_DIM` | `768` | Embedding vector dimension (must match model) |
+| `VECTOR_SEARCH_ENABLED` | `1` | Enable `/api/v1/search` + `/api/v1/similar` endpoints |
 
 ### RPC endpoints
 

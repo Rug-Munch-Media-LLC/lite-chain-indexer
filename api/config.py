@@ -53,3 +53,18 @@ LOG_LEVEL: str = (os.getenv("LOG_LEVEL") or "INFO").upper()
 # ── Service ────────────────────────────────────────────────────────────
 API_TITLE: str = os.getenv("API_TITLE") or "Chain Query API"
 API_VERSION: str = os.getenv("API_VERSION") or "1.0.0"
+
+# ── LanceDB vector search ──────────────────────────────────────────────
+# Vector collections are served from the same LANCE_DIR the indexer writes
+# to. When the directory is unreachable the search endpoints return 503.
+LANCE_DIR: str = os.getenv("LANCE_DIR") or "/var/data/lance"
+EMBEDDING_PROVIDER: str = (os.getenv("EMBEDDING_PROVIDER") or "ollama").lower()
+EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL") or "nomic-embed-text"
+EMBEDDING_BASE_URL: str = os.getenv(
+    "EMBEDDING_BASE_URL",
+    "http://localhost:11434"
+    if (os.getenv("EMBEDDING_PROVIDER") or "ollama").lower() == "ollama"
+    else "https://api.openai.com/v1",
+)
+EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY") or ""
+VECTOR_SEARCH_ENABLED: bool = (os.getenv("VECTOR_SEARCH_ENABLED") or "1") == "1"

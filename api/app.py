@@ -25,7 +25,7 @@ from slowapi.util import get_remote_address
 
 from api import __version__
 from api.config import API_TITLE, API_VERSION, RATE_LIMIT_KEY_PREFIX, RATE_LIMIT_PER_MINUTE
-from api.routers import deployers, stats, system, transfers, whales
+from api.routers import deployers, search, stats, system, transfers, whales
 from api.routers import query as query_router
 
 REQUEST_COUNT = Counter(
@@ -105,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(deployers.router)
     app.include_router(whales.router)
     app.include_router(stats.router)
+    app.include_router(search.router)
 
     # Raw SQL is expensive — stricter per-IP limit.
     query_router.post_query = limiter.limit("30/minute")(query_router.post_query)
