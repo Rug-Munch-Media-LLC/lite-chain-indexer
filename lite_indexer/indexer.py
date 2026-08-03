@@ -69,7 +69,7 @@ logger = get_logger(__name__)
 _REORG_SENTINEL = "__CHAIN_REORG__"
 
 
-def _check_reorg(events: list) -> bool:
+def _check_reorg(events: list[Any]) -> bool:
     """Check if the events list contains a chain reorg sentinel.
 
     Strategies return ["__CHAIN_REORG__"] when from_block > to_block,
@@ -357,7 +357,7 @@ class LiteIndexer:
         if self._chain_type == "solana":
             return events
 
-        block_numbers = {e.get("blockNumber") for e in events if e.get("blockNumber") is not None}
+        block_numbers = {int(bn) for e in events if (bn := e.get("blockNumber")) is not None}
         if not block_numbers:
             return events
 

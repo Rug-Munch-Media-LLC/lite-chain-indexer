@@ -311,7 +311,7 @@ def test_upload_verified_then_delete(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert calls[0][0:2] == ["rclone", "copy"]
     assert calls[1][0:2] == ["rclone", "check"]
     assert calls[0][2] == str(_local_dir(tmp_path / "parquet", "ethereum", DAY))
-    assert calls[0][3] == "b2-crypt:lite-indexer-parquet/ethereum/2026-07-30"
+    assert calls[0][3] == "b2-crypt:chain-data/parquet/ethereum/2026-07-30"
     assert len(client.deletes) == 2
     assert client.last_status() == "deleted"
 

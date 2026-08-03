@@ -19,6 +19,7 @@ import signal
 import sys
 import time
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -196,7 +197,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--remote",
         type=str,
         default=None,
-        help="rclone remote root (default: PARQUET_REMOTE env or b2-crypt:lite-indexer-parquet)",
+        help="rclone remote root (default: PARQUET_REMOTE env or b2-crypt:chain-data/parquet)",
     )
     export_parser.add_argument(
         "--data-dir",
@@ -249,7 +250,7 @@ async def main_daemon(
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
-            loop.add_signal_handler(sig, lambda s=sig: _handle_signal(s))
+            loop.add_signal_handler(sig, partial(_handle_signal, sig))
         except (NotImplementedError, RuntimeError):
             signal.signal(sig, _handle_signal)
 

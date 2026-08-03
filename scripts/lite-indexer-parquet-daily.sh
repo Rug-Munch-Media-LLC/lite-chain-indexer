@@ -7,7 +7,7 @@
 # For each supported chain this:
 #   1. exports yesterday's rows from ClickHouse to Parquet
 #      (PARQUET_DIR/{chain}/{date}/, verified row count + schema),
-#   2. uploads the directory to b2-crypt:lite-indexer-parquet/{chain}/{date}/
+#   2. uploads the directory to b2-crypt:chain-data/parquet/{chain}/{date}/
 #      via `rclone copy` + `rclone check`,
 #   3. records the run in wallet_memory.parquet_export_state, and
 #   4. deletes the rows from ClickHouse ONLY after the upload is verified
@@ -33,7 +33,7 @@ for chain in $CHAINS; do
         --chain "$chain" \
         --date "$YESTERDAY" \
         --upload \
-        --remote "b2-crypt:lite-indexer-parquet" \
+        --remote "b2-crypt:chain-data/parquet" \
         --delete-after-upload
 done
 

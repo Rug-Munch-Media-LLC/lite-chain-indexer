@@ -1,7 +1,7 @@
 """
 DuckDB query layer for the B2 parquet archive.
 
-The lite indexer exports ClickHouse data to Parquet on B2 every 6h
+The lite indexer exports ClickHouse data to Parquet on B2 hourly
 (``lite-indexer-parquet-daily.sh``). This module lets you query that
 archive directly with DuckDB — no node, no ClickHouse round-trip.
 
@@ -70,8 +70,11 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     duckdb = None  # type: ignore[assignment]
 
-# B2 path layout: {chain}/{YYYY}/{MM}/{DD}/{chain}_{YYYY-MM-DD}.parquet
-# and {chain}_dex_{YYYY-MM-DD}.parquet for DEX events.
+# B2 path layout (hour-granular since 2026-08-03):
+# {chain}/{YYYY}/{MM}/{DD}/{HH}/{chain}_{YYYY-MM-DD}.parquet
+# and {chain}_dex_{YYYY-MM-DD}.parquet for DEX events. The filename is
+# date-based; the hour lives in the directory component so each hour's
+# export lands in its own folder (produced by lite-indexer-parquet-daily.sh).
 _REMOTE_BASE = "b2-crypt:chain-data/parquet"
 
 _VIEWS = ("transfers", "dex", "spl_balance_changes")
@@ -97,20 +100,26 @@ def _date_range(start: str | date, end: str | date) -> list[date]:
     return days
 
 
-def _local_path(mount_dir: str | Path, chain: str, day: date, kind: str) -> Path:
-    """Build the local (mounted) path for a chain/date file."""
+def _local_path(mount_dir: str | Path, chain: str, day: date, kind: str, hour: int = 0) -> Path:
+    """Build the local (mounted) path for a chain/date/hour file.
+
+    Hour-granular layout: ``{chain}/{YYYY}/{MM}/{DD}/{HH}/{fname}``. The
+    filename stays date-based (``{chain}_{YYYY-MM-DD}.parquet``); the hour
+    lives in the directory component so each hour's export from
+    ``lite-indexer-parquet-daily.sh`` lands in its own folder.
+    """
     y, m, d = f"{day.year:04d}", f"{day.month:02d}", f"{day.day:02d}"
     date_str = f"{y}-{m}-{d}"
     if kind == "dex":
         fname = f"{chain}_dex_{date_str}.parquet"
     else:
         fname = f"{chain}_{date_str}.parquet"
-    return Path(mount_dir) / chain / y / m / d / fname
+    return Path(mount_dir) / chain / y / m / d / f"{hour:02d}" / fname
 
 
-def _remote_path(chain: str, day: date, kind: str) -> str:
-    """Build the B2 remote path for a chain/date file."""
-    return f"{_REMOTE_BASE}/{_local_path('', chain, day, kind)}"
+def _remote_path(chain: str, day: date, kind: str, hour: int = 0) -> str:
+    """Build the B2 remote path for a chain/date/hour file."""
+    return f"{_REMOTE_BASE}/{_local_path('', chain, day, kind, hour)}"
 
 
 def _register_views(con: Any, files_by_view: dict[str, list[Path]]) -> None:
@@ -151,10 +160,11 @@ def _collect_mount_files(
     """Collect existing parquet files under a mounted rclone directory."""
     files = []
     for day in _date_range(start, end):
-        for kind in ("transfers", "dex"):
-            p = _local_path(mount_dir, chain, day, kind)
-            if p.is_file():
-                files.append(p)
+        for hour in range(24):
+            for kind in ("transfers", "dex"):
+                p = _local_path(mount_dir, chain, day, kind, hour)
+                if p.is_file():
+                    files.append(p)
     return _split_files(files, chain)
 
 
@@ -170,24 +180,25 @@ def _collect_rclone_cat_files(
     cache.mkdir(parents=True, exist_ok=True)
     files: list[Path] = []
     for day in _date_range(start, end):
-        for kind in ("transfers", "dex"):
-            dest = _local_path(cache, chain, day, kind)
-            if dest.is_file():
+        for hour in range(24):
+            for kind in ("transfers", "dex"):
+                dest = _local_path(cache, chain, day, kind, hour)
+                if dest.is_file():
+                    files.append(dest)
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                remote = _remote_path(chain, day, kind, hour)
+                with dest.open("wb") as fh:
+                    proc = subprocess.run(
+                        [rclone_bin, "cat", remote],
+                        stdout=fh,
+                        stderr=subprocess.PIPE,
+                        check=False,
+                    )
+                if proc.returncode != 0 or dest.stat().st_size == 0:
+                    dest.unlink(missing_ok=True)
+                    continue
                 files.append(dest)
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            remote = _remote_path(chain, day, kind)
-            with dest.open("wb") as fh:
-                proc = subprocess.run(
-                    [rclone_bin, "cat", remote],
-                    stdout=fh,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                )
-            if proc.returncode != 0 or dest.stat().st_size == 0:
-                dest.unlink(missing_ok=True)
-                continue
-            files.append(dest)
     return _split_files(files, chain)
 
 
@@ -225,10 +236,14 @@ def query_parquet(
     Returns:
         Query result rows as a list of dicts.
     """
+    # Resolve documented defaults: start defaults to yesterday, end to start.
+    start_d: str | date = start if start is not None else (date.today() - timedelta(days=1))
+    end_d: str | date = end if end is not None else start_d
+
     if fetch:
-        files = _collect_rclone_cat_files(chain, start, end, cache_dir, rclone_bin)
+        files = _collect_rclone_cat_files(chain, start_d, end_d, cache_dir, rclone_bin)
     else:
-        files = _collect_mount_files(mount_dir, chain, start, end)
+        files = _collect_mount_files(mount_dir, chain, start_d, end_d)
 
     con = _ensure_duckdb()
     _register_views(con, files)
@@ -265,6 +280,10 @@ def query_httpfs(
     if not ak or not sk:
         raise RuntimeError("httpfs needs access keys (B2_ACCOUNT_ID / B2_APPLICATION_KEY)")
 
+    # Resolve documented defaults: start defaults to yesterday, end to start.
+    start_d: str | date = start if start is not None else (date.today() - timedelta(days=1))
+    end_d: str | date = end if end is not None else start_d
+
     con = _ensure_duckdb()
     con.execute("INSTALL httpfs; LOAD httpfs;")
     con.execute(f"SET s3_endpoint = '{ep}'")
@@ -273,17 +292,18 @@ def query_httpfs(
     con.execute(f"SET s3_secret_access_key = '{sk}'")
 
     files: dict[str, list[str]] = {"transfers": [], "dex": [], "spl_balance_changes": []}
-    for day in _date_range(start, end):
-        for kind in ("transfers", "dex"):
-            rel = _local_path("", chain, day, kind)
-            s3 = f"s3://{bucket}/{rel}"
-            name = rel.name
-            if "_dex_" in name:
-                files["dex"].append(s3)
-            elif chain == "solana":
-                files["spl_balance_changes"].append(s3)
-            else:
-                files["transfers"].append(s3)
+    for day in _date_range(start_d, end_d):
+        for hour in range(24):
+            for kind in ("transfers", "dex"):
+                rel = _local_path("", chain, day, kind, hour)
+                s3 = f"s3://{bucket}/{rel}"
+                name = rel.name
+                if "_dex_" in name:
+                    files["dex"].append(s3)
+                elif chain == "solana":
+                    files["spl_balance_changes"].append(s3)
+                else:
+                    files["transfers"].append(s3)
 
     for view, paths in files.items():
         if not paths:

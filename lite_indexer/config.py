@@ -365,9 +365,10 @@ CHAIN_PRIORITY: dict[str, int] = {
 # permanent tier, then deleted from ClickHouse to reclaim disk.
 # Optional dependency: pyarrow.
 PARQUET_DIR: Path = DATA_DIR / "parquet"
-# Remote root for the parquet archive. The daily script passes
-# ``--remote b2-crypt:lite-indexer-parquet`` explicitly.
-PARQUET_REMOTE: str = os.environ.get("PARQUET_REMOTE", "b2-crypt:lite-indexer-parquet")
+# Remote root for the parquet archive. Canonical prefix (matches the
+# live hourly export script /root/scripts/lite-indexer-parquet-daily.sh
+# and the DuckDB read path in lite_indexer.storage.duckdb_query).
+PARQUET_REMOTE: str = os.environ.get("PARQUET_REMOTE", "b2-crypt:chain-data/parquet")
 PARQUET_RCLONE_BIN: str = os.environ.get("PARQUET_RCLONE_BIN", "rclone")
 # Min age (days) of rows eligible for cold storage (keep hot window).
 # Used for the --days backfill mode; the daily job exports an explicit

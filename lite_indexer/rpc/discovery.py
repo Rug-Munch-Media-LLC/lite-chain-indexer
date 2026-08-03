@@ -129,13 +129,13 @@ async def fetch_chain_registry(
 
 def extract_rpc_candidates(
     chain: str,
-    registry: list[dict[str, Any]],
+    registry: list[Any],
 ) -> list[str]:
     """Extract free, keyless RPC URLs for ``chain`` from the registry.
 
     Args:
         chain: Chain name.
-        registry: Parsed chains.json entries.
+        registry: Parsed chains.json entries (may contain non-dict rows).
 
     Returns:
         List of candidate RPC URLs (deduplicated, https-only).

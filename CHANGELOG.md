@@ -2,10 +2,18 @@
 
 All notable changes to Lite Chain Indexer will be documented in this file.
 
-## [Unreleased]
+## [1.3.0] — 2026-08-03
 
 ### Features
 
+- **Lazy per-chain DEX/deployer indexing** (`chains/demand.py`) — every chain
+  starts with transfer events only; DEX swap and deployer event indexing is
+  enabled by default for top chains (ethereum, bsc, polygon, arbitrum, base,
+  solana) and only after the scanner signals demand for long-tail chains
+  (scroll, mantle, linea, fantom, avalanche, gnosis). Demand is signaled via a
+  lightweight file touch (`{INDEXER_DEMAND_DIR}/{chain}/dex|deployer`) — no
+  cross-service imports — and once enabled stays enabled (persisted in the
+  state file). Setting `LAZY_INDEXING_ENABLED=0` restores the legacy behavior.
 - **NDJSON write-ahead log now optional (default off)** — the NDJSON
   replay buffer is redundant with ClickHouse (the durable store), so it is
   gated behind the `NDJSON_ENABLED` env flag (default `false`). When
@@ -17,44 +25,26 @@ All notable changes to Lite Chain Indexer will be documented in this file.
   code is retained behind the flag for rollback; the fleet rotation cron
   (`rotate-lite-indexer-data.sh`, `compress-stale-ndjson.sh`) no-ops when
   the flag is off.
-- **Balance reconciliation** (`storage/reconciliation.py`) — TrueBlocks-style
-  completeness check: computes each sampled wallet's balance from
-  `evm_transfers` deltas (incoming minus outgoing via
-  `sum(toInt128(value))`) and compares it against on-chain
-  `eth_getBalance`. Status `MATCH` (delta == 0), `APPROXIMATE` (<1%), or
-  `MISMATCH` (with the gap). Results are cached in
-  `wallet_memory.reconciliation_results` (MergeTree, one row per
-  (chain, address, checked_at)). Lightweight + non-blocking: runs on a
-  random sample of 100 wallets per chain (configurable
-  `RECONCILIATION_SAMPLE_SIZE`), concurrency-capped RPC calls, and is
-  gated by `RECONCILIATION_ENABLED`. Exposed as the `reconcile`
-  subcommand for a daily cron.
-- **Reorg staging** (`strategies/evm/reorg.py`) — Envio/TrueBlocks-style
-  reorg-safe block confirmation. Tracks the last N blocks as "unripe"
-  using `wallet_memory.block_checkpoints` (ReplacingMergeTree keyed by
-  (chain, block_number)); after `MAX_REORG_DEPTH[chain]` blocks
-  (ethereum/bsc/arbitrum/optimism/base/avalanche/gnosis: 12,
-  polygon: 32) the stored hash is compared against the current chain
-  hash. On mismatch, `evm_transfers` + `dex_events` above the fork
-  point are DELETEd and the indexer re-fetches from the fork. Wired
-  into `EVMChainStrategy.reorg_stage` after each block batch and gated
-  by `REORG_PROTECTION_ENABLED` (default on for EVM, off for
-  Solana/Tron).
+- **Env placeholder fix** — `${ENV_VAR}` RPC endpoint templates are now
+  expanded and filtered at import time: unexpanded placeholder URLs are
+  dropped from the pool instead of being retried forever
+  (1583 `verify_endpoint_failed`/30min → 0). Defense-in-depth in the
+  health checker and discovery path.
+- **Parquet cold-tier export** — per-chain/per-date rollup of old ClickHouse
+  rows into verified Parquet files, uploaded to the B2 permanent tier via
+  rclone, then deleted from ClickHouse only after the upload is verified
+  (`--delete-after-upload`). Idempotent (state marker + `parquet_export_state`
+  audit table). Script: `scripts/lite-indexer-parquet-daily.sh`
+  (daily 03:30 UTC; the fleet copy runs 6-hourly).
 
-### Fixes
+### Storage
 
-- **Restore `pair_address` in deployer_events** — the F0 deployer EOA fix
-  repurposed `token_address` to hold token0 and dropped the pair/pool
-  address, breaking scanner joins on `pair_address`. `pair_address` is
-  added back as its own column (`String DEFAULT '' AFTER token1`), the
-  insert now writes all address columns (`deployer`, `token_address`,
-  `token0`, `token1`, `pair_address`, `factory`, `deployer_eoa`), and
-  `_ensure_deployer_columns()` migrates existing tables idempotently.
-
-## [1.3.0] — 2026-08-02
-
-### Performance
-
+- **Enrichment stripping** (`storage/token_meta.py`) — `token_symbol` /
+  `token_name` are no longer written to every transfer row (~60 bytes x 278M
+  rows). Transfer rows now carry only the 10 hot-path columns; token metadata
+  lives in the `wallet_memory.token_meta_ref` reference table, upserted once
+  per unique token per batch (ReplacingMergeTree makes re-upserts
+  idempotent). `TOKEN_META_ENABLED` is always on and non-configurable.
 - **Address-first wallet access path** (`storage/projections.py`) —
   electrs-inspired projections on `evm_transfers` ordered by
   `(chain, address, block_number, log_index)` so "all transfers for
@@ -65,15 +55,6 @@ All notable changes to Lite Chain Indexer will be documented in this file.
   Projections are maintained for new inserts automatically; pass
   `materialize_existing=True` once to backfill the existing 264M rows.
   Gated by `WALLET_PROJECTION_ENABLED`.
-
-### Storage
-
-- **Token metadata reference table** (`storage/token_meta.py`) —
-  cryo-inspired `wallet_memory.token_meta_ref`: one row per token instead
-  of `token_symbol`/`token_name` on every transfer row (~60 bytes x 264M
-  rows). When `TOKEN_META_ENABLED`, transfer rows store empty
-  symbol/name and the reference table is upserted once per unique token
-  per batch (ReplacingMergeTree makes re-upserts idempotent).
 - **Per-token incremental balance cache** (`storage/balance_cache.py`) —
   electrs lazy cache: `wallet_memory.holder_balances` (ReplacingMergeTree)
   is read-modify-written per holder per batch so holder queries never
@@ -89,6 +70,62 @@ All notable changes to Lite Chain Indexer will be documented in this file.
   after transfer inserts succeed (so caches never diverge from
   `evm_transfers`); each feature is independently gated by its own env
   flag and all DDL is idempotent and non-fatal.
+- **Reorg staging** (`strategies/evm/reorg.py`) — Envio/TrueBlocks-style
+  reorg-safe block confirmation. Tracks the last N blocks as "unripe"
+  using `wallet_memory.block_checkpoints` (ReplacingMergeTree keyed by
+  (chain, block_number)); after `MAX_REORG_DEPTH[chain]` blocks
+  (ethereum/bsc/arbitrum/optimism/base/avalanche/gnosis: 12,
+  polygon: 32) the stored hash is compared against the current chain
+  hash. On mismatch, `evm_transfers` + `dex_events` above the fork
+  point are DELETEd and the indexer re-fetches from the fork. Wired
+  into `EVMChainStrategy.reorg_stage` after each block batch and gated
+  by `REORG_PROTECTION_ENABLED` (default on for EVM, off for
+  Solana/Tron).
+- **Balance reconciliation** (`storage/reconciliation.py`) — TrueBlocks-style
+  completeness check: computes each sampled wallet's balance from
+  `evm_transfers` deltas (incoming minus outgoing via
+  `sum(toInt128(value))`) and compares it against on-chain
+  `eth_getBalance`. Status `MATCH` (delta == 0), `APPROXIMATE` (<1%), or
+  `MISMATCH` (with the gap). Results are cached in
+  `wallet_memory.reconciliation_results` (MergeTree, one row per
+  (chain, address, checked_at)). Lightweight + non-blocking: runs on a
+  random sample of 100 wallets per chain (configurable
+  `RECONCILIATION_SAMPLE_SIZE`), concurrency-capped RPC calls, and is
+  gated by `RECONCILIATION_ENABLED`. Exposed as the `reconcile`
+  subcommand for a daily cron.
+
+### RPC & Reliability
+
+- **Bloom byte-order fix** (`strategies/evm/bloom.py`) — `_test_bit` now
+  reads byte `255 - p // 8` (geth/MSB-first logsBloom layout). The previous
+  little-endian read produced 100% false negatives on address queries,
+  silently skipping blocks that actually contained the address. Now
+  geth-conformant with 6 regression tests. Bloom fetch concurrency is
+  bounded (`BLOOM_FETCH_CONCURRENCY`).
+- **Circuit breaker close fix** (`rpc/client.py`) — `record_endpoint_success`
+  is now wired into `RpcClient.call()`, so breakers actually close on
+  recovery instead of oscillating open↔half-open forever. The
+  chainid.network registry is cached (1 fetch/hour instead of per-chain).
+- **Restore `pair_address` in deployer_events** — the F0 deployer EOA fix
+  repurposed `token_address` to hold token0 and dropped the pair/pool
+  address, breaking scanner joins on `pair_address`. `pair_address` is
+  added back as its own column (`String DEFAULT '' AFTER token1`), the
+  insert now writes all address columns (`deployer`, `token_address`,
+  `token0`, `token1`, `pair_address`, `factory`, `deployer_eoa`), and
+  `_ensure_deployer_columns()` migrates existing tables idempotently.
+
+### Docs
+
+- **README updated for v1.3.0** — version badge, quickstart with `pip
+  install` + env vars, new feature list (lazy indexing, enrichment
+  stripping, NDJSON gate, reconciliation, reorg staging), refreshed
+  architecture diagram, and honest performance claims (278M+ transfers,
+  ~30s freshness, free RPCs only).
+- **`.env.example` updated** — all new flags documented (`NDJSON_ENABLED`,
+  `LAZY_INDEXING_ENABLED`, `RECONCILIATION_*`, `REORG_PROTECTION_ENABLED`,
+  `TOKEN_META_ENABLED`, `WALLET_PROJECTION_ENABLED`, `BALANCE_CACHE_ENABLED`,
+  `HOLDER_BALANCES_MV_ENABLED`, `BLOOM_ENABLED`, `CH_TTL_ENABLED`,
+  `PARQUET_*`).
 
 ## [1.2.0] — 2026-08-02
 

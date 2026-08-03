@@ -1,3 +1,6 @@
+# DEPRECATED: Canonical export is now /root/scripts/lite-indexer-parquet-daily.sh
+# which uses ClickHouse-native FORMAT Parquet (not pyarrow).
+# This module retained for dry-run/testing. Do not schedule.
 """
 Parquet cold storage tier — daily rollup of old ClickHouse rows.
 

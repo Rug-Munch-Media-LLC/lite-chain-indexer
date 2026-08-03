@@ -3,7 +3,7 @@
 **The free, open-source, multi-chain blockchain indexer.** Index transfers, DEX swaps, and deployer activity across **16 chains (14 EVM + Solana + Tron)** using **only free public RPCs** — zero infrastructure cost, zero API keys required, and DuckDB-queryable parquet archives on B2. No node. No gateway. No bill.
 
 [![CI](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml/badge.svg?branch=main)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-v1.2.0-blue.svg)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/tags)
+[![Version](https://img.shields.io/badge/version-v1.3.0-blue.svg)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/tags)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
@@ -13,7 +13,7 @@
 
 ## What It Does
 
-Lite Chain Indexer is a lightweight, self-hosted **multi-chain blockchain indexer** that turns raw on-chain activity into queryable, analyzable data. It watches **ERC-20/TRC-20/SPL transfer events**, **DEX swap events** (Uniswap V2/V3 and forks), and **pair/pool deployment events** across **14 EVM chains plus Solana and Tron** — entirely through **free public RPC endpoints**. Events are written to local NDJSON files and ClickHouse in real time, then exported as **parquet snapshots to B2** every six hours so you can run **DuckDB SQL queries over historical data** with no node, no gateway, and no recurring bill.
+Lite Chain Indexer is a lightweight, self-hosted **multi-chain blockchain indexer** that turns raw on-chain activity into queryable, analyzable data. It watches **ERC-20/TRC-20/SPL transfer events**, **DEX swap events** (Uniswap V2/V3 and forks), and **pair/pool deployment events** across **14 EVM chains plus Solana and Tron** — entirely through **free public RPC endpoints**. Events are written to ClickHouse in real time, then exported as **parquet snapshots to B2** so you can run **DuckDB SQL queries over historical data** with no node, no gateway, and no recurring bill.
 
 It's the **free blockchain indexer** for anyone who wants **blockchain data without running a node** — analysts, wallets, dashboards, Telegram bots, and research pipelines.
 
@@ -23,10 +23,11 @@ It's the **free blockchain indexer** for anyone who wants **blockchain data with
 
 - **$0/month forever** — runs entirely on free public RPC endpoints (123 verified endpoints across 16 chains). No paid APIs, no gateway fees, no infrastructure bill.
 - **16 chains, one process** — Ethereum, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, Fantom, Linea, Scroll, zkSync Era, Mantle, Gnosis, Celo **+ Solana + Tron**. One Python process, `asyncio`-parallel daemon.
-- **DuckDB-queryable parquet archive** — ClickHouse for live data, **parquet snapshots exported to B2 every 6 hours**, queryable with DuckDB. No vendor lock-in, no proprietary formats.
+- **DuckDB-queryable parquet archive** — ClickHouse for live data, **parquet snapshots exported to B2 on a scheduled cron** (daily in-repo script, 6-hourly on the fleet), queryable with DuckDB. No vendor lock-in, no proprietary formats.
 - **Self-hosted** — your data, your server, your control. No centralized gateway, no API keys, no rate-limit anxiety.
-- **Production-proven** — **231M+ transfer events** and **58M+ DEX events** indexed in production, ~3M events/hour sustained, sub-2-minute latency from chain tip.
+- **Production-proven** — **278M+ transfer events** and **58M+ DEX events** indexed in production, ~3M events/hour sustained, ~30s freshness from chain tip on free RPCs.
 - **Honest footprint** — ~2 GB RAM for all 16 chains concurrently. Runs on a $5 VPS.
+- **Demand-aware** — lazy per-chain DEX/deployer indexing: long-tail chains only index extra event types when your scanner actually queries them (file-touch signaling, persisted in state).
 
 > This is an **open source blockchain indexer** (MIT) — the community reference implementation. The RugMunch production instance layers proprietary analytics on top; the OSS code here is a complete, self-contained starting point.
 
@@ -38,20 +39,39 @@ The fastest way to try Lite Chain Indexer — one chain, one command:
 
 ```bash
 pip install lite-chain-indexer
-export CLICKHOUSE_HOST=localhost
+export CH_HOST=localhost CH_PORT=9000 CH_DATABASE=wallet_memory
 lite-indexer --chain ethereum --dex
 ```
 
 This installs the package, points the ClickHouse writer at a local server
-(optional — events are always written to NDJSON even without ClickHouse),
-and indexes Ethereum transfer + DEX swap events from the current head.
-See [Quick Start](#quick-start) below for the full walkthrough.
+(optional — without ClickHouse, indexing still works and data is written
+to the state file + cold tier), and indexes Ethereum transfer + DEX swap
+events from the current head. See [Quick Start](#quick-start) below for
+the full walkthrough and the [Configuration](#configuration) section for
+all supported environment variables.
+
+### Key environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `CH_HOST` (alias `CLICKHOUSE_HOST`) | `127.0.0.1` | ClickHouse host |
+| `CH_PORT` (alias `CLICKHOUSE_PORT`) | `9000` | ClickHouse native port |
+| `CH_USER` (alias `CLICKHOUSE_USER`) | `default` | ClickHouse user |
+| `CH_DATABASE` | `wallet_memory` | ClickHouse database |
+| `DATA_DIR` | `/var/data/chain-indexer` | Data directory for state + parquet |
+| `NDJSON_ENABLED` | `0` | Write-ahead NDJSON log (default off) |
+| `LAZY_INDEXING_ENABLED` | `1` | Lazy per-chain DEX/deployer indexing |
+| `REORG_PROTECTION_ENABLED` | `1` | Reorg staging / fork rollback (EVM) |
+| `RECONCILIATION_ENABLED` | `1` | Balance reconciliation cron |
+| `TOKEN_META_ENABLED` | always on | Enrichment stripping (token_meta_ref) |
+
+See [Configuration](#configuration) for the complete table.
 
 ---
 
 ## Quick Start
 
-Requirements: Python 3.11+, a little disk space, and internet access to free RPCs. **No ClickHouse required to start** — events are always written to NDJSON; ClickHouse and DuckDB are optional outputs.
+Requirements: Python 3.11+, a little disk space, and internet access to free RPCs. **No ClickHouse required to start** — the indexer runs on free public RPCs and persists progress to its state file; ClickHouse, DuckDB, and Parquet are optional outputs.
 
 ```bash
 # 1. Clone (primary mirror: Forgejo; also on Codeberg, GitLab, Radicle)
@@ -75,7 +95,7 @@ lite-indexer --daemon --chains ethereum,base,bsc,polygon
 lite-indexer --daemon --dex --deployers --start-from-head
 ```
 
-Output lands in `DATA_DIR` (default `/var/lib/chain-indexer`) as compressed NDJSON organized by chain/date, plus ClickHouse inserts if configured.
+Output lands in `DATA_DIR` (default `/var/data/chain-indexer`) as state + optional compressed NDJSON organized by chain/date, plus ClickHouse inserts if configured.
 
 ### Run as a service
 
@@ -98,7 +118,7 @@ pip install -e ".[query]"
 
 ## Chains Covered
 
-16 chains, 123 free RPC endpoints (113 EVM + 6 Solana + 4 Tron), all verified for the methods this indexer needs. Stats below are **live from the production ClickHouse store** (`wallet_memory`), captured 2026-08-01.
+16 chains, 123 free RPC endpoints (113 EVM + 6 Solana + 4 Tron), all verified for the methods this indexer needs. Per-chain stats below are a **snapshot from the production ClickHouse store** (`wallet_memory`), captured 2026-08-01; the production total has since grown past **278M transfer events**.
 
 | Chain | Type | Block time | RPCs | Transfers indexed | DEX events indexed |
 |-------|------|:----------:|:----:|------------------:|-------------------:|
@@ -118,9 +138,9 @@ pip install -e ".[query]"
 | Solana | Solana | 0.4s | 6 | 841,478 (SPL changes) | — |
 | Fantom | EVM | 1s | 7 | *add via `--chains`* | *add via `--chains`* |
 | Celo | EVM | 5s | 6 | *add via `--chains`* | *add via `--chains`* |
-| **Total** | | | **123** | **231,902,240** | **58,143,706** |
+| **Total** | | | **123** | **278,000,000+** | **58,143,706+** |
 
-*Totals don't include the ~0.9M deployer events and ~0.8M Solana SPL balance changes — roughly **291M+ events** indexed in total. Fantom and Celo are fully supported in code; they're simply not in the default daemon chain list — add them with `--chains`.*
+*Totals don't include the ~0.9M deployer events and ~0.8M Solana SPL balance changes — roughly **338M+ events** indexed in total. Fantom and Celo are fully supported in code; they're simply not in the default daemon chain list — add them with `--chains`.*
 
 ---
 
@@ -129,18 +149,24 @@ pip install -e ".[query]"
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                       lite-indexer (CLI)                         │
-│       --chain · --daemon · --dex · --deployers · --chains        │
+│   --chain · --daemon · --dex · --deployers · --chains ·          │
+│   reconcile · export-parquet                                     │
 ├──────────────────────────────────────────────────────────────────┤
 │                  LiteIndexer (indexer.py)                        │
-│          orchestrator: fetch → parse → enrich → persist          │
+│      orchestrator: fetch → parse → enrich → persist              │
+│      + demand-aware event gating (chains/demand.py)              │
 ├───────────────┬──────────────────┬───────────────────────────────┤
 │  strategies/  │      rpc/        │         storage/              │
-│  EVM (14)     │  endpoint pool   │  NDJSON writer (.zst)         │
+│  EVM (14)     │  endpoint pool   │  NDJSON writer (gated, .zst)  │
 │  Solana       │  health checks   │  ClickHouse writer (live)     │
 │  Tron         │  rate limiting   │  DuckDB query (parquet/B2)    │
-│               │  block ranges    │  disk cap + rotation          │
+│  bloom pre-   │  per-method      │  token_meta_ref (stripping)   │
+│  filtering    │  routing         │  projections (address-first)  │
+│  reorg stage  │  circuit breaker │  balance cache + MV           │
+│               │                  │  reconciliation               │
+│               │                  │  parquet cold tier + disk cap │
 ├───────────────┴──────────────────┴───────────────────────────────┤
-│   chains/  (endpoints · limits · polling · non-evm) + config.py  │
+│   chains/  (endpoints · limits · demand · polling · non-evm)     │
 │            123 free RPC endpoints · 16 chains · event topics     │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -151,16 +177,20 @@ pip install -e ".[query]"
 Free public RPC (eth_getLogs · Solana JSON-RPC · TronGrid)
         │
         ▼
-Strategy layer (EVM / Solana / Tron)
+Strategy layer (EVM / Solana / Tron)  ── bloom pre-filter, chunked fetches
         │
         ▼
 LiteIndexer: fetch → parse → enrich (block timestamps, token resolution)
+        │   ▲
+        │   └─ demand gating (chains/demand.py): lazy DEX/deployer per chain
         │
-        ├───────────► NDJSON        {data_dir}/{chain}/{date}/events.jsonl  (local, zstd)
+        ├───────────► NDJSON (optional) {data_dir}/{chain}/{date}/events.jsonl  (.zst)
         ├───────────► ClickHouse    wallet_memory.evm_transfers / dex_events
         │                             (live, hot, sub-second queries)
+        │                             + token_meta_ref, projections, balances,
+        │                               block_checkpoints (reorg), reconciliation
         ▼
-Parquet export → B2  (daily 03:30 UTC, cron: lite-indexer-parquet-daily.sh)
+Parquet export → B2  (daily 03:30 UTC script; fleet runs 6-hourly)
         │
         ▼
 DuckDB queries (storage/duckdb_query.py)  — no node, no server, no bill
@@ -176,10 +206,12 @@ Honest numbers from the production deployment (2-core VPS, free public RPCs):
 
 | Metric | Value |
 |--------|-------|
+| Events indexed | **278M+ transfer events** + 58M+ DEX events + ~0.9M deployer events in production |
 | Memory | **~2 GB** for all 16 chains in a single process |
 | Throughput | **~3M+ events/hour** sustained (≈77M rows/day to ClickHouse) |
-| Latency | **< 2 minutes** from chain tip (adaptive per-chain polling) |
-| Disk | NDJSON auto-compressed to `.zst` after 15 min; configurable hard cap (default 10 GB) |
+| Freshness | **~30s** from chain tip on free RPCs (adaptive per-chain polling, chunked fetches) |
+| RPC cost | **$0** — free public endpoints only (123 verified), no API keys required |
+| Disk | Configurable hard cap (default 10 GB); Parquet cold tier moves old rows to B2 |
 
 Typical sustained catch-up (backfill) rates per chain on a 2-core VPS using free public RPCs — *actual rates vary with free-tier rate limits and network conditions*:
 
@@ -218,7 +250,7 @@ See [docs/COMPARISON.md](docs/COMPARISON.md) for the detailed breakdown, caveats
 ## Features
 
 ### 🪶 Real-time indexing
-Sub-2-minute latency from chain tip. Adaptive polling intervals per chain (respects native block time — Base 2s, Arbitrum 0.25s, etc.). Daemon mode indexes all chains in parallel with `asyncio`, one independent task per chain so fast chains are never throttled by slow ones.
+~30s freshness from chain tip. Adaptive polling intervals per chain (respects native block time — Base 2s, Arbitrum 0.25s, etc.). Daemon mode indexes all chains in parallel with `asyncio`, one independent task per chain so fast chains are never throttled by slow ones. Chunked fetches (50 EVM blocks / 500 Solana slots per `eth_getLogs`) cut RPC round trips and avoid "response too large" errors from restrictive free RPCs.
 
 ### 💱 DEX swap decoding
 Automatically decodes Uniswap V2/V3 style swap events with token0/token1 resolution. Supports PancakeSwap (BSC), QuickSwap (Polygon), and all standard V2/V3 forks. Builds a persistent pair→tokens cache that survives restarts, with `eth_call` fallback resolution.
@@ -231,17 +263,31 @@ Tracks every PairCreated/PoolCreated event from known DEX factories. Records fac
 - **Solana** — SPL token balance changes via `getSignaturesForAddress` + `getTransaction`
 - **Tron** — TRC-20 transfers via the TronGrid event API
 
+### 🎯 Demand-aware indexing
+Lazy per-chain event gating: every chain starts with transfer events only. Top chains (ethereum, bsc, polygon, arbitrum, base, solana) always index DEX + deployer events; long-tail chains (scroll, mantle, linea, fantom, avalanche, gnosis) enable them only after the scanner signals demand via a file touch (`{INDEXER_DEMAND_DIR}/{chain}/dex`). Enabled event types persist in the state file. Set `LAZY_INDEXING_ENABLED=0` for the legacy all-events behavior.
+
+### 🧹 Enrichment stripping
+Transfer rows carry only the 10 hot-path columns — `token_symbol` / `token_name` (~60 bytes × 278M rows) moved out of `evm_transfers` into a single `token_meta_ref` reference table. Queries `JOIN` the reference for metadata; the hot table stays lean.
+
+### 🛡️ Reorg staging + reconciliation
+- **Reorg staging** — the last N blocks per chain are held "unripe" in `wallet_memory.block_checkpoints`; on hash mismatch the indexer DELETEs `evm_transfers` + `dex_events` above the fork point and re-fetches from the fork (`REORG_PROTECTION_ENABLED`, EVM default on).
+- **Balance reconciliation** — TrueBlocks-style completeness check: computed balances from `evm_transfers` deltas vs on-chain `eth_getBalance`, cached in `wallet_memory.reconciliation_results` (`reconcile` subcommand, default 100 sampled wallets/chain).
+
 ### 📊 Three data outputs
-- **NDJSON** — portable, append-only, auto-compressed (`.zst`) event logs organized by chain/date
+- **NDJSON** — optional write-ahead log (`NDJSON_ENABLED=1`), append-only, auto-compressed (`.zst`), organized by chain/date
 - **ClickHouse** — native-protocol inserts for live analytical queries, queryable immediately
-- **Parquet → B2 → DuckDB** — cold archive snapshots every 6 hours, queryable with plain SQL via the included `duckdb_query` module (`transfers`, `dex`, `spl_balance_changes` views)
+- **Parquet → B2 → DuckDB** — cold archive snapshots on a cron (daily script in-repo, 6-hourly on the fleet), queryable with plain SQL via the included `duckdb_query` module (`transfers`, `dex`, `spl_balance_changes` views)
 
 ### 🔒 Production hardening
 - **Disk cap enforcement** — configurable hard limit on data directory (default 10 GB)
 - **Self-healing RPC pool** — 123 endpoints with automatic health verification, tiered rotation, and exponential backoff
+- **Per-method RPC routing** — heavy `eth_getLogs` goes to free public tiers; latency-sensitive calls (receipts, `eth_call`) prefer dedicated nodes
+- **Circuit breakers** — per-endpoint open/half-open/close protection with success-based recovery
 - **Per-provider token buckets** — fine-grained rate limiting that never trips free-tier caps
 - **Provider-aware block ranges** — respects endpoint-specific `eth_getLogs` range limits, adjusts batch sizes automatically
-- **Chain reorg detection** — detects and flags reorganizations instead of silently ingesting bad data
+- **Bloom pre-filtering** — address-indexed per-block logs-bloom cache skips blocks that can't contain the queried address (geth-conformant byte order)
+- **Chain reorg protection** — staged block confirmation with fork rollback (deletes + re-fetch) instead of silently ingesting bad data
+- **Column TTL** — heavy detail columns degrade to defaults after `RETENTION_DAYS` while summary columns stay queryable
 
 ### 🧪 Thread-safe state management
 File-locked state files allow safe concurrent runs. Pair cache and per-chain progress persist across restarts.
@@ -254,15 +300,30 @@ File-locked state files allow safe concurrent runs. Pair cache and per-chain pro
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATA_DIR` | `/var/lib/chain-indexer` | Data directory for NDJSON + state |
-| `CH_HOST` | `127.0.0.1` | ClickHouse host |
-| `CH_PORT` | `9000` | ClickHouse native port |
-| `CH_USER` | `default` | ClickHouse user |
+| `DATA_DIR` | `/var/data/chain-indexer` | Data directory for state + parquet |
+| `CH_HOST` (alias `CLICKHOUSE_HOST`) | `127.0.0.1` | ClickHouse host |
+| `CH_PORT` (alias `CLICKHOUSE_PORT`) | `9000` | ClickHouse native port |
+| `CH_USER` (alias `CLICKHOUSE_USER`) | `default` | ClickHouse user |
 | `CH_PASSWORD` | `""` | ClickHouse password |
 | `CH_DATABASE` | `wallet_memory` | ClickHouse database |
 | `LOG_LEVEL` | `INFO` | Logging level |
 | `RPC_TIMEOUT` | `30` | RPC call timeout (seconds) |
 | `DISK_CAP_GB` | `10` | Max data directory size (GB) |
+| `NDJSON_ENABLED` | `0` | Write-ahead NDJSON log (default off; redundant with ClickHouse) |
+| `LAZY_INDEXING_ENABLED` | `1` | Lazy per-chain DEX/deployer indexing |
+| `INDEXER_DEMAND_DIR` | `/tmp/indexer-demand` | Scanner demand signal files for lazy indexing |
+| `TOKEN_META_ENABLED` | always on | Enrichment stripping (token_meta_ref table) |
+| `WALLET_PROJECTION_ENABLED` | `1` | Address-first projections on evm_transfers |
+| `BALANCE_CACHE_ENABLED` | `1` | Per-token incremental holder balance cache |
+| `HOLDER_BALANCES_MV_ENABLED` | `1` | SummingMergeTree materialized holder balances |
+| `REORG_PROTECTION_ENABLED` | `1` | Reorg staging + fork rollback (EVM) |
+| `RECONCILIATION_ENABLED` | `1` | Balance reconciliation vs on-chain |
+| `RECONCILIATION_SAMPLE_SIZE` | `100` | Sampled wallets per chain per reconcile run |
+| `BLOOM_ENABLED` | `1` | logsBloom pre-filtering (geth byte order) |
+| `REDIS_URL` | `""` | Optional Redis backing for the bloom cache |
+| `CH_TTL_ENABLED` | `1` | Column-level ClickHouse TTL / retention |
+| `PARQUET_COLD_DAYS` | `7` | Min age (days) of rows eligible for Parquet cold tier |
+| `PARQUET_REMOTE` | `b2-crypt:lite-indexer-parquet` | rclone remote for Parquet uploads |
 
 ### RPC endpoints
 
@@ -287,6 +348,7 @@ usage: lite-indexer [-h] [--chain CHAIN] [--from-block FROM_BLOCK]
                     [--disk-cap DISK_CAP] [--daemon] [--chains CHAINS]
                     [--dex] [--deployers] [--start-from-head]
                     [--data-dir DATA_DIR] [--log-level LOG_LEVEL]
+                    {reconcile,export-parquet}
 
 Lite Chain Indexer — lightweight multi-chain blockchain indexer using free RPCs
 
@@ -303,6 +365,10 @@ options:
   --start-from-head     Start from chain tip instead of backfilling
   --data-dir PATH       Data directory for NDJSON + state
   --log-level LEVEL     Log level (DEBUG, INFO, WARNING, ERROR)
+
+subcommands:
+  reconcile             TrueBlocks-style balance reconciliation vs on-chain
+  export-parquet        Export cold rows to Parquet + upload to B2
 ```
 
 ---

@@ -18,7 +18,11 @@ duckdb = pytest.importorskip("duckdb")
 
 @pytest.fixture()
 def parquet_tree(tmp_path: Path) -> Path:
-    """Create a fake mounted parquet tree: ethereum/2026/07/31/*.parquet."""
+    """Create a fake mounted parquet tree: ethereum/2026/07/31/12/*.parquet.
+
+    Hour-granular layout mirrors the live export:
+    {chain}/{YYYY}/{MM}/{DD}/{HH}/{chain}_{YYYY-MM-DD}.parquet
+    """
     con = duckdb.connect()
 
     def write_parquet(rel: Path, sql: str) -> None:
@@ -26,7 +30,7 @@ def parquet_tree(tmp_path: Path) -> Path:
         con.execute(f"COPY ({sql}) TO '{rel}' (FORMAT PARQUET)")
 
     base = tmp_path / "parquet"
-    ethereum_dir = base / "ethereum" / "2026" / "07" / "31"
+    ethereum_dir = base / "ethereum" / "2026" / "07" / "31" / "12"
     write_parquet(
         ethereum_dir / "ethereum_2026-07-31.parquet",
         """
@@ -48,7 +52,7 @@ def parquet_tree(tmp_path: Path) -> Path:
     )
 
     # Solana tree — spl balance changes live in the chain dir with no dex file.
-    solana_dir = base / "solana" / "2026" / "07" / "31"
+    solana_dir = base / "solana" / "2026" / "07" / "31" / "12"
     write_parquet(
         solana_dir / "solana_2026-07-31.parquet",
         """
@@ -101,7 +105,7 @@ class TestQueryParquet:
 
         con = duckdb.connect()
         for day in ("30", "31"):
-            rel = tmp_path / "parquet" / "base" / "2026" / "07" / day
+            rel = tmp_path / "parquet" / "base" / "2026" / "07" / day / "12"
             rel.mkdir(parents=True, exist_ok=True)
             con.execute(
                 f"COPY (SELECT {day}::BIGINT AS value, 'base' AS chain) "
@@ -131,13 +135,16 @@ class TestQueryParquet:
     def test_fetch_mode_uses_rclone_cat(self, parquet_tree: Path, tmp_path: Path, monkeypatch):
         from lite_indexer.storage.duckdb_query import query_parquet
 
-        # Fake rclone: `rclone cat <path>` writes the mirrored local file to stdout.
+        # Fake rclone: `rclone cat <path>` writes the mirrored local file to
+        # stdout; missing hour dirs return nonzero (like the real binary).
         def fake_rclone(cmd, **kwargs):
-            # cmd == ["rclone", "cat", "b2-crypt:chain-data/parquet/ethereum/2026/07/31/..."]
+            # cmd == ["rclone", "cat", "b2-crypt:chain-data/parquet/ethereum/2026/07/31/12/..."]
             remote = cmd[2]
             rel = remote.removeprefix("b2-crypt:chain-data/parquet/")
             src = parquet_tree / rel
             out = kwargs["stdout"]
+            if not src.is_file():
+                return subprocess.CompletedProcess(cmd, 1)
             out.write(src.read_bytes())
             out.flush()
             return subprocess.CompletedProcess(cmd, 0)

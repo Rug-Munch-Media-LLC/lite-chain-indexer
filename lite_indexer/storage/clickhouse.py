@@ -127,13 +127,14 @@ class ClickHouseWriter:
             return self._client
 
         ch_host = os.getenv("CH_HOST") or os.getenv("CLICKHOUSE_HOST", "127.0.0.1")
-        ch_port = int(os.getenv("CH_PORT") or os.getenv("CLICKHOUSE_PORT", "9000"))
+        ch_port_raw = os.getenv("CH_PORT") or os.getenv("CLICKHOUSE_PORT") or "9000"
+        ch_port = int(ch_port_raw)
         ch_user = os.getenv("CH_USER") or os.getenv("CLICKHOUSE_USER", "default")
         ch_pass = os.getenv("CH_PASSWORD") or os.getenv("CLICKHOUSE_PASSWORD") or ""
         ch_db = os.getenv("CH_DATABASE", "wallet_memory")
 
         try:
-            from clickhouse_driver import Client as CHClient  # type: ignore[import-untyped]
+            from clickhouse_driver import Client as CHClient
 
             self._client = CHClient(
                 host=ch_host,
@@ -374,7 +375,7 @@ class ClickHouseWriter:
             self.ensure_ttl_policies(client)
 
         now = datetime.now(UTC)
-        rows: list[tuple] = []
+        rows: list[tuple[Any, ...]] = []
 
         for event in events:
             ts_str = event.get("blockTimestamp", "")
@@ -432,7 +433,7 @@ class ClickHouseWriter:
             self.ensure_ttl_policies(client)
 
         now = datetime.now(UTC)
-        rows: list[tuple] = []
+        rows: list[tuple[Any, ...]] = []
 
         for event in events:
             ts_str = event.get("blockTimestamp", "")
@@ -528,7 +529,7 @@ class ClickHouseWriter:
             eoa_map = {}
 
         now = datetime.now(UTC)
-        rows: list[tuple] = []
+        rows: list[tuple[Any, ...]] = []
 
         for e in events:
             ts_str = e.get("blockTimestamp", "")
