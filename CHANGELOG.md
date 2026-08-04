@@ -2,6 +2,26 @@
 
 All notable changes to Lite Chain Indexer will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- **NATS JetStream real-time streaming** (`lite_indexer/streaming/`) — the
+  indexer fans events out to NATS immediately after ClickHouse writes:
+  transfers → `chain.{chain}.transfer`, DEX swaps →
+  `chain.{chain}.dex.swap`, deployer events → `chain.{chain}.deploy`, and
+  whale-flagged swaps additionally → `alerts.whale.{chain}`. Publishing is
+  best-effort by design (NATS is a fan-out layer, never the durable store):
+  every failure path is logged and swallowed so NATS downtime can never
+  block indexing. A circuit breaker opens after
+  `NATS_CIRCUIT_FAILURE_THRESHOLD` consecutive failures and drops
+  publishes for `NATS_CIRCUIT_COOLDOWN_SECONDS` before half-open probing.
+  JetStream is used when available (auto-provisions a `CHAIN_EVENTS`
+  stream capturing `chain.>` / `alerts.>`), degrading to core NATS publish
+  otherwise. Gated by `NATS_ENABLED` (default off); server runs via
+  `compose.nats.yml` (NATS 2.10-alpine, JetStream + WebSocket on 8080).
+  New optional dependency: `pip install -e '.[streaming]'` (nats-py).
+
 ## [1.3.0] — 2026-08-03
 
 ### Features

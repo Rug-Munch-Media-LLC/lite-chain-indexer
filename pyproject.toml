@@ -48,6 +48,9 @@ vectors = [
     "lancedb>=0.30.0",
     "pyarrow>=15.0.0",
 ]
+streaming = [
+    "nats-py>=2.9.0",
+]
 
 [project.scripts]
 lite-indexer = "lite_indexer.cli:main"

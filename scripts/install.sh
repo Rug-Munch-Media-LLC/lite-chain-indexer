@@ -14,6 +14,12 @@ pip install -e "$REPO_DIR"
 echo "==> Creating data directory..."
 mkdir -p "$DATA_DIR/state"
 
+echo "==> Applying ClickHouse grants (rmi user)..."
+if command -v clickhouse-client &>/dev/null; then
+    clickhouse-client --queries-file "$REPO_DIR/migrations/001_grants.sql" 2>/dev/null ||
+        echo "   (non-fatal: grants may already exist or ClickHouse is not running)"
+fi
+
 echo "==> Installing systemd service..."
 cat >/etc/systemd/system/lite-indexer.service <<SERVICE
 [Unit]

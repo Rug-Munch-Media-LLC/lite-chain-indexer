@@ -1,0 +1,45 @@
+# NATS JetStream server for LiteChainIndexer real-time streaming.
+#
+# Companion to lite_indexer/streaming (NATSPublisher). The indexer
+# publishes indexed events (transfers, DEX swaps, deployer events, whale
+# alerts) to NATS after ClickHouse writes; real-time consumers subscribe
+# to `chain.*.*` / `alerts.*` subjects.
+#
+# JetStream is enabled (-js) so events published to `chain.>` / `alerts.>`
+# can be captured by a stream (the publisher auto-provisions one named
+# CHAIN_EVENTS on first connect) for durable, replayable delivery.
+#
+# Ports (all bound to loopback — expose publicly via nginx/cloudflared):
+#   4222  NATS client protocol (NATS_URL default nats://localhost:4222)
+#   8080  WebSocket (browser / JS clients)
+#   8222  Monitoring dashboard + healthz
+#
+# Start:
+#   docker compose -f compose.nats.yml up -d
+#
+# Quick check:
+#   curl -s http://127.0.0.1:8222/healthz
+#   docker exec lite-indexer-nats nats-server --version
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    container_name: lite-chain-indexer-nats
+    restart: unless-stopped
+    command: ["-js", "-c", "/etc/nats/nats-server.conf"]
+    ports:
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8222:8222"
+    volumes:
+      - ./nats-server.conf:/etc/nats/nats-server.conf:ro
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  nats-data:

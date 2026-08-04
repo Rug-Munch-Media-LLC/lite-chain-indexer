@@ -160,14 +160,14 @@ class TraceCollector:
             concurrency: Max parallel trace calls (default 2 — trace
                 endpoints are rate-limited).
             max_blocks: Optional cap on how many blocks to sweep in one
-                call (oldest first); None sweeps the full range.
+                call (most recent first); None sweeps the full range.
 
         Returns:
             List of standardized internal-transfer rows.
         """
         blocks = list(range(from_block, to_block + 1))
         if max_blocks is not None and max_blocks > 0:
-            blocks = blocks[:max_blocks]
+            blocks = blocks[-max_blocks:]
 
         if not self.endpoints:
             logger.warning("trace_no_endpoints", chain=chain)

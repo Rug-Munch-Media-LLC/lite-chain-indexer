@@ -36,13 +36,27 @@ if ! systemctl is-active --quiet "${SERVICE}"; then
 fi
 
 # ── 1. Run the lag check (bounded by TIMEOUT_S) ─────────────────────
-LAG_OUT="$(timeout "${TIMEOUT_S}" "${PYTHON}" -m lite_indexer.health --lag --json 2>/dev/null)" || {
-    rc=$?
-    # 124 = timeout, non-zero = check error. Don't restart on a failed
-    # check — the daemon may be fine and we'd cause a restart loop.
-    log "lag check failed (rc=${rc}) — skipping restart"
+LAG_OUT="$(timeout "${TIMEOUT_S}" "${PYTHON}" -m lite_indexer.health --lag --json 2>/dev/null)"
+LAG_RC=$?
+# Exit codes from the health module:
+#   0   — all chains healthy
+#   1   — some chains behind/errored (JSON still valid — parse it)
+#   124 — timeout killed the process
+#   >1  — real check error
+case ${LAG_RC} in
+0 | 1)
+    # Health module ran successfully — JSON is valid in LAG_OUT.
+    # Continue to parse stale/behind chains below.
+    ;;
+124)
+    log "lag check timed out after ${TIMEOUT_S}s — skipping restart"
     exit 4
-}
+    ;;
+*)
+    log "lag check failed (rc=${LAG_RC}) — skipping restart"
+    exit 4
+    ;;
+esac
 
 STALE_CHAINS="$(printf '%s' "${LAG_OUT}" | "${PYTHON}" -c '
 import json, sys

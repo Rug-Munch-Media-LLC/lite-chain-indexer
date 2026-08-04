@@ -39,12 +39,16 @@ from lite_indexer.config import (
     DISK_CAP_BYTES,
     HEAD_BUFFER,
     LAZY_INDEXING_ENABLED,
+    NATS_ENABLED,
     NDJSON_ENABLED,
     PLUGIN_ENABLED,
     REORG_PROTECTION_ENABLED,
     TRACE_CONCURRENCY,
     TRACE_ENABLED,
     TRACE_MAX_BLOCKS_PER_CYCLE,
+    VECTOR_INGESTION_BATCH_SIZE,
+    VECTOR_INGESTION_ENABLED,
+    VECTOR_INGESTION_INTERVAL_BLOCKS,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.plugin import BasePlugin, PluginContext, PluginLoader
@@ -69,6 +73,7 @@ from lite_indexer.strategies import (
     create_strategy,
 )
 from lite_indexer.strategies.base import AbstractChainStrategy
+from lite_indexer.streaming import NATSPublisher
 
 logger = get_logger(__name__)
 
@@ -117,6 +122,8 @@ class LiteIndexer:
         ndjson_enabled: bool | None = None,
         lazy_indexing: bool | None = None,
         traces_enabled: bool | None = None,
+        vector_ingestion: bool | None = None,
+        nats_enabled: bool | None = None,
     ) -> None:
         self.chain = chain
         self.batch_size = batch_size
@@ -135,6 +142,18 @@ class LiteIndexer:
         # after the scanner signals demand (see chains/demand.py). When
         # disabled, CLI flags are the sole authority (legacy behavior).
         self.lazy_indexing_enabled = lazy_indexing if lazy_indexing is not None else LAZY_INDEXING_ENABLED
+
+        # Optional LanceDB vector ingestion (VECTOR_INGESTION_ENABLED, default
+        # off). When enabled, the sync loop periodically reads the freshly
+        # synced block range from ClickHouse, embeds wallet/contract text
+        # representations via Ollama, and stores them in LanceDB collections.
+        # Best-effort: a failure logs a warning and never blocks indexing.
+        self.vector_ingestion_enabled = VECTOR_INGESTION_ENABLED if vector_ingestion is None else vector_ingestion
+        # Lazy LanceDB store (one per indexer; only created when enabled).
+        self._vector_store: Any = None
+        # Last block covered by vector ingestion (None = never run → first
+        # cycle ingests regardless of the block interval).
+        self._last_vector_ingestion_block: int | None = None
         self.start_from_head = start_from_head
         # User-requested head mode (--start-from-head): never auto-cleared.
         # Reorg-triggered head mode is cleared after a successful cycle.
@@ -147,6 +166,14 @@ class LiteIndexer:
         # overrides it. When disabled the writer is never constructed and
         # step 6 of the sync loop is skipped entirely.
         self.ndjson_enabled = NDJSON_ENABLED if ndjson_enabled is None else ndjson_enabled
+
+        # NATS JetStream real-time event publishing. Best-effort fan-out
+        # after ClickHouse writes — NATS downtime never blocks indexing.
+        # Defaults to the NATS_ENABLED env flag (default off); an explicit
+        # value overrides it. The publisher itself is lazy: created on
+        # first use, connection opened on first publish.
+        self.nats_enabled = NATS_ENABLED if nats_enabled is None else nats_enabled
+        self._nats_publisher: NATSPublisher | None = None
 
         # Chain type detection
         chain_info = SUPPORTED_CHAINS.get(chain, {"type": "evm"})
@@ -277,6 +304,183 @@ class LiteIndexer:
         if self._ch_writer is None:
             self._ch_writer = ClickHouseWriter()
         return self._ch_writer
+
+    @property
+    def nats_publisher(self) -> NATSPublisher | None:
+        """Lazily-created NATS publisher (None when NATS is disabled).
+
+        The publisher is only constructed when ``nats_enabled`` is set
+        (env ``NATS_ENABLED=1`` or an explicit constructor override), so
+        a disabled deployment never pays the import/attribute cost.
+        """
+        if not self.nats_enabled:
+            return None
+        if self._nats_publisher is None:
+            self._nats_publisher = NATSPublisher(enabled=True)
+        return self._nats_publisher
+
+    # ── NATS Real-Time Streaming (best-effort) ────────────────────
+
+    async def _publish_nats_events(
+        self,
+        chain: str,
+        block: int,
+        transfers: list[dict[str, Any]],
+        dex_events: list[dict[str, Any]],
+        deployer_events: list[dict[str, Any]],
+        trace_events: list[dict[str, Any]],
+    ) -> int:
+        """Fan this cycle's events out to NATS after ClickHouse writes.
+
+        Best-effort by design: NATS is a real-time fan-out layer, never the
+        durable store. Every failure path (disabled, unknown event type,
+        connection error, open circuit) returns a count without raising,
+        so NATS downtime can never block or abort the indexing loop. The
+        per-event publisher owns retry/circuit-breaker semantics.
+
+        Event routing:
+          - transfer rows        → ``evm_transfer`` subject
+          - DEX swap rows        → ``dex_swap`` subject
+          - whale-flagged swaps  → ``whale_alert`` subject (in addition)
+          - deployer rows        → ``deployer_event`` subject
+          - internal trace rows  → ``evm_transfer`` subject (type field
+            distinguishes ``internal_transfer`` on the wire)
+
+        Returns:
+            Number of events accepted by NATS (0 when disabled).
+        """
+        publisher = self.nats_publisher
+        if publisher is None:
+            return 0
+
+        payloads: list[tuple[str, dict[str, Any]]] = []
+        for event in transfers:
+            if isinstance(event, dict):
+                payloads.append(("evm_transfer", event))
+        for event in dex_events:
+            if isinstance(event, dict):
+                payloads.append(("dex_swap", event))
+                if event.get("whale"):
+                    payloads.append(("whale_alert", event))
+        for event in deployer_events:
+            if isinstance(event, dict):
+                payloads.append(("deployer_event", event))
+        for event in trace_events:
+            if isinstance(event, dict):
+                payloads.append(("evm_transfer", event))
+
+        if not payloads:
+            return 0
+
+        try:
+            published = await publisher.stream_block_batch(chain, block, payloads)
+        except Exception as exc:  # noqa: BLE001 — NATS is best-effort
+            logger.warning("nats_batch_publish_failed", chain=chain, error=str(exc)[:120])
+            return 0
+
+        if published:
+            logger.info(
+                "nats_events_published",
+                chain=chain,
+                block=block,
+                published=published,
+                total=len(payloads),
+            )
+        return published
+
+    # ── Vector Ingestion (LanceDB, optional) ─────────────────────────
+
+    async def _run_vector_ingestion_guarded(
+        self,
+        from_block: int,
+        to_block: int,
+        summary: dict[str, Any],
+    ) -> None:
+        """Best-effort LanceDB vector ingestion for the synced block range.
+
+        Never raises and never blocks indexing: when ingestion is disabled,
+        the block interval has not elapsed, ClickHouse is unreachable, or the
+        pipeline raises, we log and continue. Vector data is enrichment — the
+        durable store is ClickHouse, and the sync loop must proceed even if
+        Ollama / LanceDB / ClickHouse hiccup.
+
+        Args:
+            from_block: First block of the synced range.
+            to_block: Last block of the synced range.
+            summary: Sync summary dict; ingestion stats are merged in on
+                success (e.g. ``wallets_indexed`` / ``contracts_indexed``).
+        """
+        if not self.vector_ingestion_enabled:
+            return
+        try:
+            stats = await self._maybe_run_vector_ingestion(from_block, to_block)
+            if stats:
+                summary.update(stats)
+        except Exception as exc:  # noqa: BLE001 — ingestion must never block indexing
+            logger.warning(
+                "vector_ingestion_failed",
+                chain=self.chain,
+                from_block=from_block,
+                to_block=to_block,
+                error=str(exc)[:150],
+            )
+
+    async def _maybe_run_vector_ingestion(
+        self,
+        from_block: int,
+        to_block: int,
+    ) -> dict[str, int] | None:
+        """Run the ingestion pipeline when the block interval has elapsed.
+
+        The pipeline reads the freshly synced ``[from_block, to_block]``
+        range from ClickHouse, generates text representations for wallets and
+        contracts, embeds them via Ollama (``nomic-embed-text``), and stores
+        them in LanceDB collections. The first cycle always ingests (there is
+        no prior block marker); afterwards ingestion runs every
+        ``VECTOR_INGESTION_INTERVAL_BLOCKS`` blocks.
+
+        Args:
+            from_block: First block of the synced range.
+            to_block: Last block of the synced range.
+
+        Returns:
+            Stats dict (``wallets_indexed`` / ``contracts_indexed``) when
+            ingestion ran, or None when skipped (interval not elapsed or
+            ClickHouse unavailable).
+        """
+        last = self._last_vector_ingestion_block
+        if last is not None and to_block - last < VECTOR_INGESTION_INTERVAL_BLOCKS:
+            return None
+
+        client = self.ch_writer.client()
+        if client is None:
+            logger.warning("vector_ingestion_skipped_no_ch", chain=self.chain)
+            return None
+
+        from lite_indexer.vectors.ingestion import run_vector_ingestion
+        from lite_indexer.vectors.lance_store import LanceVectorStore
+
+        if self._vector_store is None:
+            self._vector_store = LanceVectorStore()
+
+        stats = await run_vector_ingestion(
+            self._vector_store,
+            client,
+            self.chain,
+            from_block,
+            to_block,
+            limit=VECTOR_INGESTION_BATCH_SIZE,
+        )
+        self._last_vector_ingestion_block = to_block
+        logger.info(
+            "vector_ingestion_complete",
+            chain=self.chain,
+            from_block=from_block,
+            to_block=to_block,
+            wallets=stats["wallets_indexed"],
+            contracts=stats["contracts_indexed"],
+        )
+        return stats
 
     # ── Plugins ─────────────────────────────────────────────────────
 
@@ -614,6 +818,7 @@ class LiteIndexer:
             "events_fetched": 0,
             "events_written_ndjson": 0,
             "events_written_ch": 0,
+            "nats_events_published": 0,
             "bytes_written": 0,
             "duration_seconds": 0,
             "errors": [],
@@ -957,10 +1162,46 @@ class LiteIndexer:
                     summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
                     return summary
 
+        # 7c. NATS JetStream real-time event publishing (best-effort).
+        # After the durable ClickHouse writes succeed, fan events out to
+        # NATS for real-time consumers (scanner alerts, dashboards, bots).
+        # NATS is never the durable store: failures are logged and
+        # swallowed, and the publisher's circuit breaker opens after
+        # repeated failures so a dead NATS server costs ~one attempt per
+        # cycle instead of one per event. Deployer events are read from
+        # the strategy's last-batch lists (already enriched with
+        # timestamps at 5b).
+        nats_deployer_events: list[dict[str, Any]] = []
+        if self.deployers_enabled:
+            if evm_strategy and evm_strategy._last_pair_events:
+                nats_deployer_events = list(evm_strategy._last_pair_events)
+            elif solana_strategy and solana_strategy._last_deployer_events:
+                nats_deployer_events = list(solana_strategy._last_deployer_events)
+        nats_published = await self._publish_nats_events(
+            self.chain,
+            to_block,
+            events,
+            dex_events,
+            nats_deployer_events,
+            trace_events,
+        )
+        if nats_published:
+            summary["nats_events_published"] = nats_published
+
         # 8. Save state
         total_events = len(events) + len(dex_events) + deployer_written + len(trace_events)
         self._clear_reorg_recovery()
         self.state.save(to_block, total_events, enabled_events=self._enabled_event_types())
+
+        # 8a. Vector ingestion (optional, LanceDB). Reads the freshly synced
+        # block range from ClickHouse, generates text representations for
+        # wallets/contracts, embeds them via Ollama (nomic-embed-text), and
+        # stores them in LanceDB collections. Gated by
+        # VECTOR_INGESTION_ENABLED (default off) and the block interval
+        # VECTOR_INGESTION_INTERVAL_BLOCKS. Exception-guarded: a vector
+        # ingestion failure logs a warning and never blocks or aborts the
+        # sync cycle — the durable store is ClickHouse, not LanceDB.
+        await self._run_vector_ingestion_guarded(from_block, to_block, summary)
 
         summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
         logger.info(

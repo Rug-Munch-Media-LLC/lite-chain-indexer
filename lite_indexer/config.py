@@ -58,10 +58,10 @@ CH_DEPLOYER_TABLE = "wallet_memory.deployer_events"
 # (WETH unwraps, bridge deposits, fee flows, SELFDESTRUCT payouts) are
 # invisible to eth_getLogs and live in wallet_memory.internal_transfers,
 # collected from free trace_* / debug_traceBlockByNumber RPCs. Default
-# OFF — free-tier trace endpoints are aggressively rate-limited and each
-# block costs a full trace RPC call, so this is an explicit opt-in via
-# TRACE_ENABLED=true or the --traces CLI flag.
-TRACE_ENABLED: bool = os.environ.get("TRACE_ENABLED", "0") == "1"
+# ON — the collector is stable, bounded per-cycle (TRACE_MAX_BLOCKS_PER_CYCLE),
+# and rate-limit-aware (TRACE_CONCURRENCY). Disable with TRACE_ENABLED=0 or
+# --no-traces CLI flag.
+TRACE_ENABLED: bool = os.environ.get("TRACE_ENABLED", "1") == "1"
 
 # Trace calls can be slow on busy blocks (a full block trace returns a
 # nested call tree) — use a longer timeout than the default RPC call.
@@ -628,3 +628,50 @@ DEFAULT_DECIMALS_BY_CHAIN: dict[str, int] = {
     "solana": 9,
     "tron": 6,
 }
+
+# ── Vector Ingestion (LanceDB) ──────────────────────────────────────────
+# Optional background pipeline that turns freshly indexed ClickHouse rows
+# into semantic embeddings (see lite_indexer/vectors/ingestion.py): it reads
+# the last synced block range from ClickHouse, generates text representations
+# for wallets and contracts, embeds them via Ollama (nomic-embed-text), and
+# stores them in LanceDB collections. OFF by default — embedding the event
+# stream costs CPU (Ollama) and disk (LanceDB); enable only when the vector
+# search API is actually in use. Ingestion is best-effort: a failure is
+# logged and never blocks the core sync loop.
+VECTOR_INGESTION_ENABLED: bool = os.environ.get("VECTOR_INGESTION_ENABLED", "0") == "1"
+
+# Ingestion cadence: run the vector pipeline once every N blocks per chain
+# (checked at the end of each sync cycle; the first cycle always ingests).
+VECTOR_INGESTION_INTERVAL_BLOCKS: int = int(os.environ.get("VECTOR_INGESTION_INTERVAL_BLOCKS", "100"))
+
+# Max wallets/contracts read + embedded per ingestion run. Bounds the Ollama
+# request size and memory usage of a single ingestion pass.
+VECTOR_INGESTION_BATCH_SIZE: int = int(os.environ.get("VECTOR_INGESTION_BATCH_SIZE", "50"))
+
+# ── NATS JetStream Real-Time Streaming ───────────────────────────────
+# After ClickHouse writes succeed, the indexer fans events out to NATS
+# for real-time consumers (scanner alerts, dashboards, bots). NATS is a
+# fan-out layer, never the durable store — downtime must never block
+# indexing, so publishing is best-effort and protected by a circuit
+# breaker: after NATS_CIRCUIT_FAILURE_THRESHOLD consecutive failures the
+# circuit opens and publishes are dropped for the cooldown period.
+NATS_ENABLED: bool = os.environ.get("NATS_ENABLED", "0") == "1"
+
+# NATS server URL (compose.nats.yml runs a JetStream-enabled server).
+NATS_URL: str = os.environ.get("NATS_URL", "nats://localhost:4222")
+
+# Circuit breaker: consecutive failures before the circuit opens.
+NATS_CIRCUIT_FAILURE_THRESHOLD: int = int(os.environ.get("NATS_CIRCUIT_FAILURE_THRESHOLD", "5"))
+
+# Circuit breaker: how long the circuit stays open (seconds) before a
+# half-open probe is attempted.
+NATS_CIRCUIT_COOLDOWN_SECONDS: int = int(os.environ.get("NATS_CIRCUIT_COOLDOWN_SECONDS", "30"))
+
+# When true, events are published through JetStream (a stream matching
+# `chain.>` / `alerts.>` is auto-provisioned on first connect). When the
+# server has JetStream disabled the publisher degrades to core NATS
+# publish automatically.
+NATS_JETSTREAM_ENABLED: bool = os.environ.get("NATS_JETSTREAM_ENABLED", "1") != "0"
+
+# JetStream stream name auto-provisioned to capture indexed events.
+NATS_STREAM_NAME: str = os.environ.get("NATS_STREAM_NAME", "CHAIN_EVENTS")

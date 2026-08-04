@@ -1,4 +1,4 @@
--- Migration 004: wallet intelligence tables.
+-- Migration 005: wallet intelligence tables.
 --
 -- The intel package (lite_indexer.intel) reads wallet labels, scam
 -- addresses, profiles, and entity clusters from the ClickHouse

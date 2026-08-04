@@ -444,7 +444,10 @@ class TestTraceCollector:
         from lite_indexer.traces.trace_collector import TraceCollector
 
         rpc = MagicMock()
-        rpc.call = AsyncMock(return_value={"id": 1, "result": []})
+        # Non-empty result so _fetch_block returns truthy and the flow
+        # reaches _block_timestamp; empty dict has no value transfers,
+        # so extract_internal_transfers returns [].
+        rpc.call = AsyncMock(return_value={"id": 1, "result": [{}]})
         rpc.eth_get_block_by_number = AsyncMock(return_value={"timestamp": "0x66c07c00"})
         collector = TraceCollector(
             chain="ethereum",
@@ -453,7 +456,7 @@ class TestTraceCollector:
         )
         rows = await collector.collect_range("ethereum", 1, 100, max_blocks=3)
         assert rows == []  # no value calls in empty blocks
-        # Only 3 blocks were swept (block numbers 98, 99, 100).
+        # Only 3 blocks were swept, most-recent first (blocks 98, 99, 100).
         swept = {c.args[1] for c in rpc.eth_get_block_by_number.await_args_list}
         assert swept == {98, 99, 100}
 
