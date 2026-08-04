@@ -27,12 +27,23 @@ import httpx
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcFetchFailedError
 from lite_indexer.strategies.base import AbstractChainStrategy
+from lite_indexer.traces.solana import (
+    SolanaTraceCollector,
+    ensure_solana_transfers_table,
+    write_solana_transfers,
+)
 
 from .models import MAX_SIGNATURES_PER_TOKEN, SOLANA_TRACKED_TOKENS, SOLANA_TX_CONCURRENCY
 from .parsing import parse_solana_transfer_events
 from .rpc import rpc_call
 
 logger = get_logger(__name__)
+
+# Upper bound on buffered trace rows awaiting a ClickHouse write. Trace
+# rows are collected from the same getTransaction calls as SPL events
+# (zero extra RPC cost) and drained in write_clickhouse; the cap bounds
+# memory when CH is down between cycles (oldest rows are dropped first).
+_SOLANA_TRACE_ROW_CAP = 10_000
 
 
 class SolanaStrategy(AbstractChainStrategy):
@@ -57,6 +68,12 @@ class SolanaStrategy(AbstractChainStrategy):
         # ``_deployer_captured_mints``.
         self._last_deployer_events: list[dict[str, Any]] = []
         self._deployer_captured_mints: set[str] = set()
+        # Trace-level collection: SOL transfers, CPI inner instructions and
+        # token account state changes, parsed from the same getTransaction
+        # result that already feeds SPL balance changes (no extra RPC
+        # call). Rows are buffered here and written in write_clickhouse.
+        self._trace_collector = SolanaTraceCollector()
+        self._trace_rows: list[dict[str, Any]] = []
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -374,11 +391,32 @@ class SolanaStrategy(AbstractChainStrategy):
                     )
                     if not tx_result or "result" not in tx_result or tx_result["result"] is None:
                         return []
-                    return parse_solana_transfer_events(
-                        tx_result["result"],
+                    tx_data = tx_result["result"]
+                    events = parse_solana_transfer_events(
+                        tx_data,
                         slot,
                         {mint},
                     )
+                    # Trace-level visibility: reuse the same transaction to
+                    # also extract SOL transfers, CPI inner instructions and
+                    # token account state changes. Pure parsing — the
+                    # getTransaction (jsonParsed) result already contains the
+                    # full instruction tree, so this costs zero extra RPC
+                    # calls. Best-effort: a parse failure only loses trace
+                    # rows, never the SPL balance events.
+                    try:
+                        trace_rows = await self._trace_collector.extract_transfers(tx_data, slot)
+                        if trace_rows:
+                            self._trace_rows.extend(trace_rows)
+                            if len(self._trace_rows) > _SOLANA_TRACE_ROW_CAP:
+                                self._trace_rows = self._trace_rows[-_SOLANA_TRACE_ROW_CAP:]
+                    except Exception as exc:  # noqa: BLE001 — best-effort traces
+                        logger.warning(
+                            "solana_trace_extract_failed",
+                            sig=sig[:20],
+                            error=str(exc)[:60],
+                        )
+                    return events
                 except (
                     httpx.HTTPError,
                     ConnectionError,
@@ -477,3 +515,24 @@ class SolanaStrategy(AbstractChainStrategy):
         except Exception as exc:
             logger.error("solana_clickhouse_insert_failed", rows=len(rows), error=str(exc)[:150])
             return 0
+        finally:
+            # 4b. Trace-level rows (SOL transfers, CPIs, account state
+            # changes) collected from the same getTransaction calls. Written
+            # best-effort after the SPL balance events; on failure the rows
+            # are kept (bounded by _SOLANA_TRACE_ROW_CAP) and retried on the
+            # next write cycle. Runs in a finally so trace rows are drained
+            # even when the SPL insert fails (e.g. CH hiccup).
+            trace_rows = self._trace_rows
+            self._trace_rows = []
+            if trace_rows:
+                try:
+                    ensure_solana_transfers_table(client)
+                    written = write_solana_transfers(client, trace_rows)
+                    logger.info("solana_trace_clickhouse_inserted", rows=written)
+                except Exception as trace_exc:  # noqa: BLE001 — best-effort traces
+                    logger.error(
+                        "solana_trace_clickhouse_insert_failed",
+                        rows=len(trace_rows),
+                        error=str(trace_exc)[:150],
+                    )
+                    self._trace_rows = trace_rows
