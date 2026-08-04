@@ -30,10 +30,11 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from lite_indexer.config import (
     RPC_METHOD_DEFAULT_RATE,
