@@ -32,7 +32,7 @@ from typing import Any
 import httpx
 
 from lite_indexer.config import STATE_DIR
-from lite_indexer.logging import get_logger
+from lite_indexer.logging import get_logger, setup_logging
 from lite_indexer.strategies import SUPPORTED_CHAINS, create_strategy
 
 logger = get_logger(__name__)
@@ -437,7 +437,13 @@ async def main() -> None:
 
     The lag mode is intended for a systemd timer: if any chain is
     ``stale`` or far behind, the timer restarts the indexer service.
+
+    Logging goes to stderr (setup_logging) so ``--json`` output on
+    stdout stays pure — watchdog scripts parse stdout as JSON and would
+    otherwise choke on structlog lines leaking into it (structlog's
+    default factory prints to stdout when setup_logging is skipped).
     """
+    setup_logging()
     import argparse
     import sys
 

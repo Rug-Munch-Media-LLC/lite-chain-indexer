@@ -25,6 +25,7 @@ from slowapi.util import get_remote_address
 
 from api import __version__
 from api.config import API_TITLE, API_VERSION, RATE_LIMIT_KEY_PREFIX, RATE_LIMIT_PER_MINUTE
+from api.graphql import graphql_router
 from api.routers import deployers, intel, search, stats, system, trace, transfers, whales
 from api.routers import query as query_router
 
@@ -121,6 +122,11 @@ def create_app() -> FastAPI:
 
     # Wallet intelligence — rate-limited per-IP.
     app.include_router(intel.router)
+
+    # GraphQL read surface (competitive parity with GraphQL-first indexers).
+    # Rate limiting is inherited from the default per-IP limiter; the
+    # resolvers reuse the same guarded queries as the REST routers.
+    app.include_router(graphql_router)
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str]:

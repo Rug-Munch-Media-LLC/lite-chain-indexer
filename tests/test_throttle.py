@@ -253,15 +253,22 @@ class TestPersistence:
 class TestModuleWrappers:
     @pytest.mark.asyncio
     async def test_throttle_before_returns_without_wait_when_open(self):
-        RATE_TRACKER.reset()
+        from lite_indexer.rpc.throttle import RATE_TRACKER as current_tracker
+
+        current_tracker.reset()
         await throttle_before("https://open.example", "eth_blockNumber")
 
     def test_record_response_updates_tracker(self):
-        RATE_TRACKER.reset()
+        from lite_indexer.rpc.throttle import RATE_TRACKER as current_tracker
+
+        current_tracker.reset()
         record_rpc_response("https://wrap.example", "eth_getLogs", 429, {"Retry-After": "5"})
-        assert RATE_TRACKER.state_for("https://wrap.example")["in_backoff"] is True
+        assert current_tracker.state_for("https://wrap.example")["in_backoff"] is True
 
     def test_rate_tracker_is_singleton(self):
-        from lite_indexer.rpc import RATE_TRACKER as exported
+        import lite_indexer.rpc as pkg
+        import lite_indexer.rpc.throttle as throttle_module
 
-        assert exported is RATE_TRACKER
+        # The rpc package re-export must resolve to the live throttle
+        # singleton (which the conftest isolation fixture replaces per test).
+        assert pkg.RATE_TRACKER is throttle_module.RATE_TRACKER

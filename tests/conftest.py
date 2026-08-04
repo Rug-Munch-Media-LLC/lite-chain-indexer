@@ -29,6 +29,13 @@ def _isolate_rpc_throttle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     lives under the test's tmp dir. Applied to every test (autouse) so no
     test can sleep on a backoff window recorded by another test or by the
     production daemon.
+
+    Both the ``lite_indexer.rpc.throttle`` attribute and the
+    ``lite_indexer.rpc`` package re-export are patched: code that reaches
+    the tracker through either path must see the isolated instance, never
+    the production singleton (which loads the live backoff state from
+    ``RPC_THROTTLE_FILE``).
     """
     tracker = RPCRateTracker(path=tmp_path / "rpc_throttle.json")
     monkeypatch.setattr("lite_indexer.rpc.throttle.RATE_TRACKER", tracker)
+    monkeypatch.setattr("lite_indexer.rpc.RATE_TRACKER", tracker)

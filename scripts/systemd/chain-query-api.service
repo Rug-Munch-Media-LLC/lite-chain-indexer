@@ -1,0 +1,64 @@
+# chain-query-api.service — production systemd unit for the Chain Query API
+#
+# The Chain Query API (FastAPI REST + GraphQL over the ClickHouse warehouse)
+# previously ran as a bare `uvicorn api.main:app` process. This unit gives it
+# proper supervision: auto-restart, journald logging, and OS-level hardening
+# (dedicated unprivileged user, no new privileges, private /tmp).
+#
+# Secure default: bind 127.0.0.1. Front the API with nginx / a Cloudflare
+# Tunnel rather than exposing port 8100 directly. To bind all interfaces
+# (NOT recommended without auth), set CHAIN_API_BIND=0.0.0.0 in the
+# environment file.
+#
+# Install (run as root):
+#   cp scripts/systemd/chain-query-api.service /etc/systemd/system/
+#   # API credentials go in an env file, never in git:
+#   cat > /etc/lite-chain-indexer/api.env <<'EOF'
+#   CH_API_HOST=127.0.0.1
+#   CH_API_PORT=9000
+#   CH_API_USER=chain_api
+#   CH_API_PASSWORD=<from secrets manager>
+#   CH_API_DATABASE=wallet_memory
+#   CHAIN_API_BIND=127.0.0.1
+#   CHAIN_API_PORT=8100
+#   EOF
+#   chmod 600 /etc/lite-chain-indexer/api.env
+#   systemctl daemon-reload
+#   systemctl enable --now chain-query-api
+#
+[Unit]
+Description=Chain Query API — read-only REST+GraphQL over the ClickHouse warehouse
+Documentation=https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer
+After=network.target clickhouse-server.service
+Wants=clickhouse-server.service
+
+[Service]
+Type=simple
+# Dedicated unprivileged OS user (created by scripts/install.sh). The API
+# only ever talks to ClickHouse over the network and reads LANCE_DIR for
+# vector search; it needs no write access to the repo or the system.
+User=chain-api
+Group=chain-api
+WorkingDirectory=/srv/work/repos/lite-chain-indexer
+# Optional env file: CH_API_* ClickHouse creds + bind/port overrides.
+EnvironmentFile=-/etc/lite-chain-indexer/api.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/local/bin/uvicorn api.app:app --host ${CHAIN_API_BIND:-127.0.0.1} --port ${CHAIN_API_PORT:-8100} --workers ${CHAIN_API_WORKERS:-1}
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+# ── OS hardening ──────────────────────────────────────────────────────
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# The API is read-only by design; the ClickHouse DB user is SELECT-only.
+
+[Install]
+WantedBy=multi-user.target

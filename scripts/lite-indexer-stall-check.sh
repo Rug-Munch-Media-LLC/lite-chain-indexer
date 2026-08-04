@@ -74,11 +74,23 @@ esac
 # Python SyntaxError (observed 08/04: the BEHIND_CHAINS block broke and
 # the watchdog silently reported "all chains healthy" while chains were
 # behind).
+#
+# The health CLI can emit a few import-time structlog lines to stdout
+# before setup_logging() reroutes to stderr (health.py main() now does
+# that). Every parser below therefore scans ALL lines and uses the LAST
+# one that parses as a JSON object — never json.load() over the whole
+# stream, which would fail on log noise and mask stalled chains.
 STALE_CHAINS="$(printf '%s' "${LAG_OUT}" | "${PYTHON}" -c '
 import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
+data = None
+for line in sys.stdin.read().splitlines():
+    try:
+        candidate = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(candidate, dict):
+        data = candidate
+if data is None:
     sys.exit(0)
 stale = [c for c, info in data.items() if info.get("status") == "stale"]
 print(" ".join(stale))
@@ -89,9 +101,15 @@ print(" ".join(stale))
 NO_ADVANCE_CHAINS="$(printf '%s' "${LAG_OUT}" | "${PYTHON}" -c '
 import json, sys
 stall = float(sys.argv[1])
-try:
-    data = json.load(sys.stdin)
-except Exception:
+data = None
+for line in sys.stdin.read().splitlines():
+    try:
+        candidate = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(candidate, dict):
+        data = candidate
+if data is None:
     sys.exit(0)
 no_advance = []
 for c, info in data.items():
@@ -116,9 +134,15 @@ fi
 # ── 3. Chains behind but making progress — informational ────────────
 BEHIND_CHAINS="$(printf '%s' "${LAG_OUT}" | "${PYTHON}" -c '
 import json, sys
-try:
-    data = json.load(sys.stdin)
-except Exception:
+data = None
+for line in sys.stdin.read().splitlines():
+    try:
+        candidate = json.loads(line)
+    except Exception:
+        continue
+    if isinstance(candidate, dict):
+        data = candidate
+if data is None:
     sys.exit(0)
 behind = []
 for c, info in data.items():
