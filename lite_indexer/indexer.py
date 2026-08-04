@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from lite_indexer.chains import GET_LOGS_ENDPOINTS
 from lite_indexer.chains.demand import (
     default_enabled_events,
     get_chain_demand,
@@ -39,10 +40,15 @@ from lite_indexer.config import (
     HEAD_BUFFER,
     LAZY_INDEXING_ENABLED,
     NDJSON_ENABLED,
+    PLUGIN_ENABLED,
     REORG_PROTECTION_ENABLED,
+    TRACE_CONCURRENCY,
+    TRACE_ENABLED,
+    TRACE_MAX_BLOCKS_PER_CYCLE,
 )
 from lite_indexer.logging import get_logger
-from lite_indexer.rpc import RpcClient, RpcFetchFailedError
+from lite_indexer.plugin import BasePlugin, PluginContext, PluginLoader
+from lite_indexer.rpc import RpcClient, RpcFetchFailedError, get_best_endpoint
 from lite_indexer.rpc.verify import (
     EndpointVerifyResult,
     apply_verified_endpoints,
@@ -110,12 +116,20 @@ class LiteIndexer:
         chunk_size: int | None = None,
         ndjson_enabled: bool | None = None,
         lazy_indexing: bool | None = None,
+        traces_enabled: bool | None = None,
     ) -> None:
         self.chain = chain
         self.batch_size = batch_size
         self.disk_cap = disk_cap
         self.dex_enabled = False
         self.deployers_enabled = False
+        # Internal-transfer trace collection (optional, TRACE_ENABLED /
+        # --traces). Off by default because free-tier trace RPCs are
+        # aggressively rate-limited; an explicit value overrides the env
+        # flag. When enabled, value-moving internal calls (WETH unwraps,
+        # bridge deposits, fee flows) land in
+        # wallet_memory.internal_transfers alongside transfers.
+        self.traces_enabled = TRACE_ENABLED if traces_enabled is None else traces_enabled
         # Lazy indexing: per-chain event type gating. When enabled (default),
         # top chains always index DEX + deployer and long-tail chains only
         # after the scanner signals demand (see chains/demand.py). When
@@ -168,6 +182,10 @@ class LiteIndexer:
 
         # Strategy — chain-specific logic
         self._strategy: AbstractChainStrategy | None = None
+
+        # Plugins — lazily loaded (chain-scoped) on first sync cycle.
+        # None means "not yet loaded"; an empty list means no plugins.
+        self._plugins: list[BasePlugin] | None = None
 
     # ── Strategy ─────────────────────────────────────────────────────
 
@@ -260,6 +278,110 @@ class LiteIndexer:
             self._ch_writer = ClickHouseWriter()
         return self._ch_writer
 
+    # ── Plugins ─────────────────────────────────────────────────────
+
+    def _get_plugins(self) -> list[BasePlugin]:
+        """Load (once) the plugins registered for this chain.
+
+        Plugins are optional: when the plugin layer is disabled or no
+        plugins are installed the result is an empty list and the sync
+        loop is unchanged. Load failures never propagate — the loader
+        skips invalid plugins with a warning.
+        """
+        if self._plugins is None:
+            if not PLUGIN_ENABLED:
+                self._plugins = []
+            else:
+                try:
+                    self._plugins = PluginLoader().load_all(chain=self.chain)
+                except Exception as exc:  # noqa: BLE001 — plugin layer is best-effort
+                    logger.warning("plugin_load_failed", chain=self.chain, error=str(exc)[:200])
+                    self._plugins = []
+        return self._plugins
+
+    async def _dispatch_plugin_events(self, from_block: int, to_block: int) -> dict[str, Any]:
+        """Fetch + dispatch decoded events to registered plugins (EVM).
+
+        For every registered plugin matching this chain, fetches the
+        plugin's declared contracts/events via ``eth_getLogs`` (one call
+        per contract × event topic, chunk range = the current sync
+        range) and routes each raw log to the plugin's manifest handler.
+
+        Best-effort by design: RPC failures, malformed logs, or handler
+        errors are logged and skipped — plugin indexing must never block
+        or break the core sync loop.
+
+        Returns:
+            Summary stats (``plugin_events_fetched`` /
+            ``plugin_events_handled``) or an empty dict when no plugins
+            are registered for this chain.
+        """
+        plugins = self._get_plugins()
+        if not plugins:
+            return {}
+
+        endpoints = GET_LOGS_ENDPOINTS.get(self.chain, [])
+        if not endpoints:
+            return {}
+        endpoint = get_best_endpoint(endpoints)
+
+        ctx = PluginContext(
+            chain=self.chain,
+            from_block=from_block,
+            to_block=to_block,
+            data_dir=self.data_dir,
+        )
+
+        fetched = 0
+        handled = 0
+        for plugin in plugins:
+            for spec in plugin.manifest.events:
+                for contract in plugin.manifest.contracts:
+                    start = max(from_block, contract.start_block)
+                    if start > to_block:
+                        continue
+                    try:
+                        logs = await self.rpc.get_logs(
+                            endpoint,
+                            start,
+                            to_block,
+                            topic=spec.topic,
+                            address=contract.address,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        logger.warning(
+                            "plugin_logs_fetch_failed",
+                            plugin=plugin.name,
+                            event_name=spec.name,
+                            error=str(exc)[:120],
+                        )
+                        continue
+                    if not logs:
+                        continue
+                    fetched += len(logs)
+                    for raw_log in logs:
+                        try:
+                            raw_log["_chain"] = self.chain
+                            if await plugin.handle_log(raw_log, ctx):
+                                handled += 1
+                        except Exception as exc:  # noqa: BLE001 — handler errors are contained
+                            logger.warning(
+                                "plugin_handle_failed",
+                                plugin=plugin.name,
+                                event_name=spec.name,
+                                error=str(exc)[:120],
+                            )
+
+        if fetched:
+            logger.info(
+                "plugin_events_dispatched",
+                chain=self.chain,
+                plugins=len(plugins),
+                logs=fetched,
+                handled=handled,
+            )
+        return {"plugin_events_fetched": fetched, "plugin_events_handled": handled}
+
     # ── RPC: Latest Block ───────────────────────────────────────────
 
     async def fetch_block_number(self) -> int | None:
@@ -278,6 +400,64 @@ class LiteIndexer:
           - Tron: block timestamps from block_header
         """
         return await self.strategy.fetch_block_timestamps(block_numbers)
+
+    # ── Internal-Transfer Traces (EVM only, optional) ───────────────
+
+    async def _collect_internal_transfers(
+        self,
+        from_block: int,
+        to_block: int,
+    ) -> list[dict[str, Any]]:
+        """Collect internal transfers for the sync range via free trace RPCs.
+
+        The #1 analytical blind spot: WETH unwraps, bridge deposits, fee
+        flows and SELFDESTRUCT payouts never emit ERC-20 Transfer logs.
+        When ``traces_enabled`` and the chain has a verified trace
+        endpoint, this sweeps the batch range with a bounded concurrency
+        and returns standardized internal-transfer rows.
+
+        Best-effort by design: trace RPCs are rate-limited on free tiers,
+        so a total trace failure degrades to an empty list + a warning and
+        never blocks the main transfer sync (the trace table is
+        enrichment, not the durable transfer record).
+
+        Args:
+            from_block: First block of the sync range.
+            to_block: Last block of the sync range.
+
+        Returns:
+            Standardized internal-transfer rows (possibly empty).
+        """
+        from lite_indexer.traces import has_trace_endpoints
+        from lite_indexer.traces.trace_collector import TraceCollector
+
+        if not self._is_evm() or not has_trace_endpoints(self.chain):
+            return []
+
+        max_blocks = min(TRACE_MAX_BLOCKS_PER_CYCLE, to_block - from_block + 1)
+        if max_blocks <= 0:
+            return []
+        # Sweep from the range head (most recent) — oldest blocks get
+        # covered on later cycles when the range advances.
+        start = to_block - max_blocks + 1
+        collector = TraceCollector(self.chain)
+        try:
+            return await collector.collect_range(
+                self.chain,
+                start,
+                to_block,
+                concurrency=TRACE_CONCURRENCY,
+                max_blocks=max_blocks,
+            )
+        except Exception as exc:  # noqa: BLE001 — trace collection is best-effort
+            logger.warning(
+                "trace_collection_failed",
+                chain=self.chain,
+                from_block=start,
+                to_block=to_block,
+                error=str(exc)[:120],
+            )
+            return []
 
     # ── RPC: Transfer Events ────────────────────────────────────────
 
@@ -616,8 +796,25 @@ class LiteIndexer:
             except Exception as exc:
                 logger.warning("deployer_pair_fetch_failed", chain=self.chain, error=str(exc)[:100])
 
+        # 4b. Internal-transfer traces (EVM only, optional). The #1
+        # analytical blind spot: WETH unwraps, bridge deposits, fee flows
+        # and SELFDESTRUCT payouts never emit ERC-20 Transfer logs. When
+        # traces_enabled, sweep the sync range via free trace_* RPCs.
+        # Best-effort + rate-limit-aware: a trace failure logs a warning
+        # and returns [] — it never blocks or aborts the transfer sync.
+        #
+        # Runs BEFORE the "no events" short-circuit below: a block can
+        # contain internal transfers without any ERC-20 Transfer logs, so
+        # trace collection must not be skipped just because transfers were
+        # empty.
+        trace_events: list[dict[str, Any]] = []
+        if self.traces_enabled:
+            trace_events = await self._collect_internal_transfers(from_block, to_block)
+            if trace_events:
+                summary["trace_events_fetched"] = len(trace_events)
+
         # Check if we have any events or deployer tracking
-        if not events and not dex_events and not self.deployers_enabled:
+        if not events and not dex_events and not self.deployers_enabled and not trace_events:
             self._clear_reorg_recovery()
             self.state.save(to_block, 0, enabled_events=self._enabled_event_types())
             summary["status"] = "no_events"
@@ -629,6 +826,14 @@ class LiteIndexer:
             events = await self._enrich_timestamps(events)
         if dex_events and not _check_reorg(dex_events):
             dex_events = await self._enrich_timestamps(dex_events)
+
+        # 5a. Plugin dispatch — registered plugins receive decoded events
+        # for their declared contracts (EVM only, best-effort). Runs after
+        # timestamp enrichment so plugin handlers observe the same block
+        # context as the core pipeline. Failures are contained per plugin.
+        plugin_stats = await self._dispatch_plugin_events(from_block, to_block)
+        if plugin_stats:
+            summary.update(plugin_stats)
 
         # 5b. Write deployer events (EVM + Solana)
         # write_deployer_events resolves the real deployer EOA (tx `from`)
@@ -669,9 +874,15 @@ class LiteIndexer:
                     summary["dex_bytes_written"] = dex_bytes
 
         # 7. Write ClickHouse via strategy
+        # ch_available tracks whether ClickHouse is confirmed writable for
+        # this cycle: transfers insert OK, or there were no transfers to
+        # write (then CH availability is only probed by the trace write
+        # itself, which degrades gracefully).
+        ch_available = not events
         if events:
             ch_inserted = self.strategy.write_clickhouse(events, self.ch_writer)
             summary["events_written_ch"] = ch_inserted
+            ch_available = ch_inserted > 0
 
             # Data-loss guard: if events were fetched but NOT written to
             # ClickHouse (CH unavailable / insert failed), do NOT advance
@@ -706,6 +917,18 @@ class LiteIndexer:
             dex_ch_inserted = self.ch_writer.write_dex_events(self.chain, dex_events)
             summary["dex_events_written_ch"] = dex_ch_inserted
 
+        # 7a2. Write internal-transfer traces (optional, best-effort).
+        # Unlike transfers, a trace write failure does NOT abort the sync:
+        # the trace table is enrichment (rate-limited free-tier RPCs may
+        # skip blocks) and the durable transfer record has already been
+        # written above. Rows are only written once the transfer insert
+        # succeeded, so evm_transfers and internal_transfers stay aligned
+        # on block ranges.
+        if trace_events and ch_available:
+            trace_written = await self.ch_writer.write_internal_transfers(self.chain, trace_events)
+            if trace_written:
+                summary["traces_written_ch"] = trace_written
+
         # 7b. Reorg staging (EVM only, gated by REORG_PROTECTION_ENABLED):
         # checkpoint the batch tip block hash, then verify the block at
         # to_block - MAX_REORG_DEPTH[chain] against its checkpoint. On
@@ -735,7 +958,7 @@ class LiteIndexer:
                     return summary
 
         # 8. Save state
-        total_events = len(events) + len(dex_events) + deployer_written
+        total_events = len(events) + len(dex_events) + deployer_written + len(trace_events)
         self._clear_reorg_recovery()
         self.state.save(to_block, total_events, enabled_events=self._enabled_event_types())
 
@@ -746,6 +969,7 @@ class LiteIndexer:
             transfer_events=len(events),
             dex_events=len(dex_events),
             deployer_events=deployer_written,
+            trace_events=len(trace_events),
             duration_s=summary["duration_seconds"],
         )
 

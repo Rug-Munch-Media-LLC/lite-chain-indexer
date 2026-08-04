@@ -109,6 +109,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable deployer tracking via factory PairCreated/PoolCreated events",
     )
     parser.add_argument(
+        "--traces",
+        action="store_true",
+        help="Enable internal-transfer trace collection (WETH unwraps, bridge deposits, "
+        "fee flows) via free trace_* RPCs. Off by default — trace endpoints are "
+        "rate-limited on free tiers. Also settable via TRACE_ENABLED=true.",
+    )
+    parser.add_argument(
         "--start-from-head",
         action="store_true",
         help="Start indexing from chain tip instead of backfilling from genesis. "
@@ -267,6 +274,7 @@ async def main_daemon(
     chains: list[str],
     dex_enabled: bool = False,
     deployers_enabled: bool = False,
+    traces_enabled: bool = False,
     disk_cap: int = DISK_CAP_BYTES,
     start_from_head: bool = False,
     data_dir: str | None = None,
@@ -297,6 +305,7 @@ async def main_daemon(
         chains=chains,
         dex=dex_enabled,
         deployers=deployers_enabled,
+        traces=traces_enabled,
         start_from_head=start_from_head,
         max_concurrent=max_concurrent,
     )
@@ -345,6 +354,7 @@ async def main_daemon(
         )
         indexer.dex_enabled = dex_enabled
         indexer.deployers_enabled = deployers_enabled
+        indexer.traces_enabled = traces_enabled
 
         base_interval = CHAIN_POLL_INTERVALS.get(chain, 15.0)
         poll_interval = effective_poll_interval(chain, base_interval)
@@ -547,6 +557,7 @@ async def async_main(args: argparse.Namespace) -> int:
             chains_list,
             dex_enabled=args.dex,
             deployers_enabled=args.deployers,
+            traces_enabled=args.traces,
             disk_cap=args.disk_cap,
             start_from_head=args.start_from_head,
             data_dir=args.data_dir,
@@ -565,6 +576,7 @@ async def async_main(args: argparse.Namespace) -> int:
     )
     indexer.dex_enabled = args.dex
     indexer.deployers_enabled = args.deployers
+    indexer.traces_enabled = args.traces
 
     # Startup USD price refresh (best-effort, non-blocking): populate the
     # token_prices feed + cache so the whale flag and USD columns on the

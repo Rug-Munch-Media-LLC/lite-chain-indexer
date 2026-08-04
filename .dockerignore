@@ -1,0 +1,21 @@
+# Docker build context exclusions (repo root is the context for api/Dockerfile)
+.git
+.github
+.forgejo
+.superpowers
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+tests/
+docs/
+scripts/
+examples/
+migrations/
+*.md
+.env
+.env.*
+!.env.example

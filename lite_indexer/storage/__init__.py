@@ -41,6 +41,10 @@ from lite_indexer.storage.token_meta import (
     resolve_token_meta,
     upsert_token_meta,
 )
+from lite_indexer.storage.trace_store import (
+    ensure_internal_transfers_table,
+    write_internal_transfers,
+)
 
 __all__ = [
     "ClickHouseWriter",
@@ -66,4 +70,7 @@ __all__ = [
     "select_random_wallets",
     "verify_transfer_completeness",
     "run_reconciliation",
+    # Internal-transfer traces
+    "ensure_internal_transfers_table",
+    "write_internal_transfers",
 ]

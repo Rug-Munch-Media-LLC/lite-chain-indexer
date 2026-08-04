@@ -110,3 +110,76 @@ class StatusInfo(BaseModel):
 
     tables: dict[str, dict[str, Any]]
     source: str = Field(description="ClickHouse version string")
+
+
+# ── Cross-chain forensics (api.routers.trace) ──────────────────────────
+
+
+class TraceNodeOut(BaseModel):
+    """One address on one chain in a fund-trace graph."""
+
+    address: str
+    chain: str
+    label: str = ""
+    entity_type: str = Field(default="", description="bridge | cex_hot_wallet | defi | mixer | scam | eoa | ...")
+    risk_score: float = Field(default=0.0, ge=0, le=1, description="0 (clean) .. 1 (high risk)")
+    is_scam: bool = False
+    first_seen: str = ""
+
+
+class TraceEdgeOut(BaseModel):
+    """One money movement between two trace nodes."""
+
+    from_address: str
+    to_address: str
+    tx_hash: str
+    chain: str
+    amount: str
+    token: str = ""
+    edge_type: str = Field(
+        default="transfer",
+        description="transfer | internal | swap | bridge_deposit | bridge_withdraw | cex_deposit",
+    )
+    timestamp: str = ""
+    protocol: str = ""
+    confidence: float = Field(default=1.0, ge=0, le=1)
+
+
+class TraceGraphOut(BaseModel):
+    """Directed graph of fund movement."""
+
+    nodes: list[TraceNodeOut]
+    edges: list[TraceEdgeOut]
+    stats: dict[str, Any]
+
+
+class BridgeInteractionOut(BaseModel):
+    """A wallet's interaction with a bridge contract."""
+
+    address: str
+    bridge_name: str
+    direction: str = Field(description="deposit | withdraw")
+    chain: str
+    tx_hash: str
+    token: str
+    amount: str
+    timestamp: str
+    counterpart_chain: str = ""
+    counterpart_tx: str = ""
+    matched: bool = False
+    confidence: float = Field(default=0.0, ge=0, le=1)
+
+
+class CexDepositOut(BaseModel):
+    """A deposit to a known CEX hot wallet."""
+
+    address: str
+    cex_name: str
+    chain: str
+    to_address: str
+    tx_hash: str
+    token: str
+    amount: str
+    timestamp: str
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    pattern: str = Field(default="direct", description="direct | sweep")

@@ -147,6 +147,7 @@ class ClickHouseWriter:
         self._token_meta_ready = False
         self._balance_cache_ready = False
         self._holder_mv_ready = False
+        self._trace_table_ready = False
 
     def _connect(self) -> Any | None:
         """Lazy-init ClickHouse native protocol client."""
@@ -770,6 +771,49 @@ class ClickHouseWriter:
             metrics_incr("clickhouse_errors")
             logger.error("solana_deployer_events_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
             return 0
+
+    # ── Internal-Transfer Traces (wallet-memory blind spot) ─────────────
+    # Internal ETH flows (WETH unwraps, bridge deposits, fee flows,
+    # SELFDESTRUCT payouts) never appear as ERC-20 Transfer logs. Rows are
+    # collected from free trace_* RPCs by lite_indexer.traces.TraceCollector
+    # and inserted here. Best-effort + gated by TRACE_ENABLED: a trace
+    # insert failure never blocks the main transfer sync (the table is
+    # enrichment, not the durable transfer record).
+
+    async def write_internal_transfers(self, chain: str, rows: list[dict[str, Any]]) -> int:
+        """Insert internal-transfer rows into ClickHouse.
+
+        Delegates to :func:`lite_indexer.storage.trace_store.write_internal_transfers`,
+        ensuring the table exists first. Returns rows inserted (0 when
+        ClickHouse is unavailable or the insert fails).
+
+        Args:
+            chain: Chain name.
+            rows: Standardized internal-transfer row dicts from
+                ``TraceCollector``.
+
+        Returns:
+            Number of rows inserted (0 on failure/unavailable).
+        """
+        if not rows:
+            return 0
+        client = self._connect()
+        if not client:
+            logger.warning("trace_clickhouse_skipped", chain=chain)
+            return 0
+
+        from lite_indexer.storage.trace_store import (
+            ensure_internal_transfers_table,
+        )
+        from lite_indexer.storage.trace_store import (
+            write_internal_transfers as _write,
+        )
+
+        if not self._trace_table_ready and await ensure_internal_transfers_table(client):
+            self._trace_table_ready = True
+        if not self._trace_table_ready:
+            return 0
+        return _write(client, chain, rows)
 
     # ── Wallet Access Path (competitive features) ──────────────────────
     # Address-first projections, token metadata reference table, and the

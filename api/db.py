@@ -45,6 +45,11 @@ ALLOWED_TABLES: frozenset[str] = frozenset(
         "token_meta_ref",
         "scam_addresses",
         "wallet_profiles",
+        "wallet_entities",
+        "internal_transfers",
+        "solana_transfers",
+        "bridge_mappings",
+        "token_prices",
         "dex_ohlcv_hourly",
     }
 )

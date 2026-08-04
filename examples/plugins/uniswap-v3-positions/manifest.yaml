@@ -1,0 +1,27 @@
+name: uniswap-v3-positions
+version: 1.0.0
+author: RugMunch
+description: Tracks Uniswap V3 liquidity positions
+chain: ethereum
+contracts:
+  - address: "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+    start_block: 12369621
+events:
+  - name: IncreaseLiquidity
+    signature: "IncreaseLiquidity(uint256,address,uint256,uint256)"
+    params: [tokenId, owner, amount0, amount1]
+    indexed: [0]
+    handler: on_increase_liquidity
+  - name: DecreaseLiquidity
+    signature: "DecreaseLiquidity(uint256,address,uint256,uint256)"
+    params: [tokenId, owner, amount0, amount1]
+    indexed: [0]
+    handler: on_decrease_liquidity
+schema:
+  table: uniswap_v3_positions
+  columns:
+    token_id: UInt256
+    owner: String
+    liquidity: UInt256
+    tick_lower: Int32
+    tick_upper: Int32

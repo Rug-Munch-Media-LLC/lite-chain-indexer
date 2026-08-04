@@ -53,6 +53,43 @@ CH_TABLE = "wallet_memory.evm_transfers"
 CH_DEX_TABLE = "wallet_memory.dex_events"
 CH_DEPLOYER_TABLE = "wallet_memory.deployer_events"
 
+# ── Internal-Transfer Trace Collection ────────────────────────────────
+# The indexer normally only sees ERC-20 Transfer logs. Internal ETH flows
+# (WETH unwraps, bridge deposits, fee flows, SELFDESTRUCT payouts) are
+# invisible to eth_getLogs and live in wallet_memory.internal_transfers,
+# collected from free trace_* / debug_traceBlockByNumber RPCs. Default
+# OFF — free-tier trace endpoints are aggressively rate-limited and each
+# block costs a full trace RPC call, so this is an explicit opt-in via
+# TRACE_ENABLED=true or the --traces CLI flag.
+TRACE_ENABLED: bool = os.environ.get("TRACE_ENABLED", "0") == "1"
+
+# Trace calls can be slow on busy blocks (a full block trace returns a
+# nested call tree) — use a longer timeout than the default RPC call.
+TRACE_CALL_TIMEOUT: float = float(os.environ.get("TRACE_CALL_TIMEOUT", "60.0"))
+
+# Max blocks swept per sync cycle when traces are enabled (bounds RPC
+# load on free tiers — trace endpoints are rate-limited far below the
+# getLogs tier).
+TRACE_MAX_BLOCKS_PER_CYCLE: int = int(os.environ.get("TRACE_MAX_BLOCKS_PER_CYCLE", "100"))
+
+# Concurrent trace calls per chain (trace endpoints are rate-limited).
+TRACE_CONCURRENCY: int = int(os.environ.get("TRACE_CONCURRENCY", "2"))
+
+# ClickHouse table for internal-transfer rows.
+CH_TRACE_TABLE: str = "wallet_memory.internal_transfers"
+
+# ── Cross-Chain Forensics (lite_indexer.forensics) ─────────────────────
+# Read-side table references used by FundTracer. The main transfer table
+# is CH_TABLE above; these aliases keep the forensics package decoupled
+# from the writer's naming so either can evolve independently.
+CH_DATABASE: str = os.environ.get("CH_DATABASE") or os.environ.get("CLICKHOUSE_DATABASE") or "wallet_memory"
+CH_EVM_TRANSFERS_TABLE: str = os.environ.get("CH_EVM_TRANSFERS_TABLE") or CH_TABLE
+CH_INTERNAL_TRANSFERS_TABLE: str = os.environ.get("CH_INTERNAL_TRANSFERS_TABLE") or CH_TRACE_TABLE
+CH_SOLANA_TABLE: str = os.environ.get("CH_SOLANA_TABLE") or "wallet_memory.solana_spl_balance_changes"
+CH_LABELS_TABLE: str = os.environ.get("CH_LABELS_TABLE") or "wallet_memory.wallet_labels"
+CH_SCAM_TABLE: str = os.environ.get("CH_SCAM_TABLE") or "wallet_memory.scam_addresses"
+CH_BRIDGE_MAPPINGS_TABLE: str = os.environ.get("CH_BRIDGE_MAPPINGS_TABLE") or "wallet_memory.bridge_mappings"
+
 # ── Event Topics ──────────────────────────────────────────────────────
 
 # keccak256("Transfer(address,address,uint256)")
@@ -247,6 +284,7 @@ RETENTION_DAYS: dict[str, int] = {
     "evm_transfers": 30,
     "dex_events": 90,
     "deployer_events": 365,
+    "internal_transfers": 90,
 }
 
 # Columns to KEEP (summary) for old rows — everything else degrades.
@@ -437,6 +475,16 @@ CH_BLOCK_CHECKPOINTS_TABLE: str = "wallet_memory.block_checkpoints"
 # touch. Setting LAZY_INDEXING_ENABLED=0 restores the legacy behavior of
 # indexing all event types equally (CLI flags are the authority).
 LAZY_INDEXING_ENABLED: bool = os.environ.get("LAZY_INDEXING_ENABLED", "1") != "0"
+
+# ── Plugin System ──────────────────────────────────────────────────────
+# Directory where user-installed plugins live (LITE_INDEXER_PLUGIN_DIR,
+# default DATA_DIR/plugins). A plugin is a folder containing a
+# manifest.yaml + handler module; the loader scans this directory each
+# sync cycle. The examples/plugins tree in the repo ships bundled
+# plugins that `python -m lite_indexer.plugin.manager install` copies
+# here. Set PLUGIN_ENABLED=0 to disable the plugin layer entirely.
+PLUGIN_DIR: Path = Path(os.environ.get("LITE_INDEXER_PLUGIN_DIR", str(DATA_DIR / "plugins")))
+PLUGIN_ENABLED: bool = os.environ.get("PLUGIN_ENABLED", "1") != "0"
 
 # Directory where the scanner writes demand signal files:
 #   {INDEXER_DEMAND_DIR}/{chain}/dex

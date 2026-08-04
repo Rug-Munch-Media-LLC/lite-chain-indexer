@@ -1,0 +1,1738 @@
+{
+  "generated_at": "2026-08-04T08:16:56.744647Z",
+  "example_wallets": {
+    "known_scam_wallet": {
+      "address": "0x00077065f5760168aa838add40d4883b96a272a3",
+      "chain": "ethereum",
+      "generated_at": "2026-08-04T08:16:56.744647Z",
+      "entity": {
+        "address": "0x00077065f5760168aa838add40d4883b96a272a3",
+        "chain": "ethereum",
+        "name": "Multichain Hack Alert 3128",
+        "type": "hack",
+        "confidence": "HIGH",
+        "confidence_score": 0.9,
+        "tags": [
+          "category:exploiter",
+          "category:scam",
+          "source:wallet_labels:etherscan_combined",
+          "threat:exploiter"
+        ],
+        "labels": [
+          {
+            "name": "wallet_labels:etherscan_combined: exploiter",
+            "category": "scam",
+            "source": "scanner:wallet_labels:etherscan_combined",
+            "sanctioned": false
+          },
+          {
+            "name": "Multichain Hack Alert 3128",
+            "category": "exploiter",
+            "source": "etherscan_combined",
+            "sanctioned": false
+          }
+        ],
+        "threats": [
+          {
+            "type": "exploiter",
+            "source": "wallet_labels:etherscan_combined",
+            "evidence": "Multichain Hack Alert 3128",
+            "confidence": 0.8500000238418579
+          }
+        ],
+        "entity_id": null,
+        "deployments": 0,
+        "sources_used": [
+          "deployer_events",
+          "scam_addresses",
+          "wallet_labels",
+          "wallet_profiles"
+        ]
+      },
+      "risk": {
+        "address": "0x00077065f5760168aa838add40d4883b96a272a3",
+        "chain": "ethereum",
+        "score": 75.0,
+        "level": "critical",
+        "factors": [
+          {
+            "name": "known_scam_taint",
+            "weight": 0.25,
+            "score": 100.0,
+            "contribution": 25.0,
+            "evidence": [
+              "wallet_labels:etherscan_combined: exploiter (Multichain Hack Alert 3128)",
+              "label category scam: wallet_labels:etherscan_combined: exploiter"
+            ]
+          },
+          {
+            "name": "mixer_interaction",
+            "weight": 0.15,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "exploit_funding",
+            "weight": 0.15,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "deployer_rug_pattern",
+            "weight": 0.15,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "sanctioned_interaction",
+            "weight": 0.1,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "wallet_age",
+            "weight": 0.1,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": [
+              "wallet age 20669 days"
+            ]
+          },
+          {
+            "name": "precomputed",
+            "weight": 0.05,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "activity_anomaly",
+            "weight": 0.05,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          }
+        ],
+        "flags": [
+          "known_scam_taint: wallet_labels:etherscan_combined: exploiter (Multichain Hack Alert 3128)",
+          "risk floored by direct scam-database match"
+        ],
+        "sources_used": [
+          "deployer_events",
+          "evm_transfers",
+          "scam_addresses",
+          "wallet_labels",
+          "wallet_profiles"
+        ]
+      },
+      "cluster": {
+        "count": 0,
+        "addresses": []
+      },
+      "similar_wallets": [
+        {
+          "error": "vector store unavailable"
+        }
+      ],
+      "activity": {
+        "tx_count": 0,
+        "unique_tokens": 0,
+        "unique_senders": 0,
+        "unique_receivers": 0,
+        "first_seen": "1970-01-01T00:00:00Z",
+        "last_seen": "1970-01-01T00:00:00Z",
+        "chains_active": [],
+        "recent_transfers": []
+      },
+      "sources_checked": [
+        {
+          "name": "wallet_labels",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "scam_addresses",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "wallet_profiles",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "wallet_entities",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "goplus_token_security",
+          "local": false,
+          "available": false,
+          "source": "api.gopluslabs.io (free, no auth)"
+        },
+        {
+          "name": "chainabuse",
+          "local": false,
+          "available": false,
+          "source": "api.chainabuse.com (CHAINABUSE_API_KEY)"
+        },
+        {
+          "name": "cryptoscamdb",
+          "local": false,
+          "available": false,
+          "source": "api.cryptoscamdb.org (public)"
+        },
+        {
+          "name": "rekt_news",
+          "local": false,
+          "available": false,
+          "source": "api.rekt.news (public)"
+        }
+      ]
+    },
+    "known_cex_wallet": {
+      "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+      "chain": "ethereum",
+      "generated_at": "2026-08-04T08:17:06.910254Z",
+      "entity": {
+        "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+        "chain": "ethereum",
+        "name": "Binance 14",
+        "type": "cex",
+        "confidence": "HIGH",
+        "confidence_score": 0.9,
+        "tags": [
+          "category:exchange"
+        ],
+        "labels": [
+          {
+            "name": "Binance 14",
+            "category": "exchange",
+            "source": "etherscan_combined",
+            "sanctioned": false
+          }
+        ],
+        "threats": [],
+        "entity_id": null,
+        "deployments": 0,
+        "sources_used": [
+          "deployer_events",
+          "scam_addresses",
+          "wallet_labels",
+          "wallet_profiles"
+        ]
+      },
+      "risk": {
+        "address": "0x28c6c06298d514db089934071355e5743bf21d60",
+        "chain": "ethereum",
+        "score": 0.0,
+        "level": "low",
+        "factors": [
+          {
+            "name": "known_scam_taint",
+            "weight": 0.25,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "mixer_interaction",
+            "weight": 0.15,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "exploit_funding",
+            "weight": 0.15,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "deployer_rug_pattern",
+            "weight": 0.15,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "sanctioned_interaction",
+            "weight": 0.1,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "wallet_age",
+            "weight": 0.1,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": [
+              "wallet age 1101 days"
+            ]
+          },
+          {
+            "name": "precomputed",
+            "weight": 0.05,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "activity_anomaly",
+            "weight": 0.05,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          }
+        ],
+        "flags": [
+          "no high-risk signals (low)"
+        ],
+        "sources_used": [
+          "deployer_events",
+          "evm_transfers",
+          "scam_addresses",
+          "wallet_labels",
+          "wallet_profiles"
+        ]
+      },
+      "cluster": {
+        "count": 1,
+        "addresses": [
+          {
+            "address": "0xee7ae85f2fe2239e27d9c1e23fffe168d63b4055",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x06fd4ba7973a0d39a91734bbc35bc2bcaa99e3b0"
+          }
+        ]
+      },
+      "similar_wallets": [
+        {
+          "error": "vector store unavailable"
+        }
+      ],
+      "activity": {
+        "tx_count": 388501,
+        "unique_tokens": 253,
+        "unique_senders": 67632,
+        "unique_receivers": 15987,
+        "first_seen": "2023-07-30T13:36:27Z",
+        "last_seen": "2026-08-03T21:00:30Z",
+        "chains_active": [
+          "base",
+          "bsc",
+          "ethereum",
+          "scroll"
+        ],
+        "recent_transfers": [
+          {
+            "chain": "ethereum",
+            "block_timestamp": "2026-08-03T21:00:30Z",
+            "tx_hash": "0xaf76f661e790697bc0b8825e1d4d51f4c7f6678db11a643be8abfb72d7a20963",
+            "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+            "to": "0x0bf7b18e1f48c1f3fc3103e9ea96b90522941c8e",
+            "token": "0xd1d2eb1b1e90b638588728b4130137d262c87cae",
+            "value": "2540463592902"
+          },
+          {
+            "chain": "ethereum",
+            "block_timestamp": "2026-08-03T21:00:30Z",
+            "tx_hash": "0xf8b44d4a2d30168d0a3aef92081cd27ddd7f7017c33ae3a635cc6fe62eafaa7e",
+            "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+            "to": "0x5dff1e3fc06782d90f1e8a9a2f174a81c1857f19",
+            "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "value": "384020000"
+          },
+          {
+            "chain": "ethereum",
+            "block_timestamp": "2026-08-03T21:00:30Z",
+            "tx_hash": "0xb70cb1bd5e230db5cdc51a55f865a29c5cd7b7d22a2e43e6cc581f1eb4b06913",
+            "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+            "to": "0x28c9c9aa6077502ab2e8d51752b0243c041de5fc",
+            "token": "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce",
+            "value": "9513165000000000000000000"
+          },
+          {
+            "chain": "ethereum",
+            "block_timestamp": "2026-08-03T21:00:30Z",
+            "tx_hash": "0x7918e19b994d4325c5028756f37e538dd6d15ad2b26dec31acfa4e6db1036004",
+            "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+            "to": "0x867c4dd2b23606e32f75ccabb2581638f18c525d",
+            "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "value": "223297293"
+          },
+          {
+            "chain": "ethereum",
+            "block_timestamp": "2026-08-03T21:00:30Z",
+            "tx_hash": "0xf04b976215f70bcd51d00e71f59db03de049db8ebf891b5c9bd6da086c7c3c52",
+            "from": "0xc17a40852e4bfe04bc81af355fdf132c539ba753",
+            "to": "0x28c6c06298d514db089934071355e5743bf21d60",
+            "token": "0xc4441c2be5d8fa8126822b9929ca0b81ea0de38e",
+            "value": "586431600000000000000000"
+          },
+          {
+            "chain": "ethereum",
+            "block_timestamp": "2026-08-03T21:00:30Z",
+            "tx_hash": "0xd2b89796d9690e45cb558b43b0666924a495dc26f414f9294b8b03a78a6aa410",
+            "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+            "to": "0xa3f331dab3dc872b981484c35c93269e422985ac",
+            "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "value": "112340966"
+          },
+          {
+            "chain": "ethereum",
+            "block_timestamp": "2026-08-03T21:00:30Z",
+            "tx_hash": "0x30ff12df293bda6b7faa68dc8a6ab280c0251a2ba682aee1af2982d8833e87ef",
+            "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+            "to": "0x00ea08b51c70b262f2ed77a1d778916e28239079",
+            "token": "0x6e6f6d696e61decd6605bd4a57836c5db6923340",
+            "value": "288996881000000000000000"
+          },
+          {
+            "chain": "ethereum",
+            "block_timestamp": "2026-08-03T21:00:30Z",
+            "tx_hash": "0xea931ddd89e3ad5fe7d84430a8e570747fbf79088e83e75a5dafe111ed3e66d7",
+            "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+            "to": "0x18a3a7fbee2c00d29eb80ebc536b0c4e0714a50f",
+            "token": "0x8408d45b61f5823298f19a09b53b7339c0280489",
+            "value": "26668970000000000000000"
+          },
+          {
+            "chain": "ethereum",
+            "block_timestamp": "2026-08-03T21:00:30Z",
+            "tx_hash": "0x72893897ef8e95453e737c5f23e6bdd10b900ebdedde6fba50f0960d4f3894b6",
+            "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+            "to": "0x98c3d3183c4b8a650614ad179a1a98be0a8d6b8e",
+            "token": "0x8de5b80a0c1b02fe4976851d030b36122dbb8624",
+            "value": "516916500000000000000000"
+          },
+          {
+            "chain": "ethereum",
+            "block_timestamp": "2026-08-03T21:00:30Z",
+            "tx_hash": "0xc5ad76b2c1443deecfbc7535104aecbf93a91b770629bc68feeb43174fd49bb4",
+            "from": "0x28c6c06298d514db089934071355e5743bf21d60",
+            "to": "0x19da95ee47de9bf71cef856835e3e223aa375465",
+            "token": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+            "value": "32000000"
+          }
+        ]
+      },
+      "sources_checked": [
+        {
+          "name": "wallet_labels",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "scam_addresses",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "wallet_profiles",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "wallet_entities",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "goplus_token_security",
+          "local": false,
+          "available": false,
+          "source": "api.gopluslabs.io (free, no auth)"
+        },
+        {
+          "name": "chainabuse",
+          "local": false,
+          "available": false,
+          "source": "api.chainabuse.com (CHAINABUSE_API_KEY)"
+        },
+        {
+          "name": "cryptoscamdb",
+          "local": false,
+          "available": false,
+          "source": "api.cryptoscamdb.org (public)"
+        },
+        {
+          "name": "rekt_news",
+          "local": false,
+          "available": false,
+          "source": "api.rekt.news (public)"
+        }
+      ]
+    },
+    "fresh_deployer_wallet": {
+      "address": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+      "chain": null,
+      "generated_at": "2026-08-04T08:17:33.215583Z",
+      "entity": {
+        "address": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+        "chain": null,
+        "name": "deployer on base",
+        "type": "deployer",
+        "confidence": "MEDIUM",
+        "confidence_score": 0.7,
+        "tags": [],
+        "labels": [],
+        "threats": [],
+        "entity_id": null,
+        "deployments": 1,
+        "sources_used": [
+          "deployer_events",
+          "scam_addresses",
+          "wallet_labels",
+          "wallet_profiles"
+        ]
+      },
+      "risk": {
+        "address": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+        "chain": null,
+        "score": 21.0,
+        "level": "low",
+        "factors": [
+          {
+            "name": "known_scam_taint",
+            "weight": 0.25,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "mixer_interaction",
+            "weight": 0.15,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "exploit_funding",
+            "weight": 0.15,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "deployer_rug_pattern",
+            "weight": 0.15,
+            "score": 40.0,
+            "contribution": 6.0,
+            "evidence": [
+              "1 deployment(s) on base"
+            ]
+          },
+          {
+            "name": "sanctioned_interaction",
+            "weight": 0.1,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "wallet_age",
+            "weight": 0.1,
+            "score": 100.0,
+            "contribution": 10.0,
+            "evidence": [
+              "wallet age 0 days"
+            ]
+          },
+          {
+            "name": "precomputed",
+            "weight": 0.05,
+            "score": 0.0,
+            "contribution": 0.0,
+            "evidence": []
+          },
+          {
+            "name": "activity_anomaly",
+            "weight": 0.05,
+            "score": 100.0,
+            "contribution": 5.0,
+            "evidence": [
+              "new wallet with 8 txs in 0.4 days"
+            ]
+          }
+        ],
+        "flags": [
+          "wallet_age: wallet age 0 days",
+          "activity_anomaly: new wallet with 8 txs in 0.4 days"
+        ],
+        "sources_used": [
+          "deployer_events",
+          "evm_transfers",
+          "scam_addresses",
+          "wallet_labels",
+          "wallet_profiles"
+        ]
+      },
+      "cluster": {
+        "count": 50,
+        "addresses": [
+          {
+            "address": "0x0000000000000000000000000000000000000000",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x000000000000000000000000000000000000dead",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x009cf7bc57584b7998236eff51b98a168dcea9b0",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x00bd459a892bb18635e4ce064f8c5bdcfd1eac55",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x02be689878b4dd4e853fa77b7338fca54025f784",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x03561d81cd009807827b562ac1448331c0802e47",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x041e26fdb6dbf1c47bf7c4e464e0483097edf2c3",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x066d5544a0b05b19f08e45dbc13758a3590386c4",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x067a6e84f430946b32c11d70ccc9e0454f24e662",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x06831088c586d475e51c37c716f8f5c601793ef4",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x06eabcc0900ebd89c0493b5c0ecf74f2d8ccc335",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x0851f2a3be4e99a907c2dac161d958bedf02f206",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x088b26d97270cec5922176654ec484a1b307ba90",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x0cd352b3baa2222ec1af44d0665415f912adfb4f",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x0df5e216e260f1d432b6d75ea4e6057fe5edcf31",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x101c32f026a08b311266cd6d1eb5217e3c248b13",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x11904a8e60bd756f48d20a6970ff86b7a43bc022",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x1528c729a774d9faa4950fb8b5bc597a2efa09af",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x158b0b80126a2b8163f487e607198de2b9c2c8d3",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x16a3385b40da16c177aa7abc7d5fc758a10c0f04",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x16c6ce0f7fbbf79e4fad1b7eb87cb660e8821e6a",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x1794e4f8d253c92bc11ee5cdced5cc352d082d61",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x18be16c0ac16438675b6a0f62f2175d4e18b5a37",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x1b02da8cb0d097eb8d57a175b88c7d8b47997506",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x1bd53edb201d14ba8580325f8ec4274d84136e64",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x6b67daf38e1e2a695c8236eb64e266159ae2a2df"
+          },
+          {
+            "address": "0x1ed5981c4ce6c04fee394e968220b315b09ad7ba",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x20ec291bb8459b6145317e7126532ce7ece5056f",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x22b4b3a984590447eb75f0d9047de6ce869d44cb",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x22dcb4798abf95b96c18cb6aade0229ae8dda3e1",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x22df54985cb23de3f561dd77ea0e262d1d323e3d",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x2918ab1f6dbca6af2743c8ce95a92e4b2e852a5f",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x29703534ed952925047d7dcbd565047020c899dd",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x2bfaa76c5570e180da80a833d61b7616d8bfedd9",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x2f19a8730f447cd4279c520170c811d2fddc1aa7",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x302874d564b8de4bcc244193dff60460e54fd555",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x3399f1527a01f37d5de3de81fde3a7eba89fa685",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x34238e248b8dd69b44f5262f8cce79f86b3653f5",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x34d22cc2ae681e7fb2ec20369342df711f200565",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x38aa820904815e53f779704fbb9198aa7c44abdc",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x398f6c2ac2dacabd2f4776af39c6fbed87779840",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x3a65cefebf06e47360655708eb5a385a8297fb86",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x6b67daf38e1e2a695c8236eb64e266159ae2a2df"
+          },
+          {
+            "address": "0x3a7905d8902982317776ccbc67812c45f7179981",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x3b9ad02e5c3c166916daa5d970627891de48c064",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x3d92bac0565a9845ba93aafb67c3ac972e8c5f28",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x3e72620ecb23f0ef713ef93bb4c9994cbe7cde84",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x3f12e928cb6ff9e4e425c7877482fa4fc1ead026",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x6b67daf38e1e2a695c8236eb64e266159ae2a2df"
+          },
+          {
+            "address": "0x4080a647af23141640a795cb899df79ff974c105",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          },
+          {
+            "address": "0x40cfe08fb2dec74780d1037fa2c78a363e297cf5",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24"
+          },
+          {
+            "address": "0x4231c0a08cfa5f5256aa94209d510b20aed7c0f7",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0x0000000000000000000000000000000000000000"
+          },
+          {
+            "address": "0x43e65f12f4553294498487c8db13caf0e730bdb5",
+            "chain": null,
+            "heuristic_type": "shared_funding",
+            "confidence": 0.7,
+            "evidence": "funded by same source 0xa3524ef4114787896c31c155d60e57f8f041e9f7"
+          }
+        ]
+      },
+      "similar_wallets": [
+        {
+          "error": "vector store unavailable"
+        }
+      ],
+      "activity": {
+        "tx_count": 8,
+        "unique_tokens": 3,
+        "unique_senders": 5,
+        "unique_receivers": 2,
+        "first_seen": "2026-08-03T23:43:13Z",
+        "last_seen": "2026-08-03T23:52:31Z",
+        "chains_active": [
+          "base",
+          "optimism"
+        ],
+        "recent_transfers": [
+          {
+            "chain": "base",
+            "block_timestamp": "2026-08-03T23:52:31Z",
+            "tx_hash": "0x7dae3a0cda0be4dfbdcc54ead449380fa797fafa50d51526f382eed4696ddbcf",
+            "from": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+            "to": "0x6b67daf38e1e2a695c8236eb64e266159ae2a2df",
+            "token": "0xd516c647df1146fc18ba3796d14b53df76f9780b",
+            "value": "4133662244812478819468312576"
+          },
+          {
+            "chain": "base",
+            "block_timestamp": "2026-08-03T23:52:19Z",
+            "tx_hash": "0xfbce15e3bd12b7f1f27e018515906d303323228045b5d6b3e77b16fab9353d5a",
+            "from": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+            "to": "0x6b67daf38e1e2a695c8236eb64e266159ae2a2df",
+            "token": "0x6b67daf38e1e2a695c8236eb64e266159ae2a2df",
+            "value": "118321595661992320850346"
+          },
+          {
+            "chain": "base",
+            "block_timestamp": "2026-08-03T23:52:19Z",
+            "tx_hash": "0xfbce15e3bd12b7f1f27e018515906d303323228045b5d6b3e77b16fab9353d5a",
+            "from": "0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24",
+            "to": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+            "token": "0xd516c647df1146fc18ba3796d14b53df76f9780b",
+            "value": "4154236108655740418356933546"
+          },
+          {
+            "chain": "optimism",
+            "block_timestamp": "2026-08-03T23:45:05Z",
+            "tx_hash": "0x9a7883570f8a0810e8f876140c780fe8bf107a032f4c91fbeb1eadc195c399c8",
+            "from": "0xa3524ef4114787896c31c155d60e57f8f041e9f7",
+            "to": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+            "token": "0x9a3192c66c476ce442f04183a81f88ffe32968f6",
+            "value": "2048000000000000000000"
+          },
+          {
+            "chain": "base",
+            "block_timestamp": "2026-08-03T23:43:45Z",
+            "tx_hash": "0xd0d1db6bed810fb70a50109c4821b5a03604a328293e88f0b2189cfbd91c60ce",
+            "from": "0x6b67daf38e1e2a695c8236eb64e266159ae2a2df",
+            "to": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+            "token": "0xd516c647df1146fc18ba3796d14b53df76f9780b",
+            "value": "198308241222997943835695"
+          },
+          {
+            "chain": "base",
+            "block_timestamp": "2026-08-03T23:43:39Z",
+            "tx_hash": "0x35d289d83407e5f76c18c7ee301392914a4c565e3842737d3822b66dc2f3b5ab",
+            "from": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+            "to": "0x6b67daf38e1e2a695c8236eb64e266159ae2a2df",
+            "token": "0xd516c647df1146fc18ba3796d14b53df76f9780b",
+            "value": "5600000000000000000000000000"
+          },
+          {
+            "chain": "base",
+            "block_timestamp": "2026-08-03T23:43:39Z",
+            "tx_hash": "0x35d289d83407e5f76c18c7ee301392914a4c565e3842737d3822b66dc2f3b5ab",
+            "from": "0x0000000000000000000000000000000000000000",
+            "to": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+            "token": "0x6b67daf38e1e2a695c8236eb64e266159ae2a2df",
+            "value": "118321595661992320850346"
+          },
+          {
+            "chain": "base",
+            "block_timestamp": "2026-08-03T23:43:13Z",
+            "tx_hash": "0x1e8a7ba776e6ccd85c56f3d07ce34ea54b817a41ec8512a1286cd939a96c416c",
+            "from": "0x0000000000000000000000000000000000000000",
+            "to": "0x27bf4e6eaabc305991f4386502ba62680a1509cf",
+            "token": "0xd516c647df1146fc18ba3796d14b53df76f9780b",
+            "value": "5600000000000000000000000000"
+          }
+        ]
+      },
+      "sources_checked": [
+        {
+          "name": "wallet_labels",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "scam_addresses",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "wallet_profiles",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "wallet_entities",
+          "local": true,
+          "available": true,
+          "source": "ClickHouse warehouse"
+        },
+        {
+          "name": "goplus_token_security",
+          "local": false,
+          "available": false,
+          "source": "api.gopluslabs.io (free, no auth)"
+        },
+        {
+          "name": "chainabuse",
+          "local": false,
+          "available": false,
+          "source": "api.chainabuse.com (CHAINABUSE_API_KEY)"
+        },
+        {
+          "name": "cryptoscamdb",
+          "local": false,
+          "available": false,
+          "source": "api.cryptoscamdb.org (public)"
+        },
+        {
+          "name": "rekt_news",
+          "local": false,
+          "available": false,
+          "source": "api.rekt.news (public)"
+        }
+      ]
+    }
+  },
+  "recent_anomalies": [
+    {
+      "address": "0x07ff4e06865de4934409aa6ecea503b08cc1c78d",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "629580 txs in <48h (191640 counterparties)",
+      "detail": {
+        "txs": 629580,
+        "counterparties": 191640,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0x10673dcb927f667fe55587839a438cfb390764d1",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "754559 txs in <48h (497894 counterparties)",
+      "detail": {
+        "txs": 754559,
+        "counterparties": 497894,
+        "first_seen": "2026-08-02T08:17:35Z",
+        "last_seen": "2026-08-03T06:36:49Z"
+      }
+    },
+    {
+      "address": "0x10c994239af74835260b79dbb2433047eb191a4a",
+      "chain": "optimism",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "251295 txs in <48h (251295 counterparties)",
+      "detail": {
+        "txs": 251295,
+        "counterparties": 251295,
+        "first_seen": "2026-08-03T09:05:19Z",
+        "last_seen": "2026-08-03T21:03:49Z"
+      }
+    },
+    {
+      "address": "0x12a27733d9ce2c2682792ece2124bdf58b80c71c",
+      "chain": "optimism",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "797204 txs in <48h (787715 counterparties)",
+      "detail": {
+        "txs": 797204,
+        "counterparties": 787715,
+        "first_seen": "2026-08-02T08:20:24Z",
+        "last_seen": "2026-08-03T00:51:17Z"
+      }
+    },
+    {
+      "address": "0x1926f7ce5f1229fcb3e8705874b5533bfb7d1a6d",
+      "chain": "avalanche",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "378307 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 378307,
+        "counterparties": 2,
+        "first_seen": "2026-08-03T08:34:48Z",
+        "last_seen": "2026-08-03T23:56:59Z"
+      }
+    },
+    {
+      "address": "0x1964ca90474b11ffd08af387b110ba6c96251bfc",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "1724026 txs in <48h (76122 counterparties)",
+      "detail": {
+        "txs": 1724026,
+        "counterparties": 76122,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0x1c43229d1a6006ae61d7071f1c6a57d8846b0047",
+      "chain": "optimism",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "316295 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 316295,
+        "counterparties": 2,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-03T22:00:01Z"
+      }
+    },
+    {
+      "address": "0x1cea44f206c346f8d3ebd9bf2ae210deb245a9fb",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "529213 txs in <48h (529213 counterparties)",
+      "detail": {
+        "txs": 529213,
+        "counterparties": 529213,
+        "first_seen": "2026-08-02T09:23:09Z",
+        "last_seen": "2026-08-04T08:16:45Z"
+      }
+    },
+    {
+      "address": "0x20021c1b4d48f8aa27a47b029b275052bae1debf",
+      "chain": "optimism",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "599606 txs in <48h (599606 counterparties)",
+      "detail": {
+        "txs": 599606,
+        "counterparties": 599606,
+        "first_seen": "2026-08-03T12:13:39Z",
+        "last_seen": "2026-08-03T22:42:01Z"
+      }
+    },
+    {
+      "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+      "chain": "bsc",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "219599 txs in <48h (2828 counterparties)",
+      "detail": {
+        "txs": 219599,
+        "counterparties": 2828,
+        "first_seen": "2026-08-02T18:16:49Z",
+        "last_seen": "2026-08-04T07:21:21Z"
+      }
+    },
+    {
+      "address": "0x23e2b07d85a8dbc307742c72aadbbdde4e5e2efb",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "222994 txs in <48h (12094 counterparties)",
+      "detail": {
+        "txs": 222994,
+        "counterparties": 12094,
+        "first_seen": "2026-08-02T08:17:35Z",
+        "last_seen": "2026-08-04T08:17:35Z"
+      }
+    },
+    {
+      "address": "0x25a4b842cb200e9148ff5a11babf80488c8d8b07",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "1191420 txs in <48h (21881 counterparties)",
+      "detail": {
+        "txs": 1191420,
+        "counterparties": 21881,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0x273d46b5bcc95094e019defb8abd7eb0c0735cdd",
+      "chain": "avalanche",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "609500 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 609500,
+        "counterparties": 2,
+        "first_seen": "2026-08-02T08:17:35Z",
+        "last_seen": "2026-08-03T08:40:26Z"
+      }
+    },
+    {
+      "address": "0x278d858f05b94576c1e6f73285886876ff6ef8d2",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "354638 txs in <48h (287 counterparties)",
+      "detail": {
+        "txs": 354638,
+        "counterparties": 287,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:41Z"
+      }
+    },
+    {
+      "address": "0x2b4ee3387008e5ff1a9996fc8b48d2fd61389037",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "359235 txs in <48h (1 counterparties)",
+      "detail": {
+        "txs": 359235,
+        "counterparties": 1,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:41Z"
+      }
+    },
+    {
+      "address": "0x323a83ce767ad658f64a38078ef78a289e118c8f",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "698623 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 698623,
+        "counterparties": 2,
+        "first_seen": "2026-08-02T08:27:03Z",
+        "last_seen": "2026-08-04T08:12:05Z"
+      }
+    },
+    {
+      "address": "0x478946bcd4a5a22b316470f5486fafb928c0ba25",
+      "chain": "optimism",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "281952 txs in <48h (202 counterparties)",
+      "detail": {
+        "txs": 281952,
+        "counterparties": 202,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0x498581ff718922c3f8e6a244956af099b2652b2b",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "361801 txs in <48h (22464 counterparties)",
+      "detail": {
+        "txs": 361801,
+        "counterparties": 22464,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:41Z"
+      }
+    },
+    {
+      "address": "0x4d97dcd97ec945f40cf65f87097ace5ea0476045",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "1251627 txs in <48h (2070 counterparties)",
+      "detail": {
+        "txs": 1251627,
+        "counterparties": 2070,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0x5aff56f7913f7818134e4dbc3522752f21609d1e",
+      "chain": "avalanche",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "274786 txs in <48h (8 counterparties)",
+      "detail": {
+        "txs": 274786,
+        "counterparties": 8,
+        "first_seen": "2026-08-02T08:18:52Z",
+        "last_seen": "2026-08-04T08:17:50Z"
+      }
+    },
+    {
+      "address": "0x61040e143a77f165ba44543af4a079f2c809d14b",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "517529 txs in <48h (139 counterparties)",
+      "detail": {
+        "txs": 517529,
+        "counterparties": 139,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:41Z"
+      }
+    },
+    {
+      "address": "0x6652d0f0d7aec5070804e55b7023d32b9bbc4190",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "329239 txs in <48h (56068 counterparties)",
+      "detail": {
+        "txs": 329239,
+        "counterparties": 56068,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0x6b772618cee5cd45a4b054f83cf1beec81c1814f",
+      "chain": "avalanche",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "3470864 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 3470864,
+        "counterparties": 2,
+        "first_seen": "2026-08-02T08:17:44Z",
+        "last_seen": "2026-08-04T08:17:53Z"
+      }
+    },
+    {
+      "address": "0x6c0ac888b075c6b5141cbc1da6170b6686afd07d",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "222904 txs in <48h (15400 counterparties)",
+      "detail": {
+        "txs": 222904,
+        "counterparties": 15400,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0x6d896ab0e5001cc1fe11c8db0647b066f9bfa1e7",
+      "chain": "avalanche",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "229012 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 229012,
+        "counterparties": 2,
+        "first_seen": "2026-08-04T00:32:32Z",
+        "last_seen": "2026-08-04T07:58:10Z"
+      }
+    },
+    {
+      "address": "0x6eb6dd5d939f701906587287f24610e35913458f",
+      "chain": "bsc",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "250975 txs in <48h (7963 counterparties)",
+      "detail": {
+        "txs": 250975,
+        "counterparties": 7963,
+        "first_seen": "2026-08-02T18:27:04Z",
+        "last_seen": "2026-08-04T07:21:21Z"
+      }
+    },
+    {
+      "address": "0x733ac659f96595902b028db9a115bdcf056422ad",
+      "chain": "avalanche",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "582955 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 582955,
+        "counterparties": 2,
+        "first_seen": "2026-08-04T00:15:14Z",
+        "last_seen": "2026-08-04T08:11:33Z"
+      }
+    },
+    {
+      "address": "0x78654ed080c1d1c87907646fdb2ae48db3635341",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "252090 txs in <48h (1 counterparties)",
+      "detail": {
+        "txs": 252090,
+        "counterparties": 1,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0x83a127444ba6c8ac756c47d7d0b3d4ca57598647",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "388905 txs in <48h (230053 counterparties)",
+      "detail": {
+        "txs": 388905,
+        "counterparties": 230053,
+        "first_seen": "2026-08-03T07:30:11Z",
+        "last_seen": "2026-08-03T21:40:49Z"
+      }
+    },
+    {
+      "address": "0x882df4b0fb50a229c3b4124eb18c759911485bfb",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "1190881 txs in <48h (151198 counterparties)",
+      "detail": {
+        "txs": 1190881,
+        "counterparties": 151198,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0x8ca97f41d2c81af050656e8ad0cf543820a24504",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "981659 txs in <48h (76855 counterparties)",
+      "detail": {
+        "txs": 981659,
+        "counterparties": 76855,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0x991ea644546ef0043afab651bd7daa01737d914e",
+      "chain": "optimism",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "357233 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 357233,
+        "counterparties": 2,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0xa1200000d0002264c9a1698e001292d00e1b00af",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "705961 txs in <48h (716 counterparties)",
+      "detail": {
+        "txs": 705961,
+        "counterparties": 716,
+        "first_seen": "2026-08-02T08:17:56Z",
+        "last_seen": "2026-08-04T08:17:38Z"
+      }
+    },
+    {
+      "address": "0xa304823c775d13fc851379c75e2b6f300e223234",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "2582141 txs in <48h (9 counterparties)",
+      "detail": {
+        "txs": 2582141,
+        "counterparties": 9,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0xa3524ef4114787896c31c155d60e57f8f041e9f7",
+      "chain": "optimism",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "832812 txs in <48h (788597 counterparties)",
+      "detail": {
+        "txs": 832812,
+        "counterparties": 788597,
+        "first_seen": "2026-08-03T22:47:55Z",
+        "last_seen": "2026-08-04T08:16:31Z"
+      }
+    },
+    {
+      "address": "0xa3a7b6f88361f48403514059f1f16c8e78d60eec",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "236677 txs in <48h (235824 counterparties)",
+      "detail": {
+        "txs": 236677,
+        "counterparties": 235824,
+        "first_seen": "2026-08-03T17:10:51Z",
+        "last_seen": "2026-08-04T08:16:55Z"
+      }
+    },
+    {
+      "address": "0xa7548448f4c774e3c3005bcfe81cd21b5925e91a",
+      "chain": "avalanche",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "5721608 txs in <48h (49 counterparties)",
+      "detail": {
+        "txs": 5721608,
+        "counterparties": 49,
+        "first_seen": "2026-08-02T08:17:35Z",
+        "last_seen": "2026-08-04T08:17:57Z"
+      }
+    },
+    {
+      "address": "0xada100874d00e3331d00f2007a9c336a65009718",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "2137890 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 2137890,
+        "counterparties": 2,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0xada100db00ca00073811820692005400218fce1f",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "449757 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 449757,
+        "counterparties": 2,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0xada200001000ef00d07553cee7006808f895c6f1",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "358942 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 358942,
+        "counterparties": 2,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0xb2cc224c1c9fee385f8ad6a55b4d94e92359dc59",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "233718 txs in <48h (694 counterparties)",
+      "detail": {
+        "txs": 233718,
+        "counterparties": 694,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:41Z"
+      }
+    },
+    {
+      "address": "0xb300000b72deaeb607a12d5f54773d1c19c7028d",
+      "chain": "bsc",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "229189 txs in <48h (12737 counterparties)",
+      "detail": {
+        "txs": 229189,
+        "counterparties": 12737,
+        "first_seen": "2026-08-02T18:16:49Z",
+        "last_seen": "2026-08-04T07:21:21Z"
+      }
+    },
+    {
+      "address": "0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "3989264 txs in <48h (2 counterparties)",
+      "detail": {
+        "txs": 3989264,
+        "counterparties": 2,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0xc417fd8e9661c0d2120b64a04bb3278c17e99db1",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "2541279 txs in <48h (21096 counterparties)",
+      "detail": {
+        "txs": 2541279,
+        "counterparties": 21096,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0xd1b267c836f9837b9d0efb8bac97e2fe5eed6b4e",
+      "chain": "optimism",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "5430495 txs in <48h (5430495 counterparties)",
+      "detail": {
+        "txs": 5430495,
+        "counterparties": 5430495,
+        "first_seen": "2026-08-03T00:53:07Z",
+        "last_seen": "2026-08-03T20:55:24Z"
+      }
+    },
+    {
+      "address": "0xd91e80cf2e7be2e162c6513ced06f1dd0da35296",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "1040417 txs in <48h (3 counterparties)",
+      "detail": {
+        "txs": 1040417,
+        "counterparties": 3,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0xd9f7bd6033d34caf61143a460d7f79c4384aae97",
+      "chain": "optimism",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "377426 txs in <48h (8 counterparties)",
+      "detail": {
+        "txs": 377426,
+        "counterparties": 8,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0xde16cae674b3208ac51c700a37784ccb6239f15f",
+      "chain": "base",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "754292 txs in <48h (11 counterparties)",
+      "detail": {
+        "txs": 754292,
+        "counterparties": 11,
+        "first_seen": "2026-08-02T08:27:03Z",
+        "last_seen": "2026-08-04T08:12:05Z"
+      }
+    },
+    {
+      "address": "0xe111180000d2663c0091e4f400237545b87b996b",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "5418859 txs in <48h (23686 counterparties)",
+      "detail": {
+        "txs": 5418859,
+        "counterparties": 23686,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    },
+    {
+      "address": "0xe2222d279d744050d28e00520010520000310f59",
+      "chain": "polygon",
+      "anomaly_type": "new_wallet_volume",
+      "severity": "medium",
+      "evidence": "932602 txs in <48h (13025 counterparties)",
+      "detail": {
+        "txs": 932602,
+        "counterparties": 13025,
+        "first_seen": "2026-08-02T08:17:33Z",
+        "last_seen": "2026-08-04T08:17:39Z"
+      }
+    }
+  ]
+}
