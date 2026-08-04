@@ -616,6 +616,11 @@ class TestIndexerTraceIntegration:
         ch.client.return_value = None  # skip reorg staging
         indexer._ch_writer = ch
         strategy.write_clickhouse = MagicMock(return_value=0)
+        # The 2026-08-04 CH health gate would pause the sync when the fake
+        # writer reports client=None. This test exercises the trace write
+        # path, so force the gate open (reorg staging is still skipped via
+        # client=None above).
+        indexer._ch_health = type("_ChHealthStub", (), {"ok": lambda self: True})()
 
         summary = await indexer._sync_loop_inner({"status": "ok", "errors": []}, 0.0)
 

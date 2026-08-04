@@ -3,6 +3,7 @@ State file management and pair cache persistence.
 
 Manages:
   - LiteIndexer sync state (last indexed block per chain)
+  - Monotonic high-water mark per chain (backward-state guard)
   - Pair cache (pair→(token0, token1) mapping across restarts)
 """
 
@@ -100,6 +101,73 @@ class StateManager:
             logger.info("state_saved", chain=self.chain, last_block=last_block)
         except OSError as exc:
             logger.error("state_save_failed", chain=self.chain, error=str(exc))
+
+
+class StateHighWater:
+    """Monotonic per-chain high-water mark (backward-state guard).
+
+    The regular state file (``lite_{chain}.json``) is written by the
+    indexer on every cycle and CAN go backwards — a torn write, a
+    corrupted JSON (fallback to ``{}``), or a buggy companion writer
+    resets ``last_block`` and the indexer re-indexes from genesis.
+
+    The high-water mark file (``highwater_{chain}.json``) only ever
+    moves forward: it is updated after every successful forward sync and
+    never rewound. ``LiteIndexer`` consults it on load (when
+    ``STATE_BACKWARD_PROTECTION`` is enabled) to detect a regression and
+    recover from the ClickHouse max block instead of re-indexing from 0.
+    """
+
+    def __init__(self, chain: str) -> None:
+        self.chain = chain
+
+    def _path(self) -> Path:
+        return STATE_DIR / f"highwater_{self.chain}.json"
+
+    def load(self) -> int | None:
+        """Return the highest last_block ever recorded, or None."""
+        path = self._path()
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+            block = data.get("last_block")
+            return int(block) if block is not None else None
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+            logger.warning("highwater_load_failed", chain=self.chain, error=str(exc)[:80])
+            return None
+
+    def update(self, last_block: int) -> None:
+        """Advance the high-water mark (no-op when going backwards).
+
+        Args:
+            last_block: The block just successfully indexed.
+        """
+        current = self.load()
+        if current is not None and last_block <= current:
+            return
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            path = self._path()
+            tmp_path = path.with_suffix(".json.tmp")
+            payload = json.dumps(
+                {
+                    "last_block": last_block,
+                    "last_timestamp": datetime.now(UTC).isoformat(),
+                    "chain": self.chain,
+                },
+                indent=2,
+            )
+            with open(tmp_path, "w") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+                fcntl.flock(f, fcntl.LOCK_UN)
+            os.replace(tmp_path, path)
+            logger.info("highwater_updated", chain=self.chain, last_block=last_block)
+        except OSError as exc:
+            logger.warning("highwater_save_failed", chain=self.chain, error=str(exc)[:80])
 
 
 class PairCache:

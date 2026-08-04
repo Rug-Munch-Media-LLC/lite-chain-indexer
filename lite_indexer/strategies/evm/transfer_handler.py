@@ -30,7 +30,7 @@ from typing import Any, cast
 
 import httpx
 
-from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range
+from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range, last_resort_endpoints
 from lite_indexer.chunks import CHUNK_PARALLELISM, chunk_range, merge_chunked_results
 from lite_indexer.config import BLOOM_ENABLED, CHUNK_SIZE_EVM, RPC_TIMEOUT, TRANSFER_EVENT_TOPIC
 from lite_indexer.dex import parse_transfer_logs
@@ -39,6 +39,7 @@ from lite_indexer.rpc import (
     RpcClient,
     RpcFetchFailedError,
     apply_endpoint_backoff,
+    ban_endpoint,
     get_best_endpoint,
     handle_rate_limit,
     record_endpoint_failure,
@@ -196,6 +197,14 @@ async def _fetch_range(
                 last_error = "rate_limited"
                 await handle_rate_limit(url)
                 continue
+            elif resp.status_code == 403:
+                # Provider blacklists the endpoint (bsc-rpc.publicnode.com
+                # returned http_403 on ranged topic-only eth_getLogs during
+                # the 08/04 outage). Hard-ban for an exponential window.
+                last_error = "http_403"
+                record_endpoint_failure(url)
+                ban_endpoint(url, reason="http_403")
+                continue
             else:
                 last_error = f"http_{resp.status_code}"
                 record_endpoint_failure(url)
@@ -218,6 +227,61 @@ async def _fetch_range(
             logger.warning("transfer_fetch_unexpected", chain=chain, endpoint=url[:50], error=str(exc)[:80])
             record_endpoint_failure(url)
             continue
+
+    # Last-resort fallback: every endpoint in the active pool failed.
+    # Before giving up (data-loss guard → retry next cycle), try the
+    # chain's known-good last-resort endpoints (official RPCs / drpc.org)
+    # so a total pool wipe still has a shot at serving the range.
+    if best_result is None:
+        last_resort = [ep for ep in last_resort_endpoints(chain) if ep not in rotated]
+        if last_resort:
+            logger.warning(
+                "last_resort_endpoints_tried",
+                chain=chain,
+                count=len(last_resort),
+                from_block=from_block,
+                to_block=to_block,
+            )
+            for url in last_resort:
+                await apply_endpoint_backoff(url)
+                try:
+                    resp = await client.post(url, json=body, timeout=RPC_TIMEOUT)
+                    if resp.status_code == 200 and resp.text and len(resp.text) >= 10:
+                        data = resp.json()
+                        if isinstance(data, dict) and isinstance(data.get("result"), list):
+                            logs = data["result"]
+                            parsed = parse_transfer_logs(logs, chain, from_block, to_block)
+                            if best_result is None or len(parsed) > len(best_result):
+                                best_result = parsed
+                                if len(parsed) == len(logs):
+                                    break
+                        elif isinstance(data, dict) and data.get("result") is None:
+                            if best_result is None:
+                                best_result = []
+                            break
+                    elif resp.status_code == 429:
+                        await handle_rate_limit(url)
+                    elif resp.status_code == 403:
+                        record_endpoint_failure(url)
+                        ban_endpoint(url, reason="http_403")
+                except (
+                    httpx.HTTPError,
+                    ConnectionError,
+                    OSError,
+                    TimeoutError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                ) as exc:
+                    last_error = str(exc)[:80]
+                    logger.warning(
+                        "last_resort_fetch_failed",
+                        chain=chain,
+                        endpoint=url[:50],
+                        error=str(exc)[:60],
+                    )
+                    record_endpoint_failure(url)
+                    continue
 
     if best_result is not None:
         return best_result

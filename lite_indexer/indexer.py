@@ -21,6 +21,8 @@ point, so at most one sync cycle (~30s) is lost and re-fetched from RPC.
 
 from __future__ import annotations
 
+import gc
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,14 +37,25 @@ from lite_indexer.chains.demand import (
 )
 from lite_indexer.chunks import chunk_size_for_chain
 from lite_indexer.config import (
+    CH_HEALTH_CHECK_ENABLED,
+    CH_HEALTH_INTERVAL,
     DATA_DIR,
+    DATA_RECONCILIATION_ENABLED,
+    DATA_RECONCILIATION_EVERY_N_CYCLES,
+    DATA_RECONCILIATION_MAX_DISCREPANCY_PCT,
     DISK_CAP_BYTES,
+    GC_EVERY_N_CYCLES,
     HEAD_BUFFER,
     LAZY_INDEXING_ENABLED,
+    MEMORY_CHECK_INTERVAL,
+    MEMORY_HIGH_MB,
+    MEMORY_PAUSE_SLEEP,
     NATS_ENABLED,
     NDJSON_ENABLED,
     PLUGIN_ENABLED,
     REORG_PROTECTION_ENABLED,
+    STATE_BACKWARD_PROTECTION,
+    STATE_REGRESSION_TOLERANCE_BLOCKS,
     TRACE_CONCURRENCY,
     TRACE_ENABLED,
     TRACE_MAX_BLOCKS_PER_CYCLE,
@@ -59,7 +72,7 @@ from lite_indexer.rpc.verify import (
     restore_original_endpoints,
     verify_chain_endpoints,
 )
-from lite_indexer.state import StateManager
+from lite_indexer.state import StateHighWater, StateManager
 from lite_indexer.storage import (
     ClickHouseWriter,
     NDJSONWriter,
@@ -94,6 +107,110 @@ def _check_reorg(events: list[Any]) -> bool:
         True if a reorg was detected.
     """
     return bool(events and len(events) == 1 and isinstance(events[0], str) and events[0] == _REORG_SENTINEL)
+
+
+# ── Memory / ClickHouse watchdog helpers ────────────────────────────────
+
+
+def get_process_rss_mb() -> int:
+    """Return the current RSS of this process in MiB (no psutil needed).
+
+    Reads ``/proc/self/statm`` (resident set size in pages) and
+    multiplies by the page size. Falls back to 0 when the file is
+    unavailable (non-Linux) so callers treat "unknown" as "under limit".
+
+    Returns:
+        Resident set size in MiB, or 0 when unavailable.
+    """
+    try:
+        with open("/proc/self/statm") as f:
+            fields = f.read().split()
+        if len(fields) < 2:
+            return 0
+        pages = int(fields[1])
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        return int(pages * page_size / (1024 * 1024))
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
+class MemoryGate:
+    """Cached in-process memory watchdog (pause ingestion when RSS is high).
+
+    The daemon checks :meth:`ok` before starting a new sync cycle. When
+    RSS exceeds :data:`MEMORY_HIGH_MB` the gate reports ``False`` and the
+    caller sleeps (:data:`MEMORY_PAUSE_SLEEP`) instead of ingesting —
+    pausing new chain ingestion until memory drops, which is the
+    in-process backstop before the systemd cgroup OOM reaper fires.
+
+    The RSS read is cached for :data:`MEMORY_CHECK_INTERVAL` seconds so
+    the gate doesn't thrash under GC churn.
+    """
+
+    def __init__(self, high_mb: int = MEMORY_HIGH_MB) -> None:
+        self._high_mb = high_mb
+        self._last_check: float = 0.0
+        self._cached_ok: bool = True
+
+    @property
+    def high_mb(self) -> int:
+        """The RSS threshold in MiB."""
+        return self._high_mb
+
+    def ok(self) -> bool:
+        """Whether new ingestion may proceed (RSS under the threshold)."""
+        if self._high_mb <= 0:
+            return True
+        now = time.monotonic()
+        if now - self._last_check < MEMORY_CHECK_INTERVAL:
+            return self._cached_ok
+        self._last_check = now
+        rss = get_process_rss_mb()
+        self._cached_ok = rss < self._high_mb
+        if not self._cached_ok:
+            logger.warning(
+                "memory_gate_closed",
+                rss_mb=rss,
+                high_mb=self._high_mb,
+                pause_s=MEMORY_PAUSE_SLEEP,
+            )
+        return self._cached_ok
+
+
+class ClickHouseHealth:
+    """Cached ClickHouse reachability probe for graceful CH pauses.
+
+    ``ok()`` runs ``SELECT 1`` through the shared ClickHouseWriter client
+    (lazy connect, 5s connect timeout) and caches the result for
+    :data:`CH_HEALTH_INTERVAL` seconds. The sync loop calls this before
+    fetching events from RPC: when CH is unreachable the cycle aborts
+    with ``ch_unavailable`` — no RPC budget burned, no state movement,
+    no crash.
+    """
+
+    def __init__(self, ch_writer: ClickHouseWriter | None = None) -> None:
+        self._writer: ClickHouseWriter | None = ch_writer
+        self._last_check: float = 0.0
+        self._cached_ok: bool = True
+
+    def ok(self) -> bool:
+        """Whether ClickHouse is currently reachable and writable."""
+        if not CH_HEALTH_CHECK_ENABLED:
+            return True
+        now = time.monotonic()
+        if now - self._last_check < CH_HEALTH_INTERVAL:
+            return self._cached_ok
+        self._last_check = now
+        writer = self._writer if self._writer is not None else ClickHouseWriter()
+        try:
+            client = writer.client()
+            self._cached_ok = client is not None
+        except Exception as exc:  # noqa: BLE001 — health probe must never raise
+            logger.warning("ch_health_probe_failed", error=str(exc)[:100])
+            self._cached_ok = False
+        if not self._cached_ok:
+            logger.warning("ch_health_down", next_probe_s=CH_HEALTH_INTERVAL)
+        return self._cached_ok
 
 
 class LiteIndexer:
@@ -185,6 +302,17 @@ class LiteIndexer:
 
         # State manager (generic — works for all chain types)
         self.state = StateManager(chain)
+        # Monotonic high-water mark for the backward-state guard
+        # (STATE_BACKWARD_PROTECTION). Updated after every successful
+        # forward sync; consulted on load to detect state regressions.
+        self._highwater = StateHighWater(chain)
+        # Per-indexer cycle counter for periodic GC + data reconciliation.
+        self._cycles_since_gc = 0
+        self._cycles_since_reconcile = 0
+        # In-process memory watchdog (RSS) — pauses ingestion when high.
+        self._memory_gate = MemoryGate()
+        # Cached ClickHouse reachability probe — graceful CH pause.
+        self._ch_health = ClickHouseHealth()
 
         # Event types persisted as enabled in the state file (lazy indexing).
         # DEX/deployer stay enabled across restarts once demand is observed.
@@ -759,6 +887,232 @@ class LiteIndexer:
 
     # ── Block Range Determination ──────────────────────────────────
 
+    def _ch_table_for_chain(self) -> str:
+        """ClickHouse table + block column for this chain's range checks.
+
+        EVM + Tron write to ``evm_transfers`` keyed by ``chain``;
+        Solana writes to ``solana_spl_balance_changes`` (slot-based, no
+        chain column — the table is solana-only).
+
+        Returns:
+            ``(table, column)`` tuple for range completeness queries.
+        """
+        if self._chain_type == "solana":
+            from lite_indexer.config import SOLANA_CH_TABLE
+
+            return SOLANA_CH_TABLE, "slot"
+        from lite_indexer.config import CH_TABLE
+
+        return CH_TABLE, "block_number"
+
+    def _fetch_ch_max_block(self) -> int | None:
+        """Query ClickHouse for the actual max indexed block for this chain.
+
+        Best-effort: returns None when ClickHouse is unreachable or the
+        query fails (the caller then falls back to the high-water mark).
+
+        Returns:
+            Max block/slot present in ClickHouse for this chain, or None.
+        """
+        try:
+            client = self.ch_writer.client()
+            if client is None:
+                return None
+            table, column = self._ch_table_for_chain()
+            if self._chain_type == "solana":
+                rows = client.execute(f"SELECT max({column}) FROM {table}")
+            else:
+                rows = client.execute(
+                    f"SELECT max({column}) FROM {table} WHERE chain = %(chain)s",
+                    {"chain": self.chain},
+                )
+            if rows and rows[0] and rows[0][0] is not None:
+                return int(rows[0][0])
+            return None
+        except Exception as exc:  # noqa: BLE001 — guard is best-effort
+            logger.debug("ch_max_block_query_failed", chain=self.chain, error=str(exc)[:80])
+            return None
+
+    async def _guard_state_regression(
+        self,
+        state: dict[str, Any],
+        from_block: int,
+        summary: dict[str, Any],
+    ) -> int | None:
+        """Detect + recover from a state-file regression.
+
+        A regression is when the state file's resume block is more than
+        ``STATE_REGRESSION_TOLERANCE_BLOCKS`` below the monotonic
+        high-water mark for this chain. Reorg rollbacks rewind state by a
+        few blocks (within tolerance) and are left alone.
+
+        Recovery: query ClickHouse for the actual max block and resume
+        from ``max(ch_max, highwater)`` — never from genesis. If both the
+        CH query and the high-water mark are unavailable the state file
+        is trusted as-is.
+
+        Args:
+            state: The loaded state dict (may be ``{}``).
+            from_block: The resume block derived from the state file.
+            summary: Sync summary dict; recovery is recorded on it.
+
+        Returns:
+            A corrected resume block, or None when no correction applies.
+        """
+        highwater = self._highwater.load()
+        if highwater is not None and from_block < highwater - STATE_REGRESSION_TOLERANCE_BLOCKS:
+            ch_max = self._fetch_ch_max_block()
+            resume = max(highwater, ch_max or 0) + 1
+            if resume > from_block:
+                logger.warning(
+                    "state_regression_recovered",
+                    chain=self.chain,
+                    state_last_block=state.get("last_block", 0),
+                    highwater=highwater,
+                    ch_max=ch_max,
+                    resume_block=resume,
+                )
+                summary["state_regression"] = True
+                summary["state_regression_recovered_to"] = resume
+                self._highwater.update(resume - 1)
+                return resume
+            return None
+
+        # No high-water mark yet (first run with protection enabled): if
+        # ClickHouse already has data far ahead of the state file, that is
+        # also a regression (state file was clobbered before the mark was
+        # ever written). Only trust this when CH is actually ahead — a
+        # healthy genesis backfill has ch_max <= state anyway.
+        ch_max = self._fetch_ch_max_block()
+        if ch_max is not None and from_block < ch_max - STATE_REGRESSION_TOLERANCE_BLOCKS:
+            resume = ch_max + 1
+            logger.warning(
+                "state_regression_recovered_ch",
+                chain=self.chain,
+                state_last_block=state.get("last_block", 0),
+                ch_max=ch_max,
+                resume_block=resume,
+            )
+            summary["state_regression"] = True
+            summary["state_regression_recovered_to"] = resume
+            self._highwater.update(resume - 1)
+            return resume
+
+        return None
+
+    # ── Memory / GC / Reconciliation housekeeping ───────────────────
+
+    def _maybe_run_gc(self) -> None:
+        """Force ``gc.collect()`` every ``GC_EVERY_N_CYCLES`` sync cycles.
+
+        Python's cyclic GC does not collect aggressively under cgroup
+        memory pressure; event dicts, bloom filters, and httpx response
+        objects form reference cycles that a manual collect reclaims
+        between cycles. Runs at the START of every sync cycle so even
+        aborted cycles (disk cap, no RPC, CH down) still count.
+        """
+        self._cycles_since_gc += 1
+        if self._cycles_since_gc >= GC_EVERY_N_CYCLES:
+            self._cycles_since_gc = 0
+            collected = gc.collect()
+            if collected:
+                logger.debug("gc_collected", chain=self.chain, objects=collected)
+
+    def memory_gate_ok(self) -> bool:
+        """Whether new ingestion may proceed given current RSS.
+
+        Returns False (and logs) when the in-process memory watchdog
+        sees RSS over ``MEMORY_HIGH_MB`` — the daemon then sleeps
+        instead of starting a new sync cycle (pause, not crash).
+
+        Returns:
+            True when under the threshold (or the watchdog is disabled).
+        """
+        return self._memory_gate.ok()
+
+    def _maybe_reconcile_range(
+        self,
+        from_block: int,
+        to_block: int,
+        expected: int,
+        summary: dict[str, Any],
+    ) -> None:
+        """Periodically compare CH row count vs expected for a synced range.
+
+        Every ``DATA_RECONCILIATION_EVERY_N_CYCLES`` cycles, count the
+        rows ClickHouse actually holds for ``[from_block, to_block]`` for
+        this chain and compare against the events fetched from RPC. A
+        discrepancy above ``DATA_RECONCILIATION_MAX_DISCREPANCY_PCT``
+        percent means the durable store is missing rows (partial write,
+        missed chunk, CH hiccup) — log a warning and rewind the state
+        file so the next cycle re-fetches (backfills) the range.
+
+        Best-effort: CH unavailable or a query failure logs at debug and
+        never blocks or aborts the sync.
+
+        Args:
+            from_block: Start of the synced range.
+            to_block: End of the synced range.
+            expected: Events fetched from RPC for the range.
+            summary: Sync summary dict; reconciliation stats are merged.
+        """
+        if not DATA_RECONCILIATION_ENABLED or expected <= 0:
+            return
+        self._cycles_since_reconcile += 1
+        if self._cycles_since_reconcile < DATA_RECONCILIATION_EVERY_N_CYCLES:
+            return
+        self._cycles_since_reconcile = 0
+
+        from lite_indexer.storage.reconciliation import check_range_completeness
+
+        try:
+            client = self.ch_writer.client()
+            if client is None:
+                return
+            outcome = check_range_completeness(
+                self.chain,
+                client,
+                from_block,
+                to_block,
+                expected,
+                chain_type=self._chain_type,
+            )
+        except Exception as exc:  # noqa: BLE001 — reconciliation is best-effort
+            logger.debug("reconcile_count_failed", chain=self.chain, error=str(exc)[:80])
+            return
+
+        actual = outcome.get("actual", 0)
+        discrepancy_pct = float(outcome.get("discrepancy_pct", 0.0))
+        summary["reconcile_expected"] = expected
+        summary["reconcile_actual"] = actual
+        summary["reconcile_discrepancy_pct"] = round(discrepancy_pct, 2)
+
+        if discrepancy_pct <= DATA_RECONCILIATION_MAX_DISCREPANCY_PCT:
+            logger.info(
+                "reconcile_range_ok",
+                chain=self.chain,
+                from_block=from_block,
+                to_block=to_block,
+                expected=expected,
+                actual=actual,
+                discrepancy_pct=round(discrepancy_pct, 2),
+            )
+            return
+
+        logger.warning(
+            "reconcile_range_mismatch_backfill",
+            chain=self.chain,
+            from_block=from_block,
+            to_block=to_block,
+            expected=expected,
+            actual=actual,
+            discrepancy_pct=round(discrepancy_pct, 2),
+        )
+        summary["reconcile_backfill_triggered"] = True
+        # Rewind state so the next cycle re-fetches the range. High-water
+        # mark is NOT rewound — it stays monotonic.
+        self.state.save(from_block - 1, 0, enabled_events=self._enabled_event_types())
+
     async def _determine_block_range(self, summary: dict[str, Any]) -> tuple[int, int] | None:
         """Determine the block range for this sync cycle.
 
@@ -781,6 +1135,18 @@ class LiteIndexer:
         # Normal path: resume from state file or override
         state = self.state.load()
         from_block = self._override_from if self._override_from is not None else state.get("last_block", 0) + 1
+
+        # Backward-state guard (STATE_BACKWARD_PROTECTION): a state file
+        # that regressed below the monotonic high-water mark (or below
+        # the ClickHouse max block) is corruption — a torn write, an OOM
+        # mid-write, or a companion writer clobbering last_block. Resume
+        # from the actual max block in ClickHouse instead of re-indexing
+        # from genesis (observed 08/03 + 08/04: ethereum state reset to
+        # block ~93K / 100 while the CH max was 25.6M).
+        if STATE_BACKWARD_PROTECTION and self._override_from is None:
+            guarded = await self._guard_state_regression(state, from_block, summary)
+            if guarded is not None:
+                from_block = guarded
 
         if from_block <= 1:
             from_block = 0
@@ -811,6 +1177,12 @@ class LiteIndexer:
 
         Returns summary dict with stats.
         """
+        # Periodic GC: force gc.collect() every GC_EVERY_N_CYCLES cycles.
+        # Runs at the START so even aborted cycles count toward the budget
+        # (cyclic GC misses event dict / bloom / httpx reference cycles
+        # under cgroup memory pressure).
+        self._maybe_run_gc()
+
         start_time = time.monotonic()
         summary: dict[str, Any] = {
             "chain": self.chain,
@@ -931,6 +1303,23 @@ class LiteIndexer:
             return summary
         from_block, to_block = block_range
 
+        # 2a. Graceful ClickHouse pause: probe CH BEFORE fetching events
+        # from RPC. When CH is unreachable the cycle aborts here with
+        # status "ch_unavailable" — no RPC budget burned on fetches that
+        # cannot be persisted, no state movement, no crash. The daemon
+        # treats this as a pause (retry next poll interval).
+        if not self._ch_health.ok():
+            summary["status"] = "ch_unavailable"
+            summary["errors"].append("clickhouse unreachable — paused indexing")
+            summary["duration_seconds"] = time.monotonic() - start_time
+            logger.warning(
+                "sync_paused_ch_unavailable",
+                chain=self.chain,
+                from_block=from_block,
+                to_block=to_block,
+            )
+            return summary
+
         # 3. Fetch transfer events via strategy
         logger.info("sync_start", chain=self.chain, from_block=from_block, to_block=to_block)
 
@@ -1022,6 +1411,7 @@ class LiteIndexer:
         if not events and not dex_events and not self.deployers_enabled and not trace_events:
             self._clear_reorg_recovery()
             self.state.save(to_block, 0, enabled_events=self._enabled_event_types())
+            self._highwater.update(to_block)
             summary["status"] = "no_events"
             summary["duration_seconds"] = time.monotonic() - start_time
             return summary
@@ -1192,6 +1582,15 @@ class LiteIndexer:
         total_events = len(events) + len(dex_events) + deployer_written + len(trace_events)
         self._clear_reorg_recovery()
         self.state.save(to_block, total_events, enabled_events=self._enabled_event_types())
+        # Monotonic high-water mark — only ever moves forward. Feeds the
+        # backward-state guard on the next load.
+        self._highwater.update(to_block)
+
+        # 8b. Periodic data reconciliation: every N cycles compare the
+        # ClickHouse row count for this range against the events fetched
+        # from RPC; a >5% shortfall rewinds state so the next cycle
+        # backfills the range. Best-effort — never blocks or aborts.
+        self._maybe_reconcile_range(from_block, to_block, len(events), summary)
 
         # 8a. Vector ingestion (optional, LanceDB). Reads the freshly synced
         # block range from ClickHouse, generates text representations for

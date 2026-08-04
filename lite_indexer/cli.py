@@ -31,7 +31,7 @@ from lite_indexer.config import (
     BATCH_SIZE,
     DATA_DIR,
     DISK_CAP_BYTES,
-    GC_EVERY_N_CYCLES,
+    MEMORY_PAUSE_SLEEP,
     MAX_CONCURRENT_CHAINS,
     PRICING_ENABLED,
     RECONCILIATION_SAMPLE_SIZE,
@@ -360,10 +360,23 @@ async def main_daemon(
         poll_interval = effective_poll_interval(chain, base_interval)
         log_chain_resources(chain, poll_interval=base_interval)
 
-        cycles_since_gc = 0
         while not shutdown_event.is_set():
             loop_start = time.monotonic()
             try:
+                # In-process memory watchdog: when RSS exceeds
+                # MEMORY_HIGH_MB, pause NEW chain ingestion until memory
+                # drops instead of piling another sync cycle onto the
+                # cgroup pressure (which caused the 08/03 OOM kills).
+                # Per-chain periodic GC is handled inside
+                # LiteIndexer.sync_loop (GC_EVERY_N_CYCLES).
+                if not indexer.memory_gate_ok():
+                    logger.warning(
+                        "daemon_memory_paused",
+                        chain=chain,
+                        pause_s=MEMORY_PAUSE_SLEEP,
+                    )
+                    await asyncio.sleep(MEMORY_PAUSE_SLEEP)
+                    continue
                 if concurrency_slot is not None:
                     async with concurrency_slot:
                         result = await indexer.sync_loop()
@@ -371,17 +384,6 @@ async def main_daemon(
                     result = await indexer.sync_loop()
                 if isinstance(result, dict) and result.get("status") == "error":
                     error_count += 1
-
-                # Periodic GC: release reference cycles (event dicts, bloom
-                # filters, httpx responses) that cyclic GC misses under
-                # cgroup memory pressure.
-                cycles_since_gc += 1
-                if cycles_since_gc >= GC_EVERY_N_CYCLES:
-                    cycles_since_gc = 0
-                    import gc
-
-                    collected = gc.collect()
-                    logger.debug("gc_collected", chain=chain, objects=collected)
             except Exception as exc:
                 error_count += 1
                 logger.error("daemon_chain_failed", chain=chain, error=str(exc))

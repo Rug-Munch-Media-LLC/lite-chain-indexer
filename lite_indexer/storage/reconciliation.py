@@ -17,6 +17,11 @@ The reconciliation is deliberately lightweight and non-blocking:
   run is append-only and auditable.
 * Gated by ``RECONCILIATION_ENABLED`` (default on) at the
   :func:`run_reconciliation` entry point.
+
+Also provides :func:`check_range_completeness` — a periodic durable-store
+row-count check (the indexer compares the ClickHouse row count for a just
+synced range against the events fetched from RPC and backfills when the
+durable store is short by more than the configured percentage).
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from lite_indexer.config import (
     CH_TABLE,
     RECONCILIATION_ENABLED,
     RECONCILIATION_SAMPLE_SIZE,
+    SOLANA_CH_TABLE,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
@@ -334,6 +340,105 @@ async def verify_transfer_completeness(
     return results
 
 
+def range_table_for(chain: str, chain_type: str = "evm") -> tuple[str, str]:
+    """Return (table, block_column) for a chain's range completeness check.
+
+    EVM + Tron write to ``evm_transfers`` keyed by a ``chain`` column;
+    Solana writes to ``solana_spl_balance_changes`` (slot-based, no chain
+    column — the table is solana-only).
+
+    Args:
+        chain: Chain name (unused for the table lookup but kept for a
+            future per-chain table registry).
+        chain_type: ``"evm"`` / ``"solana"`` / ``"tron"``.
+
+    Returns:
+        ``(table, column)`` tuple.
+    """
+    if chain_type == "solana":
+        return SOLANA_CH_TABLE, "slot"
+    return CH_TABLE, "block_number"
+
+
+def check_range_completeness(
+    chain: str,
+    ch_client: Any,
+    from_block: int,
+    to_block: int,
+    expected: int,
+    chain_type: str = "evm",
+) -> dict[str, Any]:
+    """Compare ClickHouse row count for a range against the expected count.
+
+    Counts the rows ClickHouse actually holds for ``[from_block,
+    to_block]`` for this chain and returns the discrepancy. The indexer
+    calls this every ``DATA_RECONCILIATION_EVERY_N_CYCLES`` cycles and
+    backfills the range when the durable store is short by more than
+    ``DATA_RECONCILIATION_MAX_DISCREPANCY_PCT`` percent.
+
+    Best-effort: ClickHouse unavailable or a query failure returns a dict
+    with ``ok=False`` and never raises.
+
+    Args:
+        chain: Chain name.
+        ch_client: ClickHouse client (anything with ``execute``).
+        from_block: Start of the synced range (inclusive).
+        to_block: End of the synced range (inclusive).
+        expected: Events fetched from RPC for the range.
+        chain_type: ``"evm"`` / ``"solana"`` / ``"tron"``.
+
+    Returns:
+        ``{ok, expected, actual, discrepancy_pct}`` where ``ok`` is True
+        when the check ran and the discrepancy is within tolerance, False
+        when the durable store is short, and None-ish (ok=False) when the
+        check could not run (CH unavailable / query failure).
+    """
+    result: dict[str, Any] = {
+        "ok": False,
+        "expected": expected,
+        "actual": 0,
+        "discrepancy_pct": 0.0,
+        "error": "",
+    }
+    if expected <= 0:
+        result["ok"] = True
+        return result
+    if ch_client is None:
+        result["error"] = "clickhouse_unavailable"
+        return result
+
+    table, column = range_table_for(chain, chain_type)
+    try:
+        if chain_type == "solana":
+            rows = ch_client.execute(
+                f"SELECT count() FROM {table} WHERE {column} BETWEEN %(f)s AND %(t)s",
+                {"f": from_block, "t": to_block},
+            )
+        else:
+            rows = ch_client.execute(
+                f"SELECT count() FROM {table} WHERE chain = %(chain)s AND {{column}} BETWEEN %(f)s AND %(t)s".format(
+                    column=column
+                ),
+                {"chain": chain, "f": from_block, "t": to_block},
+            )
+        actual = int(rows[0][0]) if rows and rows[0] else 0
+    except Exception as exc:  # noqa: BLE001 — best-effort check
+        result["error"] = str(exc)[:100]
+        logger.debug("reconcile_count_failed", chain=chain, error=result["error"])
+        return result
+
+    result["actual"] = actual
+    if actual >= expected:
+        result["ok"] = True
+        return result
+    result["discrepancy_pct"] = (expected - actual) / expected * 100.0
+    # "ok" is True only when the check ran AND the durable store is not
+    # significantly short. The caller decides the tolerance; here we mark
+    # ok=False so a short store is clearly visible to the caller.
+    result["ok"] = False
+    return result
+
+
 async def run_reconciliation(
     chain: str,
     rpc_client: Any,
@@ -378,4 +483,6 @@ __all__ = [
     "select_random_wallets",
     "verify_transfer_completeness",
     "run_reconciliation",
+    "range_table_for",
+    "check_range_completeness",
 ]

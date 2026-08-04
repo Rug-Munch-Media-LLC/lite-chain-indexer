@@ -336,6 +336,47 @@ CIRCUIT_COOLDOWN_SECONDS: int = 30
 # RPC usage/cost tracking: keep a bounded per-endpoint usage ledger.
 RPC_USAGE_MAX_ENDPOINTS: int = 512
 
+# ── Intelligent RPC Throttling (rpc/throttle.py) ─────────────────────
+# Rate-limit header tracking + pre-emptive throttling layered on top of
+# the per-provider token buckets (rpc/ratelimit.py). The tracker honors
+# X-RateLimit-Remaining / X-RateLimit-Limit / Retry-After headers exactly
+# and persists all state to RPC_THROTTLE_FILE so a restart mid-429-window
+# does not re-hammer the endpoint that just told us to back off.
+
+# Persisted tracker state path (default: DATA_DIR/rpc_throttle.json).
+RPC_THROTTLE_FILE: str = os.environ.get("RPC_THROTTLE_FILE", str(DATA_DIR / "rpc_throttle.json"))
+
+# Pre-emptive throttle threshold: when an endpoint advertises a budget via
+# X-RateLimit-Limit/Remaining and we have consumed more than this percent,
+# the next request is delayed to stay under the limit instead of waiting
+# for a 429. 80 = slow down after consuming 80% of the budget.
+RPC_PREEMPTIVE_THRESHOLD_PCT: float = float(os.environ.get("RPC_PREEMPTIVE_THRESHOLD_PCT", "80.0"))
+
+# Per-method request budgets (req/s) used when the endpoint does NOT
+# advertise headers. eth_getLogs is the expensive call on free tiers
+# (3-10 req/s typical) while eth_blockNumber is nearly free — cheap
+# calls must never starve expensive ones.
+RPC_METHOD_REQ_PER_SEC: dict[str, float] = {
+    "eth_getLogs": 3.0,
+    "eth_traceTransaction": 3.0,
+    "trace_block": 3.0,
+    "trace_filter": 3.0,
+    "trace_transaction": 3.0,
+    "eth_call": 5.0,
+    "eth_getTransactionReceipt": 10.0,
+    "eth_getBlockByNumber": 10.0,
+    "eth_blockNumber": 20.0,
+    "default": 10.0,
+}
+
+# Default per-method budget used when a method has no explicit entry.
+RPC_METHOD_DEFAULT_RATE: float = float(os.environ.get("RPC_METHOD_DEFAULT_RATE", "10.0"))
+
+# Hard cap (seconds) on the pre-emptive/adaptive sleep introduced by the
+# throttle tracker. Retry-After from a real 429 may exceed this and is
+# honored exactly; this only bounds the speculative pre-emptive sleep.
+RPC_THROTTLE_MAX_WAIT: float = float(os.environ.get("RPC_THROTTLE_MAX_WAIT", "30.0"))
+
 # RPC auto-discovery: how often (seconds) to scan chainlist.org for new
 # free endpoints. 0 disables. Default: daily.
 RPC_DISCOVERY_INTERVAL: int = int(os.environ.get("RPC_DISCOVERY_INTERVAL", "86400"))
@@ -354,11 +395,91 @@ CHAIN_AFFINITY_ENABLED: bool = os.environ.get("CHAIN_AFFINITY_ENABLED", "0") == 
 # slots free. Set MAX_CONCURRENT_CHAINS=14 to restore old behavior.
 MAX_CONCURRENT_CHAINS: int = int(os.environ.get("MAX_CONCURRENT_CHAINS", "6"))
 
+# ── Chain-Level Health / Auto-Disable (daemon) ────────────────────────
+# If a chain's state has not advanced for CHAIN_STALL_DISABLE_SECONDS
+# (default 2h) the daemon marks it disabled and stops spending RPC budget
+# on it, while the other chains keep indexing. A disabled chain is
+# re-probed at a slow interval and re-enables as soon as its state moves
+# again (e.g. the RPC pool for that chain recovers).
+CHAIN_AUTO_DISABLE_ENABLED: bool = os.environ.get("CHAIN_AUTO_DISABLE_ENABLED", "1") == "1"
+CHAIN_STALL_DISABLE_SECONDS: int = int(os.environ.get("CHAIN_STALL_DISABLE_SECONDS", "7200"))
+# Re-probe interval (seconds) for a disabled chain.
+CHAIN_DISABLED_RECHECK_SECONDS: int = int(os.environ.get("CHAIN_DISABLED_RECHECK_SECONDS", "900"))
+
 # Run gc.collect() after every N sync cycles per chain. Python's cyclic
 # GC does not collect aggressively under cgroup memory pressure; event
 # dicts, bloom filters, and httpx response objects form reference cycles
-# that a manual collect reclaims between cycles.
+# that a manual collect reclaims between cycles. Enforced inside
+# LiteIndexer.sync_loop (covers daemon AND single-chain mode).
 GC_EVERY_N_CYCLES: int = int(os.environ.get("GC_EVERY_N_CYCLES", "5"))
+
+# ── Memory Watchdog ──────────────────────────────────────────────────────
+# When the indexer process RSS exceeds MEMORY_HIGH_MB the daemon pauses
+# NEW chain ingestion (no new sync cycles) until RSS drops back under the
+# threshold. This is an in-process backstop on top of the systemd
+# MemoryHigh/MemoryMax cgroup limits: it avoids the OOM-kill churn that
+# 14 parallel chains caused on 2026-08-03 by backing off *before* the
+# cgroup reaper fires. Default 3072 = 3 GiB, matching the systemd
+# MemoryHigh drop-in (3221225472 bytes). RSS is read from /proc/self/statm
+# (no psutil dependency).
+MEMORY_HIGH_MB: int = int(os.environ.get("MEMORY_HIGH_MB", "3072"))
+
+# How often (seconds) the memory watchdog may re-read RSS. Reading
+# /proc every cycle is cheap, but under heavy GC churn the value flaps;
+# caching it bounds the backoff logic.
+MEMORY_CHECK_INTERVAL: int = int(os.environ.get("MEMORY_CHECK_INTERVAL", "15"))
+
+# How long (seconds) a chain loop sleeps when the memory gate is closed
+# (RSS over MEMORY_HIGH_MB) before re-checking.
+MEMORY_PAUSE_SLEEP: int = int(os.environ.get("MEMORY_PAUSE_SLEEP", "30"))
+
+# ── ClickHouse Health Pause ─────────────────────────────────────────────
+# Graceful degradation when ClickHouse is unreachable: the sync loop
+# probes CH before fetching events from RPC and, when CH is down, aborts
+# the cycle with status "ch_unavailable" WITHOUT advancing state and
+# WITHOUT burning free-tier RPC budget on fetches it cannot persist.
+# The daemon treats "ch_unavailable" as a pause (no state movement, no
+# error spam) rather than a crash.
+CH_HEALTH_CHECK_ENABLED: bool = os.environ.get("CH_HEALTH_CHECK_ENABLED", "1") == "1"
+
+# How often (seconds) the CH health probe result is cached before the
+# sync loop re-probes (probe = SELECT 1 via the existing CH client).
+CH_HEALTH_INTERVAL: int = int(os.environ.get("CH_HEALTH_INTERVAL", "30"))
+
+# ── State Backward Protection ───────────────────────────────────────────
+# Guard against state-file regressions (observed 08/03 + 08/04: the
+# ethereum state file was reset to ~93K / block 100 while the ClickHouse
+# max was 25.6M, triggering an endless genesis backfill). When enabled,
+# the indexer keeps a monotonic high-water mark per chain and, on load,
+# detects when the state file's last_block regressed by more than
+# STATE_REGRESSION_TOLERANCE_BLOCKS below the high-water mark. It then
+# recovers by querying ClickHouse for the actual max block and resuming
+# from there instead of re-indexing from genesis.
+STATE_BACKWARD_PROTECTION: bool = os.environ.get("STATE_BACKWARD_PROTECTION", "1") == "1"
+
+# A state regression smaller than this is treated as legitimate reorg
+# rewind (reorg rollbacks rewind state to fork_block-1, typically a few
+# blocks) and is NOT recovered. Only a larger gap is corruption.
+STATE_REGRESSION_TOLERANCE_BLOCKS: int = int(os.environ.get("STATE_REGRESSION_TOLERANCE_BLOCKS", "100"))
+
+# ── Endpoint Ban (403/429 hard ban) ─────────────────────────────────────
+# Endpoints returning 403/429 are rate-limited or blacklisted by the
+# provider for a while; hammering them only deepens the ban. These are
+# banned for an exponentially growing duration (base * 2^ban_count,
+# capped) instead of the plain 300s cooldown used for generic failures.
+ENDPOINT_BAN_BASE_SECONDS: int = int(os.environ.get("ENDPOINT_BAN_BASE_SECONDS", "60"))
+ENDPOINT_BAN_CAP_SECONDS: int = int(os.environ.get("ENDPOINT_BAN_CAP_SECONDS", "3600"))
+
+# ── Periodic Data Reconciliation ────────────────────────────────────────
+# Every DATA_RECONCILIATION_EVERY_N_CYCLES sync cycles, compare the
+# ClickHouse row count for the just-synced range against the events
+# fetched from RPC. A discrepancy above
+# DATA_RECONCILIATION_MAX_DISCREPANCY_PCT percent triggers a warning and
+# rewinds the state file so the next cycle re-fetches (backfills) the
+# range — catching partial writes / missed chunks before they compound.
+DATA_RECONCILIATION_ENABLED: bool = os.environ.get("DATA_RECONCILIATION_ENABLED", "1") == "1"
+DATA_RECONCILIATION_EVERY_N_CYCLES: int = int(os.environ.get("DATA_RECONCILIATION_EVERY_N_CYCLES", "50"))
+DATA_RECONCILIATION_MAX_DISCREPANCY_PCT: float = float(os.environ.get("DATA_RECONCILIATION_MAX_DISCREPANCY_PCT", "5.0"))
 
 CHAIN_CPU_AFFINITY: dict[str, list[int]] = {
     "solana": [0, 1],

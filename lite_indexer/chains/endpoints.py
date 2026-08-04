@@ -259,3 +259,44 @@ def _resolved_endpoints(urls: list[str]) -> list[str]:
 
 
 GET_LOGS_ENDPOINTS = {chain: _resolved_endpoints(urls) for chain, urls in GET_LOGS_ENDPOINTS.items()}
+
+# ── Last-Resort Endpoints ───────────────────────────────────────────────
+# Known-good endpoints tried when every endpoint in the active pool fails
+# for a chain. These are the most battle-tested public providers from the
+# live-verified sets above (official RPCs + drpc.org). They are a final
+# fallback only — the regular pool's health scoring / bans / circuit
+# breakers still apply; the last-resort list exists so a total pool wipe
+# (e.g. an outage taking out every tier at once) still has a shot at
+# serving the range instead of raising RpcFetchFailedError immediately.
+LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
+    "ethereum": ["https://eth.drpc.org", "https://rpc.flashbots.net"],
+    "base": ["https://mainnet.base.org", "https://base.drpc.org"],
+    "bsc": ["https://rpc-bsc.48.club"],
+    "polygon": ["https://polygon.drpc.org", "https://polygon-rpc.blxrbdn.com"],
+    "arbitrum": ["https://arb1.arbitrum.io/rpc", "https://arbitrum.drpc.org"],
+    "optimism": ["https://mainnet.optimism.io", "https://optimism.drpc.org"],
+    "avalanche": ["https://api.avax.network/ext/bc/C/rpc"],
+    "fantom": ["https://rpc.fantom.network"],
+    "linea": ["https://rpc.linea.build", "https://linea.drpc.org"],
+    "scroll": ["https://rpc.scroll.io", "https://scroll.drpc.org"],
+    "zksync": ["https://mainnet.era.zksync.io"],
+    "mantle": ["https://rpc.mantle.xyz"],
+    "gnosis": ["https://rpc.gnosischain.com", "https://gnosis.drpc.org"],
+    "celo": ["https://forno.celo.org"],
+}
+
+
+def last_resort_endpoints(chain: str) -> list[str]:
+    """Return the known-good last-resort endpoints for a chain.
+
+    Resolves ``${ENV_VAR}`` placeholders and drops unresolved ones, same
+    as the main pool, so a last-resort URL that needs a key that isn't
+    set is never dialed.
+
+    Args:
+        chain: Chain name.
+
+    Returns:
+        List of dialable fallback endpoint URLs (may be empty).
+    """
+    return _resolved_endpoints(LAST_RESORT_ENDPOINTS.get(chain, []))

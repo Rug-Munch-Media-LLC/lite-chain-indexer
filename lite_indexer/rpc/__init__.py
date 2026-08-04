@@ -30,10 +30,13 @@ from lite_indexer.rpc.health import (
 )
 from lite_indexer.rpc.pool import (
     apply_endpoint_backoff,
+    ban_endpoint,
     get_best_endpoint,
     handle_rate_limit,
+    is_endpoint_banned,
     record_endpoint_failure,
     record_endpoint_success,
+    unban_endpoint,
 )
 from lite_indexer.rpc.routing import (
     CIRCUIT_BREAKER,
@@ -63,13 +66,16 @@ __all__ = [
     "RpcClient",
     "RpcFetchFailedError",
     "apply_endpoint_backoff",
+    "ban_endpoint",
     "fetch_block_timestamps",
     "get_best_endpoint",
     "handle_rate_limit",
+    "is_endpoint_banned",
     "is_endpoint_healthy",
     "monitor_endpoint_health",
     "record_endpoint_failure",
     "record_endpoint_success",
+    "unban_endpoint",
     "verify_endpoint",
     "verify_endpoints_for_chain",
     # routing

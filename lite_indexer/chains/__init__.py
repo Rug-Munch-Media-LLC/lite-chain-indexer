@@ -24,7 +24,7 @@ from .demand import (
     read_demand_files,
     record_scan_demand,
 )
-from .endpoints import GET_LOGS_ENDPOINTS
+from .endpoints import GET_LOGS_ENDPOINTS, LAST_RESORT_ENDPOINTS, last_resort_endpoints
 from .helpers import get_endpoints_for_range, get_max_block_range, get_provider_rate_limit
 from .limits import (
     CHAIN_BLOCK_RANGE_LIMITS,
@@ -51,6 +51,8 @@ from .polling import (
 
 __all__ = [
     "GET_LOGS_ENDPOINTS",
+    "LAST_RESORT_ENDPOINTS",
+    "last_resort_endpoints",
     "SOLANA_ENDPOINTS",
     "TRON_ENDPOINTS",
     "PROVIDER_RATE_LIMITS",

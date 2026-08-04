@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 #
-# lite-indexer-stall-check.sh — restart the indexer if a chain stalls.
+# lite-indexer-stall-check.sh — watchdog for the lite-indexer service.
 #
-# Runs the lag health check (python -m lite_indexer.health --lag --json).
-# If ANY chain reports status "stale" (state file not updated for several
-# poll intervals — typically a wedged event loop, e.g. a synchronous
-# ClickHouse connect blocking all 14 chain tasks) the service is
-# restarted. Also restarts when the service is not running at all.
+# Three responsibilities (driven by the lite-indexer-stall-check.timer
+# systemd timer, every 10 minutes):
 #
-# Intended to be driven by the lite-indexer-stall-check.timer systemd
-# timer (every 10 minutes).
+#   1. PROCESS WATCHDOG — if the lite-indexer.service is not active (dead
+#      process, failed start), start it immediately.
+#   2. STALL DETECTION — run the lag health check
+#      (python -m lite_indexer.health --lag --json). If ANY chain reports
+#      status "stale" (state file not updated for several poll intervals —
+#      typically a wedged event loop, e.g. a synchronous ClickHouse
+#      connect blocking all chain tasks) the service is restarted.
+#   3. NO-ADVANCE DETECTION — if any chain's state file has not been
+#      updated for more than STALL_MINUTES (default 30 minutes) the chain
+#      has not advanced and the service is restarted (auto-reset).
 #
 # Exit codes:
 #   0 — healthy, no action
@@ -18,17 +23,22 @@
 #   3 — service was not running → started it
 #   4 — lag check itself failed (no restart; avoid restart storms)
 #
+# Env overrides: SERVICE, STALL_MINUTES, TIMEOUT_S, PYTHON
+#
 set -u
 
-SERVICE="lite-indexer.service"
+SERVICE="${SERVICE:-lite-indexer.service}"
 PYTHON="${PYTHON:-/usr/bin/python3}"
 TIMEOUT_S="${TIMEOUT_S:-90}"
+# A chain that hasn't advanced its state file in this many minutes is
+# considered stalled → auto-reset (restart the service).
+STALL_MINUTES="${STALL_MINUTES:-30}"
+STALL_AGE_S=$((STALL_MINUTES * 60))
 
-# Relative to the repo; editable install means the module resolves anyway.
 # shellcheck disable=SC2317
 log() { echo "[$(date -Iseconds)] $*"; }
 
-# ── 0. Is the service running at all? ───────────────────────────────
+# ── 0. Is the service running at all? (process watchdog) ─────────────
 if ! systemctl is-active --quiet "${SERVICE}"; then
     log "service ${SERVICE} not active — starting"
     systemctl start "${SERVICE}" 2>&1 | log || true
@@ -58,6 +68,12 @@ case ${LAG_RC} in
     ;;
 esac
 
+# ── 2. Parse the lag JSON. ────────────────────────────────────────────
+# NOTE: keep inline Python single-quote-safe. No \" inside the f-strings —
+# bash passes the text verbatim inside '...' and backslash-quote is a
+# Python SyntaxError (observed 08/04: the BEHIND_CHAINS block broke and
+# the watchdog silently reported "all chains healthy" while chains were
+# behind).
 STALE_CHAINS="$(printf '%s' "${LAG_OUT}" | "${PYTHON}" -c '
 import json, sys
 try:
@@ -68,13 +84,36 @@ stale = [c for c, info in data.items() if info.get("status") == "stale"]
 print(" ".join(stale))
 ')"
 
+# Chains whose state file has not advanced for more than STALL_MINUTES.
+# These are the >30-min no-advance cases the timer must auto-reset.
+NO_ADVANCE_CHAINS="$(printf '%s' "${LAG_OUT}" | "${PYTHON}" -c '
+import json, sys
+stall = float(sys.argv[1])
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+no_advance = []
+for c, info in data.items():
+    age = info.get("state_age_seconds")
+    if age is not None and age > stall:
+        no_advance.append(c + ":" + str(int(age)))
+print(" ".join(no_advance))
+' "${STALL_AGE_S}")"
+
 if [ -n "${STALE_CHAINS}" ]; then
     log "stalled chain(s): ${STALE_CHAINS} — restarting ${SERVICE}"
     systemctl restart "${SERVICE}" 2>&1 | log || true
     exit 2
 fi
 
-# ── 2. Chains behind but making progress — informational ────────────
+if [ -n "${NO_ADVANCE_CHAINS}" ]; then
+    log "chain(s) not advanced for >${STALL_MINUTES}min: ${NO_ADVANCE_CHAINS} — restarting ${SERVICE}"
+    systemctl restart "${SERVICE}" 2>&1 | log || true
+    exit 2
+fi
+
+# ── 3. Chains behind but making progress — informational ────────────
 BEHIND_CHAINS="$(printf '%s' "${LAG_OUT}" | "${PYTHON}" -c '
 import json, sys
 try:
@@ -84,7 +123,7 @@ except Exception:
 behind = []
 for c, info in data.items():
     if info.get("status") == "behind":
-        behind.append(f"{c}:{info.get(\"lag_blocks\", 0)}")
+        behind.append(c + ":" + str(info.get("lag_blocks", 0)))
 print(" ".join(behind))
 ')"
 

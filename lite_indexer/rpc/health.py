@@ -186,7 +186,7 @@ def is_endpoint_healthy(endpoint: str) -> bool:
 # ── Periodic Health Monitor ───────────────────────────────────────────
 
 
-async def _probe_endpoint(endpoint: str, timeout: float) -> bool:
+async def _probe_endpoint(endpoint: str, timeout: float) -> int:
     """Light liveness probe for a single RPC endpoint (eth_blockNumber).
 
     Kept deliberately light (one JSON-RPC call, short timeout) so the
@@ -200,7 +200,9 @@ async def _probe_endpoint(endpoint: str, timeout: float) -> bool:
         timeout: Probe timeout in seconds.
 
     Returns:
-        True if the endpoint answered with a valid block number.
+        HTTP status code on a successful dial (200 for a valid
+        eth_blockNumber answer, 4xx/5xx otherwise), or 0 when the probe
+        failed at the transport level (timeout / connection error).
     """
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
@@ -209,16 +211,16 @@ async def _probe_endpoint(endpoint: str, timeout: float) -> bool:
                 json={"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},
             )
             if resp.status_code != 200:
-                return False
+                return resp.status_code
             data = resp.json()
-            return isinstance(data, dict) and bool(data.get("result"))
+            return 200 if isinstance(data, dict) and bool(data.get("result")) else 0
     except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
-        logger.warning(
+        logger.debug(
             "rpc_probe_failed",
             endpoint=endpoint[:50],
             error=str(exc)[:80],
         )
-        return False
+        return 0
 
 
 async def monitor_endpoint_health(
@@ -251,7 +253,7 @@ async def monitor_endpoint_health(
         timeout: Per-endpoint probe timeout in seconds.
     """
     from lite_indexer.chains import GET_LOGS_ENDPOINTS
-    from lite_indexer.rpc.pool import record_endpoint_failure
+    from lite_indexer.rpc.pool import ban_endpoint, record_endpoint_failure
 
     target_chains = chains if chains is not None else sorted(GET_LOGS_ENDPOINTS)
     logger.info(
@@ -272,8 +274,10 @@ async def monitor_endpoint_health(
 
             up: list[str] = []
             down: list[str] = []
+            rate_limited: list[str] = []
             for url in endpoints:
-                ok = await _probe_endpoint(url, timeout)
+                status = await _probe_endpoint(url, timeout)
+                ok = status == 200
                 _endpoint_verified_ok[url] = ok
                 if ok:
                     up.append(url)
@@ -282,6 +286,29 @@ async def monitor_endpoint_health(
                     down.append(url)
                     down_total += 1
                     record_endpoint_failure(url)
+                    # 403/429 = provider rate-limit / blacklist: hard-ban
+                    # the endpoint for an exponential window instead of
+                    # just a 300s cooldown.
+                    if status in (403, 429):
+                        rate_limited.append(url)
+                        ban_endpoint(url, reason=f"probe_http_{status}")
+
+            # Per-chain endpoint health metrics for monitoring: emitted on
+            # every cycle with per-chain up/down + the endpoint list, plus
+            # Prometheus counters so per-chain health is graphable.
+            metrics_incr(f"endpoint_chain_up_{chain}", len(up))
+            metrics_incr(f"endpoint_chain_down_{chain}", len(down))
+            if rate_limited:
+                metrics_incr(f"endpoint_chain_banned_{chain}", len(rate_limited))
+            logger.info(
+                "endpoint_health_chain",
+                chain=chain,
+                up=len(up),
+                down=len(down),
+                rate_limited=len(rate_limited),
+                total=len(endpoints),
+                down_endpoints=[ep[:60] for ep in down],
+            )
 
             if down:
                 logger.warning(

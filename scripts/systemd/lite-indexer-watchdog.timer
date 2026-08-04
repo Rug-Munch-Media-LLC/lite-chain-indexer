@@ -1,0 +1,19 @@
+# lite-indexer-watchdog.timer — run the process watchdog every 2 minutes
+#
+# Faster dead-process detection than the 10-minute stall-check timer.
+# The stall-check remains the authoritative wedged-chain detector; this
+# timer covers the "process died" case promptly.
+#
+# Install: see lite-indexer-watchdog.service header.
+#
+[Unit]
+Description=Run LiteIndexer process watchdog every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

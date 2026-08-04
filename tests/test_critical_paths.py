@@ -94,6 +94,11 @@ async def test_deployers_with_dex(tmp_path, monkeypatch):
     ch.write_dex_events.return_value = 0
     ch.client.return_value = None  # ClickHouse unavailable → reorg staging skipped
     indexer._ch_writer = ch
+    # The 2026-08-04 CH health gate would pause the sync when the fake
+    # writer reports client=None. This test exercises the DEX/deployer
+    # flow, so force the gate open (reorg staging is still skipped via
+    # client=None above).
+    indexer._ch_health = type("_ChHealthStub", (), {"ok": lambda self: True})()
     indexer._ndjson_writer.write_events = Mock(return_value=0)
     indexer._ndjson_writer.write_dex_events = Mock(return_value=0)
     # write_clickhouse is a sync method (called without await) → plain Mock
@@ -122,6 +127,17 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
     strategy = indexer.strategy
     strategy.fetch_block_number = AsyncMock(return_value=500)
 
+    # The 2026-08-04 CH health gate would pause the sync when the fake
+    # writer reports client=None. This test exercises the reorg flag
+    # reset flow, so force the gate open for both cycles (reorg staging
+    # is still skipped via client=None below).
+    ch = Mock()
+    ch.write_dex_events.return_value = 0
+    ch.write_wallet_features = AsyncMock(return_value={})
+    ch.client.return_value = None  # ClickHouse unavailable → reorg staging skipped
+    indexer._ch_writer = ch
+    indexer._ch_health = type("_ChHealthStub", (), {"ok": lambda self: True})()
+
     # Simulate block reversal: transfers come back as the reorg sentinel
     strategy.fetch_transfers = AsyncMock(return_value=["__CHAIN_REORG__"])
     summary1 = await indexer._sync_loop_inner({"status": "ok", "errors": []}, time.monotonic())
@@ -139,11 +155,6 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
     indexer._ndjson_writer.write_dex_events = Mock(return_value=0)
     # write_clickhouse is a sync method (called without await) → plain Mock
     strategy.write_clickhouse = Mock(return_value=1)
-    ch = Mock()
-    ch.write_dex_events.return_value = 0
-    ch.write_wallet_features = AsyncMock(return_value={})
-    ch.client.return_value = None  # ClickHouse unavailable → reorg staging skipped
-    indexer._ch_writer = ch
 
     summary2 = await indexer._sync_loop_inner({"status": "ok", "errors": []}, time.monotonic())
     assert summary2["status"] == "ok"

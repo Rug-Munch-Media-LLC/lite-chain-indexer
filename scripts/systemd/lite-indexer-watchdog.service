@@ -1,0 +1,24 @@
+# lite-indexer-watchdog.service — fast process-death watchdog for lite-indexer
+#
+# A lightweight companion to lite-indexer-stall-check.timer: this unit only
+# checks that the lite-indexer process is ALIVE (systemd unit active) and
+# restarts it when dead. The stall-check service additionally detects
+# wedged/stalled chains (>30 min no-advance) and restarts for those.
+#
+# Install (run as root):
+#   cp scripts/systemd/lite-indexer-watchdog.service /etc/systemd/system/
+#   cp scripts/systemd/lite-indexer-watchdog.timer  /etc/systemd/system/
+#   systemctl daemon-reload
+#   systemctl enable --now lite-indexer-watchdog.timer
+#
+[Unit]
+Description=LiteIndexer process watchdog — restart indexer if the process dies
+# Deliberately NOT Requires=lite-indexer.service: the watchdog itself
+# starts/restarts the indexer, so a hard dependency would create a cycle.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'systemctl is-active --quiet lite-indexer.service || { echo "[$(date -Iseconds)] lite-indexer.service not active — starting"; systemctl start lite-indexer.service; }'
+# The watchdog itself must never loop on failure.
+Restart=no
+TimeoutStartSec=60

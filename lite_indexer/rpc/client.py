@@ -25,7 +25,12 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
-from lite_indexer.rpc.pool import get_best_endpoint, record_endpoint_failure, record_endpoint_success
+from lite_indexer.rpc.pool import (
+    ban_endpoint,
+    get_best_endpoint,
+    record_endpoint_failure,
+    record_endpoint_success,
+)
 from lite_indexer.rpc.ratelimit import apply_provider_rate_limit
 
 logger = get_logger(__name__)
@@ -97,6 +102,7 @@ class RpcClient:
             Parsed JSON response dict, or None on failure.
         """
         from lite_indexer.rpc.routing import record_rpc_usage
+        from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
 
         payload = {
             "jsonrpc": "2.0",
@@ -104,10 +110,14 @@ class RpcClient:
             "method": method,
             "params": params or [],
         }
+        # Intelligent throttle: honor Retry-After / advertised budget /
+        # per-method rate BEFORE spending another request on this endpoint.
+        await throttle_before(endpoint, method)
         try:
             client = await _get_call_client(timeout)
             resp = await client.post(endpoint, json=payload)
             bytes_received = len(resp.content or b"")
+            record_rpc_response(endpoint, method, resp.status_code, resp.headers)
 
             # Empty response check
             if not resp.text or len(resp.text) < 5:
@@ -157,8 +167,13 @@ class RpcClient:
             record_rpc_usage(endpoint, method, ok=False, error="connection_error")
             return None
         except httpx.HTTPStatusError as exc:
-            logger.debug("rpc_http_error", endpoint=endpoint[:50], method=method, status=exc.response.status_code)
-            record_rpc_usage(endpoint, method, ok=False, error=f"http_{exc.response.status_code}")
+            status = exc.response.status_code
+            logger.debug("rpc_http_error", endpoint=endpoint[:50], method=method, status=status)
+            record_rpc_usage(endpoint, method, ok=False, error=f"http_{status}")
+            # 403/429 = provider rate-limit / blacklist: hard-ban the
+            # endpoint for an exponential window so we stop hammering it.
+            if status in (403, 429):
+                ban_endpoint(endpoint, reason=f"http_{status}")
             return None
         except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
             logger.warning("rpc_call_failed", endpoint=endpoint[:50], method=method, error=str(exc)[:80])
@@ -285,16 +300,27 @@ class RpcClient:
             "params": [filter_params],
         }
 
+        from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
+
         for attempt in range(max_retries):
             # Apply provider rate limiting before request
             await apply_provider_rate_limit(endpoint)
+            # Intelligent throttle: Retry-After / budget / per-method pacing.
+            await throttle_before(endpoint, "eth_getLogs")
 
             try:
                 client = await self._get_client()
                 resp = await client.post(endpoint, json=payload, timeout=RPC_TIMEOUT)
+                record_rpc_response(endpoint, "eth_getLogs", resp.status_code, resp.headers)
 
                 if resp.status_code == 429:
-                    wait = 2**attempt
+                    # Respect Retry-After exactly when the endpoint tells
+                    # us how long to wait; otherwise exponential backoff.
+                    from lite_indexer.rpc.throttle import RATE_TRACKER
+
+                    state = RATE_TRACKER.state_for(endpoint)
+                    retry_after = state.get("backoff_until", 0.0)
+                    wait = max(0.0, retry_after - time.time()) if retry_after else 2**attempt
                     logger.debug(
                         "rate_limited_retry",
                         endpoint=endpoint[:40],
@@ -302,7 +328,8 @@ class RpcClient:
                         wait=wait,
                     )
                     record_endpoint_failure(endpoint)
-                    await asyncio.sleep(wait)
+                    ban_endpoint(endpoint, reason="http_429")
+                    await asyncio.sleep(min(wait, RATE_LIMIT_WAIT_CAP))
                     continue
 
                 resp.raise_for_status()
