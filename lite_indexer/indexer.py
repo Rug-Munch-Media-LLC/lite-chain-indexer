@@ -629,7 +629,85 @@ class LiteIndexer:
                 except Exception as exc:  # noqa: BLE001 — plugin layer is best-effort
                     logger.warning("plugin_load_failed", chain=self.chain, error=str(exc)[:200])
                     self._plugins = []
+            # Auto-create ClickHouse tables from plugin schemas
+            self._ensure_plugin_tables()
         return self._plugins
+
+    def _ensure_plugin_tables(self) -> None:
+        """Create ClickHouse tables declared by plugin schemas.
+
+        Iterates every loaded plugin; for each one that declares a
+        ``schema`` block in its manifest, generates a ``CREATE TABLE IF
+        NOT EXISTS`` DDL statement from the column declarations, maps
+        Python-type shorthands to ClickHouse types via
+        :func:`map_ch_type`, and executes the DDL through
+        :meth:`ch_writer`. Plugins without a schema or when ClickHouse
+        is unavailable are silently skipped (best-effort).
+
+        The ``order_by`` key from the manifest (defaulting to the first
+        column) is used as the MergeTree ordering key. Metadata columns
+        (``_block_number``, ``_tx_hash``, ``_timestamp``) are added
+        automatically.
+        """
+        if not self._plugins:
+            return
+
+        from lite_indexer.plugin.base import map_ch_type
+
+        client = self.ch_writer.client()
+        if client is None:
+            logger.warning(
+                "plugin_table_creation_skipped",
+                reason="clickhouse_unavailable",
+                plugins_with_schema=sum(1 for p in self._plugins if p.manifest.schema),
+            )
+            return
+
+        for plugin in self._plugins:
+            schema = plugin.manifest.schema
+            if schema is None:
+                continue
+
+            table_name = schema.table
+            col_defs: list[str] = []
+            for col_name, col_type in schema.columns.items():
+                ch_type = map_ch_type(col_type)
+                col_defs.append(f"    {col_name} {ch_type}")
+
+            # Metadata columns
+            col_defs.append("    _block_number UInt64")
+            col_defs.append("    _tx_hash String")
+            col_defs.append("    _timestamp DateTime DEFAULT now()")
+
+            # Ordering key: explicit, or auto-detect indexed columns, or first col
+            if schema.order_by:
+                order_cols = ", ".join(schema.order_by)
+            else:
+                # Auto-detect: use first column (or nothing special)
+                first_col = next(iter(schema.columns), None)
+                order_cols = first_col if first_col else "_timestamp"
+
+            ddl = (
+                f"CREATE TABLE IF NOT EXISTS {table_name} (\n"
+                + ",\n".join(col_defs)
+                + f"\n) ENGINE = MergeTree()\nORDER BY ({order_cols})"
+            )
+
+            try:
+                client.execute(ddl)
+                logger.info(
+                    "plugin_table_created",
+                    plugin=plugin.name,
+                    table=table_name,
+                    columns=len(schema.columns),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    "plugin_table_create_failed",
+                    plugin=plugin.name,
+                    table=table_name,
+                    error=str(exc)[:200],
+                )
 
     async def _dispatch_plugin_events(self, from_block: int, to_block: int) -> dict[str, Any]:
         """Fetch + dispatch decoded events to registered plugins (EVM).
@@ -662,6 +740,8 @@ class LiteIndexer:
             from_block=from_block,
             to_block=to_block,
             data_dir=self.data_dir,
+            ch_writer=self.ch_writer,
+            logger=logger,
         )
 
         fetched = 0

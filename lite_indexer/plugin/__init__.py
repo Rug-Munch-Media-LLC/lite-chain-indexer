@@ -31,6 +31,7 @@ from lite_indexer.plugin.base import (
     PluginValidationError,
     decode_event_log,
     event_topic,
+    map_ch_type,
     parse_manifest,
 )
 from lite_indexer.plugin.loader import PluginLoader
@@ -50,5 +51,6 @@ __all__ = [
     "decode_event_log",
     "event_topic",
     "find_community",
+    "map_ch_type",
     "parse_manifest",
 ]

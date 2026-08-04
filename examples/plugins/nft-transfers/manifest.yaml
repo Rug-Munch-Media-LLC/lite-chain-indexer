@@ -1,0 +1,22 @@
+name: nft-transfers
+version: 1.0.0
+author: RugMunch
+description: Tracks ERC-721 Transfer events for a specific NFT contract
+chain: ethereum
+contracts:
+  - address: "0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D"
+    start_block: 12287507
+events:
+  - name: Transfer
+    signature: "Transfer(address,address,uint256)"
+    params: [from, to, tokenId]
+    indexed: [0, 1, 2]
+    handler: on_transfer
+schema:
+  table: nft_transfers
+  columns:
+    sender: String
+    receiver: String
+    token_id: UInt256
+  order_by:
+    - token_id

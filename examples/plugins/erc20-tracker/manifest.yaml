@@ -1,0 +1,20 @@
+name: erc20-tracker
+version: 1.0.0
+author: RugMunch
+description: Tracks ERC-20 Transfer events for a specific token contract
+chain: ethereum
+contracts:
+  - address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    start_block: 6082465
+events:
+  - name: Transfer
+    signature: "Transfer(address,address,uint256)"
+    params: [from, to, value]
+    indexed: [0, 1]
+    handler: on_transfer
+schema:
+  table: erc20_transfers
+  columns:
+    sender: String
+    receiver: String
+    value: UInt256

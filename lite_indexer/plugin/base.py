@@ -54,6 +54,61 @@ from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
 
+# ── ClickHouse Type Mapping ──────────────────────────────────────────
+
+# Map Python shorthand types to ClickHouse column types. All other
+# strings (including existing ClickHouse types like ``UInt256``,
+# ``Int32``, ``String``, ``DateTime``, etc.) pass through unchanged.
+_PYTHON_TO_CH_TYPE: dict[str, str] = {
+    "int": "Int64",
+    "float": "Float64",
+    "str": "String",
+    "bool": "UInt8",
+    "bytes": "String",
+}
+
+
+def map_ch_type(raw_type: str) -> str:
+    """Map a Python shorthand type to a ClickHouse column type.
+
+    Known ClickHouse types (``UInt*``, ``Int*``, ``Float*``, ``String``,
+    ``DateTime``, ``Decimal``, ``Bool``, ``Date``, ``Array``, ``FixedString``,
+    ``Nullable``, ``Enum``, ``UUID``, ``IPv4``, ``IPv6``) pass through as-is.
+    Python shorthands ``int``, ``float``, ``str``, ``bool``, ``bytes``
+    are translated to their ClickHouse equivalents.
+    """
+    t = raw_type.strip()
+    # Already a ClickHouse type?
+    if any(
+        t.startswith(prefix)
+        for prefix in (
+            "UInt",
+            "Int",
+            "Float",
+            "Decimal",
+            "DateTime",
+            "Date",
+            "String",
+            "FixedString",
+            "Array",
+            "Nullable",
+            "Enum",
+            "UUID",
+            "IPv4",
+            "IPv6",
+            "Bool",
+            "LowCardinality",
+            "Map",
+            "Tuple",
+            "AggregateFunction",
+            "SimpleAggregateFunction",
+        )
+    ):
+        return t
+    # Python shorthand
+    return _PYTHON_TO_CH_TYPE.get(t.lower(), "String")
+
+
 # ── Manifest Schema ────────────────────────────────────────────────────
 
 _SIGNATURE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\(([^)]*)\)$")
@@ -91,10 +146,15 @@ class EventSpec:
 
 @dataclass(frozen=True)
 class PluginSchema:
-    """Output table schema declared by the plugin (informational)."""
+    """Output table schema declared by the plugin.
+
+    Columns map parameter names to ClickHouse column types (or Python
+    shorthand types). The indexer auto-creates the table on plugin load.
+    """
 
     table: str
     columns: dict[str, str]
+    order_by: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -407,7 +467,14 @@ def parse_manifest(data: dict[str, Any]) -> PluginManifest:
         if not table or not isinstance(columns_raw, dict) or not columns_raw:
             raise PluginValidationError(f"plugin {name!r}: schema requires table and non-empty columns")
         columns = {str(k).strip(): str(v).strip() for k, v in columns_raw.items()}
-        schema = PluginSchema(table=table, columns=columns)
+        order_by_raw = schema_raw.get("order_by")
+        order_by: tuple[str, ...] = ()
+        if order_by_raw is not None:
+            if isinstance(order_by_raw, list):
+                order_by = tuple(str(o).strip() for o in order_by_raw)
+            elif isinstance(order_by_raw, str):
+                order_by = tuple(s.strip() for s in order_by_raw.split(","))
+        schema = PluginSchema(table=table, columns=columns, order_by=order_by)
 
     return PluginManifest(
         name=name,
@@ -441,12 +508,23 @@ class DecodedEvent:
 
 @dataclass(frozen=True)
 class PluginContext:
-    """Context passed to plugin handlers with each event."""
+    """Context passed to plugin handlers with each event.
+
+    Attributes:
+        chain: The chain being indexed.
+        from_block / to_block: The block range of the current sync cycle.
+        data_dir: Data directory path (for plugin output).
+        ch_writer: ClickHouse writer handle — plugins can call
+            ``ctx.ch_writer.client()`` for direct DDL or inserts.
+        logger: Structured logger scoped for plugin use.
+    """
 
     chain: str
     from_block: int
     to_block: int
     data_dir: Any = None  # Path | None — kept as Any to avoid import cycles
+    ch_writer: Any = None  # ClickHouseWriter | None — kept as Any to avoid import cycles
+    logger: Any = None  # structlog logger — kept as Any to avoid import cycles
 
 
 # ── Base Plugin ────────────────────────────────────────────────────────
@@ -591,5 +669,6 @@ __all__ = [
     "PluginValidationError",
     "decode_event_log",
     "event_topic",
+    "map_ch_type",
     "parse_manifest",
 ]

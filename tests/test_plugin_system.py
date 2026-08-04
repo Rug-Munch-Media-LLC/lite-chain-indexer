@@ -243,7 +243,8 @@ def test_loader_missing_manifest_dir_returns_empty(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_handle_log_dispatches_to_handler(tmp_path: Path) -> None:
     loader = PluginLoader(plugins_dir=EXAMPLES_PLUGINS)
-    plugin = loader.load_all(chain="ethereum")[0]
+    plugins = loader.load_all(chain="ethereum")
+    plugin = next(p for p in plugins if p.name == "uniswap-v3-positions")
     ctx = PluginContext(chain="ethereum", from_block=0, to_block=10**9, data_dir=tmp_path)
 
     assert await plugin.handle_log(_increase_log(), ctx) is True
@@ -266,3 +267,285 @@ async def test_handle_log_unknown_event_returns_false(tmp_path: Path) -> None:
     log = _increase_log()
     log["topics"] = ["0x" + "11" * 32]
     assert await plugin.handle_log(log, ctx) is False
+
+
+# ── Type Mapping ────────────────────────────────────────────────────────
+
+
+def test_map_ch_type_python_shorthands() -> None:
+    from lite_indexer.plugin.base import map_ch_type
+
+    assert map_ch_type("int") == "Int64"
+    assert map_ch_type("float") == "Float64"
+    assert map_ch_type("str") == "String"
+    assert map_ch_type("bool") == "UInt8"
+    assert map_ch_type("bytes") == "String"
+
+
+def test_map_ch_type_clickhouse_types_passthrough() -> None:
+    from lite_indexer.plugin.base import map_ch_type
+
+    assert map_ch_type("UInt256") == "UInt256"
+    assert map_ch_type("Int64") == "Int64"
+    assert map_ch_type("Float64") == "Float64"
+    assert map_ch_type("String") == "String"
+    assert map_ch_type("DateTime") == "DateTime"
+    assert map_ch_type("UInt8") == "UInt8"
+    assert map_ch_type("Int32") == "Int32"
+    assert map_ch_type("Decimal(19,4)") == "Decimal(19,4)"
+    assert map_ch_type("Array(String)") == "Array(String)"
+    assert map_ch_type("Nullable(UInt64)") == "Nullable(UInt64)"
+    assert map_ch_type("FixedString(66)") == "FixedString(66)"
+    assert map_ch_type("LowCardinality(String)") == "LowCardinality(String)"
+
+
+def test_map_ch_type_unknown_defaults_to_string() -> None:
+    from lite_indexer.plugin.base import map_ch_type
+
+    assert map_ch_type("weird_custom_type") == "String"
+    assert map_ch_type("") == "String"
+
+
+# ── PluginContext ───────────────────────────────────────────────────────
+
+
+def test_plugin_context_with_writer_and_logger() -> None:
+    """PluginContext carries ch_writer and logger (docs: Gap 2 fix)."""
+    ctx = PluginContext(
+        chain="ethereum",
+        from_block=0,
+        to_block=100,
+        data_dir=None,
+        ch_writer="fake_writer",  # type: ignore[arg-type]
+        logger="fake_logger",  # type: ignore[arg-type]
+    )
+    assert ctx.chain == "ethereum"
+    assert ctx.ch_writer == "fake_writer"
+    assert ctx.logger == "fake_logger"
+
+
+def test_plugin_context_defaults_none() -> None:
+    """Backward-compat: default ch_writer/logger are None."""
+    ctx = PluginContext(chain="ethereum", from_block=0, to_block=0)
+    assert ctx.ch_writer is None
+    assert ctx.logger is None
+
+
+# ── Schema order_by ─────────────────────────────────────────────────────
+
+
+def test_manifest_schema_order_by() -> None:
+    raw = {
+        "name": "test-order-by",
+        "version": "1.0.0",
+        "author": "RugMunch",
+        "description": "Tests order_by in schema",
+        "chain": "ethereum",
+        "contracts": [{"address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"}],
+        "events": [
+            {
+                "name": "Transfer",
+                "signature": "Transfer(address,address,uint256)",
+                "handler": "on_transfer",
+            }
+        ],
+        "schema": {
+            "table": "test_table",
+            "columns": {"a": "String", "b": "UInt64"},
+            "order_by": ["b", "a"],
+        },
+    }
+    manifest = parse_manifest(raw)
+    assert manifest.schema is not None
+    assert manifest.schema.order_by == ("b", "a")
+
+
+def test_manifest_schema_no_order_by_defaults_empty() -> None:
+    raw = {
+        "name": "test-no-order",
+        "version": "1.0.0",
+        "author": "RugMunch",
+        "description": "No order_by",
+        "chain": "ethereum",
+        "contracts": [{"address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"}],
+        "events": [
+            {
+                "name": "Transfer",
+                "signature": "Transfer(address,address,uint256)",
+                "handler": "on_transfer",
+            }
+        ],
+        "schema": {"table": "test_table", "columns": {"a": "String"}},
+    }
+    manifest = parse_manifest(raw)
+    assert manifest.schema is not None
+    assert manifest.schema.order_by == ()
+
+
+# ── ensure_plugin_tables (Gap 1 fix) ────────────────────────────────────
+
+
+def test_ensure_plugin_tables_generates_ddl(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Verify _ensure_plugin_tables generates correct DDL for plugin schemas."""
+    from unittest.mock import MagicMock
+
+    from lite_indexer.indexer import LiteIndexer
+    from lite_indexer.plugin.base import PluginManifest, EventSpec, ContractSpec, PluginSchema
+
+    # Fabricate a minimal plugin-manifest that carries a schema.
+    manifest = PluginManifest(
+        name="test_plugin",
+        version="1.0.0",
+        author="x",
+        description="x",
+        chain="ethereum",
+        contracts=(ContractSpec(address="0xaaa", start_block=0),),
+        events=(
+            EventSpec(
+                name="Transfer",
+                signature="Transfer(address,address,uint256)",
+                handler="on_transfer",
+                topic="0xabc",
+                abi_types=("address", "address", "uint256"),
+            ),
+        ),
+        schema=PluginSchema(
+            table="test_plugin_table",
+            columns={"sender": "String", "receiver": "String", "value": "UInt256"},
+            order_by=("value",),
+        ),
+    )
+
+    FakePlugin = type("FakePlugin", (), {"name": "test_plugin", "manifest": manifest})
+
+    # Create LiteIndexer with a known chain.
+    idx = LiteIndexer(chain="ethereum")
+    idx._plugins = [FakePlugin()]  # type: ignore[list-item]
+
+    mock_client = MagicMock()
+    mock_client.execute.return_value = None
+
+    # Patch ch_writer.client() to return our mock.
+    idx.ch_writer._client = mock_client  # type: ignore[attr-defined]
+
+    idx._ensure_plugin_tables()
+
+    # Verify CREATE TABLE was issued.
+    calls = [call[0][0] for call in mock_client.execute.call_args_list]  # type: ignore[union-attr]
+    assert any("CREATE TABLE IF NOT EXISTS test_plugin_table" in c for c in calls), f"Expected DDL in: {calls}"
+
+    # Verify the DDL includes the ordering key.
+    ddl = next(c for c in calls if "CREATE TABLE" in c)
+    assert "ORDER BY (value)" in ddl
+    assert "sender String" in ddl
+    assert "value UInt256" in ddl
+    assert "_block_number UInt64" in ddl
+
+
+def test_ensure_plugin_tables_no_schema_is_skipped(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Plugins without a schema block don't generate DDL."""
+    from unittest.mock import MagicMock
+
+    from lite_indexer.indexer import LiteIndexer
+    from lite_indexer.plugin.base import PluginManifest, EventSpec, ContractSpec
+
+    manifest = PluginManifest(
+        name="no_schema_plugin",
+        version="1.0.0",
+        author="x",
+        description="x",
+        chain="ethereum",
+        contracts=(ContractSpec(address="0xaaa", start_block=0),),
+        events=(
+            EventSpec(
+                name="Transfer",
+                signature="Transfer(address,address,uint256)",
+                handler="on_transfer",
+                topic="0xabc",
+                abi_types=("address", "address", "uint256"),
+            ),
+        ),
+        schema=None,
+    )
+
+    FakePlugin = type("FakePlugin", (), {"name": "no_schema_plugin", "manifest": manifest})
+
+    idx = LiteIndexer(chain="ethereum")
+    idx._plugins = [FakePlugin()]  # type: ignore[list-item]
+
+    mock_client = MagicMock()
+    idx.ch_writer._client = mock_client  # type: ignore[attr-defined]
+
+    idx._ensure_plugin_tables()
+
+    # No DDL should have been issued.
+    calls = [c[0][0] for c in mock_client.execute.call_args_list]  # type: ignore[union-attr]
+    assert not any("CREATE TABLE" in c for c in calls)
+
+
+def test_ensure_plugin_tables_no_clickhouse_skips_gracefully(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """When ClickHouse is unavailable, _ensure_plugin_tables skips without error."""
+    from lite_indexer.indexer import LiteIndexer
+    from lite_indexer.plugin.base import PluginManifest, EventSpec, ContractSpec, PluginSchema
+
+    manifest = PluginManifest(
+        name="test_plugin",
+        version="1.0.0",
+        author="x",
+        description="x",
+        chain="ethereum",
+        contracts=(ContractSpec(address="0xaaa", start_block=0),),
+        events=(
+            EventSpec(
+                name="Transfer",
+                signature="Transfer(address,address,uint256)",
+                handler="on_transfer",
+                topic="0xabc",
+                abi_types=("address", "address", "uint256"),
+            ),
+        ),
+        schema=PluginSchema(
+            table="test_plugin_table",
+            columns={"sender": "String"},
+        ),
+    )
+
+    FakePlugin = type("FakePlugin", (), {"name": "test_plugin", "manifest": manifest})
+
+    idx = LiteIndexer(chain="ethereum")
+    idx._plugins = [FakePlugin()]  # type: ignore[list-item]
+
+    # Patch client() to return None (ClickHouse unavailable).
+    def _fake_client():
+        return None
+
+    monkeypatch.setattr(idx.ch_writer, "client", _fake_client)
+
+    # Should not raise — gracefully skip.
+    idx._ensure_plugin_tables()
+
+    # Verify plugin list is intact (not mutated).
+    assert len(idx._plugins) == 1  # type: ignore[arg-type]
+
+
+# ── New example plugins ─────────────────────────────────────────────────
+
+
+def test_new_plugins_load() -> None:
+    """Both new example plugins load via PluginLoader."""
+    loader = PluginLoader(plugins_dir=EXAMPLES_PLUGINS)
+    plugins = loader.load_all(chain="ethereum")
+    names = {p.name for p in plugins}
+    assert "erc20-tracker" in names
+    assert "nft-transfers" in names
+
+    erc20 = next(p for p in plugins if p.name == "erc20-tracker")
+    assert erc20.handler_for("Transfer") is not None
+    assert erc20.manifest.schema is not None
+    assert erc20.manifest.schema.table == "erc20_transfers"
+
+    nft = next(p for p in plugins if p.name == "nft-transfers")
+    assert nft.handler_for("Transfer") is not None
+    assert nft.manifest.schema is not None
+    assert nft.manifest.schema.table == "nft_transfers"
+    assert nft.manifest.schema.order_by == ("token_id",)
