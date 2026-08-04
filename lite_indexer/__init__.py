@@ -14,6 +14,7 @@ Architecture uses a strategy pattern:
   - TronStrategy (TronGrid event API)
 """
 
+from lite_indexer.bootstrap import SnapshotBootstrap, build_import_sql
 from lite_indexer.chains import (
     CHAIN_POLL_INTERVALS,
     GET_LOGS_ENDPOINTS,
@@ -23,6 +24,7 @@ from lite_indexer.chains import (
 from lite_indexer.cli import async_main, main, main_daemon, parse_args
 from lite_indexer.config import BATCH_SIZE, DISK_CAP_BYTES
 from lite_indexer.indexer import LiteIndexer
+from lite_indexer.snapshot_manifest import SnapshotManifest, build_manifest, parse_manifest
 from lite_indexer.storage import ClickHouseWriter, NDJSONWriter, ParquetExporter
 from lite_indexer.strategies import (
     SUPPORTED_CHAINS,
@@ -49,6 +51,12 @@ __all__ = [
     "ClickHouseWriter",
     "NDJSONWriter",
     "ParquetExporter",
+    # Snapshot bootstrap exports
+    "SnapshotBootstrap",
+    "SnapshotManifest",
+    "build_import_sql",
+    "build_manifest",
+    "parse_manifest",
     # Strategy exports
     "SUPPORTED_CHAINS",
     "AbstractChainStrategy",

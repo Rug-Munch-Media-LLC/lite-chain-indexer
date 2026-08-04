@@ -21,6 +21,12 @@ Pipeline (idempotent, safe by default):
 6. Mark the (chain, date) in ``PARQUET_STATE_DIR`` so the daily cron
    never re-exports or double-deletes.
 
+With ``publish_snapshot=True`` (CLI ``--publish-snapshot``), each exported
+(chain, date) is additionally mirrored to the bootstrap snapshot location
+``{BOOTSTRAP_B2_BUCKET}/{BOOTSTRAP_PARQUET_PATH}/{date}/{chain}/`` with a
+generated ``manifest.json`` — this is what makes ``lite-indexer bootstrap``
+able to discover and replay the snapshot (see lite_indexer.snapshot_manifest).
+
 Failures are non-fatal and logged; the state marker is only written
 after a successful export, so a partial failure retries next run.
 Rows are never deleted from ClickHouse unless the archive upload has
@@ -38,6 +44,8 @@ from pathlib import Path
 from typing import Any
 
 from lite_indexer.config import (
+    BOOTSTRAP_B2_BUCKET,
+    BOOTSTRAP_PARQUET_PATH,
     CH_DEX_TABLE,
     CH_PARQUET_STATE_TABLE,
     CH_TABLE,
@@ -48,6 +56,7 @@ from lite_indexer.config import (
     PARQUET_STATE_DIR,
 )
 from lite_indexer.logging import get_logger
+from lite_indexer.snapshot_manifest import MANIFEST_NAME, build_manifest, manifest_json
 
 logger = get_logger(__name__)
 
@@ -187,6 +196,38 @@ def _remote_path(remote: str, chain: str, day: date, kind: str) -> str:
 def _state_marker(state_dir: Path, chain: str, day: date) -> Path:
     """Return the state marker path for a (chain, date)."""
     return state_dir / chain / f"{day.isoformat()}.done"
+
+
+def _block_range(transfer_rows: list[dict[str, Any]], dex_rows: list[dict[str, Any]]) -> tuple[int, int]:
+    """Compute the min/max block span over exported row dicts.
+
+    The manifest records ``start_block``/``end_block`` so bootstrap can
+    set the state high-water mark to the snapshot's true coverage.
+
+    Args:
+        transfer_rows: Rows from the transfers table.
+        dex_rows: Rows from the DEX table.
+
+    Returns:
+        ``(start_block, end_block)``, both 0 when no rows carry a
+        ``block_number``.
+    """
+    start: int | None = None
+    end: int | None = None
+    for rows in (transfer_rows, dex_rows):
+        for row in rows:
+            raw = row.get("block_number")
+            if raw is None:
+                continue
+            try:
+                block = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if start is None or block < start:
+                start = block
+            if end is None or block > end:
+                end = block
+    return (start if start is not None else 0, end if end is not None else 0)
 
 
 class ParquetExporter:
@@ -529,6 +570,9 @@ class ParquetExporter:
         upload: bool = False,
         delete: bool = False,
         dry_run: bool = False,
+        publish_snapshot: bool = False,
+        snapshot_bucket: str = BOOTSTRAP_B2_BUCKET,
+        snapshot_path: str = BOOTSTRAP_PARQUET_PATH,
     ) -> ExportSummary:
         """Export a chain's rows to Parquet (and B2).
 
@@ -539,6 +583,11 @@ class ParquetExporter:
         Rows are deleted from ClickHouse only after the B2 upload has
         been verified (or when there was nothing to export).
 
+        With ``publish_snapshot``, every exported (chain, date) is also
+        mirrored to the bootstrap snapshot location with a generated
+        ``manifest.json`` (see :meth:`publish_snapshot`) so
+        ``lite-indexer bootstrap`` can discover and replay it.
+
         Args:
             chain: Chain name.
             dates: Explicit dates to export (overrides cold_days mode).
@@ -546,6 +595,10 @@ class ParquetExporter:
             upload: Upload files to the B2 remote via rclone.
             delete: Delete exported rows from ClickHouse after verified upload.
             dry_run: Preview without writing files, uploading, or deleting.
+            publish_snapshot: Mirror the export to the bootstrap snapshot
+                location with a manifest (requires a real export).
+            snapshot_bucket: rclone remote root for snapshots.
+            snapshot_path: Path prefix inside the bucket.
 
         Returns:
             :class:`ExportSummary` with per-run stats.
@@ -723,6 +776,31 @@ class ParquetExporter:
                 deleted=delete,
             )
 
+            # Optional: mirror this (chain, date) to the bootstrap snapshot
+            # location with a manifest so `lite-indexer bootstrap` can
+            # discover and replay it. Only for real (non-empty) exports.
+            if publish_snapshot and total_rows > 0:
+                start_block, end_block = _block_range(transfer_rows, dex_rows)
+                if self.publish_snapshot(
+                    chain,
+                    day,
+                    transfers_rows=len(transfer_rows),
+                    dex_rows=len(dex_rows),
+                    start_block=start_block,
+                    end_block=end_block,
+                    bucket=snapshot_bucket,
+                    snapshots_path=snapshot_path,
+                ):
+                    summary.uploaded += 1
+                    logger.info(
+                        "parquet_snapshot_published",
+                        chain=chain,
+                        day=day.isoformat(),
+                        block_range=[start_block, end_block],
+                    )
+                else:
+                    summary.errors.append(f"{day.isoformat()}: snapshot publish failed")
+
         return summary
 
     def _mark_exported(
@@ -756,6 +834,93 @@ class ParquetExporter:
         except OSError as exc:
             logger.warning("parquet_marker_failed", path=str(marker), error=str(exc)[:80])
 
+    # ── Snapshot publish (bootstrap discovery) ─────────────────────
+    # With ``publish_snapshot=True`` each exported (chain, date) is
+    # mirrored to ``{BOOTSTRAP_B2_BUCKET}/{BOOTSTRAP_PARQUET_PATH}/{date}/
+    # {chain}/`` with a generated ``manifest.json``. The manifest is what
+    # ``lite-indexer bootstrap`` lists and replays — it turns the daily
+    # cold-storage export into a public bootstrap snapshot.
+
+    def publish_snapshot(
+        self,
+        chain: str,
+        day: date,
+        *,
+        transfers_rows: int = 0,
+        dex_rows: int = 0,
+        start_block: int = 0,
+        end_block: int = 0,
+        bucket: str = BOOTSTRAP_B2_BUCKET,
+        snapshots_path: str = BOOTSTRAP_PARQUET_PATH,
+    ) -> bool:
+        """Mirror an exported (chain, date) to the bootstrap snapshot location.
+
+        Writes ``manifest.json`` into the local export directory and
+        uploads the whole directory to
+        ``{bucket}/{snapshots_path}/{date}/{chain}/`` (rclone copy +
+        rclone check). Safe to call only after the export files exist.
+
+        Args:
+            chain: Chain name.
+            day: Export date.
+            transfers_rows: Rows exported from the transfers table.
+            dex_rows: Rows exported from the DEX table.
+            start_block: First block in the snapshot (0 = unknown).
+            end_block: Last block in the snapshot (0 = unknown).
+            bucket: rclone remote root for snapshots.
+            snapshots_path: Path prefix inside the bucket.
+
+        Returns:
+            True when the snapshot (manifest + parquet) was uploaded and
+            verified on B2.
+        """
+        local = _local_dir(self.data_dir, chain, day)
+        if not local.exists():
+            logger.warning("snapshot_publish_missing_dir", chain=chain, day=day.isoformat())
+            return False
+
+        tables: dict[str, dict[str, Any]] = {}
+        for kind, table_name in (("transfers", "evm_transfers"), ("dex", "dex_events")):
+            path = _local_path(self.data_dir, chain, day, kind)
+            if not path.exists():
+                continue
+            tables[table_name] = {
+                "rows": transfers_rows if kind == "transfers" else dex_rows,
+                "size_bytes": path.stat().st_size,
+                "parquet_files": [path.name],
+            }
+        if not tables:
+            logger.warning("snapshot_publish_no_files", chain=chain, day=day.isoformat())
+            return False
+
+        manifest = build_manifest(
+            chain,
+            day.isoformat(),
+            start_block,
+            end_block,
+            tables,
+        )
+        manifest_path = local / MANIFEST_NAME
+        try:
+            manifest_path.write_text(manifest_json(manifest))
+        except OSError as exc:
+            logger.warning("snapshot_manifest_write_failed", path=str(manifest_path), error=str(exc)[:100])
+            return False
+
+        remote = manifest.snapshot_dir(bucket, snapshots_path)
+        ok = self._upload_dir(local, remote)
+        if ok:
+            logger.info(
+                "snapshot_published",
+                chain=chain,
+                date=day.isoformat(),
+                remote=remote,
+                rows=manifest.total_rows(),
+            )
+        else:
+            logger.warning("snapshot_publish_failed", chain=chain, date=day.isoformat(), remote=remote)
+        return ok
+
 
 __all__ = [
     "ParquetExporter",
@@ -766,4 +931,5 @@ __all__ = [
     "_remote_dir",
     "_remote_path",
     "_state_marker",
+    "_block_range",
 ]

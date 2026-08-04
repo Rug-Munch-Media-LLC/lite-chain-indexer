@@ -6,6 +6,20 @@ All notable changes to LiteChainIndexer will be documented in this file.
 
 ### Features
 
+- **On-demand historical RPC queries** (`lite_indexer/query/`) — the
+  "no-full-indexing-needed" architecture. A new `QueryRouter` answers
+  queries about ANY block/tx/address historically by routing to the best
+  data source: ClickHouse (indexed, hot) → B2 parquet (cold) → live RPC
+  (on-demand). The system never says "data not available": when a range
+  is not indexed, `RPCFetcher` dials the chain's RPC pool for exactly the
+  tx/address/block in question (bounded by
+  `ON_DEMAND_RPC_MAX_BLOCK_RANGE`, cached with `QueryCache` for
+  `ON_DEMAND_RPC_CACHE_TTL`, and rate-limit protected by a
+  consecutive-call budget `ON_DEMAND_RPC_MAX_CONSECUTIVE`). New CLI:
+  `lite-indexer query --chain X --tx/--address/--block/--deployer`.
+  The API's `/transfers` and `/deployers` endpoints fall through to the
+  router when the indexed stores return nothing for a specific chain.
+  Gated by `ON_DEMAND_RPC_ENABLED` (default on).
 - **Intelligent RPC throttling** (`lite_indexer/rpc/throttle.py`) — new
   `RPCRateTracker` that tracks per-endpoint `X-RateLimit-*` /
   `Retry-After` headers, honors a 429's `Retry-After` exactly, slows down

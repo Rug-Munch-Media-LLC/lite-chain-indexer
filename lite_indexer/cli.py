@@ -7,7 +7,10 @@ Usage:
     lite-indexer --daemon --chains ethereum,base,bsc
     lite-indexer --daemon --dex --deployers --start-from-head
     lite-indexer export-parquet --chain ethereum --date 2026-07-30 --upload --delete-after-upload
-    lite-indexer export-parquet --chain all --date 2026-07-30 --upload --delete-after-upload
+    lite-indexer export-parquet --chain all --date 2026-07-30 --upload --delete-after-upload --publish-snapshot
+    lite-indexer bootstrap --list
+    lite-indexer bootstrap --chain ethereum --from-snapshot 2026-08-01
+    lite-indexer bootstrap --all
 """
 
 from __future__ import annotations
@@ -27,7 +30,6 @@ import httpx
 
 from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
 from lite_indexer.chains.parallelism import chain_priority
-from lite_indexer.health import ChainStallTracker
 from lite_indexer.config import (
     BATCH_SIZE,
     CHAIN_AUTO_DISABLE_ENABLED,
@@ -35,11 +37,12 @@ from lite_indexer.config import (
     CHAIN_STALL_DISABLE_SECONDS,
     DATA_DIR,
     DISK_CAP_BYTES,
-    MEMORY_PAUSE_SLEEP,
     MAX_CONCURRENT_CHAINS,
+    MEMORY_PAUSE_SLEEP,
     PRICING_ENABLED,
     RECONCILIATION_SAMPLE_SIZE,
 )
+from lite_indexer.health import ChainStallTracker
 from lite_indexer.indexer import LiteIndexer
 from lite_indexer.logging import get_logger, setup_logging
 from lite_indexer.storage.clickhouse import ClickHouseWriter
@@ -265,6 +268,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="rclone remote root (default: PARQUET_REMOTE env or b2-crypt:chain-data/parquet)",
     )
     export_parser.add_argument(
+        "--publish-snapshot",
+        action="store_true",
+        help="Mirror each exported (chain, date) to the bootstrap snapshot "
+        "location with a manifest.json so `lite-indexer bootstrap` can "
+        "discover and replay it",
+    )
+    export_parser.add_argument(
+        "--snapshot-bucket",
+        type=str,
+        default=None,
+        help="rclone remote root for bootstrap snapshots (default: BOOTSTRAP_B2_BUCKET env or b2-crypt:chain-data)",
+    )
+    export_parser.add_argument(
+        "--snapshot-path",
+        type=str,
+        default=None,
+        help="Path prefix inside the snapshot bucket (default: BOOTSTRAP_PARQUET_PATH env or snapshots)",
+    )
+    export_parser.add_argument(
         "--data-dir",
         type=str,
         default=None,
@@ -308,6 +330,153 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Preview whale_up/whale_down counts without issuing mutations",
+    )
+
+    # ── bootstrap subcommand ─────────────────────────────────────────
+    # Replay public B2 parquet snapshots into ClickHouse instead of
+    # re-indexing from genesis over free RPCs (days → minutes). This is
+    # the answer to "your backfill is RPC-bound": download the free public
+    # snapshot, import via ClickHouse file(), verify row counts, and set
+    # the state high-water mark so `lite-indexer daemon` resumes live.
+    bootstrap_parser = sub.add_parser(
+        "bootstrap",
+        help="Bootstrap indexer state from public B2 parquet snapshots",
+        description=(
+            "Replay a public B2 parquet snapshot into ClickHouse instead "
+            "of re-indexing from genesis over free RPCs. Downloads the "
+            "snapshot manifest + parquet files, imports them via "
+            "INSERT INTO ... SELECT * FROM file('*.parquet'), verifies "
+            "row counts against the manifest, and advances the state "
+            "high-water mark so the daemon resumes live from the snapshot "
+            "end block."
+        ),
+    )
+    bootstrap_parser.add_argument(
+        "--chain",
+        default="ethereum",
+        choices=sorted(SUPPORTED_CHAINS.keys()),
+        help="Chain to bootstrap (default: ethereum)",
+    )
+    bootstrap_parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Bootstrap every supported chain",
+    )
+    bootstrap_parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List available snapshots on B2 (no import)",
+    )
+    bootstrap_parser.add_argument(
+        "--from-snapshot",
+        type=str,
+        default="latest",
+        help="Snapshot date to use, YYYY-MM-DD, or 'latest' (default: latest)",
+    )
+    bootstrap_parser.add_argument(
+        "--target-db",
+        type=str,
+        default="wallet_memory",
+        help="ClickHouse database to import into (default: wallet_memory)",
+    )
+    bootstrap_parser.add_argument(
+        "--bucket",
+        type=str,
+        default=None,
+        help="rclone remote root for snapshots (default: BOOTSTRAP_B2_BUCKET env)",
+    )
+    bootstrap_parser.add_argument(
+        "--snapshots-path",
+        type=str,
+        default=None,
+        help="Path prefix inside the bucket (default: BOOTSTRAP_PARQUET_PATH env)",
+    )
+    bootstrap_parser.add_argument(
+        "--rclone-bin",
+        type=str,
+        default=None,
+        help="Path to the rclone binary (default: PARQUET_RCLONE_BIN env or 'rclone')",
+    )
+    bootstrap_parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Data directory for state files + download staging (default: DATA_DIR)",
+    )
+    bootstrap_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the import plan without downloading or writing",
+    )
+
+    # ── query subcommand (on-demand historical RPC) ──────────────────
+    # Answer a query about ANY block/tx/address historically WITHOUT
+    # indexing the whole chain: the QueryRouter routes to ClickHouse
+    # (indexed) → B2 parquet (cold) → live RPC (on-demand), so the CLI
+    # never says "data not available". Exactly one of --tx / --address /
+    # --block / --deployer must be given.
+    query_parser = sub.add_parser(
+        "query",
+        help="On-demand historical RPC query (no full indexing required)",
+        description=(
+            "Answer a query about ANY block/tx/address historically by "
+            "routing to the best data source: ClickHouse (indexed) → B2 "
+            "parquet (cold) → live RPC (on-demand). Exactly one of "
+            "--tx / --address / --block / --deployer must be given."
+        ),
+    )
+    query_parser.add_argument(
+        "--chain",
+        default="ethereum",
+        choices=sorted(SUPPORTED_CHAINS.keys()),
+        help="Chain to query (default: ethereum)",
+    )
+    query_parser.add_argument(
+        "--tx",
+        type=str,
+        default=None,
+        help="Transaction hash to look up (routed CH → cold → RPC)",
+    )
+    query_parser.add_argument(
+        "--address",
+        type=str,
+        default=None,
+        help="Wallet address for transfer history (routed CH → cold → RPC)",
+    )
+    query_parser.add_argument(
+        "--block",
+        type=int,
+        default=None,
+        help="Block number to fetch (blocks are always live RPC)",
+    )
+    query_parser.add_argument(
+        "--deployer",
+        type=str,
+        default=None,
+        help="Contract address to resolve its deployer (routed CH → cold → RPC)",
+    )
+    query_parser.add_argument(
+        "--from-block",
+        type=int,
+        default=None,
+        help="Inclusive start block for --address queries",
+    )
+    query_parser.add_argument(
+        "--to-block",
+        type=int,
+        default=None,
+        help="Inclusive end block for --address queries",
+    )
+    query_parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="Max rows for --address queries (default: 100)",
+    )
+    query_parser.add_argument(
+        "--no-rpc",
+        action="store_true",
+        help="Disable the on-demand RPC fallback (indexed data only)",
     )
     return parser.parse_args(argv)
 
@@ -617,6 +786,14 @@ async def async_main(args: argparse.Namespace) -> int:
     if args.command == "backfill-whales":
         return run_backfill_whales(args)
 
+    # ── bootstrap subcommand ─────────────────────────────────────────
+    if args.command == "bootstrap":
+        return await run_bootstrap_cli(args)
+
+    # ── query subcommand (on-demand historical RPC) ──────────────────
+    if args.command == "query":
+        return await run_query_cli(args)
+
     # ── reconcile subcommand (TrueBlocks-style) ──────────────────────
     if args.command == "reconcile":
         from lite_indexer.rpc import RpcClient
@@ -698,12 +875,19 @@ def run_export_parquet(args: argparse.Namespace) -> int:
 
     Args:
         args: Parsed CLI args (chain, date, days, upload,
-            delete_after_upload, dry_run, remote, data_dir).
+            delete_after_upload, dry_run, remote, publish_snapshot,
+            snapshot_bucket, snapshot_path, data_dir).
 
     Returns:
         Process exit code (0 = success, 2 = usage error).
     """
-    from lite_indexer.config import PARQUET_COLD_DAYS, PARQUET_DIR, PARQUET_REMOTE
+    from lite_indexer.config import (
+        BOOTSTRAP_B2_BUCKET,
+        BOOTSTRAP_PARQUET_PATH,
+        PARQUET_COLD_DAYS,
+        PARQUET_DIR,
+        PARQUET_REMOTE,
+    )
     from lite_indexer.storage.parquet import ParquetExporter
     from lite_indexer.strategies import SUPPORTED_CHAINS
 
@@ -741,6 +925,9 @@ def run_export_parquet(args: argparse.Namespace) -> int:
             upload=args.upload,
             delete=args.delete_after_upload,
             dry_run=args.dry_run,
+            publish_snapshot=args.publish_snapshot,
+            snapshot_bucket=args.snapshot_bucket or BOOTSTRAP_B2_BUCKET,
+            snapshot_path=args.snapshot_path or BOOTSTRAP_PARQUET_PATH,
         )
         summaries.append(summary.to_dict())
         if summary.errors:
@@ -773,8 +960,7 @@ async def run_recover_cli(
         2 = some chains failed).
     """
     from lite_indexer.recovery import recover_chain_state
-
-    from lite_indexer.chains import SUPPORTED_CHAINS
+    from lite_indexer.strategies import SUPPORTED_CHAINS
 
     writer = ClickHouseWriter()
     ch_client = writer.client()
@@ -818,8 +1004,7 @@ def run_integrity_check_cli(args: argparse.Namespace) -> int:
         2 = gaps found).
     """
     from lite_indexer.recovery import run_integrity_check, summarize_report
-
-    from lite_indexer.chains import SUPPORTED_CHAINS
+    from lite_indexer.strategies import SUPPORTED_CHAINS
 
     writer = ClickHouseWriter()
     ch_client = writer.client()
@@ -862,6 +1047,135 @@ def run_backfill_whales(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
     )
     print(json.dumps(result, default=str))  # noqa: T201
+    return 0
+
+
+async def run_bootstrap_cli(args: argparse.Namespace) -> int:
+    """Run the bootstrap subcommand (async).
+
+    Handles ``--list`` (enumerate snapshots), ``--chain`` (one chain),
+    ``--all`` (every supported chain), ``--from-snapshot`` (date or
+    latest), and ``--dry-run`` (preview without downloading/importing).
+
+    Args:
+        args: Parsed CLI args.
+
+    Returns:
+        Process exit code (0 = success, 1 = partial/full failure,
+        2 = usage error).
+    """
+    from lite_indexer.bootstrap import SnapshotBootstrap
+    from lite_indexer.config import BOOTSTRAP_B2_BUCKET, BOOTSTRAP_PARQUET_PATH, PARQUET_RCLONE_BIN
+    from lite_indexer.strategies import SUPPORTED_CHAINS
+
+    if args.all and args.chain != "ethereum":
+        print("error: --all and --chain are mutually exclusive", file=sys.stderr)  # noqa: T201
+        return 2
+    if args.list and args.all:
+        print("error: --list and --all are mutually exclusive", file=sys.stderr)  # noqa: T201
+        return 2
+
+    from lite_indexer.config import DATA_DIR
+
+    data_path = Path(args.data_dir) if args.data_dir else DATA_DIR
+    bootstrapper = SnapshotBootstrap(
+        bucket=args.bucket or BOOTSTRAP_B2_BUCKET,
+        snapshots_path=args.snapshots_path or BOOTSTRAP_PARQUET_PATH,
+        rclone_bin=args.rclone_bin or PARQUET_RCLONE_BIN,
+        local_dir=data_path / "bootstrap",
+        state_dir=data_path / "state",
+    )
+
+    if args.list:
+        snapshots = await bootstrapper.list_snapshots(chain=None)
+        out: dict[str, Any] = {"status": "ok", "count": len(snapshots), "snapshots": snapshots}
+        print(json.dumps(out, default=str))  # noqa: T201
+        return 0
+
+    if args.all:
+        chains = sorted(SUPPORTED_CHAINS.keys())
+        result = await bootstrapper.bootstrap_all(
+            chains=chains,
+            snapshot_date=args.from_snapshot,
+            target_db=args.target_db,
+            dry_run=args.dry_run,
+        )
+    else:
+        result = await bootstrapper.bootstrap_chain(
+            args.chain,
+            snapshot_date=args.from_snapshot,
+            target_db=args.target_db,
+            dry_run=args.dry_run,
+        )
+
+    print(json.dumps(result, default=str))  # noqa: T201
+    status = result.get("status", "error") if isinstance(result, dict) else "error"
+    return 0 if status in ("ok", "dry_run", "no_snapshot") else 1
+
+
+async def run_query_cli(args: argparse.Namespace) -> int:
+    """Run the on-demand historical RPC ``query`` subcommand (async).
+
+    Builds a :class:`lite_indexer.query.QueryRouter` over ClickHouse (hot),
+    the B2 parquet cold store, and the live RPC pool, then answers exactly
+    one of: --tx / --address / --block / --deployer.
+
+    Args:
+        args: Parsed CLI args.
+
+    Returns:
+        Process exit code (0 = ok, 1 = runtime error, 2 = usage error).
+    """
+    from lite_indexer.config import HISTORICAL_PARQUET_REMOTE, ON_DEMAND_RPC_ENABLED
+    from lite_indexer.query import QueryRouter
+    from lite_indexer.storage.clickhouse import ClickHouseWriter
+    from lite_indexer.storage.cold_store import ColdStore
+
+    modes = [bool(args.tx), bool(args.address), args.block is not None, bool(args.deployer)]
+    if sum(modes) != 1:
+        print("error: exactly one of --tx / --address / --block / --deployer is required", file=sys.stderr)  # noqa: T201
+        return 2
+    if (args.from_block is not None or args.to_block is not None) and not args.address:
+        print("error: --from-block/--to-block only apply to --address queries", file=sys.stderr)  # noqa: T201
+        return 2
+
+    writer = ClickHouseWriter()
+    ch_client = writer.client()
+    router = QueryRouter(
+        ch_client=ch_client,
+        cold_store=ColdStore(remote=HISTORICAL_PARQUET_REMOTE),
+        on_demand_enabled=ON_DEMAND_RPC_ENABLED and not args.no_rpc,
+    )
+
+    out: dict[str, Any] = {"chain": args.chain, "on_demand_rpc": router.on_demand_enabled}
+    if args.tx:
+        row = await router.get_transfer(args.chain, args.tx)
+        out["kind"] = "transfer"
+        out["found"] = row is not None
+        out["result"] = row
+    elif args.address:
+        rows = await router.get_transfers(
+            args.chain,
+            args.address,
+            from_block=args.from_block,
+            to_block=args.to_block,
+            limit=args.limit,
+        )
+        out["kind"] = "transfers"
+        out["count"] = len(rows)
+        out["results"] = rows
+    elif args.block is not None:
+        block = await router.get_block(args.chain, args.block)
+        out["kind"] = "block"
+        out["found"] = bool(block)
+        out["result"] = block
+    elif args.deployer:
+        info = await router.get_deployer_info(args.chain, args.deployer)
+        out["kind"] = "deployer"
+        out["found"] = info is not None
+        out["result"] = info
+
+    print(json.dumps(out, default=str))  # noqa: T201
     return 0
 
 

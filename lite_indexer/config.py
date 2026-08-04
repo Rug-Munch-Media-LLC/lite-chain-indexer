@@ -556,6 +556,80 @@ PARQUET_STATE_DIR: Path = STATE_DIR / "parquet"
 # and its status (pending / exporting / uploaded / deleted / failed).
 CH_PARQUET_STATE_TABLE: str = "wallet_memory.parquet_export_state"
 
+# ── Snapshot Bootstrap (public parquet replay) ─────────────────────────
+# ``lite-indexer bootstrap`` downloads public parquet snapshots from B2
+# and imports them into ClickHouse in minutes instead of re-indexing a
+# chain from genesis over free RPCs. BOOTSTRAP_B2_BUCKET is the rclone
+# remote root that also holds the live cold tier; BOOTSTRAP_PARQUET_PATH
+# is the prefix inside it where snapshot folders ({date}/{chain}/) live.
+BOOTSTRAP_B2_BUCKET: str = os.environ.get("BOOTSTRAP_B2_BUCKET", "b2-crypt:chain-data")
+BOOTSTRAP_PARQUET_PATH: str = os.environ.get("BOOTSTRAP_PARQUET_PATH", "snapshots")
+# Local staging dir for downloaded snapshots before the ClickHouse import.
+BOOTSTRAP_LOCAL_DIR: Path = Path(os.environ.get("BOOTSTRAP_LOCAL_DIR", str(DATA_DIR / "bootstrap")))
+# Optional mount root for snapshot parquet files (empty = use local dir).
+BOOTSTRAP_CH_FILE_ROOT: str = os.environ.get("BOOTSTRAP_CH_FILE_ROOT", "")
+# rclone timeout (seconds) for snapshot downloads/uploads.
+BOOTSTRAP_RCLONE_TIMEOUT: int = int(os.environ.get("BOOTSTRAP_RCLONE_TIMEOUT", "1200"))
+
+# ── Transparent Historical Access (THA) ────────────────────────────────
+# Unified hot (ClickHouse) + cold (B2 parquet) reads through one access
+# layer (lite_indexer.storage.historical.HistoricalAccess). When enabled,
+# the API's query() consults the access layer so every read spans the
+# whole archive transparently: hot rows (< HISTORICAL_HOT_TTL_DAYS) come
+# from ClickHouse for sub-second reads, cold rows back to genesis come
+# from B2 parquet via DuckDB. Disabling keeps the legacy hot-only path.
+HISTORICAL_ACCESS_ENABLED: bool = os.environ.get("HISTORICAL_ACCESS_ENABLED", "1") != "0"
+
+# How many days of data are considered "hot" (kept at full fidelity in
+# ClickHouse). Auto-detected from the table TTL expression when possible;
+# this value is the fallback and the floor for detection.
+HISTORICAL_HOT_TTL_DAYS: int = int(os.environ.get("HISTORICAL_HOT_TTL_DAYS", "30"))
+
+# Port for the rclone HTTP proxy that serves B2 parquet to ClickHouse's
+# url() table function (scripts/serve-b2-http.sh). Also the port the
+# *_historical views in migrations/006_historical_views.sql read from.
+B2_HTTP_PROXY_PORT: int = int(os.environ.get("B2_HTTP_PROXY_PORT", "8090"))
+
+# Timeout (seconds) for cold queries. Cold reads are slower than hot
+# reads (DuckDB over parquet on B2), so they get their own budget. The
+# timeout is enforced at the async boundary (the DuckDB thread is not
+# cancellable, but the caller is never blocked past this budget).
+COLD_QUERY_TIMEOUT: int = int(os.environ.get("COLD_QUERY_TIMEOUT", "60"))
+
+# rclone remote root for the cold parquet tier. Defaults to the live
+# daily-export location (PARQUET_REMOTE); the bootstrap bucket root is
+# the same remote with a different prefix, so b2_bucket defaults here.
+HISTORICAL_PARQUET_REMOTE: str = os.environ.get("HISTORICAL_PARQUET_REMOTE", PARQUET_REMOTE)
+
+# ── On-Demand Historical RPC Queries (lite_indexer.query) ───────────────
+# The "no-full-indexing-needed" architecture: the QueryRouter answers
+# queries about ANY block/tx/address historically by routing to the best
+# data source — ClickHouse (indexed, hot) → B2 parquet (cold) → live RPC
+# (on-demand). The system never says "data not available": when the
+# requested range is not indexed, it dials the chain's RPC pool for the
+# exact block/tx in question (bounded, rate-limit-protected, cached).
+ON_DEMAND_RPC_ENABLED: bool = os.environ.get("ON_DEMAND_RPC_ENABLED", "1") != "0"
+
+# How long (seconds) fetched RPC results are cached before refetching.
+# Keeps repeated queries for the same tx/address/block off the RPC tier.
+ON_DEMAND_RPC_CACHE_TTL: int = int(os.environ.get("ON_DEMAND_RPC_CACHE_TTL", "3600"))
+
+# Max block range for a single on-demand RPC query. Address/transfer
+# queries beyond this are clamped to the newest window (tip - range) so a
+# single request can never blow a free-tier endpoint's range cap.
+ON_DEMAND_RPC_MAX_BLOCK_RANGE: int = int(os.environ.get("ON_DEMAND_RPC_MAX_BLOCK_RANGE", "5000"))
+
+# Max consecutive on-demand RPC calls before pausing (rate-limit
+# protection). Free tiers throttle bursts; after this many calls the
+# fetcher sleeps ON_DEMAND_RPC_PAUSE_SECONDS, then resumes counting.
+ON_DEMAND_RPC_MAX_CONSECUTIVE: int = int(os.environ.get("ON_DEMAND_RPC_MAX_CONSECUTIVE", "10"))
+
+# Pause duration (seconds) after ON_DEMAND_RPC_MAX_CONSECUTIVE calls.
+ON_DEMAND_RPC_PAUSE_SECONDS: float = float(os.environ.get("ON_DEMAND_RPC_PAUSE_SECONDS", "1.0"))
+
+# Max entries in the on-demand RPC result cache (bounds memory).
+ON_DEMAND_RPC_CACHE_MAX_ENTRIES: int = int(os.environ.get("ON_DEMAND_RPC_CACHE_MAX_ENTRIES", "2048"))
+
 # ── NDJSON Write-Ahead Log ─────────────────────────────────────────────
 # Redundant local replay buffer (events.jsonl per chain/date). The durable
 # store is ClickHouse, so this is DISABLED by default — it costs ~15% CPU
@@ -796,3 +870,25 @@ NATS_JETSTREAM_ENABLED: bool = os.environ.get("NATS_JETSTREAM_ENABLED", "1") != 
 
 # JetStream stream name auto-provisioned to capture indexed events.
 NATS_STREAM_NAME: str = os.environ.get("NATS_STREAM_NAME", "CHAIN_EVENTS")
+
+# ── Webhook Delivery (push platform) ────────────────────────────────────
+# POST every NATS event to registered webhooks (HMAC-SHA256 signed,
+# bounded retries). Requires NATS_ENABLED=1 — the delivery service is a
+# NATS subscriber. Default ON.
+WEBHOOK_ENABLED: bool = os.environ.get("WEBHOOK_ENABLED", "1") != "0"
+
+# SQLite persistence for subscriptions + delivery log.
+WEBHOOK_DB_PATH: str = os.environ.get("WEBHOOK_DB_PATH", str(DATA_DIR / "webhooks.db"))
+
+# Retry attempts after the initial POST (backoff 1s, 4s, 16s).
+WEBHOOK_MAX_RETRIES: int = int(os.environ.get("WEBHOOK_MAX_RETRIES", "3"))
+
+# Per-request HTTP timeout and total delivery budget (seconds).
+WEBHOOK_TIMEOUT_SECONDS: float = float(os.environ.get("WEBHOOK_TIMEOUT_SECONDS", "10.0"))
+WEBHOOK_TOTAL_TIMEOUT_SECONDS: float = float(os.environ.get("WEBHOOK_TOTAL_TIMEOUT_SECONDS", "30.0"))
+
+# Backoff sequence between retries (seconds), matching .env.example.
+WEBHOOK_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 4.0, 16.0)
+
+# Per-IP cap on webhook registrations (API layer).
+WEBHOOK_MAX_PER_IP: int = int(os.environ.get("WEBHOOK_MAX_PER_IP", "10"))

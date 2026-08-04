@@ -25,9 +25,12 @@ from slowapi.util import get_remote_address
 
 from api import __version__
 from api.config import API_TITLE, API_VERSION, RATE_LIMIT_KEY_PREFIX, RATE_LIMIT_PER_MINUTE
+from api.db import get_historical
 from api.graphql import graphql_router
 from api.routers import deployers, intel, search, stats, system, trace, transfers, whales
 from api.routers import query as query_router
+from lite_indexer.config import WEBHOOK_MAX_PER_IP
+from lite_indexer.webhooks import router as webhooks
 
 REQUEST_COUNT = Counter(
     "chain_api_requests_total",
@@ -80,6 +83,13 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
     app.add_middleware(SlowAPIMiddleware)
 
+    # Transparent Historical Access (THA): the unified hot + cold layer.
+    # Constructed lazily — no ClickHouse connection is forced at startup
+    # (the access layer resolves its client on first use). Set eagerly so
+    # app.state.historical exists even when the lifespan has not run
+    # (TestClient without a context manager does not trigger lifespan).
+    app.state.historical = get_historical()
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -122,6 +132,11 @@ def create_app() -> FastAPI:
 
     # Wallet intelligence — rate-limited per-IP.
     app.include_router(intel.router)
+
+    # Webhook management — registrations are the only mutating endpoint,
+    # capped per IP (default 10/hour) to bound abuse surface.
+    webhooks.register_webhook = limiter.limit(f"{WEBHOOK_MAX_PER_IP}/hour")(webhooks.register_webhook)
+    app.include_router(webhooks.router)
 
     # GraphQL read surface (competitive parity with GraphQL-first indexers).
     # Rate limiting is inherited from the default per-IP limiter; the

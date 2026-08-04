@@ -9,9 +9,12 @@
 #      (PARQUET_DIR/{chain}/{date}/, verified row count + schema),
 #   2. uploads the directory to b2-crypt:chain-data/parquet/{chain}/{date}/
 #      via `rclone copy` + `rclone check`,
-#   3. records the run in wallet_memory.parquet_export_state, and
+#   3. records the run in wallet_memory.parquet_export_state,
 #   4. deletes the rows from ClickHouse ONLY after the upload is verified
-#      (--delete-after-upload).
+#      (--delete-after-upload), and
+#   5. publishes a bootstrap snapshot (--publish-snapshot): mirrors each
+#      exported (chain, date) to b2-crypt:chain-data/snapshots/{date}/{chain}/
+#      with a manifest.json so `lite-indexer bootstrap` can replay it.
 #
 # Idempotent: dates already exported are skipped (state marker + table).
 
@@ -34,7 +37,8 @@ for chain in $CHAINS; do
         --date "$YESTERDAY" \
         --upload \
         --remote "b2-crypt:chain-data/parquet" \
-        --delete-after-upload
+        --delete-after-upload \
+        --publish-snapshot
 done
 
 echo "==> lite-indexer parquet daily export complete ($(date -u +%Y-%m-%dT%H:%M:%SZ))"

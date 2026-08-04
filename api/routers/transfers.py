@@ -23,6 +23,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 
 from api.db import query
+from api.ondemand import run_ondemand
 from api.params import (
     chain_clause,
     clamp_limit,
@@ -31,6 +32,7 @@ from api.params import (
     has_more,
 )
 from api.schemas import Page, PageMeta, TransferEvent
+from lite_indexer.config import ON_DEMAND_RPC_ENABLED
 
 router = APIRouter(prefix="/api/v1/transfers", tags=["transfers"])
 
@@ -77,6 +79,15 @@ def get_transfers(
         events = _full_history(wallet, chain_sql, date_sql, base_params, page_limit, page_offset)
     else:
         events = _summary_history(wallet, direction, chain_sql, date_sql, base_params, page_limit, page_offset)
+
+    # On-demand RPC fallback: the indexer never says "data not available".
+    # When the indexed stores (ClickHouse + B2 parquet) have no rows for
+    # this wallet on a *specific* chain, the QueryRouter dials the chain's
+    # RPC pool for the most recent on-demand window (bounded, cached,
+    # rate-limit protected). Unbounded (all-chain) queries skip the fallback
+    # because RPC eth_getLogs is per-chain.
+    if not events and chain and ON_DEMAND_RPC_ENABLED:
+        events = _on_demand_transfers(wallet, chain, page_limit, include_counterparty)
 
     return Page[TransferEvent](
         data=events,
@@ -185,3 +196,54 @@ def _fmt_ts(value: object) -> str:
     if not value:
         return ""
     return str(value).replace(" ", "T") + "Z"
+
+
+def _on_demand_transfers(
+    wallet: str,
+    chain: str,
+    limit: int,
+    include_counterparty: bool,
+) -> list[TransferEvent]:
+    """On-demand RPC fallback for a wallet the indexed stores don't cover.
+
+    Runs the async :class:`lite_indexer.query.QueryRouter` on the API's
+    dedicated event loop (see :mod:`api.ondemand`) and returns transfers
+    from the chain's most recent on-demand window. Best-effort: any
+    failure (timeout, RPC error, ClickHouse probe) degrades to the empty
+    indexed-only result.
+    """
+    from api.db import get_query_router
+
+    router = get_query_router()
+    if router is None:
+        return []
+    try:
+        rows = run_ondemand(router.get_transfers(chain, wallet, limit=limit))
+    except Exception:  # noqa: BLE001 — fallback is best-effort
+        return []
+    events: list[TransferEvent] = []
+    for row in rows:
+        from_address = str(row.get("from_address", ""))
+        to_address = str(row.get("to_address", ""))
+        direction = "out" if from_address == wallet else "in"
+        if include_counterparty:
+            shown_from, shown_to = from_address, to_address
+        else:
+            # Summary-mode shape: expose only the wallet side as `address`.
+            shown_from = wallet if direction == "out" else ""
+            shown_to = wallet if direction == "in" else ""
+        events.append(
+            TransferEvent(
+                chain=str(row.get("chain", chain)),
+                block_number=int(row.get("block_number", 0) or 0),
+                block_timestamp=_fmt_ts(row.get("block_timestamp")),
+                tx_hash=str(row.get("tx_hash", "")),
+                log_index=int(row.get("log_index", 0) or 0),
+                from_address=shown_from,
+                to_address=shown_to,
+                token_address=str(row.get("token_address", "")),
+                value=str(row.get("value", "")),
+                direction=direction,
+            )
+        )
+    return events

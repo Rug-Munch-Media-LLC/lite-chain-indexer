@@ -11,6 +11,21 @@ settings: ``max_execution_time`` (kill long scans) and
 ``max_result_rows`` / ``max_block_size`` (bounded memory). The DB user is
 granted SELECT-only on ``wallet_memory.*`` — the server refuses writes
 even if application validation is bypassed.
+
+Transparent Historical Access (THA): when ``HISTORICAL_ACCESS_ENABLED``,
+``query()`` consults :class:`lite_indexer.storage.historical.HistoricalAccess`
+so reads over supported event tables span hot ClickHouse + cold B2
+parquet with zero API changes:
+
+* ``maybe_rewrite_view`` re-points single-table SELECTs at the unified
+  ``*_historical`` ClickHouse views (migrations/006_historical_views.sql)
+  when they exist — ClickHouse applies the exact same filters to both
+  tiers.
+* ``query_sql`` routes simple portable SELECTs through the Python
+  split/merge engine as a fallback.
+
+Anything not safely routable falls back to the original hot-path SQL, so
+behavior is unchanged unless a query can genuinely span both tiers.
 """
 
 from __future__ import annotations
@@ -30,6 +45,7 @@ from api.config import (
     CH_QUERY_TIMEOUT,
     CH_USER,
 )
+from lite_indexer.config import HISTORICAL_ACCESS_ENABLED, HISTORICAL_PARQUET_REMOTE
 
 # Tables the public API may read. Every /query statement is checked
 # against this allowlist at the application layer (the DB user is also
@@ -71,6 +87,69 @@ TABLE_ALIASES: dict[str, str] = {
 
 _local = threading.local()
 
+# Lazy Transparent Historical Access singleton (None when disabled).
+_historical: Any | None = None
+_historical_init = False
+
+# Lazy on-demand QueryRouter singleton (None when disabled).
+_query_router: Any | None = None
+_query_router_init = False
+
+
+def get_historical() -> Any | None:
+    """Return the shared :class:`HistoricalAccess` (None when disabled).
+
+    Constructed lazily on first use — no ClickHouse connection is forced
+    at app creation (the access layer resolves its client on demand).
+    """
+    global _historical, _historical_init
+    if _historical_init:
+        return _historical
+    _historical_init = True
+    if not HISTORICAL_ACCESS_ENABLED:
+        return None
+    try:
+        from lite_indexer.storage.historical import HistoricalAccess
+
+        _historical = HistoricalAccess(
+            client_factory=get_client,
+            b2_bucket=HISTORICAL_PARQUET_REMOTE,
+        )
+    except Exception:  # noqa: BLE001 — THA is optional
+        _historical = None
+    return _historical
+
+
+def get_query_router() -> Any | None:
+    """Return the shared on-demand :class:`QueryRouter` (None when disabled).
+
+    The "no-full-indexing" layer: when the indexed stores (ClickHouse +
+    B2 parquet) cannot answer a query, the router falls through to the
+    chain's RPC pool on demand (cached, rate-limit protected). Constructed
+    lazily on first use and gated by ``ON_DEMAND_RPC_ENABLED`` — no
+    ClickHouse connection or RPC call is made at app creation.
+    """
+    global _query_router, _query_router_init
+    if _query_router_init:
+        return _query_router
+    _query_router_init = True
+    from lite_indexer.config import ON_DEMAND_RPC_ENABLED
+
+    if not ON_DEMAND_RPC_ENABLED:
+        return None
+    try:
+        from lite_indexer.query import QueryRouter
+        from lite_indexer.storage.cold_store import ColdStore
+
+        _query_router = QueryRouter(
+            ch_client=None,
+            cold_store=ColdStore(remote=HISTORICAL_PARQUET_REMOTE),
+            client_factory=get_client,
+        )
+    except Exception:  # noqa: BLE001 — on-demand routing is optional
+        _query_router = None
+    return _query_router
+
 
 def get_client() -> Client:
     """Return a thread-local ClickHouse client (lazily connected)."""
@@ -105,10 +184,28 @@ def _query_settings(extra: dict[str, Any] | None = None) -> dict[str, Any]:
 def query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Execute a read-only SELECT and return rows as dicts.
 
+    When Transparent Historical Access is enabled, single-table SELECTs
+    over supported event tables are transparently served from the unified
+    hot + cold layer (ClickHouse + B2 parquet). Every other statement
+    takes the original ClickHouse hot path unchanged.
+
     Raises:
         clickhouse_driver.errors.ServerException: on ClickHouse errors
             (invalid SQL, timeout, access denied).
     """
+    historical = get_historical()
+    if historical is not None:
+        rewritten = historical.maybe_rewrite_view(sql)
+        if rewritten != sql:
+            return _query_clickhouse(rewritten, params)
+        routed = historical.query_sql(sql, params or {})
+        if routed is not None:
+            return routed
+    return _query_clickhouse(sql, params)
+
+
+def _query_clickhouse(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Execute SQL against ClickHouse and return rows as dicts."""
     rows, column_types = get_client().execute(
         sql,
         params or {},
@@ -127,7 +224,9 @@ def query_rows(
     """Execute SQL and return raw (rows, column_types) — used by /query.
 
     Keeps the raw shape so the raw-SQL endpoint can return the exact
-    columns the caller selected, including non-string values.
+    columns the caller selected, including non-string values. Raw SQL over
+    arbitrary allowlisted tables stays on the ClickHouse hot path — cold
+    routing applies to the structured event-table reads in ``query()``.
     """
     return get_client().execute(  # type: ignore[no-any-return]
         sql,

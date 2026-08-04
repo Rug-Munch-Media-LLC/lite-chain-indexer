@@ -62,6 +62,7 @@ from lite_indexer.config import (
     VECTOR_INGESTION_BATCH_SIZE,
     VECTOR_INGESTION_ENABLED,
     VECTOR_INGESTION_INTERVAL_BLOCKS,
+    WEBHOOK_ENABLED,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.plugin import BasePlugin, PluginContext, PluginLoader
@@ -87,6 +88,7 @@ from lite_indexer.strategies import (
 )
 from lite_indexer.strategies.base import AbstractChainStrategy
 from lite_indexer.streaming import NATSPublisher
+from lite_indexer.webhooks import WebhookDelivery
 
 logger = get_logger(__name__)
 
@@ -241,6 +243,7 @@ class LiteIndexer:
         traces_enabled: bool | None = None,
         vector_ingestion: bool | None = None,
         nats_enabled: bool | None = None,
+        webhook_enabled: bool | None = None,
     ) -> None:
         self.chain = chain
         self.batch_size = batch_size
@@ -291,6 +294,17 @@ class LiteIndexer:
         # first use, connection opened on first publish.
         self.nats_enabled = NATS_ENABLED if nats_enabled is None else nats_enabled
         self._nats_publisher: NATSPublisher | None = None
+
+        # Webhook delivery (lite_indexer.webhooks). Turns the NATS
+        # real-time stream into a push platform — registered webhooks
+        # receive every matching event as a signed POST. Defaults to the
+        # WEBHOOK_ENABLED env flag (default on); an explicit value
+        # overrides it. The delivery service only runs when NATS is also
+        # enabled (a NATS subscriber has nothing to consume otherwise).
+        # It is a process-wide singleton, so per-chain daemon tasks share
+        # ONE NATS subscription — never one per chain.
+        self.webhook_enabled = WEBHOOK_ENABLED if webhook_enabled is None else webhook_enabled
+        self._webhook_delivery: WebhookDelivery | None = None
 
         # Chain type detection
         chain_info = SUPPORTED_CHAINS.get(chain, {"type": "evm"})
@@ -446,6 +460,36 @@ class LiteIndexer:
         if self._nats_publisher is None:
             self._nats_publisher = NATSPublisher(enabled=True)
         return self._nats_publisher
+
+    @property
+    def webhook_delivery(self) -> WebhookDelivery | None:
+        """Process-wide webhook delivery service (None when disabled).
+
+        Requires BOTH NATS and webhooks enabled: the delivery service is
+        a NATS subscriber, so with NATS disabled there is nothing for it
+        to consume. Uses the shared singleton so the per-chain daemon
+        tasks never create duplicate NATS subscriptions.
+        """
+        if not self.nats_enabled or not self.webhook_enabled:
+            return None
+        if self._webhook_delivery is None:
+            self._webhook_delivery = WebhookDelivery.shared()
+        return self._webhook_delivery
+
+    async def _maybe_start_webhook_delivery(self) -> None:
+        """Best-effort start of the webhook delivery service.
+
+        Called after the NATS fan-out each sync cycle. Idempotent (the
+        delivery service guards its own start) and never raises — a dead
+        NATS server logs a warning and the next cycle retries.
+        """
+        delivery = self.webhook_delivery
+        if delivery is None:
+            return
+        try:
+            await delivery.start()
+        except Exception as exc:  # noqa: BLE001 — delivery is best-effort
+            logger.warning("webhook_delivery_start_failed", chain=self.chain, error=str(exc)[:120])
 
     # ── NATS Real-Time Streaming (best-effort) ────────────────────
 
@@ -1657,6 +1701,15 @@ class LiteIndexer:
         )
         if nats_published:
             summary["nats_events_published"] = nats_published
+
+        # 7d. Webhook delivery fan-out (best-effort, process-wide). The
+        # delivery service subscribes to the SAME NATS subjects the
+        # publisher writes to and POSTs matching events to registered
+        # webhooks (HMAC-signed, bounded retries). It is started lazily
+        # here — after the first NATS publish — and is idempotent, so in
+        # daemon mode the first chain to publish starts the single shared
+        # subscriber and later chains are no-ops.
+        await self._maybe_start_webhook_delivery()
 
         # 8. Save state
         total_events = len(events) + len(dex_events) + deployer_written + len(trace_events)

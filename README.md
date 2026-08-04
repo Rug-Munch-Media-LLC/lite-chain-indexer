@@ -68,6 +68,11 @@ all supported environment variables.
 | `REORG_PROTECTION_ENABLED` | `1` | Reorg staging / fork rollback (EVM) |
 | `RECONCILIATION_ENABLED` | `1` | Balance reconciliation cron |
 | `TOKEN_META_ENABLED` | always on | Enrichment stripping (token_meta_ref) |
+| `BOOTSTRAP_B2_BUCKET` | `b2-crypt:chain-data` | rclone remote root for bootstrap snapshots |
+| `BOOTSTRAP_PARQUET_PATH` | `snapshots` | Snapshot path prefix inside the bucket |
+| `BOOTSTRAP_LOCAL_DIR` | `{DATA_DIR}/bootstrap` | Local staging dir for snapshot downloads |
+| `BOOTSTRAP_CH_FILE_ROOT` | `` | file() path root for containerized ClickHouse |
+| `BOOTSTRAP_RCLONE_TIMEOUT` | `1200` | Max seconds for one rclone snapshot op |
 
 See [Configuration](#configuration) for the complete table.
 
@@ -117,6 +122,42 @@ export CH_HOST=127.0.0.1 CH_PORT=9000 CH_DATABASE=wallet_memory
 # DuckDB (historical parquet on B2) — optional extra
 pip install -e ".[query]"
 ```
+
+### Quick Start: Bootstrap from Snapshot
+
+Don't re-index a chain from genesis over free RPCs — that takes days. Our
+parquet export pipeline publishes **free public bootstrap snapshots** to B2
+(`b2-crypt:chain-data/snapshots/{date}/{chain}/`), each with a `manifest.json`
+describing its block range + row counts. `lite-indexer bootstrap` downloads
+the snapshot and replays it into ClickHouse with zero-copy parquet imports
+(`INSERT INTO ... SELECT * FROM file('*.parquet')`) — **minutes, not days**:
+
+```bash
+# Instead of waiting days for RPC backfill:
+lite-indexer bootstrap --list              # what snapshots are available?
+lite-indexer bootstrap --all               # every chain from its latest snapshot
+lite-indexer bootstrap --chain ethereum    # one chain, latest snapshot
+lite-indexer bootstrap --chain base --from-snapshot 2026-08-01  # specific date
+lite-indexer daemon                        # stay live on free RPCs from the snapshot end block
+```
+
+After bootstrap, the chain's state file + monotonic high-water mark are set
+to the snapshot's `end_block`, so `lite-indexer daemon` resumes live indexing
+from exactly where the snapshot ends — no genesis backfill, no gap.
+
+Publishing new snapshots is automatic: the daily export cron passes
+`--publish-snapshot` (see `scripts/lite-indexer-parquet-daily.sh`), which
+mirrors each exported `(chain, date)` to the snapshot location and writes
+its manifest. Operators can also publish manually:
+
+```bash
+lite-indexer export-parquet --chain ethereum --date 2026-08-01 \
+    --upload --publish-snapshot
+```
+
+Snapshot configuration (bucket, path prefix, download staging dir, ClickHouse
+file root for containerized deployments) lives in the [Configuration](#configuration)
+section under `BOOTSTRAP_*`.
 
 ---
 
@@ -417,7 +458,7 @@ usage: lite-indexer [-h] [--chain CHAIN] [--from-block FROM_BLOCK]
                     [--dex] [--deployers] [--start-from-head] [--recover]
                     [--backfill] [--data-dir DATA_DIR]
                     [--log-level LOG_LEVEL]
-                    {integrity-check,reconcile,export-parquet,backfill-whales}
+                    {integrity-check,reconcile,export-parquet,backfill-whales,bootstrap,query}
 
 LiteChainIndexer — lightweight multi-chain blockchain indexer using free RPCs
 
@@ -446,6 +487,64 @@ subcommands:
   reconcile             TrueBlocks-style balance reconciliation vs on-chain
   export-parquet        Export cold rows to Parquet + upload to B2
   backfill-whales       Re-mark recent DEX rows with whale flags
+  bootstrap             Replay a public B2 parquet snapshot into ClickHouse
+  query                 On-demand historical RPC query — answer ANY
+                        block/tx/address without full indexing
+```
+
+### Query examples (on-demand, no full indexing)
+
+The `query` subcommand answers queries about any point in history by
+routing to the best data source: ClickHouse (indexed, hot) → B2 parquet
+(cold) → live RPC (on-demand). The system never says "data not
+available" — the RPC leg is the last resort (bounded, cached, rate-limit
+protected).
+
+```bash
+# A single transfer by tx hash (CH → cold → RPC)
+lite-indexer query --chain ethereum --tx 0xabc...
+
+# A wallet's transfer history (indexed rows, or the recent RPC window)
+lite-indexer query --chain base --address 0xwallet... --limit 50
+
+# A specific block range for an address (bounded to the RPC window)
+lite-indexer query --chain ethereum --address 0xwallet... --from-block 21000000 --to-block 21001000
+
+# A block with full transactions (always live RPC)
+lite-indexer query --chain ethereum --block 21000000
+
+# Who deployed a contract (indexed deployer_events, or on-chain lookup)
+lite-indexer query --chain ethereum --deployer 0xpair...
+
+# Indexed data only — no RPC fallback
+lite-indexer query --chain ethereum --tx 0xabc... --no-rpc
+```
+
+The API's `/api/v1/transfers/{address}` and `/api/v1/deployers/{address}`
+endpoints use the same `QueryRouter`: when the indexed stores return
+nothing for a specific chain, they fall through to on-demand RPC. Set
+`ON_DEMAND_RPC_ENABLED=0` to disable the fallback.
+
+### Bootstrap examples
+
+```bash
+# List every available snapshot (chain, date, block range, size)
+lite-indexer bootstrap --list
+
+# One chain from its latest snapshot (minutes, not days of RPC backfill)
+lite-indexer bootstrap --chain ethereum
+
+# Every supported chain from the latest snapshot
+lite-indexer bootstrap --all
+
+# A specific snapshot date
+lite-indexer bootstrap --chain base --from-snapshot 2026-08-01
+
+# Preview the import plan without downloading or writing
+lite-indexer bootstrap --chain ethereum --dry-run
+
+# Publish today's export as a bootstrap snapshot (also in the daily cron)
+lite-indexer export-parquet --chain ethereum --date 2026-08-01 --upload --publish-snapshot
 ```
 
 ### Recovery & integrity examples

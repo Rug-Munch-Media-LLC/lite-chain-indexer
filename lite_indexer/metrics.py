@@ -56,6 +56,9 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "whale_backfills",
     "nats_publishes",
     "nats_publish_failures",
+    "webhook_registrations",
+    "webhook_deliveries",
+    "webhook_delivery_failures",
 )
 
 

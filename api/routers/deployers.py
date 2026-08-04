@@ -11,6 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 
 from api.db import query
+from api.ondemand import run_ondemand
 from api.params import (
     chain_clause,
     clamp_limit,
@@ -19,6 +20,7 @@ from api.params import (
     has_more,
 )
 from api.schemas import DeployerEvent, Page, PageMeta
+from lite_indexer.config import ON_DEMAND_RPC_ENABLED
 
 router = APIRouter(prefix="/api/v1/deployers", tags=["deployers"])
 
@@ -78,6 +80,15 @@ def get_deployers(
         for row in rows
     ]
 
+    # On-demand RPC fallback: the indexed store has no deployments for
+    # ``address`` on a *specific* chain. The reverse direction is still
+    # answerable on RPC — is ``address`` itself a contract, and who
+    # deployed it? The QueryRouter routes CH → cold → live RPC (cached,
+    # rate-limit protected). Unbounded (all-chain) queries skip the
+    # fallback because RPC lookups are per-chain.
+    if not events and chain and ON_DEMAND_RPC_ENABLED:
+        events = _on_demand_deployer(deployer, chain)
+
     return Page[DeployerEvent](
         data=events,
         pagination=PageMeta(
@@ -93,3 +104,43 @@ def _fmt_ts(value: object) -> str:
     if not value:
         return ""
     return str(value).replace(" ", "T") + "Z"
+
+
+def _on_demand_deployer(wallet: str, chain: str) -> list[DeployerEvent]:
+    """On-demand RPC fallback: resolve who deployed the contract at ``wallet``.
+
+    The indexed "contracts deployed by X" scan cannot run on RPC on demand
+    (it would require scanning every factory's PairCreated/PoolCreated
+    logs — exactly what full indexing does). Instead, when the indexed
+    store has no deployments for ``wallet`` on ``chain``, this checks the
+    reverse direction via the QueryRouter: is ``wallet`` itself a contract,
+    and who deployed it? Returns at most one row. Best-effort: any failure
+    degrades to the empty indexed-only result.
+    """
+    from api.db import get_query_router
+
+    router = get_query_router()
+    if router is None:
+        return []
+    try:
+        row = run_ondemand(router.get_deployer_info(chain, wallet))
+    except Exception:  # noqa: BLE001 — fallback is best-effort
+        return []
+    if not row:
+        return []
+    return [
+        DeployerEvent(
+            chain=str(row.get("chain", chain)),
+            block_number=int(row.get("block_number", 0) or 0),
+            block_timestamp=_fmt_ts(row.get("block_timestamp")),
+            tx_hash=str(row.get("tx_hash", "")),
+            deployer=str(row.get("deployer", "")),
+            deployer_eoa=str(row.get("deployer_eoa", "")),
+            token_address=str(row.get("token_address", "")),
+            token0=str(row.get("token0", "")),
+            token1=str(row.get("token1", "")),
+            pair_address=str(row.get("pair_address", "")),
+            type=str(row.get("type", "")),
+            factory=str(row.get("factory") or ""),
+        )
+    ]

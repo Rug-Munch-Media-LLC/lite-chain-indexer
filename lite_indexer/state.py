@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from lite_indexer.config import STATE_DIR
+from lite_indexer.config import STATE_DIR as STATE_DIR
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
