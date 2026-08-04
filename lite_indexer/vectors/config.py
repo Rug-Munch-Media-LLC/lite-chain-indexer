@@ -2,18 +2,19 @@
 Vector store configuration.
 
 All tunable parameters for the LanceDB adapter live here — the database
-path, embedding provider settings (Ollama local default, OpenAI-compatible
+path, embedding provider settings (Infinity local default, OpenAI-compatible
 alternative), batching, and pre-built collection names.
 
 Environment variables:
   LANCE_DIR               — LanceDB database directory (default /var/data/lance)
-  EMBEDDING_PROVIDER      — "ollama" (default) or "openai"
-  EMBEDDING_MODEL         — embedding model name (default nomic-embed-text)
-  EMBEDDING_BASE_URL      — Ollama base URL (default http://localhost:11434)
+  EMBEDDING_PROVIDER      — "infinity" (default) or "openai"; "ollama" kept
+                            only as a legacy alias for the OpenAI-compatible path
+  EMBEDDING_MODEL         — embedding model name (default BAAI/bge-m3)
+  EMBEDDING_BASE_URL      — Infinity base URL (default http://localhost:8001)
                             or OpenAI-compatible base URL when provider=openai
   EMBEDDING_API_KEY       — API key for OpenAI-compatible providers (default "")
   EMBEDDING_BATCH_SIZE    — texts per embedding request (default 32)
-  EMBEDDING_DIM           — embedding vector dimension (default 768, nomic-embed-text)
+  EMBEDDING_DIM           — embedding vector dimension (default 1024, BAAI/bge-m3)
 """
 
 from __future__ import annotations
@@ -26,17 +27,17 @@ LANCE_DIR: Path = Path(os.environ.get("LANCE_DIR", "/var/data/lance"))
 LANCE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Embedding provider ─────────────────────────────────────────────────
-EMBEDDING_PROVIDER: str = os.environ.get("EMBEDDING_PROVIDER", "ollama").lower()
-EMBEDDING_MODEL: str = os.environ.get("EMBEDDING_MODEL", "nomic-embed-text")
+EMBEDDING_PROVIDER: str = os.environ.get("EMBEDDING_PROVIDER", "infinity").lower()
+EMBEDDING_MODEL: str = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
 EMBEDDING_BASE_URL: str = os.environ.get(
     "EMBEDDING_BASE_URL",
-    "http://localhost:11434" if EMBEDDING_PROVIDER == "ollama" else "https://api.openai.com/v1",
+    "http://localhost:8001" if EMBEDDING_PROVIDER in ("infinity", "ollama") else "https://api.openai.com/v1",
 )
 EMBEDDING_API_KEY: str = os.environ.get("EMBEDDING_API_KEY", "")
 
-# nomic-embed-text produces 768-dim vectors; other models differ. The
+# BAAI/bge-m3 produces 1024-dim vectors; other models differ. The
 # dimension must match the vector column declared in each collection schema.
-EMBEDDING_DIM: int = int(os.environ.get("EMBEDDING_DIM", "768"))
+EMBEDDING_DIM: int = int(os.environ.get("EMBEDDING_DIM", "1024"))
 
 # Embedding requests are batched to keep memory bounded and respect the
 # provider's request size limits.

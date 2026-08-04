@@ -10,9 +10,11 @@ Key components:
 
 * :class:`LanceVectorStore` — embedded vector store (create, index, ANN
   search, BM25+vector hybrid search, similarity by id).
-* :class:`OllamaEmbedder` / :class:`OpenAICompatEmbedder` — embedding
-  providers (local Ollama ``nomic-embed-text`` by default, any
-  OpenAI-compatible API as an alternative).
+* :class:`OpenAICompatEmbedder` — embedding provider (Infinity
+  ``BAAI/bge-m3`` via its OpenAI-compatible ``/embeddings`` endpoint by
+  default; any OpenAI-compatible API as an alternative).
+* :class:`OllamaEmbedder` — legacy provider, kept for compatibility only,
+  never used by the default configuration.
 * :mod:`lite_indexer.vectors.collections` — pre-built schemas for wallet,
   contract, transaction, and token embeddings.
 """

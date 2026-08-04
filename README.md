@@ -419,12 +419,12 @@ wallets with behavior most similar to an address.
 | `PARQUET_COLD_DAYS` | `7` | Min age (days) of rows eligible for Parquet cold tier |
 | `PARQUET_REMOTE` | `b2-crypt:lite-indexer-parquet` | rclone remote for Parquet uploads |
 | `LANCE_DIR` | `/var/data/lance` | LanceDB vector database directory (embedded, no server) |
-| `EMBEDDING_PROVIDER` | `ollama` | Embedding provider: `ollama` (local/free) or `openai` (compatible) |
-| `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name |
-| `EMBEDDING_BASE_URL` | `http://localhost:11434` | Ollama / OpenAI-compatible base URL |
+| `EMBEDDING_PROVIDER` | `infinity` | Embedding provider: `infinity` (local/free, default) or `openai` (compatible) |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Embedding model name |
+| `EMBEDDING_BASE_URL` | `http://localhost:8001` | Infinity / OpenAI-compatible base URL |
 | `EMBEDDING_API_KEY` | `""` | API key for OpenAI-compatible providers |
 | `EMBEDDING_BATCH_SIZE` | `32` | Texts per embedding request |
-| `EMBEDDING_DIM` | `768` | Embedding vector dimension (must match model) |
+| `EMBEDDING_DIM` | `1024` | Embedding vector dimension (must match model) |
 | `VECTOR_SEARCH_ENABLED` | `1` | Enable `/api/v1/search` + `/api/v1/similar` endpoints |
 | `RPC_THROTTLE_FILE` | `<DATA_DIR>/rpc_throttle.json` | Persisted per-endpoint rate-limit tracker state |
 | `RPC_PREEMPTIVE_THRESHOLD_PCT` | `80` | Slow down before 429 once >80% of an advertised budget is consumed |

@@ -1,14 +1,19 @@
 """
 Embedding generation for the vector store.
 
-Supports two providers:
+Supports two active providers:
 
-* **Ollama** (default) — ``nomic-embed-text`` served locally, zero cost,
-  no API key. ``POST /api/embed`` with a batch of texts returns a list of
-  embeddings.
+* **Infinity** (default) — ``BAAI/bge-m3`` served locally via the
+  OpenAI-compatible ``/embeddings`` endpoint (``http://localhost:8001``).
+  Zero cost, no API key, CPU-optimized. This replaces the former Ollama
+  default.
 * **OpenAI-compatible** — any provider implementing the ``/embeddings``
   contract (OpenAI, Together, local vLLM, …). Authenticated with a Bearer
   token via ``EMBEDDING_API_KEY``.
+
+``OllamaEmbedder`` is retained as a legacy class for environments that
+explicitly select the ``"ollama"`` provider, but it is no longer the
+default and no longer relied upon by any default configuration.
 
 Both providers are called over HTTP with :mod:`httpx`. Requests are
 batched (``EMBEDDING_BATCH_SIZE``) and each batch can be observed via the
@@ -53,7 +58,12 @@ class Embedder(Protocol):
 
 
 class OllamaEmbedder:
-    """Embed via a local Ollama server (default: nomic-embed-text)."""
+    """Embed via a local Ollama server — LEGACY, no longer the default.
+
+    Kept only for environments that explicitly select ``provider="ollama"``.
+    New deployments should use ``"infinity"`` (``BAAI/bge-m3`` via the
+    OpenAI-compatible ``/embeddings`` endpoint) or ``"openai"``.
+    """
 
     def __init__(
         self,
@@ -180,15 +190,17 @@ def create_embedder(
 ) -> Embedder:
     """Factory: build the embedder configured by env (or explicit args).
 
-    ``provider`` is one of ``"ollama"`` (default) or ``"openai"``. Explicit
-    arguments override environment values, which lets callers like the API
-    layer point at a different model without touching global state.
+    ``provider`` is one of ``"infinity"`` (default), ``"openai"``, or the
+    legacy ``"ollama"``. Infinity and OpenAI both speak the OpenAI-compatible
+    ``/embeddings`` contract; Ollama is kept only for legacy compatibility.
+    Explicit arguments override environment values, which lets callers like
+    the API layer point at a different model without touching global state.
     """
     selected = (provider or EMBEDDING_PROVIDER).lower()
     embed_model = model or EMBEDDING_MODEL
     url = base_url or EMBEDDING_BASE_URL
     key = api_key if api_key is not None else EMBEDDING_API_KEY
 
-    if selected == "openai":
+    if selected in ("openai", "infinity"):
         return OpenAICompatEmbedder(base_url=url, model=embed_model, api_key=key)
     return OllamaEmbedder(base_url=url, model=embed_model)

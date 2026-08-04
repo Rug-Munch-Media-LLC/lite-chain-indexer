@@ -253,7 +253,7 @@ async def test_ingestion_failure_never_blocks_indexing(tmp_path, monkeypatch: py
     indexer = LiteIndexer(chain="ethereum", data_dir=tmp_path, vector_ingestion=True)
 
     async def boom(from_block: int, to_block: int) -> dict[str, int]:
-        raise RuntimeError("ollama down")
+        raise RuntimeError("embedding provider down")
 
     monkeypatch.setattr(indexer, "_maybe_run_vector_ingestion", boom)
 

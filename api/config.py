@@ -58,12 +58,12 @@ API_VERSION: str = os.getenv("API_VERSION") or "1.0.0"
 # Vector collections are served from the same LANCE_DIR the indexer writes
 # to. When the directory is unreachable the search endpoints return 503.
 LANCE_DIR: str = os.getenv("LANCE_DIR") or "/var/data/lance"
-EMBEDDING_PROVIDER: str = (os.getenv("EMBEDDING_PROVIDER") or "ollama").lower()
-EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL") or "nomic-embed-text"
+EMBEDDING_PROVIDER: str = (os.getenv("EMBEDDING_PROVIDER") or "infinity").lower()
+EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL") or "BAAI/bge-m3"
 EMBEDDING_BASE_URL: str = os.getenv(
     "EMBEDDING_BASE_URL",
-    "http://localhost:11434"
-    if (os.getenv("EMBEDDING_PROVIDER") or "ollama").lower() == "ollama"
+    "http://localhost:8001"
+    if (os.getenv("EMBEDDING_PROVIDER") or "infinity").lower() in ("infinity", "ollama")
     else "https://api.openai.com/v1",
 )
 EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY") or ""
