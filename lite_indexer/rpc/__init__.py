@@ -14,6 +14,7 @@ Split into sub-modules:
   - client.py: RpcClient class + fetch_block_timestamps
   - health.py: Endpoint verification + health state
   - ratelimit.py: Token-bucket rate limiting per provider
+  - throttle.py: Header-aware rate-limit tracking + pre-emptive throttling
   - pool.py: Endpoint selection, failure tracking, backoff
   - routing.py: Per-method routing, usage tracking, circuit breakers
   - discovery.py: chainlist.org free-RPC auto-discovery
@@ -49,6 +50,12 @@ from lite_indexer.rpc.routing import (
     preferred_tier_for_method,
     record_rpc_usage,
     select_endpoint_for_method,
+)
+from lite_indexer.rpc.throttle import (
+    RATE_TRACKER,
+    RPCRateTracker,
+    record_rpc_response,
+    throttle_before,
 )
 
 
@@ -89,4 +96,9 @@ __all__ = [
     "record_rpc_usage",
     "log_rpc_usage",
     "is_circuit_open",
+    # throttle
+    "RATE_TRACKER",
+    "RPCRateTracker",
+    "record_rpc_response",
+    "throttle_before",
 ]

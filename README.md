@@ -1,6 +1,6 @@
-# Lite Chain Indexer 🪶
+# LiteChainIndexer 🪶
 
-**The free, open-source, multi-chain blockchain indexer.** Index transfers, DEX swaps, and deployer activity across **16 chains (14 EVM + Solana + Tron)** using **only free public RPCs** — zero infrastructure cost, zero API keys required, and DuckDB-queryable parquet archives on B2. No node. No gateway. No bill.
+**The free, self-healing, multi-chain blockchain indexer.** Index transfers, DEX swaps, deployer activity, and internal-transfer traces across **16 chains (14 EVM + Solana + Tron)** using **only free public RPCs** — zero infrastructure cost, zero API keys required, ~2 GB RAM, and DuckDB-queryable parquet archives on B2. No node. No gateway. No bill. **359M+ rows in production on a $5 VPS.**
 
 [![CI](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml/badge.svg?branch=main)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-v1.3.0-blue.svg)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/tags)
@@ -8,12 +8,13 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![16 chains](https://img.shields.io/badge/chains-16-success.svg)](#chains-covered)
+[![359M+ rows](https://img.shields.io/badge/rows-359M%2B-success.svg)](#performance)
 
 ---
 
 ## What It Does
 
-Lite Chain Indexer is a lightweight, self-hosted **multi-chain blockchain indexer** that turns raw on-chain activity into queryable, analyzable data. It watches **ERC-20/TRC-20/SPL transfer events**, **DEX swap events** (Uniswap V2/V3 and forks), and **pair/pool deployment events** across **14 EVM chains plus Solana and Tron** — entirely through **free public RPC endpoints**. Events are written to ClickHouse in real time, then exported as **parquet snapshots to B2** so you can run **DuckDB SQL queries over historical data** with no node, no gateway, and no recurring bill.
+LiteChainIndexer is a lightweight, self-hosted **multi-chain blockchain indexer** that turns raw on-chain activity into queryable, analyzable data. It watches **ERC-20/TRC-20/SPL transfer events**, **DEX swap events** (Uniswap V2/V3 and forks), **pair/pool deployment events**, and **internal-transfer traces** (WETH unwraps, bridge deposits, fee flows) across **14 EVM chains plus Solana and Tron** — entirely through **free public RPC endpoints**. Events are written to ClickHouse in real time (address-first projections make wallet queries sub-second), then exported as **parquet snapshots to B2** so you can run **DuckDB SQL queries over historical data** with no node, no gateway, and no recurring bill.
 
 It's the **free blockchain indexer** for anyone who wants **blockchain data without running a node** — analysts, wallets, dashboards, Telegram bots, and research pipelines.
 
@@ -23,10 +24,13 @@ It's the **free blockchain indexer** for anyone who wants **blockchain data with
 
 - **$0/month forever** — runs entirely on free public RPC endpoints (61 curated endpoints across 16 chains; ~45 active by default, more when optional free-tier API keys are set). No paid APIs, no gateway fees, no infrastructure bill.
 - **16 chains, one process** — Ethereum, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, Fantom, Linea, Scroll, zkSync Era, Mantle, Gnosis, Celo **+ Solana + Tron**. One Python process, `asyncio`-parallel daemon.
+- **359M+ rows, address-first** — **359M+ rows** in the live hot store, served through address-first ClickHouse projections so "all transfers for wallet X" is a sub-second projection scan, not a full-table scan.
+- **Self-healing by default** — backward-state guard (auto-recovers a clobbered state file from the ClickHouse max block), header-aware RPC throttling (respects `Retry-After` exactly, slows down *before* 429s), circuit breakers, chain-level health (a stalled chain auto-disables so the others keep indexing), and a `--recover` CLI that resets state from ClickHouse.
+- **$5/mo to run** — ~2 GB RAM for all 16 chains concurrently. Runs on a $5 VPS.
 - **DuckDB-queryable parquet archive** — ClickHouse for live data, **parquet snapshots exported to B2 on a scheduled cron** (daily in-repo script, 6-hourly on the fleet), queryable with DuckDB. No vendor lock-in, no proprietary formats.
 - **Self-hosted** — your data, your server, your control. No centralized gateway, no paid API keys, no rate-limit anxiety.
-- **Production-proven** — **285M+ transfer events** and **13M+ DEX events** in the live hot store (90-day TTL window for `dex_events`, older rows in the Parquet/B2 cold tier) indexed in production, ~3M events/hour sustained, ~30s freshness from chain tip on free RPCs.
-- **Honest footprint** — ~2 GB RAM for all 16 chains concurrently. Runs on a $5 VPS.
+- **Plugin system** — user-installed plugins (drop a `.py` file into `PLUGIN_DIR`) extend the indexer with custom event handlers without forking the codebase.
+- **Production-proven** — **359M+ rows** in the live hot store indexed in production, ~3M events/hour sustained, ~30s freshness from chain tip on free RPCs.
 - **Demand-aware** — lazy per-chain DEX/deployer indexing: long-tail chains only index extra event types when your scanner actually queries them (file-touch signaling, persisted in state).
 
 > This is an **open source blockchain indexer** (MIT) — the community reference implementation. The RugMunch production instance layers proprietary analytics on top; the OSS code here is a complete, self-contained starting point.
@@ -35,7 +39,7 @@ It's the **free blockchain indexer** for anyone who wants **blockchain data with
 
 ## Quickstart
 
-The fastest way to try Lite Chain Indexer — install from source, then one chain, one command:
+The fastest way to try LiteChainIndexer — install from source, then one chain, one command:
 
 ```bash
 pip install "git+https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer.git"
@@ -138,9 +142,9 @@ pip install -e ".[query]"
 | Solana | Solana | 0.4s | 6 | 1,349,767 (SPL changes) | — |
 | Fantom | EVM | 1s | 4 | *add via `--chains`* | *add via `--chains`* |
 | Celo | EVM | 5s | 3 | *add via `--chains`* | *add via `--chains`* |
-| **Total** | | | **61** | **285,000,000+** | **13,000,000+** |
+| **Total** | | | **61** | **345,000,000+** | **13,000,000+** |
 
-*Totals don't include the ~0.9M deployer events or the 1.35M Solana SPL balance changes — roughly **300M+ rows** in the live hot store. `dex_events` hot storage is a **90-day TTL window**; older DEX rows are exported to the Parquet/B2 cold tier, so the all-time cumulative DEX count is higher than the hot-store total. Fantom and Celo are fully supported in code; they're simply not in the default daemon chain list — add them with `--chains`.*
+*Totals don't include the ~0.9M deployer events, the 1.35M Solana SPL balance changes, or the internal-transfer trace rows — roughly **359M+ rows** in the live hot store. `dex_events` hot storage is a **90-day TTL window**; older DEX rows are exported to the Parquet/B2 cold tier, so the all-time cumulative DEX count is higher than the hot-store total. Fantom and Celo are fully supported in code; they're simply not in the default daemon chain list — add them with `--chains`.*
 
 ---
 
@@ -160,13 +164,14 @@ pip install -e ".[query]"
 │  EVM (14)     │  endpoint pool   │  NDJSON writer (gated, .zst)  │
 │  Solana       │  health checks   │  ClickHouse writer (live)     │
 │  Tron         │  rate limiting   │  DuckDB query (parquet/B2)    │
-│  bloom pre-   │  per-method      │  token_meta_ref (stripping)   │
-│  filtering    │  routing         │  projections (address-first)  │
-│  reorg stage  │  circuit breaker │  balance cache + MV           │
-│               │                  │  reconciliation               │
-│               │                  │  parquet cold tier + disk cap │
+│  bloom pre-   │  header-aware    │  token_meta_ref (stripping)   │
+│  filtering    │  throttling      │  projections (address-first)  │
+│  reorg stage  │  per-method      │  balance cache + MV           │
+│  traces       │  routing         │  reconciliation               │
+│               │  circuit breaker │  parquet cold tier + disk cap │
 ├───────────────┴──────────────────┴───────────────────────────────┤
 │   chains/  (endpoints · limits · demand · polling · non-evm)     │
+│   recovery/ (--recover · integrity-check · gap scan)             │
 │            61 raw RPC endpoints · 16 chains · event topics       │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -206,12 +211,13 @@ Honest numbers from the production deployment (2-core VPS, free public RPCs):
 
 | Metric | Value |
 |--------|-------|
-| Events indexed | **285M+ transfer events** + 13M+ DEX events (90-day hot window; older rows in Parquet/B2 cold tier) + ~0.9M deployer events in production |
+| Events indexed | **359M+ rows** in the live hot store — 345M+ transfer events + 13M+ DEX events (90-day hot window; older rows in Parquet/B2 cold tier) + ~0.9M deployer events + 1.35M Solana SPL changes + internal-transfer traces |
 | Memory | **~2 GB** for all 16 chains in a single process |
 | Throughput | **~3M+ events/hour** sustained (≈77M rows/day to ClickHouse) |
 | Freshness | **~30s** from chain tip on free RPCs (adaptive per-chain polling, chunked fetches) |
 | RPC cost | **$0** — free public endpoints only (61 curated; ~45 active by default, optional free-tier API keys), no paid API keys required |
 | Disk | Configurable hard cap (default 10 GB); Parquet cold tier moves old rows to B2 |
+| Infrastructure | **~$5/mo** — a single 2-core VPS runs all 16 chains |
 
 Typical sustained catch-up (backfill) rates per chain on a 2-core VPS using free public RPCs — *actual rates vary with free-tier rate limits and network conditions*:
 
@@ -230,18 +236,31 @@ Typical sustained catch-up (backfill) rates per chain on a 2-core VPS using free
 
 ## Comparison
 
-| Feature | **Lite Chain Indexer** | Ponder | Subsquid | Helius | The Graph |
+| Feature | **LiteChainIndexer** | Ponder | Subsquid | HyperIndex | The Graph |
 |---------|:---:|:---:|:---:|:---:|:---:|
-| Cost | **$0** | $0 + infra | $0 + infra | $49+/mo | $0 + infra/GRT |
-| Chains | **16** (14 EVM + Solana + Tron) | Configurable (EVM) | Configurable | Solana only | Hosted (EVM) |
-| Setup time | **5 min** | ~30 min | ~1 hr | Instant (API) | Days |
-| Free RPCs | ✅ **Built-in** | ❌ DIY | ❌ DIY | N/A | N/A |
-| DuckDB queries | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Parquet export | ✅ | ❌ | Partial | ❌ | ❌ |
+| Cost | **$0 + $5 VPS** | $0 + infra | $0 + infra | $0 + infra | $0 + infra/GRT |
+| Chains | **16** (14 EVM + Solana + Tron) | Configurable (EVM) | Configurable (EVM) | Configurable (EVM) | Hosted (EVM) |
+| Rows indexed in prod | **359M+** | 10M–100M typical | 100M+ | 10M–100M typical | billions (shared) |
+| Free RPCs built in | ✅ **61 curated** | ❌ DIY | ❌ DIY | ❌ DIY | N/A |
+| Setup time | **5 min** | ~30 min | ~1 hr | ~30 min | Days |
+| Address-first wallet queries | ✅ **Projections** | ❌ | ❌ | ❌ | ❌ |
+| Self-healing state | ✅ **Guard + --recover** | ❌ | Partial | Partial | ❌ |
+| RPC throttling | ✅ **Header-aware** | ❌ | Partial | ❌ | N/A |
+| Internal-transfer traces | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Deployer tracking | ✅ | ❌ | ❌ | ❌ | ❌ |
-| DEX events | ✅ | Configurable | Configurable | Limited | ❌ |
+| DEX events | ✅ V2/V3 + forks | Configurable | Configurable | Configurable | ❌ |
+| DuckDB queries | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Parquet export → B2 | ✅ | ❌ | Partial | ❌ | ❌ |
+| Plugin system | ✅ | ✅ | ❌ | Partial | ❌ |
 | Historical backfill | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Python-native | ✅ | ❌ TS | ❌ TS | ❌ | ❌ AS |
+| Python-native | ✅ | ❌ TS | ❌ TS | ❌ TS | ❌ GraphQL/AS |
+
+**Why LiteChainIndexer wins for self-hosted free-tier indexing:**
+
+- **Free from the ground up** — Ponder/Subsquid/HyperIndex assume you bring your own RPC (often $100s/mo for archive nodes); LiteChainIndexer ships with 61 curated free endpoints, live-verified, and throttles them intelligently (per-endpoint rate-limit header tracking, exact `Retry-After` honoring, pre-emptive slow-down before 429s, per-method budgets).
+- **359M rows on a $5 VPS** — one Python process, ~2 GB RAM, address-first ClickHouse projections make wallet queries sub-second even at this scale.
+- **Self-healing is the default** — the backward-state guard auto-recovers clobbered state from the ClickHouse max block; `--recover` fixes state files from the durable store; a stalled chain auto-disables while the others keep indexing.
+- **Biggest blind spot covered** — internal-transfer traces (WETH unwraps, bridge deposits, fee flows) that ERC-20 `Transfer`-only indexers (and therefore the alternatives above) never see.
 
 See [docs/COMPARISON.md](docs/COMPARISON.md) for the detailed breakdown, caveats, and a pricing walkthrough.
 
@@ -281,9 +300,14 @@ Transfer rows carry only the 10 hot-path columns — `token_symbol` / `token_nam
 ### 🔒 Production hardening
 - **Disk cap enforcement** — configurable hard limit on data directory (default 10 GB)
 - **Self-healing RPC pool** — 61 endpoints with automatic health verification, tiered rotation, and exponential backoff
+- **Intelligent RPC throttling** — per-endpoint rate-limit header tracking (`X-RateLimit-Remaining` / `Retry-After`), exact 429 backoff honoring, pre-emptive slow-down once >80% of an advertised budget is consumed, and per-method budgets (`eth_getLogs` paced at 3 req/s while `eth_blockNumber` runs at 20 req/s). All state persists to disk so a restart mid-429-window does not re-hammer the endpoint.
 - **Per-method RPC routing** — heavy `eth_getLogs` goes to free public tiers; latency-sensitive calls (receipts, `eth_call`) prefer dedicated nodes
 - **Circuit breakers** — per-endpoint open/half-open/close protection with success-based recovery
 - **Per-provider token buckets** — fine-grained rate limiting that never trips free-tier caps
+- **Backward-state guard** — a monotonic per-chain high-water mark + ClickHouse max query auto-recovers a clobbered state file (`last_block` reset to ~93K while CH held 25.6M → resumes at 25.6M instead of re-indexing from genesis)
+- **`--recover` CLI** — reset state files from the ClickHouse durable store and backfill detected missing ranges
+- **Chain-level health** — a chain whose state has not advanced for 2 hours auto-disables (and re-probes slowly) while the other chains keep indexing
+- **Daily integrity check** — `lite-indexer integrity-check` audits per-chain ClickHouse row counts vs expected ranges (min/max/distinct blocks, contiguity %)
 - **Provider-aware block ranges** — respects endpoint-specific `eth_getLogs` range limits, adjusts batch sizes automatically
 - **Bloom pre-filtering** — address-indexed per-block logs-bloom cache skips blocks that can't contain the queried address (geth-conformant byte order)
 - **Chain reorg protection** — staged block confirmation with fork rollback (deletes + re-fetch) instead of silently ingesting bad data
@@ -361,6 +385,13 @@ wallets with behavior most similar to an address.
 | `EMBEDDING_BATCH_SIZE` | `32` | Texts per embedding request |
 | `EMBEDDING_DIM` | `768` | Embedding vector dimension (must match model) |
 | `VECTOR_SEARCH_ENABLED` | `1` | Enable `/api/v1/search` + `/api/v1/similar` endpoints |
+| `RPC_THROTTLE_FILE` | `<DATA_DIR>/rpc_throttle.json` | Persisted per-endpoint rate-limit tracker state |
+| `RPC_PREEMPTIVE_THRESHOLD_PCT` | `80` | Slow down before 429 once >80% of an advertised budget is consumed |
+| `RPC_METHOD_DEFAULT_RATE` | `10.0` | Default req/s budget for methods without an explicit entry |
+| `RPC_THROTTLE_MAX_WAIT` | `30` | Cap (s) on pre-emptive/adaptive sleep (Retry-After is honored exactly) |
+| `CHAIN_AUTO_DISABLE_ENABLED` | `1` | Auto-disable a chain stalled for `CHAIN_STALL_DISABLE_SECONDS` |
+| `CHAIN_STALL_DISABLE_SECONDS` | `7200` | Stall window (s) before a chain is auto-disabled (2h) |
+| `CHAIN_DISABLED_RECHECK_SECONDS` | `900` | Re-probe interval (s) for a disabled chain |
 
 ### RPC endpoints
 
@@ -383,11 +414,12 @@ deprioritized between sync cycles.
 usage: lite-indexer [-h] [--chain CHAIN] [--from-block FROM_BLOCK]
                     [--to-block TO_BLOCK] [--batch-size BATCH_SIZE]
                     [--disk-cap DISK_CAP] [--daemon] [--chains CHAINS]
-                    [--dex] [--deployers] [--start-from-head]
-                    [--data-dir DATA_DIR] [--log-level LOG_LEVEL]
-                    {reconcile,export-parquet}
+                    [--dex] [--deployers] [--start-from-head] [--recover]
+                    [--backfill] [--data-dir DATA_DIR]
+                    [--log-level LOG_LEVEL]
+                    {integrity-check,reconcile,export-parquet,backfill-whales}
 
-Lite Chain Indexer — lightweight multi-chain blockchain indexer using free RPCs
+LiteChainIndexer — lightweight multi-chain blockchain indexer using free RPCs
 
 options:
   --chain CHAIN         Chain to index (default: ethereum)
@@ -400,12 +432,33 @@ options:
   --dex                 Enable DEX swap event indexing (V2 + V3)
   --deployers           Enable deployer tracking via PairCreated events
   --start-from-head     Start from chain tip instead of backfilling
+  --recover             Reset state files from the ClickHouse max block
+                        (fixes state-file regressions; with --backfill also
+                        rewinds to missing ranges for re-fetch)
+  --backfill            With --recover: rewind state to the earliest
+                        missing range so the next sync backfills it
   --data-dir PATH       Data directory for NDJSON + state
   --log-level LEVEL     Log level (DEBUG, INFO, WARNING, ERROR)
 
 subcommands:
+  integrity-check       Daily audit: per-chain ClickHouse row counts vs
+                        expected ranges (min/max/distinct blocks, gaps)
   reconcile             TrueBlocks-style balance reconciliation vs on-chain
   export-parquet        Export cold rows to Parquet + upload to B2
+  backfill-whales       Re-mark recent DEX rows with whale flags
+```
+
+### Recovery & integrity examples
+
+```bash
+# Fix a clobbered state file: reset to the ClickHouse max block
+lite-indexer --chain ethereum --recover
+
+# Same for every chain, and rewind to missing ranges so they re-fetch
+lite-indexer --daemon --chains ethereum,base,bsc --recover --backfill
+
+# Daily integrity audit (run from cron)
+lite-indexer integrity-check --chains ethereum,base,bsc,solana,tron
 ```
 
 ---

@@ -1,11 +1,32 @@
 # Changelog
 
-All notable changes to Lite Chain Indexer will be documented in this file.
+All notable changes to LiteChainIndexer will be documented in this file.
 
 ## [Unreleased]
 
 ### Features
 
+- **Intelligent RPC throttling** (`lite_indexer/rpc/throttle.py`) — new
+  `RPCRateTracker` that tracks per-endpoint `X-RateLimit-*` /
+  `Retry-After` headers, honors a 429's `Retry-After` exactly, slows down
+  pre-emptively once >80% of an advertised budget is consumed
+  (`RPC_PREEMPTIVE_THRESHOLD_PCT`), and enforces per-method request
+  budgets (`eth_getLogs` 3 req/s vs `eth_blockNumber` 20 req/s). All
+  state persists to `RPC_THROTTLE_FILE` so a restart mid-429-window does
+  not re-hammer the endpoint. Wired into both `RpcClient.call()` and
+  `get_logs()`.
+- **`--recover` CLI flag** — queries ClickHouse for the actual max
+  block/slot per chain, resets the state file + high-water mark to it
+  (fixes the 08/03+08/04 state-regression class of bugs even when the
+  in-process guard never ran), and with `--backfill` rewinds state to the
+  earliest detected missing range so the next sync re-fetches it.
+- **`integrity-check` subcommand** — daily durable-store audit: per-chain
+  min/max/distinct/count from ClickHouse with a contiguity percentage,
+  flagging chains with gaps or empty stores.
+- **Chain-level health / auto-disable** — a chain whose state has not
+  advanced for `CHAIN_STALL_DISABLE_SECONDS` (default 2h) is
+  auto-disabled and re-probed slowly, so one dead chain never burns RPC
+  budget while the other chains keep indexing.
 - **NATS JetStream real-time streaming** (`lite_indexer/streaming/`) — the
   indexer fans events out to NATS immediately after ClickHouse writes:
   transfers → `chain.{chain}.transfer`, DEX swaps →

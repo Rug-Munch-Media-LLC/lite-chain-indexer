@@ -27,8 +27,12 @@ import httpx
 
 from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
 from lite_indexer.chains.parallelism import chain_priority
+from lite_indexer.health import ChainStallTracker
 from lite_indexer.config import (
     BATCH_SIZE,
+    CHAIN_AUTO_DISABLE_ENABLED,
+    CHAIN_DISABLED_RECHECK_SECONDS,
+    CHAIN_STALL_DISABLE_SECONDS,
     DATA_DIR,
     DISK_CAP_BYTES,
     MEMORY_PAUSE_SLEEP,
@@ -122,6 +126,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "Ignores any existing state file and begins from (tip - 100).",
     )
     parser.add_argument(
+        "--recover",
+        action="store_true",
+        help="Recover state files from ClickHouse: query the actual max block per "
+        "chain, reset the state file + high-water mark to it, and (with "
+        "--backfill) rewind to the earliest missing range so the next sync "
+        "re-fetches it. Fixes the 08/03+08/04 state-regression class of bugs "
+        "even when the in-process guard never ran.",
+    )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="With --recover: also rewind state to the earliest missing range "
+        "detected in ClickHouse so the next sync backfills the gap. "
+        "Without --recover this is a no-op.",
+    )
+    parser.add_argument(
         "--data-dir",
         type=str,
         default=None,
@@ -135,6 +155,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Log level (default: INFO from LOG_LEVEL env var)",
     )
     sub = parser.add_subparsers(dest="command")
+
+    # ── integrity-check subcommand ──────────────────────────────────
+    # Daily durable-store audit: per-chain min/max/distinct/count from
+    # ClickHouse with a contiguity percentage. Flags chains whose row
+    # counts do not match the expected block span so operators know
+    # before missing data compounds. Intended for a daily cron.
+    integrity_parser = sub.add_parser(
+        "integrity-check",
+        help="Audit per-chain ClickHouse row counts vs expected ranges",
+        description=(
+            "Daily integrity check: for each chain, compare the ClickHouse "
+            "row/range stats (min/max block, distinct blocks, total rows) "
+            "against the expected contiguous span and report a contiguity "
+            "percentage. Chains with gaps or empty stores are flagged."
+        ),
+    )
+    integrity_parser.add_argument(
+        "--chains",
+        type=str,
+        default="ethereum,base,bsc,polygon,arbitrum,optimism,avalanche,linea,scroll,zksync,mantle,gnosis,solana,tron",
+        help="Comma-separated chains to audit (default: all supported)",
+    )
 
     # ── reconcile subcommand (TrueBlocks-style balance reconciliation) ─
     # Runs a balance-completeness check on a random sample of wallets
@@ -360,9 +402,23 @@ async def main_daemon(
         poll_interval = effective_poll_interval(chain, base_interval)
         log_chain_resources(chain, poll_interval=base_interval)
 
+        # Chain-level health: track when the state last advanced. A chain
+        # whose state has not moved for CHAIN_STALL_DISABLE_SECONDS (2h)
+        # is auto-disabled and re-probed slowly, so one dead chain never
+        # burns RPC budget or holds concurrency slots while the others
+        # keep indexing.
+        stall_tracker = ChainStallTracker(stall_seconds=CHAIN_STALL_DISABLE_SECONDS)
+
         while not shutdown_event.is_set():
             loop_start = time.monotonic()
             try:
+                # Chain health: skip sync attempts for a disabled chain,
+                # but re-probe it at a slow interval so it re-enables as
+                # soon as its RPC pool recovers.
+                if stall_tracker.disabled:
+                    await asyncio.sleep(CHAIN_DISABLED_RECHECK_SECONDS)
+
+                state_before = indexer.state.load().get("last_block")
                 # In-process memory watchdog: when RSS exceeds
                 # MEMORY_HIGH_MB, pause NEW chain ingestion until memory
                 # drops instead of piling another sync cycle onto the
@@ -384,6 +440,20 @@ async def main_daemon(
                     result = await indexer.sync_loop()
                 if isinstance(result, dict) and result.get("status") == "error":
                     error_count += 1
+
+                # Chain health bookkeeping: did the state move?
+                state_after = indexer.state.load().get("last_block")
+                if CHAIN_AUTO_DISABLE_ENABLED:
+                    became_disabled = stall_tracker.observe(state_before, state_after)
+                    if became_disabled:
+                        logger.warning(
+                            "chain_disabled_stalled",
+                            chain=chain,
+                            stalled_s=int(stall_tracker.stalled_seconds),
+                            last_block=state_before,
+                        )
+                    elif stall_tracker.disabled:
+                        logger.info("chain_reenabled", chain=chain, block=state_after)
             except Exception as exc:
                 error_count += 1
                 logger.error("daemon_chain_failed", chain=chain, error=str(exc))
@@ -528,6 +598,21 @@ async def async_main(args: argparse.Namespace) -> int:
     if args.command == "export-parquet":
         return run_export_parquet(args)
 
+    # ── integrity-check subcommand ───────────────────────────────────
+    if args.command == "integrity-check":
+        return run_integrity_check_cli(args)
+
+    # ── recover mode ─────────────────────────────────────────────────
+    # Recover state files from the ClickHouse durable store BEFORE any
+    # indexing. Works in single-chain mode (--chain) and daemon mode
+    # (--chains). With --backfill the state is additionally rewound to
+    # the earliest missing range so the next sync re-fetches it.
+    if args.recover:
+        chains_list = [c.strip() for c in args.chains.split(",") if c.strip()]
+        if args.chain and args.chain != "ethereum":
+            chains_list = [args.chain]
+        return await run_recover_cli(chains_list, args.data_dir, args.backfill)
+
     # ── backfill-whales subcommand ───────────────────────────────────
     if args.command == "backfill-whales":
         return run_backfill_whales(args)
@@ -664,6 +749,92 @@ def run_export_parquet(args: argparse.Namespace) -> int:
     out: dict[str, Any] | list[dict[str, Any]] = summaries[0] if len(summaries) == 1 else {"chains": summaries}
     print(json.dumps(out, default=str))  # noqa: T201
     return 1 if failed else 0
+
+
+async def run_recover_cli(
+    chains: list[str],
+    data_dir: str | None,
+    backfill: bool,
+) -> int:
+    """Run the --recover state-recovery mode (async).
+
+    Queries ClickHouse for the actual max block per chain and resets the
+    state file + high-water mark to it. With ``backfill`` also rewinds
+    state to the earliest missing range so the next sync re-fetches it.
+
+    Args:
+        chains: Chains to recover.
+        data_dir: Optional data directory override (state files live
+            under ``{data_dir}/state``).
+        backfill: Whether to rewind to missing ranges for re-fetch.
+
+    Returns:
+        Process exit code (0 = all recovered, 1 = ClickHouse unavailable,
+        2 = some chains failed).
+    """
+    from lite_indexer.recovery import recover_chain_state
+
+    from lite_indexer.chains import SUPPORTED_CHAINS
+
+    writer = ClickHouseWriter()
+    ch_client = writer.client()
+    if ch_client is None:
+        print(json.dumps({"status": "error", "error": "clickhouse_unavailable"}))  # noqa: T201
+        return 1
+
+    state_dir = Path(data_dir) / "state" if data_dir else None
+    results: dict[str, Any] = {}
+    failed = False
+    for chain in chains:
+        chain_type = SUPPORTED_CHAINS.get(chain, {}).get("type", "evm")
+        res = recover_chain_state(
+            ch_client,
+            chain,
+            chain_type=chain_type,
+            state_dir=state_dir,
+            backfill=backfill,
+        )
+        results[chain] = res
+        if not res.get("ok"):
+            failed = True
+
+    out: dict[str, Any] = {
+        "status": "ok" if not failed else "partial_failure",
+        "backfill": backfill,
+        "chains": results,
+    }
+    print(json.dumps(out, default=str))  # noqa: T201
+    return 0 if not failed else 2
+
+
+def run_integrity_check_cli(args: argparse.Namespace) -> int:
+    """Run the daily integrity-check subcommand (synchronous).
+
+    Args:
+        args: Parsed CLI args (``--chains``).
+
+    Returns:
+        Process exit code (0 = clean, 1 = ClickHouse unavailable,
+        2 = gaps found).
+    """
+    from lite_indexer.recovery import run_integrity_check, summarize_report
+
+    from lite_indexer.chains import SUPPORTED_CHAINS
+
+    writer = ClickHouseWriter()
+    ch_client = writer.client()
+    if ch_client is None:
+        print(json.dumps({"status": "error", "error": "clickhouse_unavailable"}))  # noqa: T201
+        return 1
+
+    chains = [c.strip() for c in args.chains.split(",") if c.strip()]
+    chain_types = {c: SUPPORTED_CHAINS.get(c, {}).get("type", "evm") for c in chains}
+    report = run_integrity_check(ch_client, chains, chain_types)
+    summary = summarize_report(report)
+    out: dict[str, Any] = {"status": "ok" if summary["gap_count"] == 0 else "gaps_found", **summary}
+    out["chains"] = report
+    print(json.dumps(out, default=str))  # noqa: T201
+    return 0 if summary["gap_count"] == 0 else 2
 
 
 def run_backfill_whales(args: argparse.Namespace) -> int:

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,67 @@ _CHAIN_BLOCK_TIMES = {
     "solana": 0.4,
     "tron": 3.0,
 }
+
+
+class ChainStallTracker:
+    """Per-chain progress tracker for the daemon's auto-disable logic.
+
+    A chain is considered stalled when its state file has not advanced
+    for ``stall_seconds`` (default 2h). The daemon calls
+    :meth:`observe` after every sync cycle with the state block before
+    and after the cycle; the tracker returns whether the chain should
+    now be disabled (and remembers the last progress time so a disabled
+    chain re-enables as soon as its state moves again).
+    """
+
+    def __init__(self, stall_seconds: int = 7200) -> None:
+        self._stall_seconds = stall_seconds
+        self._last_progress_at = 0.0
+        self._disabled = False
+
+    def observe(
+        self,
+        state_before: int | None,
+        state_after: int | None,
+        now: float | None = None,
+    ) -> bool:
+        """Record one sync cycle's outcome.
+
+        Args:
+            state_before: Last indexed block before the cycle (None when
+                no state file).
+            state_after: Last indexed block after the cycle.
+            now: Epoch time override (tests).
+
+        Returns:
+            Whether the chain should be disabled (stalled).
+        """
+        now = time.time() if now is None else now
+        if state_after is not None and state_after != state_before:
+            self._last_progress_at = now
+            self._disabled = False
+            return False
+        if self._last_progress_at == 0.0:
+            self._last_progress_at = now
+        if now - self._last_progress_at >= self._stall_seconds:
+            self._disabled = True
+            return True
+        return self._disabled
+
+    @property
+    def disabled(self) -> bool:
+        """Whether the chain is currently marked disabled (stalled)."""
+        return self._disabled
+
+    @property
+    def stalled_seconds(self) -> float:
+        """Seconds since the last observed state advance."""
+        return 0.0 if self._last_progress_at == 0.0 else time.time() - self._last_progress_at
+
+    def reset(self) -> None:
+        """Clear the tracker (chain re-probed from scratch)."""
+        self._last_progress_at = 0.0
+        self._disabled = False
 
 
 async def check_chain_lag(

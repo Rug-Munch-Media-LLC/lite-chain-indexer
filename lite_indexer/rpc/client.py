@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from typing import Any, cast
 
 import httpx
@@ -319,17 +320,20 @@ class RpcClient:
                     from lite_indexer.rpc.throttle import RATE_TRACKER
 
                     state = RATE_TRACKER.state_for(endpoint)
-                    retry_after = state.get("backoff_until", 0.0)
-                    wait = max(0.0, retry_after - time.time()) if retry_after else 2**attempt
+                    backoff_until = state.get("backoff_until", 0.0)
+                    if backoff_until:
+                        wait = max(0.0, backoff_until - time.time())
+                    else:
+                        wait = min(2**attempt, RATE_LIMIT_WAIT_CAP)
                     logger.debug(
                         "rate_limited_retry",
                         endpoint=endpoint[:40],
                         attempt=attempt,
-                        wait=wait,
+                        wait=round(wait, 1),
                     )
                     record_endpoint_failure(endpoint)
                     ban_endpoint(endpoint, reason="http_429")
-                    await asyncio.sleep(min(wait, RATE_LIMIT_WAIT_CAP))
+                    await asyncio.sleep(wait)
                     continue
 
                 resp.raise_for_status()

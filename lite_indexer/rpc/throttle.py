@@ -64,8 +64,17 @@ _RETRY_AFTER = "retry_after"
 
 
 def _header_value(headers: Mapping[str, str], name: str) -> str | None:
-    """Case-insensitive header lookup."""
-    return headers.get(name) or headers.get(name.lower()) or headers.get(name.upper())
+    """Case-insensitive header lookup.
+
+    ``httpx`` normalizes header names to lowercase, but callers may pass
+    any Mapping (tests, proxies, other HTTP stacks) — so we scan keys
+    case-insensitively instead of relying on a fixed casing.
+    """
+    target = name.lower()
+    for key, value in headers.items():
+        if str(key).lower() == target:
+            return value
+    return None
 
 
 def _parse_int(value: str | None) -> int | None:
@@ -189,8 +198,10 @@ class RPCRateTracker:
     empty tracker rather than crashing the indexer.
     """
 
-    def __init__(self, path: str | Path | None = None) -> None:
+    def __init__(self, path: str | Path | None = None, persist_interval: float = 60.0) -> None:
         self._path = Path(path or RPC_THROTTLE_FILE)
+        self._persist_interval = persist_interval
+        self._last_persist: float = 0.0
         self._state: dict[str, EndpointState] = {}
         self._load()
 
@@ -224,6 +235,21 @@ class RPCRateTracker:
             os.replace(tmp, self._path)
         except OSError as exc:
             logger.warning("rpc_throttle_save_failed", path=str(self._path), error=str(exc)[:80])
+
+    def persist_if_stale(self, now: float | None = None) -> None:
+        """Persist when the last write is older than the interval.
+
+        Called after every recorded response so a crash loses at most
+        ``persist_interval`` seconds of throttle state (a restart mid-429
+        window still knows to back off).
+
+        Args:
+            now: Epoch time override (tests).
+        """
+        now = time.time() if now is None else now
+        if now - self._last_persist >= self._persist_interval:
+            self._last_persist = now
+            self.persist()
 
     # ── State access ──────────────────────────────────────────────────
 
@@ -322,6 +348,9 @@ class RPCRateTracker:
             # A clean success closes the 429 streak (half-open probe style).
             state.rate_limit_hits = 0
 
+        # Rate-limited disk writes: at most once per persist_interval.
+        self.persist_if_stale(now)
+
     # ── Wait computation ──────────────────────────────────────────────
 
     def wait_seconds_for(self, endpoint: str, method: str, now: float | None = None) -> float:
@@ -359,11 +388,13 @@ class RPCRateTracker:
                     if pace > 0:
                         return min(pace, RPC_THROTTLE_MAX_WAIT)
 
-        # 3. Per-method budget (rolling window enforcement).
+        # 3. Per-method budget (rolling window enforcement). The window is
+        # 1/rate seconds (eth_getLogs @ 3 req/s → 0.33s spacing) with a
+        # tiny floor to avoid zero-width windows at very high rates.
         rate = RPC_METHOD_REQ_PER_SEC.get(method, RPC_METHOD_DEFAULT_RATE)
         if rate <= 0:
             return 0.0
-        window = max(1.0, 1.0 / rate)
+        window = max(0.01, 1.0 / rate)
         times = state.request_times.setdefault(method, [])
         recent = [t for t in times if now - t < window]
         state.request_times[method] = recent

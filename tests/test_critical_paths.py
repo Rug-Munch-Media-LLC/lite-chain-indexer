@@ -70,6 +70,10 @@ async def test_deployers_with_dex(tmp_path, monkeypatch):
     )
     indexer.dex_enabled = True
     indexer.deployers_enabled = True
+    # This test exercises the DEX/deployer flow, not trace collection —
+    # disable traces so the test does not make real (rate-limited) trace
+    # RPC calls to live endpoints.
+    indexer.traces_enabled = False
 
     strategy = indexer.strategy
     strategy.fetch_block_number = AsyncMock(return_value=500)
@@ -126,6 +130,11 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
     )
     strategy = indexer.strategy
     strategy.fetch_block_number = AsyncMock(return_value=500)
+
+    # This test exercises the reorg flag reset, not trace collection —
+    # disable traces so the test does not make real (rate-limited) trace
+    # RPC calls to live endpoints.
+    indexer.traces_enabled = False
 
     # The 2026-08-04 CH health gate would pause the sync when the fake
     # writer reports client=None. This test exercises the reorg flag
