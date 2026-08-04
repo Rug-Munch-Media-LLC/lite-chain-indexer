@@ -24,7 +24,7 @@ whose key is NOT set are excluded from the active pool (they can never be
 dialed — a literal ``${...}`` in a URL only produces DNS/JSON verification
 retries). Restart the service after setting a key to activate the endpoint.
 
-Total: 61 endpoints across 14 chains (49 public + 12 API-key free tiers).
+Total: 60 endpoints across 14 chains (48 public + 12 API-key free tiers).
 """
 
 from __future__ import annotations
@@ -63,16 +63,21 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://1rpc.io/base",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── BSC (5 endpoints) ─────────────────────────────────────────────
-    # T1: tatum (audit-verified on bsc), nodereal public
-    # T2: 48.club (verified)
-    # T3: blockrazor (25-block range cap — small-range fallback)
+    # ── BSC (4 endpoints) ─────────────────────────────────────────────
+    # T1: nodereal public, 48.club (live-verified 2026-08-04 with the
+    #     exact indexer request shape: topic-only eth_getLogs over a
+    #     100-block range from tip — both returned full result sets)
+    # T2: blockrazor (25-block range cap — small-range fallback,
+    #     registered in limits.py so the indexer caps chunks for it)
     # T4: alchemy
+    # NOTE: tatum (range-limit + 429), binance seeds (limit exceeded),
+    #       bsc-rpc.publicnode.com (http_403 on ranged topic-only —
+    #       4.7k rejections during 08/04 outage), merkle (HTTP400),
+    #       ankr (unauthorized), 1rpc.io (usage limit) removed 2026-08-04.
     "bsc": [
-        "https://bsc-mainnet.gateway.tatum.io",  # T1 — tatum (audit-verified on bsc)
-        "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",  # T1 — nodereal public
-        "https://rpc-bsc.48.club",  # T2 — 48.club (verified)
-        "https://bsc.blockrazor.xyz",  # T3 — blockrazor (25-block range cap)
+        "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",  # T1 — nodereal public (verified, 25.8k logs/100-blk)
+        "https://rpc-bsc.48.club",  # T1 — 48.club (verified)
+        "https://bsc.blockrazor.xyz",  # T2 — blockrazor (25-block range cap)
         "https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
     # ── Polygon (5 endpoints) ─────────────────────────────────────────
@@ -189,16 +194,16 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 }
 
 # Summary of EVM endpoints per chain:
-#   ethereum: 7     base: 5      bsc: 5      polygon: 5
+#   ethereum: 7     base: 5      bsc: 4      polygon: 5
 #   arbitrum: 4     optimism: 4  avalanche: 4 fantom: 4
 #   linea: 5        scroll: 4    zksync: 4   mantle: 4
 #   gnosis: 3       celo: 3
 # -------------------------------------------------------
-#   Total: 61 endpoints across 14 chains
-#   (49 free public + 12 API-key free tiers)
+#   Total: 60 endpoints across 14 chains
+#   (48 free public + 12 API-key free tiers)
 #
 #   Non-EVM: solana (4), tron (3)
-#   Grand total: 68 endpoints across 16 chains
+#   Grand total: 67 endpoints across 16 chains
 
 
 # ── Endpoint URL template resolution ───────────────────────────────
