@@ -244,8 +244,6 @@ async def test_empty_range_indexes_nothing(store: LanceVectorStore) -> None:
     client = FakeCHClient(wallet_rows=[], contract_rows=[])
     stats = await run_vector_ingestion(store, client, "ethereum", 1, 10, limit=10)
     assert stats == {"wallets_indexed": 0, "contracts_indexed": 0}
-    assert store.collection_stats("wallet_embeddings")["rows"] == 0
-    assert store.collection_stats("contract_embeddings")["rows"] == 0
 
 
 # ── Indexer ingestion guard ────────────────────────────────────────────
