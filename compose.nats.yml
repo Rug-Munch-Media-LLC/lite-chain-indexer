@@ -11,7 +11,7 @@
 #
 # Ports (all bound to loopback — expose publicly via nginx/cloudflared):
 #   4222  NATS client protocol (NATS_URL default nats://localhost:4222)
-#   8080  WebSocket (browser / JS clients)
+#   8097  WebSocket (browser / JS clients) — 8080 is taken by crowdsec on host
 #   8222  Monitoring dashboard + healthz
 #
 # Start:
@@ -29,10 +29,10 @@ services:
     command: ["-js", "-c", "/etc/nats/nats-server.conf"]
     ports:
       - "127.0.0.1:4222:4222"
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8097:8080"
       - "127.0.0.1:8222:8222"
     volumes:
-      - ./nats-server.conf:/etc/nats/nats-server.conf:ro
+      - ./compose/nats-server.conf:/etc/nats/nats-server.conf:ro
       - nats-data:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]

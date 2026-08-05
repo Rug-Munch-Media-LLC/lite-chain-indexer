@@ -175,7 +175,7 @@ class WebhookDelivery:
 
             self._nc = await nats.connect(
                 self._url,
-                timeout=2.0,
+                connect_timeout=2,
                 max_reconnect_attempts=0,
             )
         except Exception as exc:  # noqa: BLE001 — start is best-effort

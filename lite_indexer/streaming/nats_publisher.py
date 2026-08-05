@@ -235,7 +235,7 @@ class NATSPublisher:
         try:
             self._nc = await nats.connect(
                 self._url,
-                timeout=self._connect_timeout,
+                connect_timeout=int(self._connect_timeout),
                 max_reconnect_attempts=0,
             )
         except Exception as exc:  # noqa: BLE001 — connect is best-effort
