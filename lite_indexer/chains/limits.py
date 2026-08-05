@@ -21,6 +21,7 @@ PROVIDER_RATE_LIMITS: dict[str, dict[str, int]] = {
     # Tier 2 — Medium capacity
     "publicnode.com": {"req_per_sec": 5, "burst": 10},
     "onfinality.io": {"req_per_sec": 5, "burst": 10},
+    "nodies.app": {"req_per_sec": 5, "burst": 10},
     # Tier 3 — Low capacity / rate limited
     "1rpc.io": {"req_per_sec": 2, "burst": 5},
     "meowrpc.com": {"req_per_sec": 3, "burst": 5},
@@ -57,6 +58,7 @@ MAX_BLOCK_RANGE: dict[str, int | None] = {
     # Medium range (100-500)
     "publicnode.com": 1000,
     "onfinality.io": 2000,
+    "nodies.app": 50,  # 50-block getLogs cap (verified 2026-08-05) — matches CHUNK_SIZE_EVM
     "tatum.io": 100,
     "mevblocker.io": 2000,
     # Low range (10-50)
@@ -66,7 +68,7 @@ MAX_BLOCK_RANGE: dict[str, int | None] = {
     "tenderly.co": 5000,
     # Unlimited / unknown
     "meowrpc.com": None,
-    "merkle.io": None,
+    "merkle.io": None,  # getLogs unsupported (-32601) — blockNumber/tip fallback only
     "blxrbdn.com": None,
     "fantom.network": None,
     "linea.build": None,

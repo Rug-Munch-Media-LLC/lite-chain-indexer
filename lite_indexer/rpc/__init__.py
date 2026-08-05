@@ -32,9 +32,14 @@ from lite_indexer.rpc.health import (
 from lite_indexer.rpc.pool import (
     apply_endpoint_backoff,
     ban_endpoint,
+    desperation_probe_due,
+    force_probe_endpoint,
     get_best_endpoint,
     handle_rate_limit,
     is_endpoint_banned,
+    least_banned_endpoint,
+    mark_desperation_probe,
+    pool_fully_down,
     record_endpoint_failure,
     record_endpoint_success,
     unban_endpoint,
@@ -96,6 +101,12 @@ __all__ = [
     "record_rpc_usage",
     "log_rpc_usage",
     "is_circuit_open",
+    # pool resilience helpers
+    "desperation_probe_due",
+    "force_probe_endpoint",
+    "least_banned_endpoint",
+    "mark_desperation_probe",
+    "pool_fully_down",
     # throttle
     "RATE_TRACKER",
     "RPCRateTracker",

@@ -33,6 +33,7 @@ from typing import Any
 
 from lite_indexer.config import (
     CIRCUIT_COOLDOWN_SECONDS,
+    CIRCUIT_DESPERATION_PROBE_INTERVAL,
     CIRCUIT_FAILURE_THRESHOLD,
     CIRCUIT_WINDOW_SECONDS,
     RPC_METHOD_ROUTING,
@@ -343,12 +344,18 @@ class RpcCircuitBreaker:
         failure_threshold: int = CIRCUIT_FAILURE_THRESHOLD,
         window_seconds: float = CIRCUIT_WINDOW_SECONDS,
         cooldown_seconds: float = CIRCUIT_COOLDOWN_SECONDS,
+        desperation_probe_interval: float = CIRCUIT_DESPERATION_PROBE_INTERVAL,
     ) -> None:
         self._threshold = failure_threshold
         self._window = window_seconds
         self._cooldown = cooldown_seconds
+        self._desperation_interval = desperation_probe_interval
         # endpoint -> (state, opened_at, failures)
         self._state: dict[str, tuple[str, float, list[float]]] = {}
+        # chain-pool key -> last desperation probe epoch. Used after a
+        # pool-wide outage so the least-banned endpoint is probed at most
+        # once per interval instead of every cycle hammering all endpoints.
+        self._last_desperation_probe: dict[str, float] = {}
 
     def _entry(self, endpoint: str) -> tuple[str, float, list[float]]:
         state = self._state.get(endpoint)
@@ -392,6 +399,54 @@ class RpcCircuitBreaker:
             return True
         return False
 
+    def force_probe(self, endpoint: str) -> bool:
+        """Bypass the ban/open state for a single request (desperation probe).
+
+        Used after a pool-wide outage: every endpoint is open/banned and
+        the cooldown may be far in the future. This lets the caller make
+        exactly one request to the least-banned endpoint without waiting
+        for the cooldown to elapse. The request outcome resolves the
+        circuit exactly like a normal half-open probe: success closes,
+        failure re-opens.
+
+        Args:
+            endpoint: RPC endpoint URL.
+
+        Returns:
+            Always True — the probe may proceed (state is armed for a
+            single request; concurrent callers see it as ``probe``).
+        """
+        self._state[endpoint] = ("probe", 0.0, self._entry(endpoint)[2])
+        return True
+
+    def desperation_probe_due(self, pool_key: str, now: float | None = None) -> bool:
+        """Whether a pool-wide desperation probe may fire for ``pool_key``.
+
+        After every endpoint in a chain's pool is open/banned, callers
+        check this before force-probing so the least-banned endpoint is
+        probed at most once per :data:`CIRCUIT_DESPERATION_PROBE_INTERVAL`
+        instead of being hammered every cycle.
+
+        Args:
+            pool_key: Stable key for the chain pool (typically the chain
+                name, e.g. ``"ethereum"``).
+            now: Epoch time override (tests).
+
+        Returns:
+            True when the interval has elapsed since the last probe.
+        """
+        now = time.time() if now is None else now
+        return now - self._last_desperation_probe.get(pool_key, 0.0) >= self._desperation_interval
+
+    def mark_desperation_probe(self, pool_key: str, now: float | None = None) -> None:
+        """Record that a desperation probe fired for ``pool_key``.
+
+        Args:
+            pool_key: Stable key for the chain pool.
+            now: Epoch time override (tests).
+        """
+        self._last_desperation_probe[pool_key] = time.time() if now is None else now
+
     def record_success(self, endpoint: str) -> None:
         """Close the circuit after a successful call/probe.
 
@@ -424,6 +479,29 @@ class RpcCircuitBreaker:
             endpoint: RPC endpoint URL.
         """
         return self.state(endpoint) == "open"
+
+    def least_banned_endpoint(self, endpoints: list[str]) -> str:
+        """Return the endpoint least penalized by the breaker.
+
+        Picks the endpoint whose circuit state is most recoverable:
+        closed > half_open > open, then by the earliest ``opened_at``
+        (so an open endpoint whose cooldown elapses soonest wins).
+
+        Args:
+            endpoints: Candidate endpoint URLs.
+
+        Returns:
+            The least-banned endpoint URL.
+        """
+        if not endpoints:
+            raise ValueError("least_banned_endpoint requires a non-empty endpoint list")
+
+        def _rank(ep: str) -> tuple[int, float]:
+            st, opened_at, _ = self._entry(ep)
+            state_rank = {"closed": 0, "half_open": 1, "probe": 1, "open": 2}.get(st, 0)
+            return (state_rank, opened_at)
+
+        return min(endpoints, key=_rank)
 
 
 # Module-level breaker shared across the codebase.

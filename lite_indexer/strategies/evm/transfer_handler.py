@@ -44,6 +44,13 @@ from lite_indexer.rpc import (
     handle_rate_limit,
     record_endpoint_failure,
 )
+from lite_indexer.rpc.pool import (
+    desperation_probe_due,
+    force_probe_endpoint,
+    least_banned_endpoint,
+    mark_desperation_probe,
+    pool_fully_down,
+)
 from lite_indexer.strategies.evm._helpers import detect_reorg, enforce_block_range
 from lite_indexer.strategies.evm.bloom import (
     BloomCache,
@@ -52,6 +59,35 @@ from lite_indexer.strategies.evm.bloom import (
 )
 
 logger = get_logger(__name__)
+
+
+# ── Adaptive chunk-size reduction ─────────────────────────────────────
+# After repeated pool-wide failures (RpcFetchFailedError), the effective
+# chunk size is halved (floor ADAPTIVE_CHUNK_FLOOR) so restrictive free
+# RPCs with small range caps (blastapi=10, blockrazor=25) or small result
+# caps can serve the range. A success resets the reduction. This makes
+# catch-up degrade gracefully instead of failing the same 50-block chunk
+# forever when every endpoint caps below the default chunk size.
+_ADAPTIVE_CHUNK_LEVELS: dict[str, int] = {}
+ADAPTIVE_CHUNK_FLOOR: int = 5
+ADAPTIVE_CHUNK_MAX_HALVES: int = 4
+
+
+def _adaptive_chunk_size(chain: str, base_chunk: int) -> int:
+    """Return the effective chunk size for ``chain`` after repeated failures."""
+    halves: int = min(_ADAPTIVE_CHUNK_LEVELS.get(chain, 0), ADAPTIVE_CHUNK_MAX_HALVES)
+    divisor: int = 2**halves
+    return max(ADAPTIVE_CHUNK_FLOOR, base_chunk // divisor)
+
+
+def _bump_adaptive_chunk(chain: str) -> None:
+    """Record one pool-wide failure — next fetch uses a smaller chunk."""
+    _ADAPTIVE_CHUNK_LEVELS[chain] = _ADAPTIVE_CHUNK_LEVELS.get(chain, 0) + 1
+
+
+def _reset_adaptive_chunk(chain: str) -> None:
+    """Reset the adaptive chunk size after a successful fetch."""
+    _ADAPTIVE_CHUNK_LEVELS.pop(chain, None)
 
 
 def _contiguous_ranges(blocks: set[int]) -> list[tuple[int, int]]:
@@ -131,6 +167,31 @@ async def _fetch_range(
     # Rotate starting endpoint for load distribution
     start_idx = endpoints.index(get_best_endpoint(endpoints))
     rotated = endpoints[start_idx:] + endpoints[:start_idx]
+
+    # Pool-wide outage desperation probe: when EVERY endpoint is banned or
+    # circuit-open, do not hammer the whole pool every cycle (that deepens
+    # the bans and stalls the chain). Instead force-probe the least-banned
+    # endpoint at most once per desperation interval so the chain can
+    # self-heal the moment any endpoint recovers.
+    if pool_fully_down(endpoints):
+        if desperation_probe_due(endpoints):
+            mark_desperation_probe(endpoints)
+            probe = least_banned_endpoint(endpoints)
+            force_probe_endpoint(probe)
+            logger.warning(
+                "rpc_desperation_probe",
+                chain=chain,
+                endpoint=probe[:60],
+                from_block=from_block,
+                to_block=to_block,
+            )
+            rotated = [probe]
+        else:
+            # Probe not due yet — do not burn the pool. Raise the
+            # data-loss guard so the cycle retries on the next probe tick.
+            raise RpcFetchFailedError(
+                f"pool fully down for {chain} range {from_block}-{to_block}: waiting for desperation probe"
+            )
 
     best_result: list[dict[str, Any]] | None = None
     last_error: str | None = None
@@ -364,6 +425,9 @@ async def fetch_transfers(
     effective_chunk = chunk_size if chunk_size and chunk_size > 0 else CHUNK_SIZE_EVM
     # A chunk must never exceed the batch size.
     effective_chunk = min(effective_chunk, max(1, to_block - from_block + 1))
+    # Adaptive: after repeated pool-wide failures, use a smaller chunk so
+    # range/result-capped free RPCs can serve the range.
+    effective_chunk = _adaptive_chunk_size(chain, effective_chunk)
     if chunk_size is None:
         # Legacy single-call behavior — no chunking.
         return await _fetch_range(
@@ -442,12 +506,17 @@ async def fetch_transfers(
             # Data-loss guard: propagate — the caller must not advance
             # state past a range that was not fully fetched.
             if isinstance(outcome, RpcFetchFailedError):
+                # Reduce the chunk size so the retry (next cycle) has a
+                # better chance against range/result-capped free RPCs.
+                _bump_adaptive_chunk(chain)
                 raise outcome
             logger.error("chunk_fetch_failed", chain=chain, error=str(outcome)[:120])
             raise RpcFetchFailedError(f"chunk fetch failed for {chain}: {str(outcome)[:120]}")
         if isinstance(outcome, list):
             chunk_results.append(outcome)
 
+    # Every chunk succeeded — restore the default chunk size.
+    _reset_adaptive_chunk(chain)
     return merge_chunked_results(chunk_results)
 
 

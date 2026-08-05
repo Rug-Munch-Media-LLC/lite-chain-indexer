@@ -94,6 +94,117 @@ def is_endpoint_banned(endpoint: str) -> bool:
     return True
 
 
+def pool_fully_down(endpoints: list[str]) -> bool:
+    """Whether every endpoint in a pool is banned or circuit-open.
+
+    This is the pool-wide outage signal that triggers the desperation
+    probe: all endpoints are currently unusable, so the fetch path must
+    not hammer the whole pool every cycle. Instead it force-probes the
+    least-banned endpoint at most once per desperation interval.
+
+    Args:
+        endpoints: Pool candidate URLs (may be empty).
+
+    Returns:
+        True when the pool is non-empty and every endpoint is banned or
+        circuit-open.
+    """
+    if not endpoints:
+        return False
+    from lite_indexer.rpc.routing import is_circuit_open
+
+    return all(is_endpoint_banned(ep) or is_circuit_open(ep) for ep in endpoints)
+
+
+def least_banned_endpoint(endpoints: list[str]) -> str:
+    """Return the endpoint with the lowest combined pool penalty.
+
+    Mirrors the :func:`get_best_endpoint` scoring (hard ban + circuit
+    open + recent failures + list position) but deterministically picks
+    the single least-penalized endpoint instead of rotating among the
+    healthy subset. Used by the desperation probe to choose which
+    endpoint to force-probe after a pool-wide outage.
+
+    Args:
+        endpoints: Pool candidate URLs.
+
+    Returns:
+        The least-banned endpoint URL.
+    """
+    if not endpoints:
+        raise ValueError("least_banned_endpoint requires a non-empty endpoint list")
+
+    from lite_indexer.rpc.routing import is_circuit_open
+
+    now = time.time()
+    scored: list[tuple[int, str]] = []
+    for i, ep in enumerate(endpoints):
+        failures = [t for t in _endpoint_failures.get(ep, []) if now - t < ENDPOINT_COOLDOWN]
+        penalty = len(failures) * 1000 + i
+        if is_endpoint_banned(ep):
+            penalty += 50000
+        if is_circuit_open(ep):
+            penalty += 20000
+        scored.append((penalty, ep))
+    scored.sort(key=lambda x: x[0])
+    return scored[0][1]
+
+
+def force_probe_endpoint(endpoint: str) -> bool:
+    """Bypass the circuit ban for a single request to ``endpoint``.
+
+    Used by the desperation probe: after a pool-wide outage the
+    least-banned endpoint is force-probed (once per
+    :data:`CIRCUIT_DESPERATION_PROBE_INTERVAL`) even though its circuit
+    is open. A successful probe closes the circuit (via
+    :func:`record_endpoint_success`); a failure re-opens it.
+
+    Args:
+        endpoint: RPC endpoint URL to probe.
+
+    Returns:
+        True — the probe may proceed.
+    """
+    from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+
+    return CIRCUIT_BREAKER.force_probe(endpoint)
+
+
+def desperation_probe_due(endpoints: list[str], now: float | None = None) -> bool:
+    """Whether a pool-wide desperation probe may fire for ``endpoints``.
+
+    Args:
+        endpoints: Pool candidate URLs (pool key = chain name is not
+            available here, so the first endpoint doubles as the pool
+            key; callers that know the chain should prefer the breaker's
+            own method with the chain name).
+        now: Epoch time override (tests).
+
+    Returns:
+        True when the desperation interval has elapsed since the last
+        probe for this pool.
+    """
+    from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+
+    if not endpoints:
+        return False
+    return CIRCUIT_BREAKER.desperation_probe_due(endpoints[0], now=now)
+
+
+def mark_desperation_probe(endpoints: list[str], now: float | None = None) -> None:
+    """Record that a desperation probe fired for ``endpoints``.
+
+    Args:
+        endpoints: Pool candidate URLs.
+        now: Epoch time override (tests).
+    """
+    from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+
+    if not endpoints:
+        return
+    CIRCUIT_BREAKER.mark_desperation_probe(endpoints[0], now=now)
+
+
 # ── Best Endpoint Selection ──────────────────────────────────────────
 
 
@@ -144,10 +255,14 @@ def get_best_endpoint(endpoints: list[str]) -> str:
     healthy = [ep for penalty, ep in scored if penalty < MAX_FAILURES * 1000]
 
     if not healthy:
-        for ep in endpoints:
-            _endpoint_failures[ep] = []
-        logger.warning("all_endpoints_cooldown_reset", count=len(endpoints))
-        return endpoints[0]
+        # Pool-wide outage. Do NOT clear failure state — that reset was
+        # the stall: every cycle re-hammered endpoints[0] (which is still
+        # banned/circuit-open) and deepened the bans. Return the
+        # least-banned endpoint instead; the fetch path's desperation
+        # probe gate decides whether it is dialed now or on the next
+        # probe tick.
+        logger.warning("all_endpoints_down", count=len(endpoints))
+        return least_banned_endpoint(endpoints)
 
     pool_size = max(2, len(healthy) // 2)
     return random.choice(healthy[:pool_size])  # noqa: S311

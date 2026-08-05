@@ -9,9 +9,11 @@ Manages:
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import json
 import os
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -20,6 +22,47 @@ from lite_indexer.config import STATE_DIR as STATE_DIR
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def atomic_write_json(path: Path, payload: dict[str, Any] | str) -> None:
+    """Atomically write a JSON payload to ``path``.
+
+    Multi-writer safe:
+      - Writes to a **unique** temp file (``.name.<pid>.<uuid>.tmp``) so
+        two processes writing the same state file never clobber each
+        other's temp file (the old shared ``.json.tmp`` name had a race:
+        writer A's tmp could be truncated by writer B before A renamed).
+      - Serializes writers with an exclusive ``fcntl.flock`` on the temp
+        file (same-filesystem rename is atomic regardless, but the lock
+        prevents read-after-partial-write from a lagging writer and makes
+        the ordering deterministic).
+      - ``fsync`` before the atomic ``os.replace`` so the rename never
+        publishes a partially-flushed payload after a crash.
+
+    The reader side (``json.loads(path.read_text())``) always sees either
+    the old complete file or the new complete file — never a torn write.
+
+    Args:
+        path: Destination file path.
+        payload: JSON-serializable dict or pre-serialized JSON string.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        data = payload if isinstance(payload, str) else json.dumps(payload, indent=2)
+        with open(tmp, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+            fcntl.flock(f, fcntl.LOCK_UN)
+        os.replace(tmp, path)
+    finally:
+        # Best-effort cleanup if the rename never happened (crash/error).
+        with open(tmp, "a"):  # ensure the file exists before unlinking
+            pass
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
 
 class StateManager:
@@ -83,21 +126,13 @@ class StateManager:
             state["enabled_events"] = sorted(enabled_events)
         try:
             path = self._state_path()
-            # Atomic write: write to a temp file in the same directory then
-            # os.replace() it into place. A plain open("w") + write can be
+            # Atomic write: unique temp file in the same directory then
+            # os.replace() into place. A plain open("w") + write can be
             # torn by an OOM kill mid-write, truncating the JSON and causing
             # the next load to fall back to {} → restart from block ~0
             # (observed 08/03: ethereum state reset to block 100 while the
             # ClickHouse max was 25.6M, triggering a genesis backfill).
-            tmp_path = path.with_suffix(".json.tmp")
-            payload = json.dumps(state, indent=2)
-            with open(tmp_path, "w") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-                fcntl.flock(f, fcntl.LOCK_UN)
-            os.replace(tmp_path, path)
+            atomic_write_json(path, state)
             logger.info("state_saved", chain=self.chain, last_block=last_block)
         except OSError as exc:
             logger.error("state_save_failed", chain=self.chain, error=str(exc))
@@ -149,22 +184,12 @@ class StateHighWater:
         try:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             path = self._path()
-            tmp_path = path.with_suffix(".json.tmp")
-            payload = json.dumps(
-                {
-                    "last_block": last_block,
-                    "last_timestamp": datetime.now(UTC).isoformat(),
-                    "chain": self.chain,
-                },
-                indent=2,
-            )
-            with open(tmp_path, "w") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-                fcntl.flock(f, fcntl.LOCK_UN)
-            os.replace(tmp_path, path)
+            payload = {
+                "last_block": last_block,
+                "last_timestamp": datetime.now(UTC).isoformat(),
+                "chain": self.chain,
+            }
+            atomic_write_json(path, payload)
             logger.info("highwater_updated", chain=self.chain, last_block=last_block)
         except OSError as exc:
             logger.warning("highwater_save_failed", chain=self.chain, error=str(exc)[:80])
@@ -201,16 +226,12 @@ class PairCache:
             self._pairs = {}
 
     def save(self) -> None:
-        """Persist pair→tokens mapping to disk."""
+        """Persist pair→tokens mapping to disk (atomic)."""
         if not self._pairs:
             return
         try:
             path = self._cache_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w") as f:
-                fcntl.flock(f, fcntl.LOCK_EX)
-                json.dump(self._pairs, f)
-                fcntl.flock(f, fcntl.LOCK_UN)
+            atomic_write_json(path, self._pairs)
             logger.debug("pair_cache_saved", chain=self.chain, pairs=len(self._pairs))
         except (OSError, TypeError) as exc:
             logger.warning("pair_cache_save_failed", chain=self.chain, error=str(exc)[:80])

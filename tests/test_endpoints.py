@@ -114,6 +114,6 @@ class TestGetLogsEndpoints:
             assert len(urls) == len(set(urls)), chain
 
     def test_total_endpoint_count_sane(self):
-        """Active pool is bounded: >= 1 per chain, <= the 61 raw templates."""
+        """Active pool is bounded: >= 1 per chain, <= the 66 raw templates."""
         total = sum(len(urls) for urls in GET_LOGS_ENDPOINTS.values())
-        assert len(GET_LOGS_ENDPOINTS) <= total <= 61
+        assert len(GET_LOGS_ENDPOINTS) <= total <= 66

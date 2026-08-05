@@ -333,6 +333,13 @@ CIRCUIT_FAILURE_THRESHOLD: int = 5
 CIRCUIT_WINDOW_SECONDS: int = 60
 CIRCUIT_COOLDOWN_SECONDS: int = 30
 
+# Desperation probe: when EVERY endpoint in a chain's pool is open/banned
+# (pool-wide outage), the pool stops hammering all endpoints and instead
+# force-probes the least-banned endpoint at most once per this interval.
+# This lets the chain self-heal after a mass outage without a 30s+ wait
+# per ban window and without racing the ban timer.
+CIRCUIT_DESPERATION_PROBE_INTERVAL: float = float(os.environ.get("CIRCUIT_DESPERATION_PROBE_INTERVAL", "30.0"))
+
 # RPC usage/cost tracking: keep a bounded per-endpoint usage ledger.
 RPC_USAGE_MAX_ENDPOINTS: int = 512
 

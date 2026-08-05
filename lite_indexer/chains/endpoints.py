@@ -7,13 +7,17 @@ Each EVM chain has a list of eth_getLogs-compatible RPC endpoints in tiers:
   T3 (indices 5+)  — last resort (range-limited publics)
   T4 (indices 5+)  — API-key free tiers (${ALCHEMY_KEY}, ${GETBLOCK_KEY}, etc.)
 
-All endpoints were live-verified 2026-08-01 with a topic-only eth_getLogs
-probe (100-block range from tip) — the exact request shape the indexer uses.
-Providers that answer eth_blockNumber but reject topic-only eth_getLogs
-(publicnode → -32701 "specify an address", meowrpc → getLogs unsupported,
-binance seeds → limit exceeded, merkle → 429, ankr → unauthorized except
-celo) were removed. 1rpc.io, tatum (except bsc/polygon), cloudflare-eth
-and polygon-rpc are confirmed dead and removed.
+All endpoints were live-verified 2026-08-05 with an eth_blockNumber probe
+plus a topic-only eth_getLogs probe (50-block range from tip) — the exact
+request shape the indexer uses. Providers that answer eth_blockNumber but
+reject topic-only eth_getLogs (publicnode → archive token required,
+merkle → -32601 "Method not found") are kept as blockNumber/timestamp
+fallbacks in lower tiers; the pool scorer's eth_getLogs verification
+deprioritizes them for log queries (see lite_indexer/rpc/health.py).
+meowrpc → getLogs unsupported, binance seeds → limit exceeded, ankr →
+unauthorized except celo, 1rpc.io/eth → usage limit, llamarpc → HTTP 521,
+tatum (except bsc/polygon), cloudflare-eth and polygon-rpc are confirmed
+dead and removed.
 
 2026-08-05: onfinality (eth.api.onfinality.io/public) re-added as Ethereum
 T1 after 429-ban during 50-block catch-up; blastapi re-added as T5 —
@@ -29,7 +33,7 @@ whose key is NOT set are excluded from the active pool (they can never be
 dialed — a literal ``${...}`` in a URL only produces DNS/JSON verification
 retries). Restart the service after setting a key to activate the endpoint.
 
-Total: 60 endpoints across 14 chains (48 public + 12 API-key free tiers).
+Total: 66 endpoints across 14 chains (53 public + 13 API-key free tiers).
 """
 
 from __future__ import annotations
@@ -41,28 +45,41 @@ from lite_indexer.logging import get_logger
 logger = get_logger(__name__)
 
 GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
-    # ── Ethereum (9 endpoints) ────────────────────────────────────────
+    # ── Ethereum (13 endpoints) ───────────────────────────────────────
     # T1: onfinality public (verified 2026-08-05 — eth_getLogs OK at
     #     10-block chunks from tip; 429-banned on 50-block catch-up,
     #     keep chunks small via ETH_BATCH_SIZE=10)
-    # T2: nodereal public demo key (works, but 429-bans under parallel load)
+    # T2: nodereal public demo key (works, but 429-bans under parallel load),
+    #     nodies (eth-pokt.nodies.app — verified 2026-08-05; 50-block
+    #     getLogs cap matches CHUNK_SIZE_EVM exactly; 20k result cap)
     # T3: drpc.org (degraded — ~75% 408 free-plan timeout, keep as fallback),
-    #     flashbots (MEV-protected; ranged topic-only getLogs errors)
+    #     flashbots (MEV-protected; ranged topic-only getLogs errors),
+    #     mevblocker (verified 2026-08-05 — 10k-result getLogs cap, blocks
+    #     MEV txs; fine for blockNumber + small getLogs ranges),
+    #     publicnode (verified 2026-08-05 blockNumber; eth_getLogs needs an
+    #     archive token — blockNumber/timestamp fallback only)
     # T4: alchemy, getblock, chainstack, quicknode (free API-key tiers)
-    # T5: blastapi (10-block range cap — OK with ETH_BATCH_SIZE=10)
-    # NOTE: mevblocker (10k-result cap) does not serve the 10-block chunk
-    #       shape and was not added. publicnode requires an address filter.
+    # T5: blastapi (10-block range cap — OK with ETH_BATCH_SIZE=10),
+    #     merkle (verified 2026-08-05 blockNumber; eth_getLogs returns
+    #     -32601 Method not found — tip/blockNumber fallback only)
+    # NOTE: llamarpc (HTTP 521), ankr (Unauthorized without key) and
+    #       1rpc.io/eth (usage limit) were tested 2026-08-05 and failed
+    #       the eth_blockNumber probe — not added.
     "ethereum": [
         "https://eth.api.onfinality.io/public",  # T1 — onfinality (verified, fast)
         "https://eth-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",  # T2 — nodereal public
+        "https://eth-pokt.nodies.app",  # T2 — nodies (50-block getLogs cap, verified 2026-08-05)
         "https://eth.drpc.org",  # T3 — drpc.org (degraded, fallback)
         "https://rpc.flashbots.net",  # T3 — flashbots (degraded, fallback)
+        "https://rpc.mevblocker.io",  # T3 — mevblocker (10k getLogs cap, verified 2026-08-05)
+        "https://ethereum-rpc.publicnode.com",  # T3 — publicnode (blockNumber verified; getLogs needs archive token)
         # T4: API-key free tiers (set env vars to activate)
         "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (300M CU/mo, 10-block getLogs cap)
         "https://eth.getblock.io/mainnet/?api_key=${GETBLOCK_KEY}",  # T4 — GetBlock free (40K req/day)
         "https://ethereum-mainnet.core.chainstack.com/${CHAINSTACK_KEY}",  # T4 — Chainstack free
         "https://${QUICKNODE_ENDPOINT}",  # T4 — QuickNode free
         "https://eth-mainnet.public.blastapi.io",  # T5 — blastapi (10-block cap, verified 2026-08-05)
+        "https://eth.merkle.io",  # T5 — merkle (blockNumber verified; getLogs -32601)
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -208,16 +225,16 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 }
 
 # Summary of EVM endpoints per chain:
-#   ethereum: 7     base: 5      bsc: 4      polygon: 5
+#   ethereum: 13    base: 5      bsc: 4      polygon: 5
 #   arbitrum: 4     optimism: 4  avalanche: 4 fantom: 4
 #   linea: 5        scroll: 4    zksync: 4   mantle: 4
 #   gnosis: 3       celo: 3
 # -------------------------------------------------------
-#   Total: 60 endpoints across 14 chains
-#   (48 free public + 12 API-key free tiers)
+#   Total: 66 endpoints across 14 chains
+#   (53 free public + 13 API-key free tiers)
 #
 #   Non-EVM: solana (4), tron (3)
-#   Grand total: 67 endpoints across 16 chains
+#   Grand total: 73 endpoints across 16 chains
 
 
 # ── Endpoint URL template resolution ───────────────────────────────
@@ -283,7 +300,14 @@ GET_LOGS_ENDPOINTS = {chain: _resolved_endpoints(urls) for chain, urls in GET_LO
 # (e.g. an outage taking out every tier at once) still has a shot at
 # serving the range instead of raising RpcFetchFailedError immediately.
 LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
-    "ethereum": ["https://eth.api.onfinality.io/public", "https://eth.drpc.org", "https://rpc.flashbots.net"],
+    "ethereum": [
+        "https://eth.api.onfinality.io/public",
+        "https://eth-mainnet.public.blastapi.io",
+        "https://eth-pokt.nodies.app",
+        "https://eth.drpc.org",
+        "https://rpc.mevblocker.io",
+        "https://rpc.flashbots.net",
+    ],
     "base": ["https://mainnet.base.org", "https://base.drpc.org"],
     "bsc": ["https://rpc-bsc.48.club"],
     "polygon": ["https://polygon.drpc.org", "https://polygon-rpc.blxrbdn.com"],
