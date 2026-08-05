@@ -35,7 +35,7 @@ from lite_indexer.chains.demand import (
     read_demand_files,
     record_scan_demand,
 )
-from lite_indexer.chunks import chunk_size_for_chain
+from lite_indexer.chunks import chunk_size_for_chain, sync_batch_for_chain
 from lite_indexer.config import (
     CH_HEALTH_CHECK_ENABLED,
     CH_HEALTH_INTERVAL,
@@ -1289,8 +1289,9 @@ class LiteIndexer:
             summary["status"] = "caught_up"
             return None
 
-        if to_block - from_block > self.batch_size:
-            to_block = from_block + self.batch_size
+        cycle_cap = sync_batch_for_chain(self.chain, self.batch_size)
+        if to_block - from_block > cycle_cap:
+            to_block = from_block + cycle_cap
 
         return from_block, to_block
 

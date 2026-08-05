@@ -44,6 +44,34 @@ def chunk_size_for_chain(chain: str) -> int:
     return CHUNK_SIZE_EVM
 
 
+def sync_batch_for_chain(chain: str, default: int) -> int:
+    """Return the per-cycle block range cap for a chain.
+
+    ``_determine_block_range`` fetches at most ``default`` blocks per sync
+    cycle (``BATCH_SIZE``). A per-chain ``{CHAIN}_SYNC_BATCH`` env var
+    (e.g. ``ETH_SYNC_BATCH=200``) overrides the cap so a cycle finishes
+    inside the stall watchdog's stale window (max(300s, 3 poll intervals)).
+
+    During catch-up a 1000-block Ethereum cycle is 100 ten-block chunks —
+    with rate-limited free RPCs that exceeds the watchdog threshold and the
+    service gets restarted mid-cycle, losing progress every 10 minutes
+    (observed 2026-08-05). A smaller cycle cap keeps state advancing
+    steadily without watchdog restarts.
+
+    Args:
+        chain: Chain name (``ethereum``, ...).
+        default: Default cycle batch (``BATCH_SIZE``).
+
+    Returns:
+        Max blocks per sync cycle.
+    """
+    env_alias = {"ethereum": "ETH"}.get(chain, chain.upper())
+    override = os.environ.get(f"{env_alias}_SYNC_BATCH")
+    if override and override.isdigit() and int(override) > 0:
+        return int(override)
+    return default
+
+
 def chunk_range(
     from_block: int,
     to_block: int,
@@ -119,6 +147,7 @@ def merge_chunked_results(results: list[list[dict[str, Any]]]) -> list[dict[str,
 __all__ = [
     "CHUNK_PARALLELISM",
     "chunk_size_for_chain",
+    "sync_batch_for_chain",
     "chunk_range",
     "num_chunks",
     "merge_chunked_results",
