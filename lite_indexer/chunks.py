@@ -9,6 +9,7 @@ Reduces RPC round trips by the chunk-size factor and avoids
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from typing import Any
 
@@ -22,12 +23,22 @@ def chunk_size_for_chain(chain: str) -> int:
     ``getSignaturesForAddress`` flow is signature-bound, not log-bound);
     Tron caps at its configured max block range.
 
+    A per-chain ``{CHAIN}_BATCH_SIZE`` env var (e.g. ``ETH_BATCH_SIZE=10``)
+    overrides the default. Small batches keep ``eth_getLogs`` ranges under
+    free-RPC caps: Alchemy/blastapi free tiers limit ranges to 10 blocks,
+    and 50-block Ethereum chunks routinely exceed the ~20K log result cap
+    that gets public RPCs (onfinality) 429-banned during catch-up.
+
     Args:
         chain: Chain name (``ethereum``, ``solana``, ``tron``, ...).
 
     Returns:
         Chunk size in blocks/slots.
     """
+    env_alias = {"ethereum": "ETH"}.get(chain, chain.upper())
+    override = os.environ.get(f"{env_alias}_BATCH_SIZE")
+    if override and override.isdigit() and int(override) > 0:
+        return int(override)
     if chain == "solana":
         return CHUNK_SIZE_SOLANA
     return CHUNK_SIZE_EVM

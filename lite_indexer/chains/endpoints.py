@@ -12,9 +12,14 @@ probe (100-block range from tip) — the exact request shape the indexer uses.
 Providers that answer eth_blockNumber but reject topic-only eth_getLogs
 (publicnode → -32701 "specify an address", meowrpc → getLogs unsupported,
 binance seeds → limit exceeded, merkle → 429, ankr → unauthorized except
-celo) were removed. 1rpc.io, onfinality.io, blastapi (except bsc), tatum
-(except bsc/polygon), cloudflare-eth and polygon-rpc are confirmed dead and
-removed.
+celo) were removed. 1rpc.io, tatum (except bsc/polygon), cloudflare-eth
+and polygon-rpc are confirmed dead and removed.
+
+2026-08-05: onfinality (eth.api.onfinality.io/public) re-added as Ethereum
+T1 after 429-ban during 50-block catch-up; blastapi re-added as T5 —
+both verified against 10-block eth_getLogs chunks from tip. Keep
+Ethereum chunks small (ETH_BATCH_SIZE=10) so free-tier range caps
+(Alchemy/blastapi = 10 blocks) and the ~20K result cap are respected.
 
 Some endpoints require an API key from a free-tier provider (Alchemy,
 GetBlock, Chainstack, QuickNode, Infura). Set the corresponding ${ENV_VAR}
@@ -36,19 +41,28 @@ from lite_indexer.logging import get_logger
 logger = get_logger(__name__)
 
 GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
-    # ── Ethereum (7 endpoints) ────────────────────────────────────────
-    # T1: drpc.org, flashbots (verified eth_getLogs)
-    # T2: nodereal public demo key
+    # ── Ethereum (9 endpoints) ────────────────────────────────────────
+    # T1: onfinality public (verified 2026-08-05 — eth_getLogs OK at
+    #     10-block chunks from tip; 429-banned on 50-block catch-up,
+    #     keep chunks small via ETH_BATCH_SIZE=10)
+    # T2: nodereal public demo key (works, but 429-bans under parallel load)
+    # T3: drpc.org (degraded — ~75% 408 free-plan timeout, keep as fallback),
+    #     flashbots (MEV-protected; ranged topic-only getLogs errors)
     # T4: alchemy, getblock, chainstack, quicknode (free API-key tiers)
+    # T5: blastapi (10-block range cap — OK with ETH_BATCH_SIZE=10)
+    # NOTE: mevblocker (10k-result cap) does not serve the 10-block chunk
+    #       shape and was not added. publicnode requires an address filter.
     "ethereum": [
-        "https://eth.drpc.org",  # T1 — drpc.org (verified, 0.5s)
-        "https://rpc.flashbots.net",  # T1 — flashbots (verified, MEV-protected)
+        "https://eth.api.onfinality.io/public",  # T1 — onfinality (verified, fast)
         "https://eth-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",  # T2 — nodereal public
+        "https://eth.drpc.org",  # T3 — drpc.org (degraded, fallback)
+        "https://rpc.flashbots.net",  # T3 — flashbots (degraded, fallback)
         # T4: API-key free tiers (set env vars to activate)
-        "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (300M CU/mo)
+        "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (300M CU/mo, 10-block getLogs cap)
         "https://eth.getblock.io/mainnet/?api_key=${GETBLOCK_KEY}",  # T4 — GetBlock free (40K req/day)
         "https://ethereum-mainnet.core.chainstack.com/${CHAINSTACK_KEY}",  # T4 — Chainstack free
         "https://${QUICKNODE_ENDPOINT}",  # T4 — QuickNode free
+        "https://eth-mainnet.public.blastapi.io",  # T5 — blastapi (10-block cap, verified 2026-08-05)
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -269,7 +283,7 @@ GET_LOGS_ENDPOINTS = {chain: _resolved_endpoints(urls) for chain, urls in GET_LO
 # (e.g. an outage taking out every tier at once) still has a shot at
 # serving the range instead of raising RpcFetchFailedError immediately.
 LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
-    "ethereum": ["https://eth.drpc.org", "https://rpc.flashbots.net"],
+    "ethereum": ["https://eth.api.onfinality.io/public", "https://eth.drpc.org", "https://rpc.flashbots.net"],
     "base": ["https://mainnet.base.org", "https://base.drpc.org"],
     "bsc": ["https://rpc-bsc.48.club"],
     "polygon": ["https://polygon.drpc.org", "https://polygon-rpc.blxrbdn.com"],

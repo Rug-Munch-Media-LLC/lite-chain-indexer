@@ -158,10 +158,15 @@ async def test_resolve_deployer_eoas_rotates_to_healthy_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The pool is rotated: a dead best endpoint must not blank the batch."""
-    # First endpoint fails, second succeeds — resolution is recovered.
+    from lite_indexer.chains import GET_LOGS_ENDPOINTS
+
+    # First (best) endpoint fails, a later one succeeds — resolution recovers.
+    # The failing endpoint is derived from the live pool so the test stays
+    # valid when the Ethereum endpoint ordering changes.
+    first_endpoint = GET_LOGS_ENDPOINTS["ethereum"][0]
     rpc = FakeRpcClient(
         by_tx={TX_HASH: EOA},
-        failing_endpoints={"https://eth.drpc.org"},
+        failing_endpoints={first_endpoint},
     )
     monkeypatch.setattr("lite_indexer.rpc.RpcClient", lambda: rpc)
     monkeypatch.setattr("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0])
