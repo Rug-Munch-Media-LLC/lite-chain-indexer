@@ -15,15 +15,26 @@
 #   3. NO-ADVANCE DETECTION — if any chain's state file has not been
 #      updated for more than STALL_MINUTES (default 30 minutes) the chain
 #      has not advanced and the service is restarted (auto-reset).
+#   4. RESTART COOLDOWN — stall/no-advance restarts are throttled to at
+#      most one per RESTART_COOLDOWN_MIN (default 30 minutes). The
+#      indexer's RPC pool keeps circuit-breaker state (403/429 hard bans,
+#      exponential backoff) IN MEMORY — an aggressive watchdog that
+#      restarts every 10 minutes wipes that state and re-hammers the very
+#      endpoints that triggered the stall (08/05 incident: 429 storm on
+#      ethereum/base/optimism). The cooldown lets the breakers work.
+#      The process watchdog (path 1) is deliberately NOT throttled: a
+#      dead service must always be (re)started.
 #
 # Exit codes:
 #   0 — healthy, no action
-#   1 — chains behind but indexer running (no restart; informational)
+#   1 — chains behind but indexer running (no restart; informational);
+#       also used when a restart was requested but throttled by cooldown
 #   2 — stalled chain detected → restarted service
 #   3 — service was not running → started it
 #   4 — lag check itself failed (no restart; avoid restart storms)
 #
-# Env overrides: SERVICE, STALL_MINUTES, TIMEOUT_S, PYTHON
+# Env overrides: SERVICE, STALL_MINUTES, TIMEOUT_S, PYTHON,
+#                RESTART_COOLDOWN_MIN, RESTART_MARKER
 #
 set -u
 
@@ -34,9 +45,33 @@ TIMEOUT_S="${TIMEOUT_S:-90}"
 # considered stalled → auto-reset (restart the service).
 STALL_MINUTES="${STALL_MINUTES:-30}"
 STALL_AGE_S=$((STALL_MINUTES * 60))
+# Minimum seconds between stall/no-advance restarts. Persisted in
+# RESTART_MARKER so the cooldown survives timer re-fires.
+RESTART_COOLDOWN_MIN="${RESTART_COOLDOWN_MIN:-30}"
+RESTART_MARKER="${RESTART_MARKER:-/var/data/chain-indexer/lite-indexer-last-restart}"
 
 # shellcheck disable=SC2317
 log() { echo "[$(date -Iseconds)] $*"; }
+
+# ── Restart helper with cooldown ──────────────────────────────────────
+# shellcheck disable=SC2317
+restart_if_cooldown_elapsed() {
+    # $1 — human-readable reason for the log line.
+    # Returns 0 if the service was restarted, 1 if throttled.
+    local reason="$1"
+    local now last_restart elapsed
+    now=$(date +%s)
+    last_restart=$(cat "${RESTART_MARKER}" 2>/dev/null || echo 0)
+    elapsed=$((now - last_restart))
+    if [ "${elapsed}" -lt $((RESTART_COOLDOWN_MIN * 60)) ]; then
+        log "restart throttled: ${reason} — last restart ${elapsed}s ago (<${RESTART_COOLDOWN_MIN}min cooldown); skipping to let RPC circuit breakers recover"
+        return 1
+    fi
+    log "restarting ${SERVICE}: ${reason}"
+    systemctl restart "${SERVICE}" 2>&1 | log || true
+    date +%s >"${RESTART_MARKER}" 2>/dev/null || true
+    return 0
+}
 
 # ── 0. Is the service running at all? (process watchdog) ─────────────
 if ! systemctl is-active --quiet "${SERVICE}"; then
@@ -120,15 +155,17 @@ print(" ".join(no_advance))
 ' "${STALL_AGE_S}")"
 
 if [ -n "${STALE_CHAINS}" ]; then
-    log "stalled chain(s): ${STALE_CHAINS} — restarting ${SERVICE}"
-    systemctl restart "${SERVICE}" 2>&1 | log || true
-    exit 2
+    if restart_if_cooldown_elapsed "stalled chain(s): ${STALE_CHAINS}"; then
+        exit 2
+    fi
+    exit 1
 fi
 
 if [ -n "${NO_ADVANCE_CHAINS}" ]; then
-    log "chain(s) not advanced for >${STALL_MINUTES}min: ${NO_ADVANCE_CHAINS} — restarting ${SERVICE}"
-    systemctl restart "${SERVICE}" 2>&1 | log || true
-    exit 2
+    if restart_if_cooldown_elapsed "chain(s) not advanced for >${STALL_MINUTES}min: ${NO_ADVANCE_CHAINS}"; then
+        exit 2
+    fi
+    exit 1
 fi
 
 # ── 3. Chains behind but making progress — informational ────────────

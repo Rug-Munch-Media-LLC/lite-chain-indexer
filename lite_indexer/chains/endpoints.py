@@ -113,13 +113,19 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     ],
     # ── Polygon (5 endpoints) ─────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)
-    # T2: tatum (audit-verified on polygon), blxrbdn (verified)
+    # T2: tatum (audit-verified on polygon), quiknode public
+    #     (rpc-mainnet.matic.quiknode.pro — verified 2026-08-05:
+    #     blockNumber + topic-only eth_getLogs from tip both OK)
     # T4: alchemy
+    # NOTE: polygon-rpc.blxrbdn.com removed 2026-08-05 — DNS failure
+    #       (000) during the 08/05 outage; polygon-rpc.com returns 401
+    #       (tenant disabled) and polygon-bor-rpc.publicnode.com requires
+    #       an address filter for getLogs, so neither was added.
     "polygon": [
         "https://polygon.gateway.tenderly.co",  # T1 — tenderly (verified)
         "https://polygon.drpc.org",  # T1 — drpc.org (verified)
         "https://polygon-mainnet.gateway.tatum.io",  # T2 — tatum (audit-verified on polygon)
-        "https://polygon-rpc.blxrbdn.com",  # T2 — bloxroute (verified eth_getLogs)
+        "https://rpc-mainnet.matic.quiknode.pro",  # T2 — quiknode public (verified eth_getLogs)
         "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
     # ── Arbitrum (4 endpoints) ────────────────────────────────────────
@@ -310,7 +316,7 @@ LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
     ],
     "base": ["https://mainnet.base.org", "https://base.drpc.org"],
     "bsc": ["https://rpc-bsc.48.club"],
-    "polygon": ["https://polygon.drpc.org", "https://polygon-rpc.blxrbdn.com"],
+    "polygon": ["https://polygon.drpc.org", "https://rpc-mainnet.matic.quiknode.pro"],
     "arbitrum": ["https://arb1.arbitrum.io/rpc", "https://arbitrum.drpc.org"],
     "optimism": ["https://mainnet.optimism.io", "https://optimism.drpc.org"],
     "avalanche": ["https://api.avax.network/ext/bc/C/rpc"],
