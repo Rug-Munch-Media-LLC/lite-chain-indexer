@@ -57,6 +57,27 @@ All notable changes to LiteChainIndexer will be documented in this file.
   `compose.nats.yml` (NATS 2.10-alpine, JetStream + WebSocket on 8080).
   New optional dependency: `pip install -e '.[streaming]'` (nats-py).
 
+### Reliability
+
+- **Watchdog restart throttling** (`scripts/lite-indexer-stall-check.sh`) —
+  stall/no-advance restarts are now throttled to at most one per
+  `RESTART_COOLDOWN_MIN` (default 30 min), persisted in
+  `/var/data/chain-indexer/lite-indexer-last-restart`. Previously the
+  stall watchdog restarted the service every 10 minutes whenever free
+  RPCs were rate-limited; each restart wiped the in-memory RPC pool
+  circuit-breaker state (403/429 hard bans, exponential backoff) and
+  re-hammered the very endpoints that triggered the stall, deepening the
+  429 storm (08/05 incident on ethereum/base/optimism). The cooldown lets
+  the breakers converge and long catch-up syncs complete (observed: a
+  702s base catch-up that previously was killed mid-flight). Process
+  watchdog path (dead service) deliberately unthrottled.
+
+- **Polygon RPC replacement** — `polygon-rpc.blxrbdn.com` (DNS failure,
+  000 during the 08/05 outage) replaced with
+  `rpc-mainnet.matic.quiknode.pro` in both the active pool and the
+  last-resort list. Verified 2026-08-05: `eth_blockNumber` and
+  topic-only `eth_getLogs` from tip both succeed.
+
 ## [1.3.0] — 2026-08-03
 
 ### Features
