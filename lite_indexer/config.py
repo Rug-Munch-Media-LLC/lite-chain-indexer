@@ -829,11 +829,9 @@ DEFAULT_DECIMALS_BY_CHAIN: dict[str, int] = {
 # into semantic embeddings (see lite_indexer/vectors/ingestion.py): it reads
 # the last synced block range from ClickHouse, generates text representations
 # for wallets and contracts, embeds them via Ollama (nomic-embed-text), and
-# stores them in LanceDB collections. OFF by default — embedding the event
-# stream costs CPU (Ollama) and disk (LanceDB); enable only when the vector
-# search API is actually in use. Ingestion is best-effort: a failure is
-# logged and never blocks the core sync loop.
-VECTOR_INGESTION_ENABLED: bool = os.environ.get("VECTOR_INGESTION_ENABLED", "0") == "1"
+# stores them in LanceDB collections. ON by default — the pipeline is stable
+# and best-effort: a failure is logged and never blocks the core sync loop.
+VECTOR_INGESTION_ENABLED: bool = os.environ.get("VECTOR_INGESTION_ENABLED", "1") == "1"
 
 # Ingestion cadence: run the vector pipeline once every N blocks per chain
 # (checked at the end of each sync cycle; the first cycle always ingests).
@@ -850,7 +848,7 @@ VECTOR_INGESTION_BATCH_SIZE: int = int(os.environ.get("VECTOR_INGESTION_BATCH_SI
 # indexing, so publishing is best-effort and protected by a circuit
 # breaker: after NATS_CIRCUIT_FAILURE_THRESHOLD consecutive failures the
 # circuit opens and publishes are dropped for the cooldown period.
-NATS_ENABLED: bool = os.environ.get("NATS_ENABLED", "0") == "1"
+NATS_ENABLED: bool = os.environ.get("NATS_ENABLED", "1") == "1"
 
 # NATS server URL (compose.nats.yml runs a JetStream-enabled server).
 NATS_URL: str = os.environ.get("NATS_URL", "nats://localhost:4222")
