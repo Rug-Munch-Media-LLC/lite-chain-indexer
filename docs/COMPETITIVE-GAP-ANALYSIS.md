@@ -1,5 +1,11 @@
 # Competitive Gap Analysis — LiteChainIndexer vs Ponder / Subsquid / The Graph / Reth / HyperIndex
 
+> **SUPERSEDED** — this analysis reflects the tree at 2026-08-04 (before
+> webhooks and snapshot bootstrap shipped). See
+> **[COMPETITIVE-ANALYSIS.md](COMPETITIVE-ANALYSIS.md)** (2026-08-05) for the
+> current, source-verified analysis at main (8e1079d).
+>
+
 > **Status:** verified 2026-08-04 against current public docs (ponder.sh, docs.sqd.dev,
 > thegraph.com blog + GIPs, docs.goldsky.com, reth.rs, docs.envio.dev).
 > LCIndexer column verified against the source tree (v1.3.0).
