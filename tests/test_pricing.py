@@ -9,6 +9,8 @@ Covers:
   4. V3 signed int256 decode (negative amounts must not read as ~2^256)
   5. ClickHouseWriter.write_dex_events — whale=1 rows and USD columns
   6. backfill_whales — retroactive marking, idempotent mutations
+  7. backfill_dex_prices — fills zero price_usd/volume_usd rows from
+     token_prices, batched idempotent mutations
 
 Uses a fake ClickHouse client (same pattern as test_wallet_features.py)
 so the suite is hermetic — no CH_HOST required.
@@ -24,6 +26,7 @@ import pytest
 
 from lite_indexer.pricing import (
     _PRICE_CACHE,
+    backfill_dex_prices,
     backfill_whales,
     compute_swap_usd,
     detect_whale,
@@ -43,8 +46,10 @@ class FakeClient:
         self.prices: dict[tuple[str, str], float] = {}
         self.price_symbols: dict[tuple[str, str], str] = {}
         self.dex_rows: list[tuple[Any, ...]] = []
+        self.dex_price_rows: list[tuple[Any, ...]] = []
         self.pair_quantiles: dict[str, float] = {}
         self.mutations: list[tuple[int, list[tuple[Any, ...]]]] = []
+        self.price_mutations: list[tuple[float, float, list[tuple[Any, ...]]]] = []
         self.token_prices_inserts: list[tuple[Any, ...]] = []
         self.tracked_tokens: list[tuple[str, str]] = []
 
@@ -72,8 +77,16 @@ class FakeClient:
             return self.tracked_tokens
         if "quantile(" in query:
             return [(pair, q) for pair, q in self.pair_quantiles.items()]
+        if "price_usd, volume_usd FROM wallet_memory.dex_events" in query:
+            return self.dex_price_rows
         if query.startswith("SELECT chain, tx_hash, log_index, token0, token1, amount0, amount1"):
             return self.dex_rows
+        if query.startswith("ALTER TABLE wallet_memory.dex_events UPDATE price_usd"):
+            price = float(params.get("price_usd") or 0.0) if isinstance(params, dict) else 0.0
+            volume = float(params.get("volume_usd") or 0.0) if isinstance(params, dict) else 0.0
+            keys = list(params.get("keys") or []) if isinstance(params, dict) else []
+            self.price_mutations.append((price, volume, keys))
+            return 1
         if query.startswith("ALTER TABLE wallet_memory.dex_events UPDATE whale"):
             whale = int(params.get("whale") or 0) if isinstance(params, dict) else 0
             keys = list(params.get("keys") or []) if isinstance(params, dict) else []
@@ -496,3 +509,86 @@ def test_backfill_whales_top_quantile_marks() -> None:
     assert stats["whale_up"] == 1
     set_1 = next(m for m in client.mutations if m[0] == 1)
     assert ("ethereum", "0xtx1", 0) in set_1[1]
+
+
+# ── backfill_dex_prices ───────────────────────────────────────────────
+
+_USDC_ETH = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"  # 6 decimals
+_USDT_ETH = "0xdac17f958d2ee523a2206206994597c13d831ec7"  # 6 decimals
+
+
+def test_backfill_dex_prices_fills_zero_rows() -> None:
+    """Rows with price_usd=0 are filled from token_prices in batches."""
+    client = FakeClient()
+    client.prices = {
+        ("ethereum", _USDC_ETH): 1.0,
+        ("ethereum", _USDT_ETH): 1.0,
+    }
+    client.dex_price_rows = [
+        # 200K USDC in / 100K USDT out: price_usd=1 (token0), volume_usd=200000
+        ("ethereum", "0xtx1", 0, _USDC_ETH, _USDT_ETH, str(200_000 * 10**6), str(100_000 * 10**6), 0.0, 0.0),
+        # unpriced token → stays 0, not mutated
+        ("ethereum", "0xtx2", 1, "0xunknown", "0xother", str(100 * 10**18), "0", 0.0, 0.0),
+    ]
+
+    stats = backfill_dex_prices(client, days=90, limit=1000)
+    assert stats["scanned"] == 2
+    assert stats["updated"] == 1
+    assert stats["unpriced"] == 1
+    assert stats["unchanged"] == 0
+
+    assert len(client.price_mutations) == 1
+    price, volume, keys = client.price_mutations[0]
+    assert price == 1.0
+    assert volume == 200_000.0
+    assert ("ethereum", "0xtx1", 0) in keys
+
+
+def test_backfill_dex_prices_groups_same_values() -> None:
+    """Rows sharing the same target price/volume share one mutation batch."""
+    client = FakeClient()
+    client.prices = {("ethereum", _USDC_ETH): 1.0}
+    client.dex_price_rows = [
+        ("ethereum", "0xtx1", 0, _USDC_ETH, _USDT_ETH, str(10 * 10**6), "0", 0.0, 0.0),
+        ("ethereum", "0xtx2", 1, _USDC_ETH, _USDT_ETH, str(10 * 10**6), "0", 0.0, 0.0),
+    ]
+
+    stats = backfill_dex_prices(client, days=90, limit=1000)
+    assert stats["updated"] == 2
+    assert len(client.price_mutations) == 1
+    _, _, keys = client.price_mutations[0]
+    assert ("ethereum", "0xtx1", 0) in keys
+    assert ("ethereum", "0xtx2", 1) in keys
+
+
+def test_backfill_dex_prices_skips_unpriced_and_unchanged() -> None:
+    """Unpriced rows stay 0 and already-filled rows are untouched."""
+    client = FakeClient()
+    client.prices = {("ethereum", _USDC_ETH): 5.0}
+    client.dex_price_rows = [
+        # will fill: price 5.0, volume 10 * 5 = 50.0
+        ("ethereum", "0xtx1", 0, _USDC_ETH, _USDT_ETH, str(10 * 10**6), "0", 0.0, 0.0),
+        # unpriced
+        ("ethereum", "0xtx2", 1, "0xunknown", "0xother", str(10 * 10**18), "0", 0.0, 0.0),
+        # already filled with the exact computed values → unchanged
+        ("ethereum", "0xtx3", 2, _USDC_ETH, _USDT_ETH, str(10 * 10**6), "0", 5.0, 50.0),
+    ]
+
+    stats = backfill_dex_prices(client, days=90, limit=1000)
+    assert stats["scanned"] == 3
+    assert stats["updated"] == 1
+    assert stats["unpriced"] == 1
+    assert stats["unchanged"] == 1
+    assert len(client.price_mutations) == 1
+
+
+def test_backfill_dex_prices_dry_run_issues_no_mutations() -> None:
+    """Dry run previews counts without mutating."""
+    client = FakeClient()
+    client.prices = {("ethereum", _USDC_ETH): 2.0}
+    client.dex_price_rows = [
+        ("ethereum", "0xtx1", 0, _USDC_ETH, _USDT_ETH, str(10 * 10**6), "0", 0.0, 0.0),
+    ]
+    stats = backfill_dex_prices(client, days=90, dry_run=True)
+    assert stats["updated"] == 1
+    assert client.price_mutations == []  # dry run never mutates

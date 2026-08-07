@@ -6,6 +6,7 @@ Covers the 2026-08-05 resilience hardening:
    most once per interval, chain does NOT stall / crash)
 2. Endpoint recovery → circuit closes, chain resumes
 3. Single endpoint failure → other endpoints take over
+3b. 429 rate limits → backoff only, never trip the circuit / hard-ban
 4. Adaptive batch/chunk-size reduction on repeated failures
 5. Atomic state-file writes (unique tmp + flock + os.replace)
 
@@ -33,6 +34,7 @@ from lite_indexer.rpc.pool import (
     pool_fully_down,
     record_endpoint_failure,
     record_endpoint_success,
+    record_rate_limit,
 )
 from lite_indexer.rpc.routing import RpcCircuitBreaker
 
@@ -248,14 +250,67 @@ class TestSingleEndpointFailure:
 
     def test_single_endpoint_failure_records_breaker_failure(self, clock: _Clock):
         ep = "https://single.invalid"
-        record_endpoint_failure(ep)
-        record_endpoint_failure(ep)
-        record_endpoint_failure(ep)
-        record_endpoint_failure(ep)
-        record_endpoint_failure(ep)
+        # Shared breaker uses the configured threshold (10 since 2026-08-07;
+        # raised from 5 so transient throttling does not trip it).
+        for _ in range(10):
+            record_endpoint_failure(ep)
         from lite_indexer.rpc.routing import CIRCUIT_BREAKER
 
         assert CIRCUIT_BREAKER.is_open(ep) is True
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 3b. 429 rate limits → backoff only, never trip the circuit / hard-ban
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestRateLimitDoesNotTripCircuit:
+    def test_rate_limits_never_open_circuit(self, clock: _Clock):
+        """Even dozens of 429s must not trip the breaker (threshold 10/120s)."""
+        ep = "https://ratelimited.invalid"
+        for _ in range(50):
+            record_rate_limit(ep)
+        from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+
+        assert CIRCUIT_BREAKER.is_open(ep) is False
+        assert is_endpoint_banned(ep) is False
+
+    def test_rate_limit_does_not_hard_ban(self, clock: _Clock):
+        """A 429 must not put the endpoint under the exponential ban window."""
+        ep = "https://ratelimited.invalid"
+        record_rate_limit(ep)
+        record_rate_limit(ep)
+        assert is_endpoint_banned(ep) is False
+
+    def test_rate_limit_still_deprioritizes_endpoint(self, clock: _Clock):
+        """Recent 429s must still add pool penalty (backoff) for selection."""
+        healthy = "https://healthy.invalid"
+        throttled = "https://throttled.invalid"
+        # 4 recent 429s → penalty 4*1000 + 1 = 4001 >= MAX_FAILURES*1000
+        # (3000) → excluded from the healthy random-choice pool entirely.
+        for _ in range(4):
+            record_rate_limit(throttled)
+        for _ in range(20):
+            assert get_best_endpoint([healthy, throttled]) == healthy
+
+    def test_genuine_failures_still_trip_circuit(self, clock: _Clock):
+        """Real failures must keep tripping the breaker (unchanged behavior)."""
+        ep = "https://genuine-fail.invalid"
+        breaker = RpcCircuitBreaker(failure_threshold=3, window_seconds=120)
+        breaker.record_failure(ep)
+        breaker.record_failure(ep)
+        breaker.record_failure(ep)
+        assert breaker.state(ep) == "open"
+
+    def test_rate_limits_do_not_count_toward_failure_threshold(self, clock: _Clock):
+        """record_rate_limit never feeds the breaker — only genuine failures do."""
+        ep = "https://mixed.invalid"
+        for _ in range(30):
+            record_rate_limit(ep)
+        from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+
+        # 30 rate limits: no failure recorded on the breaker.
+        assert CIRCUIT_BREAKER.state(ep) == "closed"
 
 
 # ═══════════════════════════════════════════════════════════════════════

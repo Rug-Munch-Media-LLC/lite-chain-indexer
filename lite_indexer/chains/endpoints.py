@@ -33,7 +33,7 @@ whose key is NOT set are excluded from the active pool (they can never be
 dialed — a literal ``${...}`` in a URL only produces DNS/JSON verification
 retries). Restart the service after setting a key to activate the endpoint.
 
-Total: 66 endpoints across 14 chains (53 public + 13 API-key free tiers).
+Total: 73 endpoints across 14 chains (60 public + 13 API-key free tiers).
 """
 
 from __future__ import annotations
@@ -94,48 +94,71 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://1rpc.io/base",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── BSC (4 endpoints) ─────────────────────────────────────────────
+    # ── BSC (8 endpoints) ─────────────────────────────────────────────
     # T1: nodereal public, 48.club (live-verified 2026-08-04 with the
     #     exact indexer request shape: topic-only eth_getLogs over a
     #     100-block range from tip — both returned full result sets)
     # T2: blockrazor (25-block range cap — small-range fallback,
-    #     registered in limits.py so the indexer caps chunks for it)
+    #     registered in limits.py so the indexer caps chunks for it),
+    #     official Binance public seeds (blockNumber verified 2026-08-07;
+    #     bsc-dataseed1.defibit.io / ninicoin.io are mirrors)
     # T4: alchemy
     # NOTE: tatum (range-limit + 429), binance seeds (limit exceeded),
     #       bsc-rpc.publicnode.com (http_403 on ranged topic-only —
     #       4.7k rejections during 08/04 outage), merkle (HTTP400),
     #       ankr (unauthorized), 1rpc.io (usage limit) removed 2026-08-04.
+    #       2026-08-07: blockpi.bsc (HTTP 521) and 1rpc.io/bnb (usage
+    #       limit) probed and rejected — official seeds added instead.
     "bsc": [
         "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",  # T1 — nodereal public (verified, 25.8k logs/100-blk)
         "https://rpc-bsc.48.club",  # T1 — 48.club (verified)
         "https://bsc.blockrazor.xyz",  # T2 — blockrazor (25-block range cap)
+        "https://bsc-dataseed.binance.org",  # T2 — official Binance seed (blockNumber verified 2026-08-07)
+        "https://bsc-dataseed1.binance.org",  # T2 — official Binance seed mirror
+        "https://bsc-dataseed1.defibit.io",  # T2 — official Binance seed mirror
+        "https://bsc-dataseed1.ninicoin.io",  # T2 — official Binance seed mirror
         "https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Polygon (5 endpoints) ─────────────────────────────────────────
+    # ── Polygon (6 endpoints) ─────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)
     # T2: tatum (audit-verified on polygon), quiknode public
     #     (rpc-mainnet.matic.quiknode.pro — verified 2026-08-05:
     #     blockNumber + topic-only eth_getLogs from tip both OK)
+    # T3: polygon-bor.publicnode.com (blockNumber verified 2026-08-07;
+    #     topic-only getLogs needs an address filter — fallback only)
     # T4: alchemy
     # NOTE: polygon-rpc.blxrbdn.com removed 2026-08-05 — DNS failure
     #       (000) during the 08/05 outage; polygon-rpc.com returns 401
     #       (tenant disabled) and polygon-bor-rpc.publicnode.com requires
     #       an address filter for getLogs, so neither was added.
+    #       2026-08-07: polygon.blockpi (HTTP 521), 1rpc.io/matic (usage
+    #       limit), rpc.ankr.com/polygon (unauthorized) probed and
+    #       rejected — publicnode added as T3 fallback instead.
     "polygon": [
         "https://polygon.gateway.tenderly.co",  # T1 — tenderly (verified)
         "https://polygon.drpc.org",  # T1 — drpc.org (verified)
         "https://polygon-mainnet.gateway.tatum.io",  # T2 — tatum (audit-verified on polygon)
         "https://rpc-mainnet.matic.quiknode.pro",  # T2 — quiknode public (verified eth_getLogs)
+        "https://polygon-bor.publicnode.com",  # T3 — publicnode (blockNumber verified; getLogs needs address filter)
         "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
-    # ── Arbitrum (4 endpoints) ────────────────────────────────────────
+    # ── Arbitrum (6 endpoints) ────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)
     # T2: official arb1.arbitrum.io (verified)
+    # T3: arbitrum-one.publicnode.com (blockNumber verified 2026-08-07;
+    #     getLogs needs archive token — fallback only), arbitrum.meowrpc
+    #     (blockNumber verified 2026-08-07; meowrpc getLogs unsupported —
+    #     blockNumber/timestamp fallback only)
     # T4: alchemy
+    # NOTE: 2026-08-07: arbitrum.blockpi (HTTP 521), 1rpc.io/arb (usage
+    #       limit), rpc.ankr.com/arbitrum (unauthorized) probed and
+    #       rejected — publicnode + meowrpc added as T3 fallbacks.
     "arbitrum": [
         "https://arbitrum.gateway.tenderly.co",  # T1 — tenderly (verified, fast)
         "https://arbitrum.drpc.org",  # T1 — drpc.org (verified)
         "https://arb1.arbitrum.io/rpc",  # T2 — official (verified)
+        "https://arbitrum-one.publicnode.com",  # T3 — publicnode (blockNumber verified; getLogs needs archive token)
+        "https://arbitrum.meowrpc.com",  # T3 — meowrpc (blockNumber verified; getLogs unsupported)
         "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
     ],
     # ── Optimism (4 endpoints) ────────────────────────────────────────
@@ -231,16 +254,16 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 }
 
 # Summary of EVM endpoints per chain:
-#   ethereum: 13    base: 5      bsc: 4      polygon: 5
-#   arbitrum: 4     optimism: 4  avalanche: 4 fantom: 4
+#   ethereum: 13    base: 5      bsc: 8      polygon: 6
+#   arbitrum: 6     optimism: 4  avalanche: 4 fantom: 4
 #   linea: 5        scroll: 4    zksync: 4   mantle: 4
 #   gnosis: 3       celo: 3
 # -------------------------------------------------------
-#   Total: 66 endpoints across 14 chains
-#   (53 free public + 13 API-key free tiers)
+#   Total: 73 endpoints across 14 chains
+#   (60 free public + 13 API-key free tiers)
 #
 #   Non-EVM: solana (4), tron (3)
-#   Grand total: 73 endpoints across 16 chains
+#   Grand total: 80 endpoints across 16 chains
 
 
 # ── Endpoint URL template resolution ───────────────────────────────
@@ -315,9 +338,17 @@ LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.flashbots.net",
     ],
     "base": ["https://mainnet.base.org", "https://base.drpc.org"],
-    "bsc": ["https://rpc-bsc.48.club"],
-    "polygon": ["https://polygon.drpc.org", "https://rpc-mainnet.matic.quiknode.pro"],
-    "arbitrum": ["https://arb1.arbitrum.io/rpc", "https://arbitrum.drpc.org"],
+    "bsc": [
+        "https://rpc-bsc.48.club",
+        "https://bsc-dataseed.binance.org",
+        "https://bsc-dataseed1.defibit.io",
+    ],
+    "polygon": [
+        "https://polygon.drpc.org",
+        "https://rpc-mainnet.matic.quiknode.pro",
+        "https://polygon-bor.publicnode.com",
+    ],
+    "arbitrum": ["https://arb1.arbitrum.io/rpc", "https://arbitrum.drpc.org", "https://arbitrum-one.publicnode.com"],
     "optimism": ["https://mainnet.optimism.io", "https://optimism.drpc.org"],
     "avalanche": ["https://api.avax.network/ext/bc/C/rpc"],
     "fantom": ["https://rpc.fantom.network"],

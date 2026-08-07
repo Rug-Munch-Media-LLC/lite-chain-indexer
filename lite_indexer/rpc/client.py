@@ -20,6 +20,7 @@ from lite_indexer.config import (
     CHAIN_BLOCK_TIMES,
     DEFAULT_BLOCK_TIME,
     GET_LOGS_SEMAPHORE_LIMIT,
+    RATE_LIMIT_WAIT_CAP,
     RPC_CALL_TIMEOUT,
     RPC_TIMEOUT,
     TIMESTAMP_FETCH_TIMEOUT,
@@ -31,6 +32,7 @@ from lite_indexer.rpc.pool import (
     get_best_endpoint,
     record_endpoint_failure,
     record_endpoint_success,
+    record_rate_limit,
 )
 from lite_indexer.rpc.ratelimit import apply_provider_rate_limit
 
@@ -171,10 +173,15 @@ class RpcClient:
             status = exc.response.status_code
             logger.debug("rpc_http_error", endpoint=endpoint[:50], method=method, status=status)
             record_rpc_usage(endpoint, method, ok=False, error=f"http_{status}")
-            # 403/429 = provider rate-limit / blacklist: hard-ban the
-            # endpoint for an exponential window so we stop hammering it.
-            if status in (403, 429):
-                ban_endpoint(endpoint, reason=f"http_{status}")
+            # 429 = provider rate-limit: backoff only (recent-failure
+            # penalty + exponential sleep) — do NOT trip the circuit
+            # breaker or hard-ban, the throttle lifts in seconds.
+            if status == 429:
+                record_rate_limit(endpoint)
+            # 403 = provider blacklist: hard-ban the endpoint for an
+            # exponential window so we stop hammering it.
+            elif status == 403:
+                ban_endpoint(endpoint, reason="http_403")
             return None
         except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
             logger.warning("rpc_call_failed", endpoint=endpoint[:50], method=method, error=str(exc)[:80])
@@ -317,6 +324,9 @@ class RpcClient:
                 if resp.status_code == 429:
                     # Respect Retry-After exactly when the endpoint tells
                     # us how long to wait; otherwise exponential backoff.
+                    # Rate limits trigger backoff ONLY — they must not
+                    # trip the circuit breaker or hard-ban the endpoint
+                    # (the throttle lifts in seconds).
                     from lite_indexer.rpc.throttle import RATE_TRACKER
 
                     state = RATE_TRACKER.state_for(endpoint)
@@ -331,8 +341,7 @@ class RpcClient:
                         attempt=attempt,
                         wait=round(wait, 1),
                     )
-                    record_endpoint_failure(endpoint)
-                    ban_endpoint(endpoint, reason="http_429")
+                    record_rate_limit(endpoint)
                     await asyncio.sleep(wait)
                     continue
 

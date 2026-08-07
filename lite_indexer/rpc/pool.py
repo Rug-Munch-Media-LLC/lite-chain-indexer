@@ -4,7 +4,9 @@ RPC endpoint pool — best-endpoint selection, failure tracking, backoff.
 Provides load-balanced endpoint selection, exponential backoff on
 failures, reactive rate-limit handling after 429 responses, and a
 per-endpoint circuit breaker (open after a failure burst) layered on
-top of the classic scoring.
+top of the classic scoring. 429 rate limits trigger backoff only — they
+do NOT trip the circuit breaker or hard-ban (see
+:func:`record_rate_limit` / :func:`handle_rate_limit`).
 """
 
 from __future__ import annotations
@@ -272,11 +274,36 @@ def get_best_endpoint(endpoints: list[str]) -> str:
 
 
 def record_endpoint_failure(endpoint: str) -> None:
-    """Record a failure for this endpoint (feeds backoff + circuit breaker)."""
+    """Record a failure for this endpoint (feeds backoff + circuit breaker).
+
+    Use for genuine failures (timeouts, connection errors, bad responses).
+    For 429 rate limits use :func:`record_rate_limit` instead — they must
+    NOT trip the circuit breaker.
+    """
     _endpoint_failures.setdefault(endpoint, []).append(time.time())
     from lite_indexer.rpc.routing import CIRCUIT_BREAKER
 
     CIRCUIT_BREAKER.record_failure(endpoint)
+
+
+def record_rate_limit(endpoint: str) -> None:
+    """Record a 429 rate limit for backoff WITHOUT tripping the circuit.
+
+    429 means the provider is temporarily throttling us — the correct
+    reaction is backoff: the recent-failure timestamp deprioritizes the
+    endpoint in :func:`get_best_endpoint` scoring and drives the
+    exponential sleep in :func:`apply_endpoint_backoff` /
+    :func:`handle_rate_limit`. It must NOT trip the per-endpoint circuit
+    breaker (which fully skips the endpoint for a cooldown) or hard-ban it
+    (``ENDPOINT_BAN_*`` exponential window) — rate limits are transient and
+    the endpoint usually recovers within seconds; banning it wastes healthy
+    capacity that free-tier providers expect us to retry after backoff.
+
+    Args:
+        endpoint: RPC endpoint URL that returned 429.
+    """
+    _endpoint_failures.setdefault(endpoint, []).append(time.time())
+    metrics_incr("rpc_rate_limits")
 
 
 def record_endpoint_success(endpoint: str) -> None:
@@ -296,19 +323,19 @@ async def apply_endpoint_backoff(url: str) -> None:
 
 
 async def handle_rate_limit(url: str) -> None:
-    """Record a rate-limit failure and sleep with exponential backoff.
+    """Handle a 429: backoff only — no circuit trip, no hard ban.
 
-    429 means the provider explicitly throttled this endpoint — record
-    the failure for the pool penalty AND hard-ban the endpoint for an
-    exponentially growing window (see :func:`ban_endpoint`) so it is
-    skipped entirely instead of being retried every cycle.
+    429 means the provider explicitly throttled this endpoint. Unlike
+    genuine failures, rate limits are transient: the endpoint usually
+    recovers in seconds, so we record the failure for the pool penalty and
+    sleep with exponential backoff, but we do NOT trip the circuit breaker
+    and do NOT hard-ban (both would skip the endpoint entirely and waste
+    healthy capacity after the throttle lifts).
 
     Args:
         url: RPC endpoint URL that returned 429.
     """
-    record_endpoint_failure(url)
-    ban_endpoint(url, reason="http_429")
-    metrics_incr("rpc_rate_limits")
+    record_rate_limit(url)
     wait = min(2 ** len(_endpoint_failures.get(url, [])), RATE_LIMIT_WAIT_CAP)
     logger.debug("rpc_rate_limited", url=url[:50], backoff=wait)
     await asyncio.sleep(wait)

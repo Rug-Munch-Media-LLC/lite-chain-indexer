@@ -686,8 +686,146 @@ def backfill_whales(
         return stats
 
 
+def backfill_dex_prices(
+    ch_client: Any,
+    *,
+    days: int = 90,
+    chain: str | None = None,
+    limit: int = 500_000,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Backfill ``price_usd`` / ``volume_usd`` on dex_events rows that are 0.
+
+    Ingestion writes ``price_usd = 0`` for swaps whose token price was not
+    in the in-memory cache at write time (feed not yet warmed, provider
+    down, token unknown). Once the ``token_prices`` table has a value,
+    this job retroactively fills those columns using the exact same
+    semantics as :meth:`ClickHouseWriter.write_dex_events`:
+
+      - ``price_usd`` — cached USD price of ``token0`` (0 when unpriced),
+      - ``volume_usd`` — max-leg USD notional (0 when unpriced).
+
+    Only rows whose values actually change are mutated (``ALTER TABLE ...
+    UPDATE``), in batches, so re-runs are idempotent and cheap. Rows with
+    no resolvable price are left at 0 and picked up by a later run.
+
+    Args:
+        ch_client: ClickHouse client.
+        days: How far back to scan (block_timestamp window).
+        chain: Restrict to one chain.
+        limit: Max rows scanned (bounds memory).
+        dry_run: Preview counts without issuing mutations.
+
+    Returns:
+        Stats dict: scanned, updated, unchanged, unpriced, dry_run,
+        errors.
+    """
+    stats: dict[str, Any] = {
+        "scanned": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "unpriced": 0,
+        "dry_run": dry_run,
+        "errors": [],
+    }
+
+    chain_clause = " AND chain = %(chain)s" if chain else ""
+    where = f"price_usd = 0 AND block_timestamp >= now() - INTERVAL %(days)s DAY{chain_clause}"
+    params: dict[str, Any] = {"days": days, "chain": chain or "", "limit": limit}
+
+    try:
+        rows = (
+            ch_client.execute(
+                "SELECT chain, tx_hash, log_index, token0, token1, amount0, amount1, "
+                "price_usd, volume_usd "
+                f"FROM {CH_DEX_TABLE} WHERE {where} "
+                "ORDER BY block_timestamp DESC LIMIT %(limit)s",
+                params,
+            )
+            or []
+        )
+        stats["scanned"] = len(rows)
+
+        # Load prices for the tokens in the scanned rows.
+        tokens = {(str(r[0]), str(r[3])) for r in rows if len(r) > 3}
+        tokens |= {(str(r[0]), str(r[4])) for r in rows if len(r) > 4}
+        prices: dict[tuple[str, str], float] = {}
+        if tokens:
+            try:
+                price_rows = ch_client.execute(
+                    f"SELECT chain, token_address, price_usd FROM {CH_TOKEN_PRICES_TABLE} "
+                    "WHERE (chain, token_address) IN %(tokens)s",
+                    {"tokens": list(tokens)},
+                )
+                for pr in price_rows or []:
+                    if len(pr) >= 3 and pr[2]:
+                        prices[(str(pr[0]), str(pr[1]))] = float(pr[2])
+            except Exception as exc:  # noqa: BLE001 — pricing is best-effort
+                stats["errors"].append(f"price_lookup: {str(exc)[:60]}")
+
+        # Group mutation keys by the exact (price_usd, volume_usd) target so
+        # each batch is a single ALTER with the same literal values (mirrors
+        # backfill_whales; no per-row FROM subquery needed).
+        # (price_usd, volume_usd) -> [(chain, tx_hash, log_index), ...]
+        groups: dict[tuple[float, float], list[tuple[Any, ...]]] = {}
+
+        for r in rows:
+            rchain, tx_hash, log_index = str(r[0]), str(r[1]), int(r[2])
+            token0, token1 = str(r[3]), str(r[4])
+            amount0 = _sane_amount(r[5])
+            amount1 = _sane_amount(r[6])
+            current_price = float(r[7]) if len(r) > 7 and r[7] else 0.0
+            current_volume = float(r[8]) if len(r) > 8 and r[8] else 0.0
+
+            # Mirror the write path exactly (compute_swap_usd): price_usd is
+            # the token0 price; volume_usd is the max-leg USD notional with
+            # each leg priced at its OWN token price.
+            price = prices.get((rchain, token0)) or 0.0
+            volume = 0.0
+            for token, amount in ((token0, amount0), (token1, amount1)):
+                leg_price = prices.get((rchain, token)) or 0.0
+                if leg_price > 0 and amount > 0:
+                    usd = (amount / (10 ** get_decimals(rchain, token))) * leg_price
+                    if usd > volume:
+                        volume = usd
+            volume = round(volume, 2)
+
+            if price <= 0 and volume <= 0:
+                stats["unpriced"] += 1
+                continue
+
+            if abs(price - current_price) < 1e-12 and abs(volume - current_volume) < 1e-12:
+                stats["unchanged"] += 1
+                continue
+
+            key = (rchain, tx_hash, log_index)
+            groups.setdefault((price, volume), []).append(key)
+
+        stats["updated"] = sum(len(keys) for keys in groups.values())
+
+        if dry_run:
+            return stats
+
+        for (price, volume), keys in groups.items():
+            for i in range(0, len(keys), _MUTATION_BATCH):
+                batch = keys[i : i + _MUTATION_BATCH]
+                ch_client.execute(
+                    f"ALTER TABLE {CH_DEX_TABLE} UPDATE "
+                    "price_usd = %(price_usd)s, volume_usd = %(volume_usd)s "
+                    "WHERE (chain, tx_hash, log_index) IN %(keys)s",
+                    {"price_usd": price, "volume_usd": volume, "keys": batch},
+                )
+        metrics_incr("price_backfills")
+        return stats
+    except Exception as exc:  # noqa: BLE001 — CLI-facing, surface the error
+        stats["errors"].append(str(exc)[:120])
+        logger.error("dex_price_backfill_failed", error=str(exc)[:120])
+        return stats
+
+
 __all__ = [
     "PriceFetcher",
+    "backfill_dex_prices",
     "backfill_whales",
     "compute_swap_usd",
     "detect_whale",

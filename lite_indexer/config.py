@@ -329,8 +329,12 @@ RPC_METHOD_ROUTING: dict[str, str] = {
 
 # Circuit breaker per RPC endpoint: after N failures inside a window the
 # endpoint is skipped for COOLDOWN seconds, then half-open probes resume.
-CIRCUIT_FAILURE_THRESHOLD: int = 5
-CIRCUIT_WINDOW_SECONDS: int = 60
+# Note: 429 rate limits do NOT count toward the threshold — they only
+# trigger backoff (see rpc/pool.record_rate_limit). Threshold raised
+# 5->10 and window 60->120 (2026-08-07) so transient public-tier throttling
+# does not trip the breaker on busy chains.
+CIRCUIT_FAILURE_THRESHOLD: int = 10
+CIRCUIT_WINDOW_SECONDS: int = 120
 CIRCUIT_COOLDOWN_SECONDS: int = 30
 
 # Desperation probe: when EVERY endpoint in a chain's pool is open/banned
