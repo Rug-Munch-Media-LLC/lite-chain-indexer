@@ -224,7 +224,10 @@ BLOOM_ENABLED: bool = os.environ.get("BLOOM_ENABLED", "1") != "0"
 BLOOM_CACHE_MAX: int = 200_000
 
 # How long a cached bloom filter is trusted (seconds) before refetch.
-BLOOM_CACHE_TTL: int = 7 * 24 * 3600  # 7 days
+# Reduced 7d → 2d (2026-08-08): bloom filters are the largest key group in
+# Redis (lci:bloom:*) and were filling 99% of memory. They are secondary to
+# memory-LRU eviction — if they expire sooner they are rebuilt on next block.
+BLOOM_CACHE_TTL: int = 2 * 24 * 3600  # 2 days
 
 # Optional Redis bloom cache. When set (redis://...), blooms are also
 # mirrored to Redis so multiple indexer processes share the cache.
