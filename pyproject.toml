@@ -106,6 +106,13 @@ warn_unused_ignores = true
 no_implicit_optional = true
 check_untyped_defs = true
 
+# Pre-existing: pyarrow stubs do not re-export fs.S3FileSystem/FileSelector/FileType
+# and some pyarrow.parquet functions are untyped — genuine third-party stub debt,
+# not fixable from this repo. Casts are used for the Any returns where possible.
+[[tool.mypy.overrides]]
+module = "lite_indexer.storage.compaction"
+disable_error_code = ["attr-defined", "no-untyped-call"]
+
 [tool.pytest.ini_options]
 minversion = "8.0"
 asyncio_mode = "auto"

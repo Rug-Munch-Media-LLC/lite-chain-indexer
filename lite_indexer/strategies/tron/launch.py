@@ -348,7 +348,9 @@ def _tx_contracts(tx: dict[str, Any]) -> list[dict[str, Any]]:
     Returns:
         List of contract-call dicts (possibly empty).
     """
-    raw_data = tx.get("raw_data") if isinstance(tx.get("raw_data"), dict) else {}
+    raw_data = tx.get("raw_data")
+    if not isinstance(raw_data, dict):
+        raw_data = {}
     contracts = raw_data.get("contract") or []
     if not isinstance(contracts, list) and isinstance(tx.get("contract"), list):
         contracts = tx.get("contract") or []
@@ -357,8 +359,12 @@ def _tx_contracts(tx: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _contract_value(contract: dict[str, Any]) -> dict[str, Any]:
     """Return the ``parameter.value`` dict of a Tron contract call."""
-    parameter = contract.get("parameter") if isinstance(contract.get("parameter"), dict) else {}
-    value = parameter.get("value") if isinstance(parameter.get("value"), dict) else {}
+    parameter = contract.get("parameter")
+    if not isinstance(parameter, dict):
+        parameter = {}
+    value = parameter.get("value")
+    if not isinstance(value, dict):
+        value = {}
     return value
 
 

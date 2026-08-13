@@ -22,14 +22,13 @@ with ``asyncio.to_thread`` to keep the event loop free.
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Any, cast
 
 import strawberry
-
 from strawberry.fastapi import GraphQLRouter
 
 from api.db import query
-from api.params import chain_clause, clamp_limit, date_range_clause
+from api.params import chain_clause, clamp_limit
 from api.stablecoins import STABLECOIN_ADDRESSES, stablecoin_symbol
 
 # ── GraphQL object types ──────────────────────────────────────────────
@@ -54,7 +53,7 @@ class Transfer:
 class ChainStats:
     """Chain-wide aggregate statistics."""
 
-    chain: Optional[str]
+    chain: str | None
     total_transfers: int
     unique_senders: int
     unique_receivers: int
@@ -64,8 +63,8 @@ class ChainStats:
     deployer_events: int
     solana_balance_changes: int
     wallet_labels: int
-    min_block_timestamp: Optional[str]
-    max_block_timestamp: Optional[str]
+    min_block_timestamp: str | None
+    max_block_timestamp: str | None
 
 
 @strawberry.type
@@ -99,7 +98,7 @@ def _fmt_ts(value: object) -> str | None:
 def _fmt_num(value: object) -> str:
     """Format a large numeric count as a compact string."""
     try:
-        return f"{int(value):,}"
+        return f"{int(cast(Any, value)):,}"
     except (TypeError, ValueError):
         return "0"
 
@@ -158,7 +157,7 @@ async def _transfers(
 async def _chain_stats(chain: str | None) -> ChainStats:
     """Chain-wide aggregate counts (mirrors the REST /stats endpoint)."""
     chain_sql, chain_params = chain_clause(chain)
-    params: dict[str, object] = chain_params
+    params: dict[str, Any] = chain_params
 
     main = (
         await asyncio.to_thread(
@@ -309,26 +308,26 @@ async def _whales(chain: str | None, min_usd: float, limit: int) -> list[WhaleEv
 class Query:
     """Read-only GraphQL surface over the ClickHouse warehouse."""
 
-    @strawberry.field(description="Transfer history for a wallet (address-first)")
+    @strawberry.field(description="Transfer history for a wallet (address-first)")  # type: ignore[untyped-decorator]  # strawberry stubs untyped
     async def transfers(
         self,
         address: str,
-        chain: Optional[str] = None,
+        chain: str | None = None,
         direction: str = "all",
-        limit: Optional[int] = 100,
+        limit: int | None = 100,
     ) -> list[Transfer]:
         return await _transfers(address, chain, direction, limit or 100)
 
-    @strawberry.field(description="Chain-wide aggregate statistics")
-    async def chain_stats(self, chain: Optional[str] = None) -> ChainStats:
+    @strawberry.field(description="Chain-wide aggregate statistics")  # type: ignore[untyped-decorator]  # strawberry stubs untyped
+    async def chain_stats(self, chain: str | None = None) -> ChainStats:
         return await _chain_stats(chain)
 
-    @strawberry.field(description="Large-value DEX swaps (USD via stablecoin side)")
+    @strawberry.field(description="Large-value DEX swaps (USD via stablecoin side)")  # type: ignore[untyped-decorator]  # strawberry stubs untyped
     async def whales(
         self,
-        chain: Optional[str] = None,
+        chain: str | None = None,
         min_usd: float = 100_000.0,
-        limit: Optional[int] = 20,
+        limit: int | None = 20,
     ) -> list[WhaleEvent]:
         return await _whales(chain, min_usd, limit or 20)
 

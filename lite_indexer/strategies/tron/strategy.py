@@ -24,6 +24,8 @@ from lite_indexer.strategies.base import AbstractChainStrategy
 from .launch import (
     SUNPUMP_CONTRACT,
     SUNSWAP_FACTORY,
+    LaunchEvent,
+    PairEvent,
     detect_sunpump_launch,
     detect_sunswap_pair,
 )
@@ -332,7 +334,7 @@ class TronStrategy(AbstractChainStrategy):
                             }
                         ]
                     }
-                    evt = detect_sunpump_launch(receipt)
+                    evt: LaunchEvent | PairEvent | None = detect_sunpump_launch(receipt)
                     if evt is None:
                         evt = detect_sunswap_pair(receipt)
                     if evt is not None:

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from clickhouse_driver import Client
 
@@ -200,7 +200,7 @@ def query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]
             return _query_clickhouse(rewritten, params)
         routed = historical.query_sql(sql, params or {})
         if routed is not None:
-            return routed
+            return cast(list[dict[str, Any]], routed)
     return _query_clickhouse(sql, params)
 
 

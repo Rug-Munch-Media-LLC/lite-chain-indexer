@@ -27,7 +27,7 @@ warning and never blocks the core sync loop.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from lite_indexer.config import (
     CH_DEPLOYER_TABLE,
@@ -325,7 +325,7 @@ async def ingest_wallet_vectors(
         to_block=to_block,
         rows=indexed,
     )
-    return indexed
+    return cast(int, indexed)
 
 
 async def ingest_contract_vectors(
@@ -380,7 +380,7 @@ async def ingest_contract_vectors(
         to_block=to_block,
         rows=indexed,
     )
-    return indexed
+    return cast(int, indexed)
 
 
 async def run_vector_ingestion(

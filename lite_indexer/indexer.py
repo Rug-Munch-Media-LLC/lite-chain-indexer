@@ -1041,7 +1041,7 @@ class LiteIndexer:
 
     # ── Block Range Determination ──────────────────────────────────
 
-    def _ch_table_for_chain(self) -> str:
+    def _ch_table_for_chain(self) -> tuple[str, str]:
         """ClickHouse table + block column for this chain's range checks.
 
         EVM + Tron write to ``evm_transfers`` keyed by ``chain``;

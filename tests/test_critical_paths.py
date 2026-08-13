@@ -242,6 +242,13 @@ async def test_tron_uses_timestamp_params():
         is_closed = False
 
         async def get(self, url: str, **kwargs):
+            # Mimic httpx: merge `params` kwargs into the URL string so
+            # every recorded URL reflects the full query, including the
+            # min/max_block_timestamp params passed via tron_get().
+            params = kwargs.get("params") or {}
+            if params:
+                query = "&".join(f"{k}={v}" for k, v in params.items())
+                url = f"{url}?{query}" if "?" not in url else f"{url}&{query}"
             urls.append(url)
             return FakeResponse()
 

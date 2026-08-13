@@ -33,7 +33,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from lite_indexer.config import (
     CH_DATABASE,
@@ -153,7 +153,7 @@ class HistoricalAccess:
         self._client_factory = client_factory
         self.b2_bucket = b2_bucket
         self.rclone = rclone_binary
-        self._cold = cold_store or ColdStore(remote=b2_bucket or None, rclone_bin=rclone_binary)
+        self._cold = cold_store or ColdStore(remote=b2_bucket or "", rclone_bin=rclone_binary)
         self._hot_ttl_days = hot_ttl_days
         self._ttl_cache: dict[str, int] = {}
         self._view_cache: dict[str, bool] = {}
@@ -369,17 +369,20 @@ class HistoricalAccess:
         thread finishes in the background).
         """
         try:
-            return await asyncio_to_thread_with_timeout(
-                self._cold.query,
-                COLD_QUERY_TIMEOUT,
-                table,
-                chain,
-                from_block=from_block,
-                to_block=to_block,
-                from_time=from_time,
-                to_time=to_time,
-                where=where,
-                limit=limit,
+            return cast(
+                list[dict[str, Any]],
+                await asyncio_to_thread_with_timeout(
+                    self._cold.query,
+                    COLD_QUERY_TIMEOUT,
+                    table,
+                    chain,
+                    from_block=from_block,
+                    to_block=to_block,
+                    from_time=from_time,
+                    to_time=to_time,
+                    where=where,
+                    limit=limit,
+                ),
             )
         except TimeoutError:
             metrics_incr("tha_cold_timeouts")
@@ -481,7 +484,7 @@ class HistoricalAccess:
         # Normalize solana_spl_balance_changes to the THA logical name.
         if table == "solana_spl_balance_changes":
             return "solana_transfers"
-        return table
+        return cast(str, table)
 
     def _view_available(self, table: str) -> bool:
         """True when ``wallet_memory.<table>_historical`` exists (cached)."""
@@ -579,8 +582,6 @@ class HistoricalAccess:
 
     def _parse_sql(self, sql: str) -> tuple[str, list[str], str, str, int, int] | None:
         """Parse a simple single-table SELECT (or return None)."""
-        if not isinstance(sql, str):
-            return None
         stmt = sql.strip().rstrip(";").strip()
         if not stmt or ";" in stmt:
             return None
@@ -691,7 +692,7 @@ class HistoricalAccess:
                             return None
                         continue
                     return None
-                if isinstance(value, str) and not isinstance(value, bool):
+                if isinstance(value, str):
                     if col == "chain" and op == "=":
                         chain = value
                         continue

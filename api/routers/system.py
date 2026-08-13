@@ -34,7 +34,7 @@ def _check_indexer_state() -> dict[str, Any]:
             "chains": {},
         }
 
-    chains_status = {}
+    chains_status: dict[str, dict[str, Any]] = {}
     overall_ok = True
     now = time.time()
 

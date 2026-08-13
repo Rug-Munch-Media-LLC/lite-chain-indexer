@@ -63,7 +63,7 @@ import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 try:
     import pyarrow as pa
@@ -318,7 +318,7 @@ def _read_manifest(fs: Any, partition_dir: str) -> dict[str, Any] | None:
     path = _manifest_path(partition_dir)
     try:
         with fs.open_input_file(path) as fh:
-            return json.loads(fh.read().decode("utf-8"))
+            return cast(dict[str, Any], json.loads(fh.read().decode("utf-8")))
     except FileNotFoundError:
         return None
 
@@ -479,14 +479,14 @@ def _plan_parts(table: pa.Table, max_bytes: int) -> list[pa.Table]:
 def _write_part(fs: Any, key: str, table: pa.Table) -> int:
     """Write one part (zstd level 3); returns bytes written."""
     pq.write_table(table, key, filesystem=fs, compression="zstd", compression_level=3)
-    return fs.get_file_info(key).size
+    return cast(int, fs.get_file_info(key).size)
 
 
 def _verify_part(fs: Any, key: str, expected_rows: int) -> bool:
     """Verify a written part by reading its footer row count back."""
     try:
         metadata = pq.read_metadata(key, filesystem=fs)
-        return metadata.num_rows == expected_rows
+        return cast(bool, metadata.num_rows == expected_rows)
     except Exception as exc:  # noqa: BLE001 — verification is best-effort
         logger.warning("compaction_verify_failed", key=key, error=str(exc)[:150])
         return False

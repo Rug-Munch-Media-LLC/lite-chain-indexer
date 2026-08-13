@@ -34,7 +34,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lite_indexer.config import (
     RPC_METHOD_DEFAULT_RATE,
@@ -318,9 +318,10 @@ class RPCRateTracker:
 
         info = extract_rate_limit(headers or {})
         if info["limit"] is not None:
-            state.limit = info["limit"]
+            # limit/remaining are parsed via _parse_int → always int at runtime.
+            state.limit = cast(int, info["limit"])
         if info["remaining"] is not None:
-            state.remaining = info["remaining"]
+            state.remaining = cast(int, info["remaining"])
         if info["reset_at"] is not None:
             state.reset_at = info["reset_at"]
 
@@ -381,13 +382,17 @@ class RPCRateTracker:
 
         # 2. Pre-emptive: advertised budget nearly consumed → spread the
         # remaining calls across the rest of the window.
-        if state.limit and state.remaining is not None and state.reset_at is not None:
-            if state.consumed_pct() >= RPC_PREEMPTIVE_THRESHOLD_PCT:
-                seconds_left = max(0.0, state.reset_at - now)
-                if seconds_left > 0 and state.remaining > 0:
-                    pace = seconds_left / state.remaining
-                    if pace > 0:
-                        return min(pace, RPC_THROTTLE_MAX_WAIT)
+        if (
+            state.limit
+            and state.remaining is not None
+            and state.reset_at is not None
+            and state.consumed_pct() >= RPC_PREEMPTIVE_THRESHOLD_PCT
+        ):
+            seconds_left = max(0.0, state.reset_at - now)
+            if seconds_left > 0 and state.remaining > 0:
+                pace = seconds_left / state.remaining
+                if pace > 0:
+                    return min(pace, RPC_THROTTLE_MAX_WAIT)
 
         # 3. Per-method budget (rolling window enforcement). The window is
         # 1/rate seconds (eth_getLogs @ 3 req/s → 0.33s spacing) with a
