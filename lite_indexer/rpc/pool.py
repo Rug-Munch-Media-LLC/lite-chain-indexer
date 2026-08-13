@@ -12,7 +12,6 @@ do NOT trip the circuit breaker or hard-ban (see
 from __future__ import annotations
 
 import asyncio
-import random
 import time
 
 from lite_indexer.config import (
@@ -216,17 +215,32 @@ def get_best_endpoint(endpoints: list[str]) -> str:
     Scoring:
       - Hard ban (403/429): +50000 penalty (skip — provider rate-limited)
       - Circuit open: +20000 penalty (skip — breaker tripped)
+      - Stale (>3 blocks behind pool median height): +15000 penalty
+        (skip — lagging endpoint; excluded until it catches up)
       - Failed verification: +10000 penalty (worst)
       - Each recent failure adds 1000 penalty
       - Original list position adds 1..N penalty (prefers earlier tiers)
       - Bottom 30% of healthy list is ignored for rotation diversity
-      - Top 2 healthy endpoints are chosen randomly for load distribution
+      - Top healthy endpoints are picked via power-of-two-choices: two
+        candidates are drawn and the lower ``ewma_ms * (1 + in_flight)``
+        damped-latency score wins (see
+        :func:`lite_indexer.rpc.routing.select_p2c`)
 
     Fallthrough: if all endpoints are in cooldown, clear and retry the first.
     """
     now = time.time()
 
-    from lite_indexer.rpc.routing import is_circuit_open
+    from lite_indexer.rpc.routing import (
+        STALE_ENDPOINT_PENALTY,
+        is_circuit_open,
+        select_p2c,
+        stale_endpoints,
+    )
+
+    # Staleness gate: endpoints lagging >3 blocks behind the pool median
+    # block height are excluded until they record a fresh height. With no
+    # recorded heights the set is empty and the gate is inactive.
+    stale = set(stale_endpoints(endpoints))
 
     scored: list[tuple[int, str]] = []
     for i, ep in enumerate(endpoints):
@@ -243,6 +257,12 @@ def get_best_endpoint(endpoints: list[str]) -> str:
         # Circuit breaker: an open circuit fully skips the endpoint.
         if is_circuit_open(ep):
             penalty += 20000
+
+        # Staleness gate: a lagging endpoint is skipped until it catches
+        # up (records a block height within STALENESS_MAX_BLOCKS of the
+        # pool median).
+        if ep in stale:
+            penalty += STALE_ENDPOINT_PENALTY
 
         # Add verification penalty (unverified endpoints deprioritized)
         from lite_indexer.rpc.health import is_endpoint_healthy
@@ -267,7 +287,10 @@ def get_best_endpoint(endpoints: list[str]) -> str:
         return least_banned_endpoint(endpoints)
 
     pool_size = max(2, len(healthy) // 2)
-    return random.choice(healthy[:pool_size])  # noqa: S311
+    # P2C over the top healthy subset: two candidates are drawn and the
+    # lower damped-latency score wins (replaces pure random.choice while
+    # preserving the penalty/breaker filtering above).
+    return select_p2c(healthy[:pool_size])
 
 
 # ── Failure Tracking ────────────────────────────────────────────────

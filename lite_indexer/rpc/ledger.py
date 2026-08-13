@@ -1,0 +1,577 @@
+"""
+Provider quota ledger + degrade ladder.
+
+An ADDITIVE layer on top of the per-endpoint throttling (``rpc/throttle.py``)
+and the per-provider token bucket (``rpc/ratelimit.py``): those pace requests
+from HTTP headers and request/s budgets, while this module tracks long-window
+**account-level quota consumption** (Compute Units / credits / request units)
+and returns a degrade level so the caller can back off *before* the 429.
+
+Key differences from the other two layers:
+
+1. **Grouping is PER ACCOUNT (``provider_id``), not per URL.** Alchemy is
+   account-wide — every ``*.g.alchemy.com`` URL for the same API key shares
+   one 30M CU/month budget — while Ankr is per-IP and gets a per-domain
+   bucket. ``provider_id_for_endpoint()`` derives the account from the URL
+   hostname; known free-tier quotas are seeded in :data:`KNOWN_QUOTAS`.
+
+2. **Tariff-weighted consumption.** ``eth_getLogs`` (75 CU) costs 15x an
+   ``eth_chainId`` (5 CU). Each budget carries a ``method_tariff`` mapping
+   method → units; ``record_call`` increments ``consumed_units`` by the
+   tariff weight, not by 1.
+
+3. **Degrade ladder, not a hard block.** 70% → widen head-follow polls and
+   narrow ``eth_getLogs`` windows; 85% → head-only (no backfill/getLogs);
+   95% → park the key until ``reset_at``. The ledger *reports* the level —
+   it never drops data on the floor. Unknown providers (no documented quota)
+   are tracked for stats but never degrade.
+
+State is persisted to ``QUOTA_LEDGER_FILE`` (default ``DATA_DIR/quota_ledger.json``)
+with the same atomic-write + debounced-save pattern as ``rpc/throttle.py`` so a
+restart does not reset counters mid-period.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from lite_indexer.config import DATA_DIR
+from lite_indexer.logging import get_logger
+
+logger = get_logger(__name__)
+
+# Persisted ledger path (default: DATA_DIR/quota_ledger.json).
+QUOTA_LEDGER_FILE: str = os.environ.get("QUOTA_LEDGER_FILE", str(DATA_DIR / "quota_ledger.json"))
+
+# Unit types and periods understood by QuotaBudget.
+UNIT_TYPES = ("CU", "credits", "request_units", "raw")
+PERIODS = ("day", "30d", "month")
+
+# One base tariff unit ≈ 5 CU (matches the documented eth_chainId @ 5 CU and
+# eth_getLogs @ 75 CU example — a 15x spread). Used to scale the relative
+# tariff table for CU/credits budgets; request-unit budgets use the raw
+# relative weights.
+CU_PER_UNIT: float = 5.0
+
+# Relative per-method tariff weights. eth_getLogs is 15x eth_chainId. Tron
+# method names (wallet/...) are included for request-unit providers.
+BASE_TARIFF_UNITS: dict[str, float] = {
+    # Cheap, high-frequency calls (1 unit).
+    "eth_chainId": 1.0,
+    "eth_blockNumber": 1.0,
+    "eth_syncing": 1.0,
+    "eth_gasPrice": 1.0,
+    "eth_getBalance": 1.0,
+    "eth_getTransactionCount": 1.0,
+    "eth_getCode": 1.0,
+    "net_version": 1.0,
+    "web3_clientVersion": 1.0,
+    "wallet/getnowblock": 1.0,
+    "wallet/getblock": 1.0,
+    # Moderate (2-4 units).
+    "eth_getBlockByNumber": 2.0,
+    "eth_getBlockByHash": 2.0,
+    "eth_getTransactionByHash": 2.0,
+    "eth_getTransactionReceipt": 2.0,
+    "eth_getBlockReceipts": 4.0,
+    "wallet/gettransactionbyid": 2.0,
+    "wallet/getblockbylimitnext": 2.0,
+    # eth_call (3 units) — cheap per call but hot in backfill.
+    "eth_call": 3.0,
+    "wallet/gettransactioninfobyid": 3.0,
+    "wallet/gettriggercontractresult": 3.0,
+    # Expensive (15-20 units).
+    "eth_getLogs": 15.0,
+    "eth_getLogsV2": 15.0,
+    "trace_block": 20.0,
+    "trace_filter": 20.0,
+    "trace_transaction": 20.0,
+    "eth_traceTransaction": 20.0,
+    # Fallback for anything unlisted.
+    "default": 1.0,
+}
+
+# Degrade ladder: (consumed_pct threshold, level, action description).
+# Level 0 = normal; 3 = key parked until reset_at.
+DEGRADE_LADDER: tuple[tuple[float, int, str], ...] = (
+    (70.0, 1, "widen head-follow polls + narrow eth_getLogs windows"),
+    (85.0, 2, "head-only: no backfill or getLogs"),
+    (95.0, 3, "park key until reset_at"),
+)
+
+
+def degrade_action(level: int) -> str:
+    """Human-readable action for a degrade level (0 = normal).
+
+    Returns the action for the HIGHEST threshold met (a parked key reports
+    the level-3 action, not the level-1 one).
+    """
+    for _threshold, lvl, action in reversed(DEGRADE_LADDER):
+        if level >= lvl:
+            return action
+    return "normal operation"
+
+
+@dataclass(frozen=True)
+class QuotaSeed:
+    """Documented free-tier quota used to seed a provider budget."""
+
+    budget_units: int
+    unit_type: str
+    period: str
+
+
+# Documented free quotas (seed values; operators can override after seeding).
+# Alchemy 30M CU/month (account-wide), Infura 3M credits/day, dRPC 210M CU/30d,
+# Helius 1M credits/month, TronGrid 100k requests/day.
+KNOWN_QUOTAS: dict[str, QuotaSeed] = {
+    "alchemy": QuotaSeed(budget_units=30_000_000, unit_type="CU", period="month"),
+    "infura": QuotaSeed(budget_units=3_000_000, unit_type="credits", period="day"),
+    "drpc": QuotaSeed(budget_units=210_000_000, unit_type="CU", period="30d"),
+    "helius": QuotaSeed(budget_units=1_000_000, unit_type="credits", period="month"),
+    "trongrid": QuotaSeed(budget_units=100_000, unit_type="request_units", period="day"),
+}
+
+# Hostname substrings → provider account id. Order matters (first match wins).
+_PROVIDER_HOST_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("alchemy", ("alchemy.com",)),
+    ("infura", ("infura.io",)),
+    ("drpc", ("drpc.org",)),
+    ("helius", ("helius.xyz", "helius-rpc.com")),
+    ("trongrid", ("trongrid.io",)),
+)
+
+# Dataclass field names used to filter persisted JSON on load (survives
+# schema drift by ignoring unknown keys).
+_QUOTA_FIELDS = frozenset(
+    {
+        "provider_id",
+        "key_id",
+        "unit_type",
+        "period",
+        "budget_units",
+        "consumed_units",
+        "method_tariff",
+        "degrade_level",
+        "reset_at",
+        "updated_at",
+    }
+)
+
+
+@dataclass
+class QuotaBudget:
+    """Persisted per-account quota state.
+
+    ``budget_units`` is ``None`` for providers without a documented free
+    quota — they are tracked for stats but never degrade (graceful by
+    default). ``consumed_units`` is tariff-weighted: an ``eth_getLogs``
+    at 75 CU costs 15x an ``eth_chainId`` at 5 CU.
+    """
+
+    provider_id: str
+    key_id: str = ""
+    unit_type: str = "raw"  # CU | credits | request_units | raw
+    period: str = "day"  # day | 30d | month
+    budget_units: int | None = None
+    consumed_units: float = 0.0
+    method_tariff: dict[str, float] = field(default_factory=dict)
+    degrade_level: int = 0
+    reset_at: float = 0.0
+    updated_at: float = 0.0
+
+    def consumed_pct(self) -> float:
+        """Percent of the budget consumed (None-safe → 0.0, can exceed 100)."""
+        if not self.budget_units:
+            return 0.0
+        return 100.0 * self.consumed_units / self.budget_units
+
+    def parked(self, now: float | None = None) -> bool:
+        """Whether this key is parked until ``reset_at`` (level 3)."""
+        now = time.time() if now is None else now
+        return self.degrade_level >= 3 and now < self.reset_at
+
+
+def provider_id_for_endpoint(endpoint: str) -> str:
+    """Derive the account-level provider id from an endpoint URL.
+
+    Grouping is per account, not per URL: every Alchemy subdomain maps to
+    ``"alchemy"`` so all chains share one CU budget. Unmatched hosts fall
+    back to their hostname (Ankr-style per-IP buckets) — those have no
+    seeded quota and never degrade.
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(endpoint).hostname or "").lower()
+    for provider_id, patterns in _PROVIDER_HOST_PATTERNS:
+        if any(pattern in host for pattern in patterns):
+            return provider_id
+    return host or "unknown"
+
+
+def key_id_for_endpoint(endpoint: str) -> str:
+    """Best-effort API-key id for keyed providers (Alchemy/Infura).
+
+    Account-wide keys are the last path segment of the URL
+    (``https://eth-mainnet.g.alchemy.com/v2/<KEY>``). Empty for
+    key-less endpoints — they group by provider_id alone.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(endpoint)
+    host = (parsed.hostname or "").lower()
+    if "alchemy.com" in host or "infura.io" in host:
+        parts = [p for p in parsed.path.split("/") if p]
+        if parts:
+            return parts[-1]
+    return ""
+
+
+class ProviderLedger:
+    """Persisted per-account quota ledger + degrade ladder.
+
+    Single-writer, JSON-on-disk, debounced saves — same contract as
+    :class:`~lite_indexer.rpc.throttle.RPCRateTracker`: every mutation
+    bumps ``updated_at`` and the ledger flushes to :data:`QUOTA_LEDGER_FILE`
+    at most once per ``persist_interval``. Load is best-effort; a corrupt
+    file degrades to an empty ledger rather than crashing the indexer.
+
+    The ledger is a **reporter**, not an enforcer: callers consult
+    ``degrade_level_for`` / the return value of :meth:`record_call` and
+    decide how to honor the ladder. Unknown providers are never degraded.
+    """
+
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        persist_interval: float = 60.0,
+    ) -> None:
+        self._path = Path(path or QUOTA_LEDGER_FILE)
+        self._persist_interval = persist_interval
+        self._last_persist: float = 0.0
+        self._budgets: dict[str, QuotaBudget] = {}
+        self._load()
+
+    # ── Keying ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _budget_key(provider_id: str, key_id: str | None = None) -> str:
+        return f"{provider_id}:{key_id or ''}"
+
+    # ── Persistence ───────────────────────────────────────────────────
+
+    def _load(self) -> None:
+        if not self._path.exists():
+            return
+        try:
+            raw = json.loads(self._path.read_text())
+            for data in raw.values():
+                if not isinstance(data, dict):
+                    continue
+                clean = {k: v for k, v in data.items() if k in _QUOTA_FIELDS}
+                budget = QuotaBudget(**clean)
+                self._budgets[self._budget_key(budget.provider_id, budget.key_id)] = budget
+            if self._budgets:
+                logger.debug("quota_ledger_loaded", budgets=len(self._budgets), path=str(self._path))
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
+            logger.warning("quota_ledger_load_failed", path=str(self._path), error=str(exc)[:80])
+
+    def persist(self) -> None:
+        """Atomically write the ledger state to disk."""
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(
+                {key: asdict(budget) for key, budget in self._budgets.items()},
+                indent=2,
+            )
+            tmp = self._path.with_suffix(".json.tmp")
+            tmp.write_text(payload)
+            os.replace(tmp, self._path)
+        except OSError as exc:
+            logger.warning("quota_ledger_save_failed", path=str(self._path), error=str(exc)[:80])
+
+    def persist_if_stale(self, now: float | None = None) -> None:
+        """Persist when the last write is older than the interval.
+
+        Debounces disk writes so a burst of ``record_call`` traffic flushes
+        at most once per ``persist_interval`` (a crash loses at most that
+        much consumption tracking).
+        """
+        now = time.time() if now is None else now
+        if now - self._last_persist >= self._persist_interval:
+            self._last_persist = now
+            self.persist()
+
+    # ── Budget lifecycle ──────────────────────────────────────────────
+
+    @staticmethod
+    def _build_tariff(unit_type: str) -> dict[str, float]:
+        """Scale the relative tariff table for the budget's unit type.
+
+        CU/credits budgets multiply by :data:`CU_PER_UNIT` so the base
+        ``eth_chainId`` unit costs 5 CU and ``eth_getLogs`` 75 CU;
+        request-unit/raw budgets use the relative weights directly.
+        """
+        scale = CU_PER_UNIT if unit_type in {"CU", "credits"} else 1.0
+        return {method: round(weight * scale, 4) for method, weight in BASE_TARIFF_UNITS.items()}
+
+    @staticmethod
+    def _compute_reset_at(period: str, now: float | None = None) -> float:
+        """Epoch time the quota window resets.
+
+        ``day``/``month`` align to UTC calendar boundaries (provider windows
+        reset on those); ``30d`` uses a rolling window from seeding time.
+        """
+        now = time.time() if now is None else now
+        if period == "day":
+            dt = datetime.fromtimestamp(now, UTC)
+            return (dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        if period == "month":
+            dt = datetime.fromtimestamp(now, UTC)
+            year = dt.year + (1 if dt.month == 12 else 0)
+            month = dt.month % 12 + 1
+            return datetime(year, month, 1, tzinfo=UTC).timestamp()
+        days = 30 if period == "30d" else 1
+        return now + days * 86_400
+
+    def _seed_budget(self, provider_id: str, key_id: str | None = None) -> QuotaBudget:
+        seed = KNOWN_QUOTAS.get(provider_id)
+        now = time.time()
+        if seed is None:
+            budget_units = None
+            unit_type = "raw"
+            period = "day"
+        else:
+            budget_units = seed.budget_units
+            unit_type = seed.unit_type
+            period = seed.period
+        return QuotaBudget(
+            provider_id=provider_id,
+            key_id=key_id or "",
+            unit_type=unit_type,
+            period=period,
+            budget_units=budget_units,
+            consumed_units=0.0,
+            method_tariff=self._build_tariff(unit_type),
+            degrade_level=0,
+            reset_at=self._compute_reset_at(period, now),
+            updated_at=now,
+        )
+
+    def _ensure_budget(self, provider_id: str, key_id: str | None = None) -> QuotaBudget:
+        key = self._budget_key(provider_id, key_id)
+        budget = self._budgets.get(key)
+        if budget is None:
+            budget = self._seed_budget(provider_id, key_id)
+            self._budgets[key] = budget
+            logger.debug("quota_budget_seeded", provider=provider_id, key_id=key_id or "")
+        return budget
+
+    def _maybe_reset(self, budget: QuotaBudget, now: float | None = None) -> None:
+        """Roll a budget into a fresh window when ``reset_at`` has passed."""
+        now = time.time() if now is None else now
+        if now >= budget.reset_at:
+            budget.consumed_units = 0.0
+            budget.degrade_level = 0
+            budget.reset_at = self._compute_reset_at(budget.period, now)
+            budget.updated_at = now
+            logger.info(
+                "quota_period_reset",
+                provider=budget.provider_id,
+                key_id=budget.key_id,
+                next_reset_at=budget.reset_at,
+            )
+
+    @staticmethod
+    def _degrade_level(pct: float) -> int:
+        if pct >= 95.0:
+            return 3
+        if pct >= 85.0:
+            return 2
+        if pct >= 70.0:
+            return 1
+        return 0
+
+    @staticmethod
+    def _tariff_for(budget: QuotaBudget, method: str) -> float:
+        return budget.method_tariff.get(method, budget.method_tariff.get("default", 1.0))
+
+    # ── Public API ────────────────────────────────────────────────────
+
+    def record_call(
+        self,
+        provider_id: str,
+        method: str,
+        key_id: str | None = None,
+        now: float | None = None,
+    ) -> int:
+        """Record one call and return the resulting degrade level (0-3).
+
+        Increments ``consumed_units`` by the method's tariff weight
+        (e.g. ``eth_getLogs`` 15x ``eth_chainId`` for CU budgets) and
+        recomputes the degrade ladder level.
+
+        Args:
+            provider_id: Account-level provider id (``"alchemy"``, ...).
+            method: JSON-RPC method name (``"eth_getLogs"``, ``"eth_call"``).
+            key_id: Optional API-key id for account grouping within a
+                provider (Alchemy/Infura account-wide keys).
+            now: Epoch time override (tests).
+
+        Returns:
+            Degrade level: 0 normal, 1 (70%) widen polls/narrow getLogs,
+            2 (85%) head-only, 3 (95%) park key until ``reset_at``.
+        """
+        now = time.time() if now is None else now
+        budget = self._ensure_budget(provider_id, key_id)
+        self._maybe_reset(budget, now)
+        if budget.budget_units is not None:
+            budget.consumed_units += self._tariff_for(budget, method)
+        budget.updated_at = now
+        budget.degrade_level = self._degrade_level(budget.consumed_pct())
+        self.persist_if_stale(now)
+        return budget.degrade_level
+
+    def record_endpoint_call(self, endpoint: str, method: str, now: float | None = None) -> int:
+        """Record a call from an endpoint URL (derives provider/key id).
+
+        Convenience wrapper for the RPC layer: ``provider_id_for_endpoint``
+        groups Alchemy/Infura URLs by account while unknown hosts get a
+        per-hostname bucket (never degraded).
+        """
+        return self.record_call(
+            provider_id_for_endpoint(endpoint),
+            method,
+            key_id_for_endpoint(endpoint),
+            now=now,
+        )
+
+    def degrade_level_for(
+        self,
+        provider_id: str,
+        key_id: str | None = None,
+        now: float | None = None,
+    ) -> int:
+        """Current degrade level (0-3) for an account without recording a call."""
+        budget = self._budgets.get(self._budget_key(provider_id, key_id))
+        if budget is None:
+            return 0
+        now = time.time() if now is None else now
+        self._maybe_reset(budget, now)
+        budget.degrade_level = self._degrade_level(budget.consumed_pct())
+        return budget.degrade_level
+
+    def consumed_pct_for(
+        self,
+        provider_id: str,
+        key_id: str | None = None,
+    ) -> float:
+        """Percent of the budget consumed (0.0 for unknown/unmanaged)."""
+        budget = self._budgets.get(self._budget_key(provider_id, key_id))
+        if budget is None:
+            return 0.0
+        return budget.consumed_pct()
+
+    def parked(self, provider_id: str, key_id: str | None = None, now: float | None = None) -> bool:
+        """Whether the account key is parked (level 3) until ``reset_at``."""
+        budget = self._budgets.get(self._budget_key(provider_id, key_id))
+        if budget is None:
+            return False
+        now = time.time() if now is None else now
+        return budget.parked(now)
+
+    def state_for(
+        self,
+        provider_id: str,
+        key_id: str | None = None,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Public read-only view of one account's quota state."""
+        budget = self._budgets.get(self._budget_key(provider_id, key_id))
+        if budget is None:
+            return {}
+        now = time.time() if now is None else now
+        self._maybe_reset(budget, now)
+        return {
+            "provider_id": budget.provider_id,
+            "key_id": budget.key_id,
+            "unit_type": budget.unit_type,
+            "period": budget.period,
+            "budget_units": budget.budget_units,
+            "consumed_units": round(budget.consumed_units, 2),
+            "consumed_pct": round(budget.consumed_pct(), 1),
+            "degrade_level": budget.degrade_level,
+            "degrade_action": degrade_action(budget.degrade_level),
+            "parked": budget.parked(now),
+            "reset_at": budget.reset_at,
+            "updated_at": budget.updated_at,
+        }
+
+    def snapshot(self, now: float | None = None) -> dict[str, dict[str, Any]]:
+        """Full ledger view (for logging / metrics)."""
+        return {key: self.state_for(budget.provider_id, budget.key_id, now) for key, budget in self._budgets.items()}
+
+    def reset(self, provider_id: str, key_id: str | None = None, now: float | None = None) -> None:
+        """Manually zero a budget (e.g. operator top-up) and persist."""
+        budget = self._ensure_budget(provider_id, key_id)
+        now = time.time() if now is None else now
+        budget.consumed_units = 0.0
+        budget.degrade_level = 0
+        budget.reset_at = self._compute_reset_at(budget.period, now)
+        budget.updated_at = now
+        self.persist()
+        logger.info("quota_budget_reset", provider=provider_id, key_id=key_id or "")
+
+
+# Module-level ledger shared across the codebase (persists to disk).
+LEDGER = ProviderLedger()
+
+
+def record_call(provider_id: str, method: str, key_id: str | None = None) -> int:
+    """Record a call in the shared ledger (convenience wrapper).
+
+    Args:
+        provider_id: Account-level provider id (``"alchemy"``, ...).
+        method: JSON-RPC method name.
+        key_id: Optional API-key id.
+
+    Returns:
+        Degrade level (0-3) after recording.
+    """
+    return LEDGER.record_call(provider_id, method, key_id)
+
+
+def record_endpoint_call(endpoint: str, method: str) -> int:
+    """Record a call from an endpoint URL in the shared ledger.
+
+    Derives the account provider id and API-key id from the URL.
+
+    Args:
+        endpoint: RPC endpoint URL.
+        method: JSON-RPC method name.
+
+    Returns:
+        Degrade level (0-3) after recording.
+    """
+    return LEDGER.record_endpoint_call(endpoint, method)
+
+
+__all__ = [
+    "CU_PER_UNIT",
+    "DEGRADE_LADDER",
+    "KNOWN_QUOTAS",
+    "LEDGER",
+    "ProviderLedger",
+    "QuotaBudget",
+    "degrade_action",
+    "key_id_for_endpoint",
+    "provider_id_for_endpoint",
+    "record_call",
+    "record_endpoint_call",
+]

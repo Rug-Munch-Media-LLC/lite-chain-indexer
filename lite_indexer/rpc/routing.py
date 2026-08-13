@@ -26,8 +26,10 @@ loop, no locks required).
 
 from __future__ import annotations
 
+import random
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -520,15 +522,372 @@ def is_circuit_open(endpoint: str) -> bool:
     return CIRCUIT_BREAKER.is_open(endpoint)
 
 
+# ── EWMA Latency / P2C Selection / Staleness Gate ─────────────────────
+#
+# An additive smart-routing layer on top of the penalty scoring + circuit
+# breaker in :mod:`lite_indexer.rpc.pool`. Nothing here bypasses the
+# breaker: banned / circuit-open endpoints are still filtered out by the
+# pool scoring before P2C selection runs. All state is in-process and
+# safe under asyncio (single-threaded event loop, no locks required).
+
+# EWMA smoothing factor: new_sample_weight = 0.2, so
+# ``ewma = 0.8 * old + 0.2 * new`` per the audit spec.
+EWMA_ALPHA = 0.2
+# Conservative initial EWMA before the first latency sample — a fresh
+# endpoint is not preferred over one with proven low latency.
+EWMA_INITIAL_MS = 1000.0
+# Window (seconds) for the rolling error-rate computation.
+ERROR_WINDOW_SECONDS = 300.0
+# Staleness gate: an endpoint lagging more than this many blocks behind
+# the pool median block height is excluded until it catches up.
+STALENESS_MAX_BLOCKS = 3
+# Penalty applied in the pool scoring for a stale endpoint. Must clear
+# the ``healthy`` cutoff (``MAX_FAILURES * 1000`` = 3000) so stale
+# endpoints drop out of rotation entirely; 15000 mirrors the
+# health-verification penalty (+10000) and sits below the circuit-open
+# (+20000) / hard-ban (+50000) penalties so the failure path still wins.
+STALE_ENDPOINT_PENALTY = 15000
+
+
+@dataclass
+class EndpointLatency:
+    """Per-endpoint EWMA latency + windowed error-rate tracking.
+
+    This is an additive signal used by P2C selection and the staleness
+    gate. It is deliberately independent of :class:`RpcCircuitBreaker`
+    and the pool failure tracker — it never trips or resets a circuit.
+    """
+
+    endpoint: str
+    ewma_ms: float = EWMA_INITIAL_MS
+    calls: int = 0
+    in_flight: int = 0
+    last_block_height: int | None = None
+    last_updated_at: float = 0.0
+    # (timestamp, ok) pairs within ERROR_WINDOW_SECONDS; pruned on write.
+    _outcomes: list[tuple[float, bool]] = field(default_factory=list, init=False, repr=False)
+
+    def error_rate(self, now: float | None = None) -> float:
+        """Fraction of calls that failed within the error window.
+
+        Args:
+            now: Epoch time override (tests).
+
+        Returns:
+            ``0.0`` when there is no recent data, else ``errors / calls``.
+        """
+        now = time.time() if now is None else now
+        recent = [ok for ts, ok in self._outcomes if now - ts <= ERROR_WINDOW_SECONDS]
+        if not recent:
+            return 0.0
+        return sum(0 if ok else 1 for ok in recent) / len(recent)
+
+    def damped_score(self) -> float:
+        """P2C selection score: EWMA latency damped by in-flight load.
+
+        ``score = ewma_ms * (1 + in_flight)`` per the audit spec — an
+        endpoint that is already serving many in-flight requests is
+        penalized so load spreads across the pool.
+        """
+        return self.ewma_ms * (1.0 + self.in_flight)
+
+
+# Module-level latency state shared across the codebase.
+_LATENCY: dict[str, EndpointLatency] = {}
+
+
+def _stats(endpoint: str) -> EndpointLatency:
+    """Return (creating on first use) the latency stats for ``endpoint``."""
+    stats = _LATENCY.get(endpoint)
+    if stats is None:
+        stats = EndpointLatency(endpoint=endpoint)
+        _LATENCY[endpoint] = stats
+    return stats
+
+
+def record_rpc_latency(endpoint: str, latency_ms: float) -> None:
+    """Update the per-endpoint EWMA latency (α=0.2).
+
+    Args:
+        endpoint: RPC endpoint URL.
+        latency_ms: Measured call latency in milliseconds (>= 0).
+    """
+    stats = _stats(endpoint)
+    stats.ewma_ms = (1.0 - EWMA_ALPHA) * stats.ewma_ms + EWMA_ALPHA * max(0.0, latency_ms)
+    stats.last_updated_at = time.time()
+
+
+def record_rpc_outcome(endpoint: str, *, ok: bool) -> None:
+    """Record a call outcome for the windowed error rate.
+
+    Does NOT touch the circuit breaker — breaker state is only managed
+    by :class:`RpcCircuitBreaker` / the pool failure tracker.
+
+    Args:
+        endpoint: RPC endpoint URL.
+        ok: Whether the call succeeded.
+    """
+    stats = _stats(endpoint)
+    now = time.time()
+    stats.calls += 1
+    stats._outcomes.append((now, ok))
+    stats._outcomes = [(ts, o) for ts, o in stats._outcomes if now - ts <= ERROR_WINDOW_SECONDS]
+
+
+def record_rpc_call(endpoint: str, *, ok: bool, latency_ms: float | None = None) -> None:
+    """Record latency + outcome for one RPC call (convenience wrapper).
+
+    Args:
+        endpoint: RPC endpoint URL.
+        ok: Whether the call succeeded.
+        latency_ms: Optional measured latency in milliseconds.
+    """
+    if latency_ms is not None:
+        record_rpc_latency(endpoint, latency_ms)
+    record_rpc_outcome(endpoint, ok=ok)
+
+
+def endpoint_ewma_ms(endpoint: str) -> float:
+    """Current EWMA latency (ms) for an endpoint (never raises)."""
+    return _stats(endpoint).ewma_ms
+
+
+def endpoint_error_rate(endpoint: str) -> float:
+    """Windowed error rate for an endpoint (0.0 when no data)."""
+    return _stats(endpoint).error_rate()
+
+
+def incr_in_flight(endpoint: str) -> None:
+    """Increment the in-flight request count for ``endpoint``."""
+    _stats(endpoint).in_flight += 1
+
+
+def decr_in_flight(endpoint: str) -> None:
+    """Decrement the in-flight request count (floored at 0)."""
+    stats = _stats(endpoint)
+    stats.in_flight = max(0, stats.in_flight - 1)
+
+
+def in_flight_count(endpoint: str) -> int:
+    """Current in-flight request count for ``endpoint``."""
+    return _stats(endpoint).in_flight
+
+
+@asynccontextmanager
+async def track_in_flight(endpoint: str) -> AsyncIterator[None]:
+    """Context manager that tracks in-flight load for ``endpoint``.
+
+    Use around each RPC call so the P2C damped score reflects concurrent
+    load::
+
+        async with track_in_flight(endpoint):
+            resp = await client.post(endpoint, ...)
+    """
+    incr_in_flight(endpoint)
+    try:
+        yield
+    finally:
+        decr_in_flight(endpoint)
+
+
+def record_endpoint_block_height(endpoint: str, height: int) -> None:
+    """Record the latest block height observed from ``endpoint``.
+
+    Feeds the staleness gate: an endpoint lagging more than
+    :data:`STALENESS_MAX_BLOCKS` behind the pool median is excluded from
+    rotation until it records a height within the threshold (i.e. it
+    catches up). Call this after every successful tip-observation call
+    (``eth_blockNumber`` / ``getBlockHeight``).
+
+    Args:
+        endpoint: RPC endpoint URL.
+        height: Latest block height observed from this endpoint.
+    """
+    stats = _stats(endpoint)
+    stats.last_block_height = height
+    stats.last_updated_at = time.time()
+
+
+def endpoint_block_height(endpoint: str) -> int | None:
+    """Last recorded block height for an endpoint, or None."""
+    return _stats(endpoint).last_block_height
+
+
+def _pool_median_height(endpoints: list[str]) -> int | None:
+    """Median of recorded block heights across the pool (None if none)."""
+    heights: list[int] = []
+    for ep in endpoints:
+        height = _stats(ep).last_block_height
+        if height is not None:
+            heights.append(height)
+    if not heights:
+        return None
+    heights.sort()
+    mid = len(heights) // 2
+    if len(heights) % 2:
+        return heights[mid]
+    return (heights[mid - 1] + heights[mid]) // 2
+
+
+def staleness_blocks(endpoint: str, endpoints: list[str]) -> int | None:
+    """How many blocks ``endpoint`` lags behind the pool median height.
+
+    Returns None when either the endpoint or the pool has no recorded
+    block height — the gate is inactive in that case (absence of data
+    never penalizes an endpoint).
+
+    Args:
+        endpoint: RPC endpoint URL.
+        endpoints: Full pool candidate list (for the median).
+
+    Returns:
+        ``median - endpoint_height`` or None when the gate is inactive.
+    """
+    height = _stats(endpoint).last_block_height
+    median = _pool_median_height(endpoints)
+    if height is None or median is None:
+        return None
+    return median - height
+
+
+def is_endpoint_stale(endpoint: str, endpoints: list[str]) -> bool:
+    """Whether ``endpoint`` lags >STALENESS_MAX_BLOCKS behind the median.
+
+    Args:
+        endpoint: RPC endpoint URL.
+        endpoints: Full pool candidate list (for the median).
+
+    Returns:
+        True when the endpoint is stale and should be excluded.
+    """
+    lag = staleness_blocks(endpoint, endpoints)
+    return lag is not None and lag > STALENESS_MAX_BLOCKS
+
+
+def stale_endpoints(endpoints: list[str]) -> list[str]:
+    """All pool endpoints lagging >STALENESS_MAX_BLOCKS behind the median.
+
+    Args:
+        endpoints: Pool candidate URLs.
+
+    Returns:
+        Stale endpoint URLs (empty when no height data is recorded).
+    """
+    median = _pool_median_height(endpoints)
+    if median is None:
+        return []
+    stale: list[str] = []
+    for ep in endpoints:
+        height = _stats(ep).last_block_height
+        if height is not None and median - height > STALENESS_MAX_BLOCKS:
+            stale.append(ep)
+    return stale
+
+
+def select_p2c(endpoints: list[str]) -> str:
+    """Power-of-two-choices endpoint selection.
+
+    Draws two candidates uniformly and returns the one with the lower
+    damped latency score ``ewma_ms * (1 + in_flight)``; ties break on
+    the windowed error rate. With a single candidate that endpoint is
+    returned directly.
+
+    Callers are expected to pass the *healthy* subset (banned /
+    circuit-open / stale endpoints already filtered out) — the pool's
+    :func:`get_best_endpoint` does this with its penalty scoring. Use
+    :func:`select_p2c_healthy` when you need the filtering done here.
+
+    Args:
+        endpoints: Candidate endpoint URLs (must be non-empty).
+
+    Returns:
+        The selected endpoint URL.
+    """
+    if not endpoints:
+        raise ValueError("select_p2c requires a non-empty endpoint list")
+    if len(endpoints) == 1:
+        return endpoints[0]
+    a, b = random.sample(endpoints, 2)  # noqa: S311
+    sa, sb = _stats(a), _stats(b)
+    score_a, score_b = sa.damped_score(), sb.damped_score()
+    if score_a != score_b:
+        return a if score_a < score_b else b
+    return a if sa.error_rate() <= sb.error_rate() else b
+
+
+def select_p2c_healthy(endpoints: list[str]) -> str:
+    """P2C selection over the healthy subset of ``endpoints``.
+
+    Filters out hard-banned, circuit-open, and stale endpoints before
+    drawing — a convenience wrapper for callers that do not already
+    maintain a healthy list (``get_best_endpoint`` does its own penalty
+    scoring and calls :func:`select_p2c` directly). Falls back to the
+    full list when fewer than two healthy candidates exist.
+
+    Args:
+        endpoints: Pool candidate URLs.
+
+    Returns:
+        The selected endpoint URL.
+    """
+    from lite_indexer.rpc.pool import is_endpoint_banned
+
+    stale = set(stale_endpoints(endpoints))
+    healthy = [ep for ep in endpoints if not is_endpoint_banned(ep) and not is_circuit_open(ep) and ep not in stale]
+    candidates = healthy if len(healthy) >= 2 else endpoints
+    return select_p2c(candidates)
+
+
+def latency_snapshot() -> dict[str, dict[str, Any]]:
+    """Per-endpoint EWMA/error-rate/in-flight snapshot (for logging)."""
+    return {
+        ep: {
+            "ewma_ms": round(s.ewma_ms, 1),
+            "error_rate": round(s.error_rate(), 4),
+            "in_flight": s.in_flight,
+            "calls": s.calls,
+            "last_block_height": s.last_block_height,
+        }
+        for ep, s in _LATENCY.items()
+    }
+
+
+def reset_latency_state() -> None:
+    """Clear all latency/height tracking (tests, operator reset)."""
+    _LATENCY.clear()
+
+
 __all__ = [
     "RpcUsageTracker",
     "RpcCircuitBreaker",
     "USAGE_TRACKER",
     "CIRCUIT_BREAKER",
+    "EndpointLatency",
+    "EWMA_ALPHA",
+    "STALENESS_MAX_BLOCKS",
+    "STALE_ENDPOINT_PENALTY",
     "endpoint_tier",
     "preferred_tier_for_method",
     "select_endpoint_for_method",
     "record_rpc_usage",
     "log_rpc_usage",
     "is_circuit_open",
+    "record_rpc_latency",
+    "record_rpc_outcome",
+    "record_rpc_call",
+    "endpoint_ewma_ms",
+    "endpoint_error_rate",
+    "incr_in_flight",
+    "decr_in_flight",
+    "in_flight_count",
+    "track_in_flight",
+    "record_endpoint_block_height",
+    "endpoint_block_height",
+    "staleness_blocks",
+    "is_endpoint_stale",
+    "stale_endpoints",
+    "select_p2c",
+    "select_p2c_healthy",
+    "latency_snapshot",
+    "reset_latency_state",
 ]
