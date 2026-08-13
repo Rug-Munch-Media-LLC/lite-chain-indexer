@@ -1,4 +1,4 @@
-# LiteChainIndexer 🪶
+# Lite Chain Indexer 🪶
 
 **The free, self-healing, multi-chain blockchain indexer.** Index transfers, DEX swaps, deployer activity, and internal-transfer traces across **16 chains (14 EVM + Solana + Tron)** using **only free public RPCs** — zero infrastructure cost, zero API keys required, ~2 GB RAM, and DuckDB-queryable parquet archives on B2. No node. No gateway. No bill. **359M+ rows in production on a $5 VPS.**
 
@@ -14,7 +14,7 @@
 
 ## What It Does
 
-LiteChainIndexer is a lightweight, self-hosted **multi-chain blockchain indexer** that turns raw on-chain activity into queryable, analyzable data. It watches **ERC-20/TRC-20/SPL transfer events**, **DEX swap events** (Uniswap V2/V3 and forks), **pair/pool deployment events**, and **internal-transfer traces** (WETH unwraps, bridge deposits, fee flows) across **14 EVM chains plus Solana and Tron** — entirely through **free public RPC endpoints**. Events are written to ClickHouse in real time (address-first projections make wallet queries sub-second), then exported as **parquet snapshots to B2** so you can run **DuckDB SQL queries over historical data** with no node, no gateway, and no recurring bill.
+Lite Chain Indexer is a lightweight, self-hosted **multi-chain blockchain indexer** that turns raw on-chain activity into queryable, analyzable data. It watches **ERC-20/TRC-20/SPL transfer events**, **DEX swap events** (Uniswap V2/V3 and forks), **pair/pool deployment events**, and **internal-transfer traces** (WETH unwraps, bridge deposits, fee flows) across **14 EVM chains plus Solana and Tron** — entirely through **free public RPC endpoints**. Events are written to ClickHouse in real time (address-first projections make wallet queries sub-second), then exported as **parquet snapshots to B2** so you can run **DuckDB SQL queries over historical data** with no node, no gateway, and no recurring bill.
 
 It's the **free blockchain indexer** for anyone who wants **blockchain data without running a node** — analysts, wallets, dashboards, Telegram bots, and research pipelines.
 
@@ -39,7 +39,7 @@ It's the **free blockchain indexer** for anyone who wants **blockchain data with
 
 ## Quickstart
 
-The fastest way to try LiteChainIndexer — install from source, then one chain, one command:
+The fastest way to try Lite Chain Indexer — install from source, then one chain, one command:
 
 ```bash
 pip install "git+https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer.git"
@@ -277,7 +277,7 @@ Typical sustained catch-up (backfill) rates per chain on a 2-core VPS using free
 
 ## Comparison
 
-| Feature | **LiteChainIndexer** | Ponder | Subsquid | HyperIndex | The Graph |
+| Feature | **Lite Chain Indexer** | Ponder | Subsquid | HyperIndex | The Graph |
 |---------|:---:|:---:|:---:|:---:|:---:|
 | Cost | **$0 + $5 VPS** | $0 + infra | $0 + infra | $0 + infra | $0 + infra/GRT |
 | Chains | **16** (14 EVM + Solana + Tron) | Configurable (EVM) | Configurable (EVM) | Configurable (EVM) | Hosted (EVM) |
@@ -296,9 +296,9 @@ Typical sustained catch-up (backfill) rates per chain on a 2-core VPS using free
 | Historical backfill | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Python-native | ✅ | ❌ TS | ❌ TS | ❌ TS | ❌ GraphQL/AS |
 
-**Why LiteChainIndexer wins for self-hosted free-tier indexing:**
+**Why Lite Chain Indexer wins for self-hosted free-tier indexing:**
 
-- **Free from the ground up** — Ponder/Subsquid/HyperIndex assume you bring your own RPC (often $100s/mo for archive nodes); LiteChainIndexer ships with 61 curated free endpoints, live-verified, and throttles them intelligently (per-endpoint rate-limit header tracking, exact `Retry-After` honoring, pre-emptive slow-down before 429s, per-method budgets).
+- **Free from the ground up** — Ponder/Subsquid/HyperIndex assume you bring your own RPC (often $100s/mo for archive nodes); Lite Chain Indexer ships with 61 curated free endpoints, live-verified, and throttles them intelligently (per-endpoint rate-limit header tracking, exact `Retry-After` honoring, pre-emptive slow-down before 429s, per-method budgets).
 - **359M rows on a $5 VPS** — one Python process, ~2 GB RAM, address-first ClickHouse projections make wallet queries sub-second even at this scale.
 - **Self-healing is the default** — the backward-state guard auto-recovers clobbered state from the ClickHouse max block; `--recover` fixes state files from the durable store; a stalled chain auto-disables while the others keep indexing.
 - **Biggest blind spot covered** — internal-transfer traces (WETH unwraps, bridge deposits, fee flows) that ERC-20 `Transfer`-only indexers (and therefore the alternatives above) never see.
@@ -460,7 +460,7 @@ usage: lite-indexer [-h] [--chain CHAIN] [--from-block FROM_BLOCK]
                     [--log-level LOG_LEVEL]
                     {integrity-check,reconcile,export-parquet,backfill-whales,bootstrap,query}
 
-LiteChainIndexer — lightweight multi-chain blockchain indexer using free RPCs
+Lite Chain Indexer — lightweight multi-chain blockchain indexer using free RPCs
 
 options:
   --chain CHAIN         Chain to index (default: ethereum)

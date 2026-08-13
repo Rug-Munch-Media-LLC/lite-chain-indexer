@@ -1,10 +1,10 @@
-# LiteChainIndexer — Dev Guide
+# Lite Chain Indexer — Dev Guide
 
 > Lightweight multi-chain blockchain indexer using only free RPCs.
 
 ## What This Repo Is
 
-LiteChainIndexer indexes ERC-20 Transfer events, DEX Swap events (V2+V3),
+Lite Chain Indexer indexes ERC-20 Transfer events, DEX Swap events (V2+V3),
 and PairCreated/PoolCreated events across 14 EVM chains — using
 **eth_getLogs** on curated free RPC endpoints. No Subsquid, no Reth,
 no infrastructure bill.

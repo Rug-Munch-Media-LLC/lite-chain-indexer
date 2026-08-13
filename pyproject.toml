@@ -1,7 +1,7 @@
 [project]
 name = "litechainindexer"
 version = "1.3.0"
-description = "LiteChainIndexer — Lightweight multi-chain blockchain indexer using free RPCs"
+description = "Lite Chain Indexer — Lightweight multi-chain blockchain indexer using free RPCs"
 requires-python = ">=3.11"
 readme = "README.md"
 license = { text = "MIT" }
