@@ -562,13 +562,101 @@ def record_endpoint_call(endpoint: str, method: str) -> int:
     return LEDGER.record_endpoint_call(endpoint, method)
 
 
+# Methods deferred at level 2 (85% consumed, head-only). ``debug_trace*``
+# and ``trace_*`` family members match by prefix via :func:`_is_heavy_method`.
+HEAVY_DEFER_METHODS: frozenset[str] = frozenset(
+    {
+        "eth_getLogs",
+        "eth_getLogsV2",
+        "eth_getBlockReceipts",
+        "getSignaturesForAddress",
+        "getBlock",
+        "getTransaction",
+        "trace_block",
+        "trace_filter",
+        "trace_transaction",
+        "eth_traceTransaction",
+    }
+)
+
+# Level-1 (70%) wide-scan threshold: ``eth_getLogs`` ranges wider than this
+# many blocks are treated as backfill-style wide scans and deferred; narrow
+# head-follow windows stay allowed.
+LEVEL1_GETLOGS_RANGE_BLOCKS: int = 1000
+
+
+def _is_heavy_method(method: str) -> bool:
+    """Whether a method is in the level-2 heavy-defer set (prefix-aware)."""
+    return method in HEAVY_DEFER_METHODS or method.startswith("debug_trace")
+
+
+def defer_reason(
+    provider_id: str,
+    method: str,
+    key_id: str | None = None,
+    range_blocks: int | None = None,
+) -> str | None:
+    """Reason string when a call should be DEFERRED, else ``None``.
+
+    Consults the shared ledger's current degrade level without recording a
+    call — a deferred call was never dispatched, so it must not consume
+    quota. This is the enforcement hook for the degrade ladder (the ledger
+    itself stays reporter-only; callers decide how to honor the reason).
+
+    Ladder:
+      * level 3 (parked) → defer ALL methods
+      * level 2 (85%)    → defer heavy methods only (see
+                           :data:`HEAVY_DEFER_METHODS`)
+      * level 1 (70%)    → defer backfill-style wide ``eth_getLogs`` scans
+                           only (``range_blocks`` > 1000); head-follow allowed
+      * level 0 / unknown providers (no seeded quota) → never deferred
+
+    Args:
+        provider_id: Account-level provider id (``"alchemy"``, ...).
+        method: JSON-RPC method name.
+        key_id: Optional API-key id for account grouping.
+        range_blocks: Optional block range for ``eth_getLogs`` so level 1
+            can tell a wide backfill scan from a narrow head-follow window.
+            Ignored for other methods; level-1 never defers when the range
+            is unknown (``None``).
+
+    Returns:
+        Reason string when the call should be skipped, else ``None``.
+        Never raises: on any ledger error it degrades to ``None`` (allow).
+    """
+    try:
+        level = LEDGER.degrade_level_for(provider_id, key_id)
+        if level <= 0:
+            return None
+        if level >= 3:
+            return f"quota_deferred_level3_parked ({degrade_action(3)})"
+        if level == 2:
+            if _is_heavy_method(method):
+                return f"quota_deferred_level2_head_only ({degrade_action(2)})"
+            return None
+        # level == 1 — wide backfill scans only; head-follow stays allowed.
+        if (
+            method in {"eth_getLogs", "eth_getLogsV2"}
+            and range_blocks is not None
+            and range_blocks > LEVEL1_GETLOGS_RANGE_BLOCKS
+        ):
+            return f"quota_deferred_level1_wide_scan ({degrade_action(1)})"
+        return None
+    except Exception as exc:  # noqa: BLE001 — enforcement must never raise
+        logger.debug("quota_defer_reason_skipped", provider=provider_id, error=str(exc)[:80])
+        return None
+
+
 __all__ = [
     "CU_PER_UNIT",
     "DEGRADE_LADDER",
+    "HEAVY_DEFER_METHODS",
     "KNOWN_QUOTAS",
     "LEDGER",
+    "LEVEL1_GETLOGS_RANGE_BLOCKS",
     "ProviderLedger",
     "QuotaBudget",
+    "defer_reason",
     "degrade_action",
     "key_id_for_endpoint",
     "provider_id_for_endpoint",

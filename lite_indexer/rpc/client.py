@@ -27,7 +27,13 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
-from lite_indexer.rpc.ledger import record_endpoint_call
+from lite_indexer.rpc.ledger import (
+    LEDGER,
+    defer_reason,
+    key_id_for_endpoint,
+    provider_id_for_endpoint,
+    record_endpoint_call,
+)
 from lite_indexer.rpc.pool import (
     ban_endpoint,
     get_best_endpoint,
@@ -59,6 +65,61 @@ def _safe_record(recorder: Any, *args: Any, **kwargs: Any) -> None:
         recorder(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 — telemetry must never raise into the RPC path
         logger.debug("rpc_telemetry_skipped", error=str(exc)[:80])
+
+
+# (provider_id, key_id, level) tuples already warned about — the defer gate
+# logs at warning once per provider+level per process, never per call.
+_defer_warned: set[tuple[str, str, int]] = set()
+
+
+def _defer_reason_for(
+    endpoint: str,
+    method: str,
+    *,
+    range_blocks: int | None = None,
+) -> str | None:
+    """Guarded quota-degrade gate for the RPC fetch path.
+
+    Derives the account-level provider/key id from the endpoint URL and asks
+    the ledger whether this call should be deferred. Never raises: on any
+    ledger error it degrades to ``None`` (allow the call) so enforcement can
+    never break the RPC path.
+    """
+    try:
+        return defer_reason(
+            provider_id_for_endpoint(endpoint),
+            method,
+            key_id_for_endpoint(endpoint),
+            range_blocks=range_blocks,
+        )
+    except Exception as exc:  # noqa: BLE001 — enforcement must never break RPC
+        logger.debug("rpc_defer_gate_skipped", endpoint=endpoint[:50], error=str(exc)[:80])
+        return None
+
+
+def _warn_deferred(endpoint: str, method: str, reason: str) -> None:
+    """Log a deferral at warning, once per provider+level (not spammy)."""
+    provider_id = ""
+    key_id = ""
+    level = 0
+    try:
+        provider_id = provider_id_for_endpoint(endpoint)
+        key_id = key_id_for_endpoint(endpoint)
+        level = LEDGER.degrade_level_for(provider_id, key_id)
+    except Exception as exc:  # noqa: BLE001 — dedup bookkeeping must never raise
+        logger.debug("rpc_defer_warn_skipped", endpoint=endpoint[:50], error=str(exc)[:80])
+    dedup_key = (provider_id, key_id, level)
+    if dedup_key in _defer_warned:
+        return
+    _defer_warned.add(dedup_key)
+    logger.warning(
+        "rpc_call_deferred",
+        provider=provider_id,
+        key_id=key_id,
+        level=level,
+        method=method,
+        reason=reason,
+    )
 
 
 # ── Pooled HTTP Clients ────────────────────────────────────────────────
@@ -129,6 +190,17 @@ class RpcClient:
         """
         from lite_indexer.rpc.routing import record_rpc_usage
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
+
+        # Quota-degrade gate: before dispatching, ask the ledger whether
+        # this call should be deferred (level 3 parks everything, level 2
+        # blocks heavy methods). Guarded — a ledger error never blocks RPC.
+        # Returns None (the existing failure shape) so callers skip
+        # gracefully; a deferred call is never dispatched and records no
+        # quota consumption.
+        reason = _defer_reason_for(endpoint, method)
+        if reason:
+            _warn_deferred(endpoint, method, reason)
+            return None
 
         payload = {
             "jsonrpc": "2.0",
@@ -341,6 +413,16 @@ class RpcClient:
         Returns:
             List of raw log dicts, or None on failure.
         """
+        # Quota-degrade gate for eth_getLogs: level 1 defers wide backfill
+        # scans only (range > 1000 blocks), level 2 defers all getLogs,
+        # level 3 (parked) defers everything. Empty list is the existing
+        # "no logs in range" shape, so callers skip gracefully without
+        # raising or breaking the result contract.
+        reason = _defer_reason_for(endpoint, "eth_getLogs", range_blocks=to_block - from_block)
+        if reason:
+            _warn_deferred(endpoint, "eth_getLogs", reason)
+            return []
+
         filter_params: dict[str, Any] = {
             "fromBlock": hex(from_block),
             "toBlock": hex(to_block),
