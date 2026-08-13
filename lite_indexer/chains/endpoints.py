@@ -33,7 +33,7 @@ whose key is NOT set are excluded from the active pool (they can never be
 dialed — a literal ``${...}`` in a URL only produces DNS/JSON verification
 retries). Restart the service after setting a key to activate the endpoint.
 
-Total: 73 endpoints across 14 chains (60 public + 13 API-key free tiers).
+Total: 74 endpoints across 15 chains (61 public + 13 API-key free tiers).
 """
 
 from __future__ import annotations
@@ -234,19 +234,33 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.ankr.com/celo",  # T1 — ankr (verified — celo only)
         "https://celo.drpc.org",  # T2 — drpc.org (verified)
     ],
+    # ── Robinhood (1 endpoint) ────────────────────────────────────────
+    # T1: official rpc.robinhood.org (Arbitrum Orbit L2, chainId 78600,
+    #     native ETH, ~0.25s block time). NOTE 2026-08-13: the official
+    #     RPC host did NOT resolve DNS from the verification sandbox and
+    #     chainid.network/chainlist still map 78600 to "Vanguard" (VANRY)
+    #     — the chain may be newly launched / geo-restricted. Registered
+    #     per spec (single official endpoint) and left for live re-verify.
+    #     Candidates rejected 2026-08-13: robinhood.rpc.publicnode.com
+    #     (TLS handshake failure — subdomain not served), robinhood.drpc.org
+    #     (302 to drpc.org homepage — no chain configured), robinhoodchain.org
+    #     (parked for-sale domain). [REVIEW]
+    "robinhood": [
+        "https://rpc.robinhood.org",  # T1 — official (per spec; unverified live)
+    ],
 }
 
 # Summary of EVM endpoints per chain:
 #   ethereum: 13    base: 5      bsc: 8      polygon: 6
 #   arbitrum: 6     optimism: 4  avalanche: 4 fantom: 4
 #   linea: 5        scroll: 4    zksync: 4   mantle: 4
-#   gnosis: 3       celo: 3
+#   gnosis: 3       celo: 3      robinhood: 1
 # -------------------------------------------------------
-#   Total: 73 endpoints across 14 chains
-#   (60 free public + 13 API-key free tiers)
+#   Total: 74 endpoints across 15 chains
+#   (61 free public + 13 API-key free tiers)
 #
 #   Non-EVM: solana (4), tron (3)
-#   Grand total: 80 endpoints across 16 chains
+#   Grand total: 81 endpoints across 17 chains
 
 
 # ── Endpoint URL template resolution ───────────────────────────────
@@ -357,6 +371,7 @@ LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
         "https://gnosis.gateway.tenderly.co",
     ],
     "celo": ["https://forno.celo.org"],
+    "robinhood": ["https://rpc.robinhood.org"],
 }
 
 

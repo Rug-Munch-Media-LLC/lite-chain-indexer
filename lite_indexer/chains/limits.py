@@ -110,4 +110,5 @@ CHAIN_BLOCK_RANGE_LIMITS: dict[str, int] = {
     "mantle": 5000,
     "gnosis": 5000,
     "celo": 5000,
+    "robinhood": 1000,  # New Orbit L2 (~0.25s blocks) — conservative until RPC live-verified
 }

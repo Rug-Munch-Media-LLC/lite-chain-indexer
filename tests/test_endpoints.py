@@ -36,6 +36,7 @@ EXPECTED_EVM_CHAINS = [
     "mantle",
     "gnosis",
     "celo",
+    "robinhood",
 ]
 
 

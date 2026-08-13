@@ -526,6 +526,7 @@ CHAIN_MEMORY_BUDGET_MB: dict[str, int] = {
     "mantle": 384,
     "gnosis": 384,
     "celo": 384,
+    "robinhood": 384,
 }
 
 # Priority (1-10): high-value chains poll more frequently. Ethereum and
@@ -547,6 +548,7 @@ CHAIN_PRIORITY: dict[str, int] = {
     "fantom": 5,
     "gnosis": 5,
     "celo": 5,
+    "robinhood": 5,  # New chain — low priority until demand proven
 }
 
 # ── Parquet Cold Storage Tier ─────────────────────────────────────────

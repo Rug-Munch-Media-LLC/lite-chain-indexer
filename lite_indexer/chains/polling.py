@@ -33,4 +33,5 @@ CHAIN_POLL_INTERVALS: dict[str, float] = {
     "celo": 5.0,
     "solana": 0.4,
     "tron": 3.0,
+    "robinhood": 1.0,  # Arbitrum Orbit L2, ~0.25s block time — poll ~1s
 }

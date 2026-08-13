@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,8 +37,6 @@ from lite_indexer.chains.demand import (
 )
 from lite_indexer.chunks import chunk_size_for_chain, sync_batch_for_chain
 from lite_indexer.config import (
-    CH_HEALTH_CHECK_ENABLED,
-    CH_HEALTH_INTERVAL,
     DATA_DIR,
     DATA_RECONCILIATION_ENABLED,
     DATA_RECONCILIATION_EVERY_N_CYCLES,
@@ -48,9 +45,6 @@ from lite_indexer.config import (
     GC_EVERY_N_CYCLES,
     HEAD_BUFFER,
     LAZY_INDEXING_ENABLED,
-    MEMORY_CHECK_INTERVAL,
-    MEMORY_HIGH_MB,
-    MEMORY_PAUSE_SLEEP,
     NATS_ENABLED,
     NDJSON_ENABLED,
     PLUGIN_ENABLED,
@@ -60,10 +54,23 @@ from lite_indexer.config import (
     TRACE_CONCURRENCY,
     TRACE_ENABLED,
     TRACE_MAX_BLOCKS_PER_CYCLE,
-    VECTOR_INGESTION_BATCH_SIZE,
     VECTOR_INGESTION_ENABLED,
-    VECTOR_INGESTION_INTERVAL_BLOCKS,
     WEBHOOK_ENABLED,
+)
+from lite_indexer.indexer._resource_guards import (
+    ClickHouseHealth,
+    MemoryGate,
+)
+from lite_indexer.indexer._resource_guards import (
+    get_process_rss_mb as get_process_rss_mb,
+)
+from lite_indexer.indexer._writers import (
+    build_nats_payloads,
+    flush_solana_launch_bundles,
+    flush_tron_launch,
+    maybe_run_vector_ingestion,
+    write_deployer_events,
+    write_ndjson,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.plugin import BasePlugin, PluginContext, PluginLoader
@@ -89,17 +96,6 @@ from lite_indexer.strategies import (
     create_strategy,
 )
 from lite_indexer.strategies.base import AbstractChainStrategy
-from lite_indexer.strategies.solana.bundles import write_bundle
-from lite_indexer.strategies.solana.launch import write_launch as write_solana_launch
-from lite_indexer.strategies.tron.launch import (
-    PairEvent as TronPairEvent,
-)
-from lite_indexer.strategies.tron.launch import (
-    write_launch as write_tron_launch,
-)
-from lite_indexer.strategies.tron.launch import (
-    write_pair as write_tron_pair,
-)
 from lite_indexer.streaming import NATSPublisher
 from lite_indexer.webhooks import WebhookDelivery
 
@@ -125,107 +121,11 @@ def _check_reorg(events: list[Any]) -> bool:
 
 
 # ── Memory / ClickHouse watchdog helpers ────────────────────────────────
-
-
-def get_process_rss_mb() -> int:
-    """Return the current RSS of this process in MiB (no psutil needed).
-
-    Reads ``/proc/self/statm`` (resident set size in pages) and
-    multiplies by the page size. Falls back to 0 when the file is
-    unavailable (non-Linux) so callers treat "unknown" as "under limit".
-
-    Returns:
-        Resident set size in MiB, or 0 when unavailable.
-    """
-    try:
-        with open("/proc/self/statm") as f:
-            fields = f.read().split()
-        if len(fields) < 2:
-            return 0
-        pages = int(fields[1])
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        return int(pages * page_size / (1024 * 1024))
-    except (OSError, ValueError, AttributeError):
-        return 0
-
-
-class MemoryGate:
-    """Cached in-process memory watchdog (pause ingestion when RSS is high).
-
-    The daemon checks :meth:`ok` before starting a new sync cycle. When
-    RSS exceeds :data:`MEMORY_HIGH_MB` the gate reports ``False`` and the
-    caller sleeps (:data:`MEMORY_PAUSE_SLEEP`) instead of ingesting —
-    pausing new chain ingestion until memory drops, which is the
-    in-process backstop before the systemd cgroup OOM reaper fires.
-
-    The RSS read is cached for :data:`MEMORY_CHECK_INTERVAL` seconds so
-    the gate doesn't thrash under GC churn.
-    """
-
-    def __init__(self, high_mb: int = MEMORY_HIGH_MB) -> None:
-        self._high_mb = high_mb
-        self._last_check: float = 0.0
-        self._cached_ok: bool = True
-
-    @property
-    def high_mb(self) -> int:
-        """The RSS threshold in MiB."""
-        return self._high_mb
-
-    def ok(self) -> bool:
-        """Whether new ingestion may proceed (RSS under the threshold)."""
-        if self._high_mb <= 0:
-            return True
-        now = time.monotonic()
-        if now - self._last_check < MEMORY_CHECK_INTERVAL:
-            return self._cached_ok
-        self._last_check = now
-        rss = get_process_rss_mb()
-        self._cached_ok = rss < self._high_mb
-        if not self._cached_ok:
-            logger.warning(
-                "memory_gate_closed",
-                rss_mb=rss,
-                high_mb=self._high_mb,
-                pause_s=MEMORY_PAUSE_SLEEP,
-            )
-        return self._cached_ok
-
-
-class ClickHouseHealth:
-    """Cached ClickHouse reachability probe for graceful CH pauses.
-
-    ``ok()`` runs ``SELECT 1`` through the shared ClickHouseWriter client
-    (lazy connect, 5s connect timeout) and caches the result for
-    :data:`CH_HEALTH_INTERVAL` seconds. The sync loop calls this before
-    fetching events from RPC: when CH is unreachable the cycle aborts
-    with ``ch_unavailable`` — no RPC budget burned, no state movement,
-    no crash.
-    """
-
-    def __init__(self, ch_writer: ClickHouseWriter | None = None) -> None:
-        self._writer: ClickHouseWriter | None = ch_writer
-        self._last_check: float = 0.0
-        self._cached_ok: bool = True
-
-    def ok(self) -> bool:
-        """Whether ClickHouse is currently reachable and writable."""
-        if not CH_HEALTH_CHECK_ENABLED:
-            return True
-        now = time.monotonic()
-        if now - self._last_check < CH_HEALTH_INTERVAL:
-            return self._cached_ok
-        self._last_check = now
-        writer = self._writer if self._writer is not None else ClickHouseWriter()
-        try:
-            client = writer.client()
-            self._cached_ok = client is not None
-        except Exception as exc:  # noqa: BLE001 — health probe must never raise
-            logger.warning("ch_health_probe_failed", error=str(exc)[:100])
-            self._cached_ok = False
-        if not self._cached_ok:
-            logger.warning("ch_health_down", next_probe_s=CH_HEALTH_INTERVAL)
-        return self._cached_ok
+# Extracted into ``lite_indexer/indexer/_resource_guards.py``:
+#   - get_process_rss_mb
+#   - MemoryGate
+#   - ClickHouseHealth
+# Re-exported above so ``from lite_indexer.indexer import ...`` is unchanged.
 
 
 class LiteIndexer:
@@ -555,21 +455,7 @@ class LiteIndexer:
         if publisher is None:
             return 0
 
-        payloads: list[tuple[str, dict[str, Any]]] = []
-        for event in transfers:
-            if isinstance(event, dict):
-                payloads.append(("evm_transfer", event))
-        for event in dex_events:
-            if isinstance(event, dict):
-                payloads.append(("dex_swap", event))
-                if event.get("whale"):
-                    payloads.append(("whale_alert", event))
-        for event in deployer_events:
-            if isinstance(event, dict):
-                payloads.append(("deployer_event", event))
-        for event in trace_events:
-            if isinstance(event, dict):
-                payloads.append(("evm_transfer", event))
+        payloads = build_nats_payloads(transfers, dex_events, deployer_events, trace_events)
 
         if not payloads:
             return 0
@@ -634,12 +520,13 @@ class LiteIndexer:
     ) -> dict[str, int] | None:
         """Run the ingestion pipeline when the block interval has elapsed.
 
-        The pipeline reads the freshly synced ``[from_block, to_block]``
-        range from ClickHouse, generates text representations for wallets and
-        contracts, embeds them via Ollama (``nomic-embed-text``), and stores
-        them in LanceDB collections. The first cycle always ingests (there is
-        no prior block marker); afterwards ingestion runs every
-        ``VECTOR_INGESTION_INTERVAL_BLOCKS`` blocks.
+        Delegates to :func:`lite_indexer.indexer._writers.maybe_run_vector_ingestion`,
+        which reads the freshly synced ``[from_block, to_block]`` range from
+        ClickHouse, embeds wallet/contract text via Ollama
+        (``nomic-embed-text``), and stores them in LanceDB collections. The
+        first cycle always ingests; afterwards ingestion runs every
+        ``VECTOR_INGESTION_INTERVAL_BLOCKS`` blocks. Best-effort — returns
+        None when the interval has not elapsed or ClickHouse is unavailable.
 
         Args:
             from_block: First block of the synced range.
@@ -647,41 +534,20 @@ class LiteIndexer:
 
         Returns:
             Stats dict (``wallets_indexed`` / ``contracts_indexed``) when
-            ingestion ran, or None when skipped (interval not elapsed or
-            ClickHouse unavailable).
+            ingestion ran, or None when skipped.
         """
-        last = self._last_vector_ingestion_block
-        if last is not None and to_block - last < VECTOR_INGESTION_INTERVAL_BLOCKS:
-            return None
-
-        client = self.ch_writer.client()
-        if client is None:
-            logger.warning("vector_ingestion_skipped_no_ch", chain=self.chain)
-            return None
-
-        from lite_indexer.vectors.ingestion import run_vector_ingestion
-        from lite_indexer.vectors.lance_store import LanceVectorStore
-
-        if self._vector_store is None:
-            self._vector_store = LanceVectorStore()
-
-        stats = await run_vector_ingestion(
-            self._vector_store,
-            client,
+        stats, store, last = await maybe_run_vector_ingestion(
             self.chain,
+            self._vector_store,
+            self.ch_writer,
+            self._last_vector_ingestion_block,
             from_block,
             to_block,
-            limit=VECTOR_INGESTION_BATCH_SIZE,
         )
-        self._last_vector_ingestion_block = to_block
-        logger.info(
-            "vector_ingestion_complete",
-            chain=self.chain,
-            from_block=from_block,
-            to_block=to_block,
-            wallets=stats["wallets_indexed"],
-            contracts=stats["contracts_indexed"],
-        )
+        if store is not None:
+            self._vector_store = store
+        if last is not None:
+            self._last_vector_ingestion_block = last
         return stats
 
     # ── Plugins ─────────────────────────────────────────────────────
@@ -1602,14 +1468,13 @@ class LiteIndexer:
         evm_strategy = self.strategy if isinstance(self.strategy, EVMChainStrategy) else None
         solana_strategy = self.strategy if isinstance(self.strategy, SolanaStrategy) else None
         tron_strategy = self.strategy if isinstance(self.strategy, TronStrategy) else None
-        if self.deployers_enabled and evm_strategy and evm_strategy._last_pair_events:
-            evm_strategy._last_pair_events = await self._enrich_timestamps(evm_strategy._last_pair_events)
-            deployer_written = await self.ch_writer.write_deployer_events(self.chain, evm_strategy._last_pair_events)
-            if deployer_written:
-                summary["deployer_events_written"] = deployer_written
-        elif self.deployers_enabled and solana_strategy and solana_strategy._last_deployer_events:
-            deployer_written = await self.ch_writer.write_solana_deployer_events(
-                self.chain, solana_strategy._last_deployer_events
+        if self.deployers_enabled:
+            deployer_written = await write_deployer_events(
+                self.chain,
+                evm_strategy,
+                solana_strategy,
+                self.ch_writer,
+                self._enrich_timestamps,
             )
             if deployer_written:
                 summary["deployer_events_written"] = deployer_written
@@ -1619,38 +1484,10 @@ class LiteIndexer:
         # deployer-event path. Best-effort: a write failure logs and keeps the
         # event buffered for the next cycle. Buffers are drained below.
         launch_written = 0
-        try:
-            if solana_strategy is not None:
-                sol_launch_events = solana_strategy._last_launch_events
-                solana_strategy._last_launch_events = []
-                for evt in sol_launch_events:
-                    try:
-                        await write_solana_launch(evt, self.ch_writer, self.nats_publisher)
-                        launch_written += 1
-                    except Exception as exc:  # noqa: BLE001 — best-effort
-                        logger.warning("solana_launch_write_failed", error=str(exc)[:100])
-                sol_bundle_events = solana_strategy._last_bundle_events
-                solana_strategy._last_bundle_events = []
-                for evt in sol_bundle_events:
-                    try:
-                        await write_bundle(evt, self.ch_writer, self.nats_publisher)
-                        launch_written += 1
-                    except Exception as exc:  # noqa: BLE001 — best-effort
-                        logger.warning("solana_bundle_write_failed", error=str(exc)[:100])
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            logger.warning("solana_launch_flush_failed", error=str(exc)[:100])
+        if solana_strategy is not None:
+            launch_written += await flush_solana_launch_bundles(solana_strategy, self.ch_writer, self.nats_publisher)
         if tron_strategy is not None:
-            tron_launch_events = tron_strategy._last_launch_events
-            tron_strategy._last_launch_events = []
-            for evt in tron_launch_events:
-                try:
-                    if isinstance(evt, TronPairEvent):
-                        await write_tron_pair(evt, self.ch_writer, self.nats_publisher)
-                    else:
-                        await write_tron_launch(evt, self.ch_writer, self.nats_publisher)
-                    launch_written += 1
-                except Exception as exc:  # noqa: BLE001 — best-effort
-                    logger.warning("tron_launch_write_failed", error=str(exc)[:100])
+            launch_written += await flush_tron_launch(tron_strategy, self.ch_writer, self.nats_publisher)
         if launch_written:
             summary["launch_events_written"] = launch_written
 
@@ -1658,19 +1495,8 @@ class LiteIndexer:
         # ClickHouse, which is the durable store). When disabled, recovery
         # is restart-from-state: at most one sync cycle is lost on crash
         # and re-fetched from RPC on the next cycle.
-        bytes_written = 0
         if self.ndjson_enabled and self._ndjson_writer is not None:
-            if events:
-                bytes_written = self._ndjson_writer.write_events(self.chain, events)
-                if bytes_written:
-                    summary["events_written_ndjson"] = len(events)
-                    summary["bytes_written"] = bytes_written
-
-            if dex_events:
-                dex_bytes = self._ndjson_writer.write_dex_events(self.chain, dex_events)
-                if dex_bytes:
-                    summary["dex_events_written_ndjson"] = len(dex_events)
-                    summary["dex_bytes_written"] = dex_bytes
+            write_ndjson(self._ndjson_writer, self.chain, events, dex_events, summary)
 
         # 7. Write ClickHouse via strategy
         # ch_available tracks whether ClickHouse is confirmed writable for
