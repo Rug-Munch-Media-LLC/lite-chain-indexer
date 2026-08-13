@@ -75,7 +75,17 @@ def get_transfers(
     date_sql, date_params = date_range_clause(start_date, end_date)
     base_params = {"address": wallet, **chain_params, **date_params}
 
-    if include_counterparty:
+    if chain and chain.strip().lower() == "solana":
+        # Solana transfers live in dedicated tables — SPL balance changes
+        # (summary mode) and trace-level solana_transfers (full mode). The
+        # EVM tables below are empty for chain='solana'.
+        if include_counterparty:
+            events = _solana_full_history(wallet, direction, chain_sql, date_sql, base_params, page_limit, page_offset)
+        else:
+            events = _solana_summary_history(
+                wallet, direction, chain_sql, date_sql, base_params, page_limit, page_offset
+            )
+    elif include_counterparty:
         events = _full_history(wallet, chain_sql, date_sql, base_params, page_limit, page_offset)
     else:
         events = _summary_history(wallet, direction, chain_sql, date_sql, base_params, page_limit, page_offset)
@@ -185,6 +195,105 @@ def _full_history(
             to_address=row["to_address"],
             token_address=row["token_address"],
             value=row["value"],
+            direction="out" if row["from_address"] == wallet else "in",
+        )
+        for row in rows
+    ]
+
+
+def _solana_summary_history(
+    wallet: str,
+    direction: str,
+    chain_sql: str,
+    date_sql: str,
+    base_params: dict[str, object],
+    limit: int,
+    offset: int,
+) -> list[TransferEvent]:
+    """Wallet history from SPL balance changes (fast, summary shape).
+
+    Reads ``solana_spl_balance_changes`` where the wallet is the token
+    account ``owner``. The per-account balance ``delta`` encodes
+    direction: positive = received (in), negative = sent (out). The
+    slot takes the role of ``block_number`` so the response keeps the
+    same sort shape as the EVM path; ``log_index`` has no Solana
+    equivalent and is 0.
+    """
+    direction_sql = ""
+    if direction == "in":
+        direction_sql = " AND toInt256(delta) > 0"
+    elif direction == "out":
+        direction_sql = " AND toInt256(delta) < 0"
+    sql = (
+        "SELECT chain, slot AS block_number, block_timestamp, tx_hash, "
+        "mint AS token_address, owner AS address, "
+        "if(toInt256(delta) < 0, 'out', 'in') AS direction, abs(toInt256(delta)) AS value "
+        "FROM wallet_memory.solana_spl_balance_changes "
+        f"WHERE owner = %(address)s{chain_sql}{date_sql}{direction_sql} "
+        "ORDER BY block_timestamp DESC, slot DESC "
+        f"LIMIT {limit} OFFSET {offset}"
+    )
+    rows = query(sql, base_params)
+    return [
+        TransferEvent(
+            chain=row["chain"],
+            block_number=row["block_number"],
+            block_timestamp=_fmt_ts(row["block_timestamp"]),
+            tx_hash=row["tx_hash"],
+            log_index=0,
+            from_address=row["address"] if row["direction"] == "out" else "",
+            to_address=row["address"] if row["direction"] == "in" else "",
+            token_address=row["token_address"],
+            value=str(row["value"]),
+            direction=row["direction"],
+        )
+        for row in rows
+    ]
+
+
+def _solana_full_history(
+    wallet: str,
+    direction: str,
+    chain_sql: str,
+    date_sql: str,
+    base_params: dict[str, object],
+    limit: int,
+    offset: int,
+) -> list[TransferEvent]:
+    """Wallet history from trace-level ``solana_transfers`` (full shape).
+
+    Rows carry real ``from_address`` / ``to_address`` / ``mint``. The
+    slot takes the role of ``block_number``; ``signature`` maps to
+    ``tx_hash`` and ``log_index`` is 0 (the trace table has no EVM-style
+    log index).
+    """
+    selects: list[str] = []
+    for addr_col, label in (("from_address", "out"), ("to_address", "in")):
+        if direction != "all" and direction != label:
+            continue
+        selects.append(
+            "SELECT chain, slot AS block_number, block_timestamp, "
+            "signature AS tx_hash, mint AS token_address, "
+            "from_address, to_address, amount AS value "
+            f"FROM wallet_memory.solana_transfers "
+            f"WHERE {addr_col} = %(address)s{chain_sql}{date_sql}"
+        )
+    if not selects:
+        return []
+    union = " UNION ALL ".join(selects)
+    sql = f"SELECT * FROM ({union}) ORDER BY block_timestamp DESC, block_number DESC LIMIT {limit} OFFSET {offset}"
+    rows = query(sql, base_params)
+    return [
+        TransferEvent(
+            chain=row["chain"],
+            block_number=row["block_number"],
+            block_timestamp=_fmt_ts(row["block_timestamp"]),
+            tx_hash=row["tx_hash"],
+            log_index=0,
+            from_address=row["from_address"],
+            to_address=row["to_address"],
+            token_address=row["token_address"],
+            value=str(row["value"]),
             direction="out" if row["from_address"] == wallet else "in",
         )
         for row in rows

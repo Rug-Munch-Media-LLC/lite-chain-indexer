@@ -78,10 +78,10 @@ TRACE_CONCURRENCY: int = int(os.environ.get("TRACE_CONCURRENCY", "2"))
 # ClickHouse table for internal-transfer rows.
 CH_TRACE_TABLE: str = "wallet_memory.internal_transfers"
 
-# ── Cross-Chain Forensics (lite_indexer.forensics) ─────────────────────
-# Read-side table references used by FundTracer. The main transfer table
-# is CH_TABLE above; these aliases keep the forensics package decoupled
-# from the writer's naming so either can evolve independently.
+# ── Cross-Chain Table References ───────────────────────────────────────
+# Read-side table references. The main transfer table is CH_TABLE above;
+# these aliases keep readers decoupled from the writer's naming so either
+# can evolve independently.
 CH_DATABASE: str = os.environ.get("CH_DATABASE") or os.environ.get("CLICKHOUSE_DATABASE") or "wallet_memory"
 CH_EVM_TRANSFERS_TABLE: str = os.environ.get("CH_EVM_TRANSFERS_TABLE") or CH_TABLE
 CH_INTERNAL_TRANSFERS_TABLE: str = os.environ.get("CH_INTERNAL_TRANSFERS_TABLE") or CH_TRACE_TABLE

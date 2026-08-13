@@ -132,6 +132,133 @@ def test_transfers_unknown_chain_returns_empty(client: TestClient) -> None:
     assert resp.json()["data"] == []
 
 
+def test_transfers_tron_served_from_evm_table(client: TestClient) -> None:
+    """Tron TRC20 rows live in evm_transfers, so chain=tron uses the EVM path."""
+    resp = client.get("/api/v1/transfers/0xwallet?chain=tron")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["data"][0]["chain"] == "ethereum"  # fixture row, shape is what matters
+    assert body["data"][0]["direction"] == "out"
+
+
+def test_transfers_solana_summary_maps_spl_rows(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    """chain=solana summary queries solana_spl_balance_changes and maps to TransferEvent."""
+    from datetime import datetime as dt
+
+    captured: dict[str, Any] = {}
+
+    def solana_fake_query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        captured["sql"] = sql
+        assert "solana_spl_balance_changes" in sql
+        assert params == {"address": "walletxyz", "chain": "solana"}
+        return [
+            {
+                "chain": "solana",
+                "block_number": 331_000_001,
+                "block_timestamp": dt(2026, 8, 13, 12, 0, 0),
+                "tx_hash": "sig123",
+                "token_address": "mint123",
+                "address": "walletxyz",
+                "direction": "in",
+                "value": 1_000_000_000,
+            },
+            {
+                "chain": "solana",
+                "block_number": 331_000_000,
+                "block_timestamp": dt(2026, 8, 13, 11, 59, 59),
+                "tx_hash": "sig124",
+                "token_address": "mint124",
+                "address": "walletxyz",
+                "direction": "out",
+                "value": 500_000_000,
+            },
+        ]
+
+    monkeypatch.setattr("api.routers.transfers.query", solana_fake_query)
+    resp = client.get("/api/v1/transfers/walletxyz?chain=solana")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["data"]) == 2
+    assert "solana_spl_balance_changes" in captured["sql"]
+    first, second = body["data"]
+    # in-row: to_address is the wallet side, value positive
+    assert first["chain"] == "solana"
+    assert first["block_number"] == 331_000_001
+    assert first["tx_hash"] == "sig123"
+    assert first["token_address"] == "mint123"
+    assert first["direction"] == "in"
+    assert first["to_address"] == "walletxyz"
+    assert first["from_address"] == ""
+    assert first["value"] == "1000000000"
+    assert first["log_index"] == 0
+    # out-row: from_address is the wallet side
+    assert second["direction"] == "out"
+    assert second["from_address"] == "walletxyz"
+    assert second["to_address"] == ""
+
+
+def test_transfers_solana_summary_direction_filter(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    """direction=out on the solana summary path filters to negative deltas."""
+    from datetime import datetime as dt
+
+    captured: dict[str, Any] = {}
+
+    def solana_fake_query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        captured["sql"] = sql
+        assert "toInt256(delta) < 0" in sql
+        return [
+            {
+                "chain": "solana",
+                "block_number": 1,
+                "block_timestamp": dt(2026, 8, 13, 12, 0, 0),
+                "tx_hash": "sig",
+                "token_address": "mint",
+                "address": "walletxyz",
+                "direction": "out",
+                "value": 5,
+            }
+        ]
+
+    monkeypatch.setattr("api.routers.transfers.query", solana_fake_query)
+    resp = client.get("/api/v1/transfers/walletxyz?chain=solana&direction=out")
+    assert resp.status_code == 200
+    assert resp.json()["data"][0]["direction"] == "out"
+
+
+def test_transfers_solana_full_maps_trace_rows(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    """chain=solana + include_counterparty queries solana_transfers (real from/to)."""
+    from datetime import datetime as dt
+
+    captured: dict[str, Any] = {}
+
+    def solana_trace_query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        captured["sql"] = sql
+        assert "solana_transfers" in sql
+        return [
+            {
+                "chain": "solana",
+                "block_number": 331_000_010,
+                "block_timestamp": dt(2026, 8, 13, 12, 0, 0),
+                "tx_hash": "sigTrace",
+                "token_address": "mintTrace",
+                "from_address": "walletxyz",
+                "to_address": "0xother",
+                "value": 1_000,
+            }
+        ]
+
+    monkeypatch.setattr("api.routers.transfers.query", solana_trace_query)
+    resp = client.get("/api/v1/transfers/walletxyz?chain=solana&include_counterparty=true")
+    assert resp.status_code == 200
+    assert "solana_transfers" in captured["sql"]
+    item = resp.json()["data"][0]
+    assert item["from_address"] == "walletxyz"
+    assert item["to_address"] == "0xother"
+    assert item["direction"] == "out"
+    assert item["token_address"] == "mintTrace"
+    assert item["value"] == "1000"
+
+
 def test_transfers_invalid_direction(client: TestClient) -> None:
     resp = client.get("/api/v1/transfers/0xwallet?direction=bogus")
     assert resp.status_code == 422

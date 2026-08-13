@@ -30,6 +30,7 @@ from lite_indexer.config import (
 from lite_indexer.logging import get_logger
 from lite_indexer.storage import ClickHouseWriter, NDJSONWriter
 from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrategy
+from lite_indexer.strategies.evm.launch import write_launch as write_evm_launch
 from lite_indexer.strategies.solana.bundles import write_bundle
 from lite_indexer.strategies.solana.launch import write_launch as write_solana_launch
 from lite_indexer.strategies.tron.launch import PairEvent as TronPairEvent
@@ -85,6 +86,7 @@ async def write_deployer_events(
     solana_strategy: SolanaStrategy | None,
     ch_writer: ClickHouseWriter,
     enrich: Callable[[list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]],
+    nats: Any | None = None,
 ) -> int:
     """Persist the buffered deployer events (EVM + Solana).
 
@@ -92,6 +94,15 @@ async def write_deployer_events(
     ``eth_getTransactionByHash`` before inserting, so enrichment is
     awaited. Solana deployer events are captured structurally by the
     strategy (creation tx fee payer) and written as-is.
+
+    EVM launch detection (audit 2026-08-14, MEDIUM): the same verified
+    pair/pool-creation events are mirrored into
+    ``wallet_memory.evm_launches`` via
+    :func:`lite_indexer.strategies.evm.launch.write_launch` so the
+    ``/api/v1/launches`` endpoint can surface EVM launches. Best-effort
+    per event, same lifecycle as the deployer write (per-batch, no
+    buffer drain — the strategy replaces ``_last_pair_events`` on every
+    fetch).
 
     Args:
         chain: Chain name (ClickHouse ``chain`` column).
@@ -102,6 +113,7 @@ async def write_deployer_events(
         ch_writer: Shared ClickHouse writer.
         enrich: Timestamp-enrichment callable (the indexer's
             ``_enrich_timestamps``) applied to EVM pair events.
+        nats: Optional NATS publisher (fan-out for EVM launches).
 
     Returns:
         Number of deployer rows written (0 when no buffer is pending).
@@ -110,6 +122,18 @@ async def write_deployer_events(
     if evm_strategy and evm_strategy._last_pair_events:
         evm_strategy._last_pair_events = await enrich(evm_strategy._last_pair_events)
         deployer_written = await ch_writer.write_deployer_events(chain, evm_strategy._last_pair_events)
+        # Minimal EVM launch detection: mirror the verified pair/pool
+        # creation events into evm_launches (best-effort, per event).
+        for evt in evm_strategy._last_pair_events:
+            try:
+                await write_evm_launch(chain, evt, ch_writer, nats)
+            except Exception as exc:  # noqa: BLE001 — launch write is best-effort
+                logger.warning(
+                    "evm_launch_write_failed",
+                    chain=chain,
+                    pair=evt.get("pair_address", "")[:16],
+                    error=str(exc)[:100],
+                )
     elif solana_strategy and solana_strategy._last_deployer_events:
         deployer_written = await ch_writer.write_solana_deployer_events(chain, solana_strategy._last_deployer_events)
     return deployer_written

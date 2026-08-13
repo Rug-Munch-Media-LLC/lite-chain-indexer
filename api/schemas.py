@@ -112,45 +112,51 @@ class StatusInfo(BaseModel):
     source: str = Field(description="ClickHouse version string")
 
 
-# ── Cross-chain forensics (api.routers.trace) ──────────────────────────
+class LaunchEvent(BaseModel):
+    """A token-launch event (Solana launchpad create, Tron SunPump/SunSwap, EVM pair/pool creation).
 
+    One row per launch. ``address`` is the token (mint for Solana, token
+    contract for EVM/Tron); ``dex`` is the venue the launch was detected
+    on (Solana ``venue``, Tron ``factory``/``event_type``, EVM factory
+    address). ``liquidity``/``mcap`` are reserved — the launch tables do
+    not track them yet, so they are always null.
+    """
 
-class TraceNodeOut(BaseModel):
-    """One address on one chain in a fund-trace graph."""
-
-    address: str
     chain: str
-    label: str = ""
-    entity_type: str = Field(default="", description="bridge | cex_hot_wallet | defi | mixer | scam | eoa | ...")
-    risk_score: float = Field(default=0.0, ge=0, le=1, description="0 (clean) .. 1 (high risk)")
-    is_scam: bool = False
-    first_seen: str = ""
-
-
-class TraceEdgeOut(BaseModel):
-    """One money movement between two trace nodes."""
-
-    from_address: str
-    to_address: str
-    tx_hash: str
-    chain: str
-    amount: str
-    token: str = ""
-    edge_type: str = Field(
-        default="transfer",
-        description="transfer | internal | swap | bridge_deposit | bridge_withdraw | cex_deposit",
+    address: str = Field(description="Token address (mint for Solana, token contract for EVM/Tron)")
+    symbol: str = ""
+    creator: str = ""
+    dex: str = ""
+    block_timestamp: str
+    age_seconds: int = Field(description="Seconds between the launch and the query time")
+    tx_hash: str = ""
+    event_type: str = ""
+    launch_signal: int = 0
+    graduation_signal: int = 0
+    confidence: str = ""
+    liquidity: float | None = Field(
+        default=None,
+        description="Reserved — not tracked by the launch tables yet (always null)",
     )
-    timestamp: str = ""
-    protocol: str = ""
-    confidence: float = Field(default=1.0, ge=0, le=1)
+    mcap: float | None = Field(
+        default=None,
+        description="Reserved — not tracked by the launch tables yet (always null)",
+    )
 
 
-class TraceGraphOut(BaseModel):
-    """Directed graph of fund movement."""
+class BundleEvent(BaseModel):
+    """A Jito bundled token launch on Solana (same-slot create + fresh-wallet buys + tip)."""
 
-    nodes: list[TraceNodeOut]
-    edges: list[TraceEdgeOut]
-    stats: dict[str, Any]
+    chain: str
+    slot: int
+    block_timestamp: str
+    create_tx_signature: str = Field(description="Token-create transaction signature")
+    tip_tx_signature: str = Field(description="Last tx of the run (carries the Jito tip)")
+    tip_account: str = Field(description="Jito tip account that received the tip")
+    mint: str = ""
+    buyer_count: int = Field(description="Distinct fresh-wallet buyers (lower bound)")
+    buyer_wallets: list[str] = Field(default_factory=list, description="Fresh buyer wallet addresses")
+    age_seconds: int = Field(description="Seconds between the bundle and the query time")
 
 
 class BridgeInteractionOut(BaseModel):

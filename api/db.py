@@ -67,6 +67,14 @@ ALLOWED_TABLES: frozenset[str] = frozenset(
         "bridge_mappings",
         "token_prices",
         "dex_ohlcv_hourly",
+        # Launch + bundle detection tables (migrations 007/008/009/011).
+        # Written by the launch/bundle strategies and read by
+        # /api/v1/launches and /api/v1/bundles (api/routers/launches.py)
+        # as well as raw /query.
+        "solana_launches",
+        "tron_launches",
+        "solana_bundles",
+        "evm_launches",
     }
 )
 
@@ -83,6 +91,11 @@ TABLE_ALIASES: dict[str, str] = {
     "holder_balance": "holder_balances",
     "token_meta": "token_meta_ref",
     "ohlcv": "dex_ohlcv_hourly",
+    "solana_launch": "solana_launches",
+    "tron_launch": "tron_launches",
+    "evm_launch": "evm_launches",
+    "bundle": "solana_bundles",
+    "bundles": "solana_bundles",
 }
 
 _local = threading.local()

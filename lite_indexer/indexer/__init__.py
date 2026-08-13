@@ -1475,6 +1475,7 @@ class LiteIndexer:
                 solana_strategy,
                 self.ch_writer,
                 self._enrich_timestamps,
+                nats=self.nats_publisher,
             )
             if deployer_written:
                 summary["deployer_events_written"] = deployer_written

@@ -27,7 +27,7 @@ from api import __version__
 from api.config import API_TITLE, API_VERSION, RATE_LIMIT_KEY_PREFIX, RATE_LIMIT_PER_MINUTE
 from api.db import get_historical
 from api.graphql import graphql_router
-from api.routers import deployers, search, stats, system, transfers, whales
+from api.routers import deployers, launches, search, stats, system, transfers, whales
 from api.routers import query as query_router
 from lite_indexer.config import WEBHOOK_MAX_PER_IP
 from lite_indexer.webhooks import router as webhooks
@@ -115,6 +115,7 @@ def create_app() -> FastAPI:
     app.include_router(transfers.router)
     app.include_router(deployers.router)
     app.include_router(whales.router)
+    app.include_router(launches.router)
     app.include_router(stats.router)
     app.include_router(search.router)
 
