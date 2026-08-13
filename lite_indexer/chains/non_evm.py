@@ -4,12 +4,12 @@ Non-EVM RPC endpoints — Solana and Tron.
 Solana uses JSON-RPC but with different methods (getSlot, etc.)
 These are NOT eth_getLogs endpoints — they're for Solana-native RPC calls.
 Tiers: T1=official/mainnet verified, T2=publicnode, T3=fallbacks.
-Tested 2026-07-30: getSlot, getSignaturesForAddress, getTransaction.
+Tested 2026-08-12: getSlot, getSignaturesForAddress, getTransaction.
 
 Tron uses REST API (TronGrid) for event queries and JSON-RPC for blocks.
 Only TronGrid (api.trongrid.io) supports the contract events API.
 Others are fallbacks for block queries only.
-Tested 2026-07-30: /wallet/getnowblock, /v1/contracts/*/events.
+Tested 2026-08-12: /wallet/getnowblock, /v1/contracts/*/events.
 """
 
 from __future__ import annotations

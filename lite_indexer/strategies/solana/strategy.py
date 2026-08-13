@@ -33,6 +33,8 @@ from lite_indexer.traces.solana import (
     write_solana_transfers,
 )
 
+from .bundles import detect_bundle
+from .launch import detect_launch
 from .models import MAX_SIGNATURES_PER_TOKEN, SOLANA_TRACKED_TOKENS, SOLANA_TX_CONCURRENCY
 from .parsing import parse_solana_transfer_events
 from .rpc import rpc_call
@@ -74,6 +76,13 @@ class SolanaStrategy(AbstractChainStrategy):
         # call). Rows are buffered here and written in write_clickhouse.
         self._trace_collector = SolanaTraceCollector()
         self._trace_rows: list[dict[str, Any]] = []
+        # Launch detection (Pump.fun/PumpSwap/Raydium/LaunchLab/LetsBonk) and
+        # Jito bundle detection: parsed from the same getTransaction results
+        # that feed SPL balance changes (no extra RPC). Buffered here and
+        # flushed in indexer.py's sync cycle. Best-effort — failures are
+        # contained and never abort the SPL write.
+        self._last_launch_events: list[Any] = []
+        self._last_bundle_events: list[Any] = []
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -373,6 +382,12 @@ class SolanaStrategy(AbstractChainStrategy):
             return [], True
 
         # Step 3: Fetch and parse each transaction
+        # Launch/bundle detection collects raw tx data per slot here so
+        # detect_bundle can run over all txs of a slot (bundled launches
+        # land create+buys in the same slot). asyncio is single-threaded,
+        # so the dict appends below are safe.
+        slot_txs: dict[int, list[dict[str, Any]]] = {}
+
         async def _fetch_and_parse(sig_info: dict[str, Any]) -> list[dict[str, Any]]:
             sig = sig_info["signature"]
             slot = int(sig_info["slot"])
@@ -392,6 +407,20 @@ class SolanaStrategy(AbstractChainStrategy):
                     if not tx_result or "result" not in tx_result or tx_result["result"] is None:
                         return []
                     tx_data = tx_result["result"]
+                    # Launch detection (best-effort): match Pump.fun/PumpSwap/
+                    # Raydium/LaunchLab/LetsBonk create instructions in the
+                    # already-fetched transaction — zero extra RPC cost.
+                    try:
+                        launch = detect_launch(tx_data)
+                        if launch is not None:
+                            self._last_launch_events.append(launch)
+                        slot_txs.setdefault(slot, []).append(tx_data)
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        logger.warning(
+                            "solana_launch_detect_failed",
+                            sig=sig[:20],
+                            error=str(exc)[:80],
+                        )
                     events = parse_solana_transfer_events(
                         tx_data,
                         slot,
@@ -435,6 +464,17 @@ class SolanaStrategy(AbstractChainStrategy):
         for outcome in outcomes:
             if isinstance(outcome, list):
                 events.extend(outcome)
+
+        # Jito bundle detection (best-effort): run over all txs of each slot
+        # collected during fetch. Bundled launches put create+buys in the
+        # same slot; detect_bundle needs the whole slot's tx set.
+        for slot, txs in slot_txs.items():
+            try:
+                bundle = detect_bundle(txs)
+                if bundle is not None:
+                    self._last_bundle_events.append(bundle)
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.warning("solana_bundle_detect_failed", slot=slot, error=str(exc)[:80])
 
         return events, True
 

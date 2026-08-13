@@ -21,6 +21,7 @@ point, so at most one sync cycle (~30s) is lost and re-fetched from RPC.
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import os
 import time
@@ -84,9 +85,21 @@ from lite_indexer.strategies import (
     SUPPORTED_CHAINS,
     EVMChainStrategy,
     SolanaStrategy,
+    TronStrategy,
     create_strategy,
 )
 from lite_indexer.strategies.base import AbstractChainStrategy
+from lite_indexer.strategies.solana.bundles import write_bundle
+from lite_indexer.strategies.solana.launch import write_launch as write_solana_launch
+from lite_indexer.strategies.tron.launch import (
+    PairEvent as TronPairEvent,
+)
+from lite_indexer.strategies.tron.launch import (
+    write_launch as write_tron_launch,
+)
+from lite_indexer.strategies.tron.launch import (
+    write_pair as write_tron_pair,
+)
 from lite_indexer.streaming import NATSPublisher
 from lite_indexer.webhooks import WebhookDelivery
 
@@ -377,6 +390,23 @@ class LiteIndexer:
         return self._strategy
 
     # ── Helpers ──────────────────────────────────────────────────────
+    def _save_current_state(self) -> None:
+        """Save current state without advancing (for error/pause paths).
+
+        Loads the current state file and re-saves it unchanged, so the
+        last_block and enabled_events persist across error/pause cycles.
+        This prevents state loss when sync_loop returns early due to
+        transient failures (CH unavailable, fetch failed, etc.).
+        """
+        try:
+            current = self.state.load()
+            last_block = current.get("last_block")
+            enabled_events = current.get("enabled_events")
+            if last_block is not None:
+                self.state.save(last_block, 0, enabled_events=enabled_events)
+                logger.debug("state_saved_current", chain=self.chain, last_block=last_block)
+        except Exception as exc:
+            logger.warning("state_save_current_failed", chain=self.chain, error=str(exc)[:100])
 
     def _is_evm(self) -> bool:
         """Check if this chain uses EVM strategy."""
@@ -1330,11 +1360,13 @@ class LiteIndexer:
         if not check_disk_cap(self.data_dir, self.disk_cap, exclude_patterns=disk_excludes):
             summary["status"] = "disk_cap_exceeded"
             summary["errors"].append("disk cap exceeded")
+            self._save_current_state()
             return summary
 
         if not check_disk_space():
             summary["status"] = "disk_full"
             summary["errors"].append("disk space critically low")
+            self._save_current_state()
             return summary
 
         # 2. Endpoint verification (EVM only — uses eth_getLogs probe)
@@ -1365,6 +1397,7 @@ class LiteIndexer:
         if result is None:
             summary["status"] = "no_endpoints"
             summary["errors"].append(f"no endpoints configured for {self.chain}")
+            self._save_current_state()
             return summary
 
         summary["endpoints_total"] = result.total
@@ -1425,6 +1458,7 @@ class LiteIndexer:
         # 2. Determine block range
         block_range = await self._determine_block_range(summary)
         if block_range is None:
+            self._save_current_state()
             return summary
         from_block, to_block = block_range
 
@@ -1443,14 +1477,15 @@ class LiteIndexer:
                 from_block=from_block,
                 to_block=to_block,
             )
+            self._save_current_state()
             return summary
 
         # 3. Fetch transfer events via strategy
         logger.info("sync_start", chain=self.chain, from_block=from_block, to_block=to_block)
 
         try:
-            events = await self.fetch_transfers(from_block, to_block)
-        except RpcFetchFailedError as exc:
+            events = await asyncio.wait_for(self.fetch_transfers(from_block, to_block), timeout=120.0)
+        except (TimeoutError, RpcFetchFailedError) as exc:
             # Data-loss guard: all endpoints failed for this range. Do NOT
             # advance state — the range is retried on the next cycle.
             logger.error(
@@ -1463,6 +1498,7 @@ class LiteIndexer:
             summary["status"] = "fetch_failed"
             summary["errors"].append(f"all endpoints failed for range {from_block}-{to_block}")
             summary["duration_seconds"] = time.monotonic() - start_time
+            self._save_current_state()
             return summary
 
         if events:
@@ -1475,6 +1511,7 @@ class LiteIndexer:
             self._reorg_recovery = True
             summary["status"] = "reorg_detected"
             summary["duration_seconds"] = time.monotonic() - start_time
+            self._save_current_state()
             return summary
 
         # 3b. Lazy indexing: apply top-chain defaults + scanner demand
@@ -1493,6 +1530,7 @@ class LiteIndexer:
                 self._reorg_recovery = True
                 summary["status"] = "reorg_detected"
                 summary["duration_seconds"] = time.monotonic() - start_time
+                self._save_current_state()
                 return summary
             summary["dex_events_fetched"] = len(dex_events)
 
@@ -1563,6 +1601,7 @@ class LiteIndexer:
         deployer_written = 0
         evm_strategy = self.strategy if isinstance(self.strategy, EVMChainStrategy) else None
         solana_strategy = self.strategy if isinstance(self.strategy, SolanaStrategy) else None
+        tron_strategy = self.strategy if isinstance(self.strategy, TronStrategy) else None
         if self.deployers_enabled and evm_strategy and evm_strategy._last_pair_events:
             evm_strategy._last_pair_events = await self._enrich_timestamps(evm_strategy._last_pair_events)
             deployer_written = await self.ch_writer.write_deployer_events(self.chain, evm_strategy._last_pair_events)
@@ -1574,6 +1613,46 @@ class LiteIndexer:
             )
             if deployer_written:
                 summary["deployer_events_written"] = deployer_written
+
+        # 5c. Write launch + Jito bundle events (Solana + Tron). Each write
+        # function persists to ClickHouse AND fans out to NATS, mirroring the
+        # deployer-event path. Best-effort: a write failure logs and keeps the
+        # event buffered for the next cycle. Buffers are drained below.
+        launch_written = 0
+        try:
+            if solana_strategy is not None:
+                sol_launch_events = solana_strategy._last_launch_events
+                solana_strategy._last_launch_events = []
+                for evt in sol_launch_events:
+                    try:
+                        await write_solana_launch(evt, self.ch_writer, self.nats_publisher)
+                        launch_written += 1
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        logger.warning("solana_launch_write_failed", error=str(exc)[:100])
+                sol_bundle_events = solana_strategy._last_bundle_events
+                solana_strategy._last_bundle_events = []
+                for evt in sol_bundle_events:
+                    try:
+                        await write_bundle(evt, self.ch_writer, self.nats_publisher)
+                        launch_written += 1
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        logger.warning("solana_bundle_write_failed", error=str(exc)[:100])
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning("solana_launch_flush_failed", error=str(exc)[:100])
+        if tron_strategy is not None:
+            tron_launch_events = tron_strategy._last_launch_events
+            tron_strategy._last_launch_events = []
+            for evt in tron_launch_events:
+                try:
+                    if isinstance(evt, TronPairEvent):
+                        await write_tron_pair(evt, self.ch_writer, self.nats_publisher)
+                    else:
+                        await write_tron_launch(evt, self.ch_writer, self.nats_publisher)
+                    launch_written += 1
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    logger.warning("tron_launch_write_failed", error=str(exc)[:100])
+        if launch_written:
+            summary["launch_events_written"] = launch_written
 
         # 6. Write NDJSON (gated by NDJSON_ENABLED — redundant with
         # ClickHouse, which is the durable store). When disabled, recovery
@@ -1620,6 +1699,7 @@ class LiteIndexer:
                 )
                 summary["status"] = "ch_write_failed"
                 summary["duration_seconds"] = time.monotonic() - start_time
+                self._save_current_state()
                 return summary
 
             # 7a. Wallet-access optimizations — address-first projections,

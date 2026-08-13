@@ -66,20 +66,11 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       1rpc.io/eth (usage limit) were tested 2026-08-05 and failed
     #       the eth_blockNumber probe — not added.
     "ethereum": [
-        "https://eth.api.onfinality.io/public",  # T1 — onfinality (verified, fast)
-        "https://eth-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",  # T2 — nodereal public
-        "https://eth-pokt.nodies.app",  # T2 — nodies (50-block getLogs cap, verified 2026-08-05)
-        "https://eth.drpc.org",  # T3 — drpc.org (degraded, fallback)
-        "https://rpc.flashbots.net",  # T3 — flashbots (degraded, fallback)
-        "https://rpc.mevblocker.io",  # T3 — mevblocker (10k getLogs cap, verified 2026-08-05)
-        "https://ethereum-rpc.publicnode.com",  # T3 — publicnode (blockNumber verified; getLogs needs archive token)
-        # T4: API-key free tiers (set env vars to activate)
-        "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (300M CU/mo, 10-block getLogs cap)
-        "https://eth.getblock.io/mainnet/?api_key=${GETBLOCK_KEY}",  # T4 — GetBlock free (40K req/day)
-        "https://ethereum-mainnet.core.chainstack.com/${CHAINSTACK_KEY}",  # T4 — Chainstack free
-        "https://${QUICKNODE_ENDPOINT}",  # T4 — QuickNode free
-        "https://eth-mainnet.public.blastapi.io",  # T5 — blastapi (10-block cap, verified 2026-08-05)
-        "https://eth.merkle.io",  # T5 — merkle (blockNumber verified; getLogs -32601)
+        "https://eth.api.onfinality.io/public",
+        "https://eth-pokt.nodies.app",
+        "https://eth.drpc.org",
+        "https://rpc.mevblocker.io",
+        "https://rpc.flashbots.net",
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -88,11 +79,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # NOTE: publicnode (needs address filter) and blastapi (HTTP400) do not
     #       serve topic-only eth_getLogs on free tier and were removed.
     "base": [
-        "https://base.gateway.tenderly.co",  # T1 — tenderly (verified, fast)
-        "https://mainnet.base.org",  # T1 — official (verified)
-        "https://base.drpc.org",  # T2 — drpc.org (verified)
-        "https://1rpc.io/base",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
-        "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
+        "https://base.gateway.tenderly.co",
+        "https://mainnet.base.org",
+        "https://base.drpc.org",
     ],
     # ── BSC (8 endpoints) ─────────────────────────────────────────────
     # T1: nodereal public, 48.club (live-verified 2026-08-04 with the
@@ -135,12 +124,10 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       limit), rpc.ankr.com/polygon (unauthorized) probed and
     #       rejected — publicnode added as T3 fallback instead.
     "polygon": [
-        "https://polygon.gateway.tenderly.co",  # T1 — tenderly (verified)
-        "https://polygon.drpc.org",  # T1 — drpc.org (verified)
-        "https://polygon-mainnet.gateway.tatum.io",  # T2 — tatum (audit-verified on polygon)
-        "https://rpc-mainnet.matic.quiknode.pro",  # T2 — quiknode public (verified eth_getLogs)
-        "https://polygon-bor.publicnode.com",  # T3 — publicnode (blockNumber verified; getLogs needs address filter)
-        "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
+        "https://polygon.gateway.tenderly.co",
+        "https://polygon.drpc.org",
+        "https://polygon-mainnet.gateway.tatum.io",
+        "https://rpc-mainnet.matic.quiknode.pro",
     ],
     # ── Arbitrum (6 endpoints) ────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)
@@ -154,12 +141,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       limit), rpc.ankr.com/arbitrum (unauthorized) probed and
     #       rejected — publicnode + meowrpc added as T3 fallbacks.
     "arbitrum": [
-        "https://arbitrum.gateway.tenderly.co",  # T1 — tenderly (verified, fast)
-        "https://arbitrum.drpc.org",  # T1 — drpc.org (verified)
-        "https://arb1.arbitrum.io/rpc",  # T2 — official (verified)
-        "https://arbitrum-one.publicnode.com",  # T3 — publicnode (blockNumber verified; getLogs needs archive token)
-        "https://arbitrum.meowrpc.com",  # T3 — meowrpc (blockNumber verified; getLogs unsupported)
-        "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
+        "https://arbitrum.gateway.tenderly.co",
+        "https://arbitrum.drpc.org",
+        "https://arb1.arbitrum.io/rpc",
     ],
     # ── Optimism (4 endpoints) ────────────────────────────────────────
     # T1: tenderly (verified)
@@ -167,10 +151,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #     drpc.org (verified 2026-08-03)
     # T4: alchemy
     "optimism": [
-        "https://optimism.gateway.tenderly.co",  # T1 — tenderly (verified)
-        "https://mainnet.optimism.io",  # T2 — official (verified)
-        "https://optimism.drpc.org",  # T2 — drpc.org (verified 2026-08-03)
-        "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
+        "https://optimism.gateway.tenderly.co",
+        "https://mainnet.optimism.io",
+        "https://optimism.drpc.org",
     ],
     # ── Avalanche (4 endpoints) ───────────────────────────────────────
     # T1: official api.avax.network, drpc.org (verified)
@@ -239,9 +222,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T1: official rpc.gnosischain.com, drpc.org (verified)
     # T2: tenderly gateway (verified 2026-08-03)
     "gnosis": [
-        "https://rpc.gnosischain.com",  # T1 — official (verified)
-        "https://gnosis.drpc.org",  # T1 — drpc.org (verified)
-        "https://gnosis.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
+        "https://rpc.gnosischain.com",
+        "https://gnosis.drpc.org",
+        "https://gnosis.gateway.tenderly.co",
     ],
     # ── Celo (3 endpoints) ────────────────────────────────────────────
     # T1: official forno.celo.org, ankr.com/celo (verified — only working ankr)
@@ -331,32 +314,48 @@ GET_LOGS_ENDPOINTS = {chain: _resolved_endpoints(urls) for chain, urls in GET_LO
 LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
     "ethereum": [
         "https://eth.api.onfinality.io/public",
-        "https://eth-mainnet.public.blastapi.io",
         "https://eth-pokt.nodies.app",
         "https://eth.drpc.org",
         "https://rpc.mevblocker.io",
         "https://rpc.flashbots.net",
     ],
-    "base": ["https://mainnet.base.org", "https://base.drpc.org"],
+    "base": [
+        "https://base.gateway.tenderly.co",
+        "https://mainnet.base.org",
+        "https://base.drpc.org",
+    ],
     "bsc": [
         "https://rpc-bsc.48.club",
         "https://bsc-dataseed.binance.org",
         "https://bsc-dataseed1.defibit.io",
     ],
     "polygon": [
+        "https://polygon.gateway.tenderly.co",
         "https://polygon.drpc.org",
+        "https://polygon-mainnet.gateway.tatum.io",
         "https://rpc-mainnet.matic.quiknode.pro",
-        "https://polygon-bor.publicnode.com",
     ],
-    "arbitrum": ["https://arb1.arbitrum.io/rpc", "https://arbitrum.drpc.org", "https://arbitrum-one.publicnode.com"],
-    "optimism": ["https://mainnet.optimism.io", "https://optimism.drpc.org"],
+    "arbitrum": [
+        "https://arbitrum.gateway.tenderly.co",
+        "https://arbitrum.drpc.org",
+        "https://arb1.arbitrum.io/rpc",
+    ],
+    "optimism": [
+        "https://optimism.gateway.tenderly.co",
+        "https://mainnet.optimism.io",
+        "https://optimism.drpc.org",
+    ],
     "avalanche": ["https://api.avax.network/ext/bc/C/rpc"],
     "fantom": ["https://rpc.fantom.network"],
     "linea": ["https://rpc.linea.build", "https://linea.drpc.org"],
     "scroll": ["https://rpc.scroll.io", "https://scroll.drpc.org"],
     "zksync": ["https://mainnet.era.zksync.io"],
     "mantle": ["https://rpc.mantle.xyz"],
-    "gnosis": ["https://rpc.gnosischain.com", "https://gnosis.drpc.org"],
+    "gnosis": [
+        "https://rpc.gnosischain.com",
+        "https://gnosis.drpc.org",
+        "https://gnosis.gateway.tenderly.co",
+    ],
     "celo": ["https://forno.celo.org"],
 }
 

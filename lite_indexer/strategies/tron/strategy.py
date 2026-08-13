@@ -21,6 +21,12 @@ from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcFetchFailedError
 from lite_indexer.strategies.base import AbstractChainStrategy
 
+from .launch import (
+    SUNPUMP_CONTRACT,
+    SUNSWAP_FACTORY,
+    detect_sunpump_launch,
+    detect_sunswap_pair,
+)
 from .models import TRC20_TOKENS, TRON_MAX_BLOCK_RANGE
 from .parsing import parse_tron_transfer_event
 from .rpc import tron_get, tron_get_with_range, tron_post
@@ -49,6 +55,9 @@ class TronStrategy(AbstractChainStrategy):
         super().__init__(chain)
         self.tokens = tokens or TRC20_TOKENS
         self._client: httpx.AsyncClient | None = None
+        # Launch detection (SunPump TokenCreate + SunSwap PairCreated):
+        # buffered here, flushed in indexer.py's sync cycle. Best-effort.
+        self._last_launch_events: list[Any] = []
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -263,7 +272,77 @@ class TronStrategy(AbstractChainStrategy):
         if len(deduped) < len(all_events):
             logger.debug("tron_dedup_removed", chain=self.chain, count=len(all_events) - len(deduped))
 
+        # Launch detection (best-effort): poll SunPump + SunSwap factory for
+        # TokenCreate / PairCreated events in the same block window. Results
+        # are buffered in self._last_launch_events and flushed in the sync
+        # cycle. Failures are contained — launch detection never blocks or
+        # aborts transfer indexing.
+        try:
+            await self._fetch_launch_events(min_ts, max_ts)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning("tron_launch_poll_failed", error=str(exc)[:80])
+
         return deduped
+
+    async def _fetch_launch_events(
+        self,
+        min_ts: int,
+        max_ts: int,
+    ) -> None:
+        """Poll SunPump + SunSwap factory for launch events (best-effort).
+
+        Maps TronGrid polled events into EVM-style receipts
+        (``{"logs": [{address, topics, data, transactionHash, blockNumber,
+        logIndex, blockTimestamp}]}``) and runs the launch/pair detectors,
+        buffering results in ``self._last_launch_events``. Tron has no
+        WebSocket events — this is polling-only (protocol constraint).
+        """
+        launch_contracts = (
+            (SUNPUMP_CONTRACT, "sunpump"),
+            (SUNSWAP_FACTORY, "sunswap"),
+        )
+        for address, name in launch_contracts:
+            try:
+                result = await self._get(
+                    f"/v1/contracts/{address}/events",
+                    {
+                        "min_block_timestamp": min_ts,
+                        "max_block_timestamp": max_ts,
+                        "only_confirmed": "true",
+                        "limit": 200,
+                        "order_by": "block_timestamp,asc",
+                    },
+                )
+                if not result:
+                    continue
+                raw_events = result.get("data") or []
+                for raw in raw_events if isinstance(raw_events, list) else []:
+                    if not isinstance(raw, dict):
+                        continue
+                    receipt = {
+                        "logs": [
+                            {
+                                "address": raw.get("address", address),
+                                "topics": raw.get("topics") or [],
+                                "data": raw.get("data", ""),
+                                "transactionHash": raw.get("transaction_id", ""),
+                                "blockNumber": raw.get("block_number", 0),
+                                "logIndex": raw.get("event_index", 0),
+                                "blockTimestamp": raw.get("block_timestamp", 0),
+                            }
+                        ]
+                    }
+                    evt = detect_sunpump_launch(receipt)
+                    if evt is None:
+                        evt = detect_sunswap_pair(receipt)
+                    if evt is not None:
+                        self._last_launch_events.append(evt)
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    "tron_launch_contract_poll_failed",
+                    contract=name,
+                    error=str(exc)[:80],
+                )
 
     async def _fetch_token_events(
         self,

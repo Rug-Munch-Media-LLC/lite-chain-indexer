@@ -149,6 +149,8 @@ class NATSPublisher:
         "evm_transfer": "chain.{chain}.transfer",
         "dex_swap": "chain.{chain}.dex.swap",
         "deployer_event": "chain.{chain}.deploy",
+        "launch": "chain.{chain}.launch",
+        "jito_bundle": "chain.{chain}.bundle",
         "whale_alert": "alerts.whale.{chain}",
     }
 
