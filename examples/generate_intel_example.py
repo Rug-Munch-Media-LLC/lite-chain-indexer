@@ -1,5 +1,10 @@
 """Generate the wallet intelligence example report against a live ClickHouse.
 
+[DEPRECATED] The wallet-intel package (``lite_indexer.intel``) was removed
+from the indexer in abaf431 — this script imports a module that no longer
+exists and will fail with ImportError. Kept as a historical reference only.
+See AUDIT-2026-08-14.md before running.
+
 Reads ClickHouse connection from env (CH_HOST/CH_PORT/CH_USER/CH_PASSWORD/
 CH_DATABASE, defaulting to localhost + wallet_memory) and writes:
 
@@ -41,9 +46,7 @@ def ch_query(sql: str, params: dict | None = None) -> list[dict]:
         database=os.getenv("CH_DATABASE", "wallet_memory"),
         connect_timeout=5,
     )
-    rows, column_types = client.execute(
-        sql, params or {}, with_column_types=True, settings={"max_execution_time": 30}
-    )
+    rows, column_types = client.execute(sql, params or {}, with_column_types=True, settings={"max_execution_time": 30})
     columns = [name for name, _ in column_types]
     return [dict(zip(columns, row, strict=True)) for row in rows]
 
@@ -75,7 +78,7 @@ async def main() -> None:
 
     dest = Path(__file__).resolve().parent / "intel_report_example.json"
     dest.write_text(json.dumps(out, indent=2, default=str))
-    print(f"wrote {dest} ({dest.stat().st_size} bytes)")
+    print(f"wrote {dest} ({dest.stat().st_size} bytes)")  # noqa: T201 — example output
 
 
 if __name__ == "__main__":

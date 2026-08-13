@@ -16,12 +16,10 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from lite_indexer.rpc.throttle import (
-    RATE_TRACKER,
     RPCRateTracker,
     extract_rate_limit,
     record_rpc_response,
@@ -66,12 +64,10 @@ class TestExtractRateLimit:
         assert info["retry_after"] == 60.0
 
     def test_retry_after_http_date(self):
-        import email.utils
         import datetime
+        import email.utils
 
-        future = email.utils.format_datetime(
-            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=45)
-        )
+        future = email.utils.format_datetime(datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=45))
         info = extract_rate_limit({"retry-after": future})
         assert info["retry_after"] is not None
         assert 40 <= info["retry_after"] <= 50
@@ -253,17 +249,17 @@ class TestPersistence:
 class TestModuleWrappers:
     @pytest.mark.asyncio
     async def test_throttle_before_returns_without_wait_when_open(self):
-        from lite_indexer.rpc.throttle import RATE_TRACKER as current_tracker
+        from lite_indexer.rpc.throttle import RATE_TRACKER
 
-        current_tracker.reset()
+        RATE_TRACKER.reset()
         await throttle_before("https://open.example", "eth_blockNumber")
 
     def test_record_response_updates_tracker(self):
-        from lite_indexer.rpc.throttle import RATE_TRACKER as current_tracker
+        from lite_indexer.rpc.throttle import RATE_TRACKER
 
-        current_tracker.reset()
+        RATE_TRACKER.reset()
         record_rpc_response("https://wrap.example", "eth_getLogs", 429, {"Retry-After": "5"})
-        assert current_tracker.state_for("https://wrap.example")["in_backoff"] is True
+        assert RATE_TRACKER.state_for("https://wrap.example")["in_backoff"] is True
 
     def test_rate_tracker_is_singleton(self):
         import lite_indexer.rpc as pkg

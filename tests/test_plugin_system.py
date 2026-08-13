@@ -390,7 +390,7 @@ def test_ensure_plugin_tables_generates_ddl(monkeypatch) -> None:  # type: ignor
     from unittest.mock import MagicMock
 
     from lite_indexer.indexer import LiteIndexer
-    from lite_indexer.plugin.base import PluginManifest, EventSpec, ContractSpec, PluginSchema
+    from lite_indexer.plugin.base import ContractSpec, EventSpec, PluginManifest, PluginSchema
 
     # Fabricate a minimal plugin-manifest that carries a schema.
     manifest = PluginManifest(
@@ -416,11 +416,11 @@ def test_ensure_plugin_tables_generates_ddl(monkeypatch) -> None:  # type: ignor
         ),
     )
 
-    FakePlugin = type("FakePlugin", (), {"name": "test_plugin", "manifest": manifest})
+    fake_plugin = type("fake_plugin", (), {"name": "test_plugin", "manifest": manifest})
 
     # Create LiteIndexer with a known chain.
     idx = LiteIndexer(chain="ethereum")
-    idx._plugins = [FakePlugin()]  # type: ignore[list-item]
+    idx._plugins = [fake_plugin()]  # type: ignore[list-item]
 
     mock_client = MagicMock()
     mock_client.execute.return_value = None
@@ -447,7 +447,7 @@ def test_ensure_plugin_tables_no_schema_is_skipped(monkeypatch) -> None:  # type
     from unittest.mock import MagicMock
 
     from lite_indexer.indexer import LiteIndexer
-    from lite_indexer.plugin.base import PluginManifest, EventSpec, ContractSpec
+    from lite_indexer.plugin.base import ContractSpec, EventSpec, PluginManifest
 
     manifest = PluginManifest(
         name="no_schema_plugin",
@@ -468,10 +468,10 @@ def test_ensure_plugin_tables_no_schema_is_skipped(monkeypatch) -> None:  # type
         schema=None,
     )
 
-    FakePlugin = type("FakePlugin", (), {"name": "no_schema_plugin", "manifest": manifest})
+    fake_plugin = type("fake_plugin", (), {"name": "no_schema_plugin", "manifest": manifest})
 
     idx = LiteIndexer(chain="ethereum")
-    idx._plugins = [FakePlugin()]  # type: ignore[list-item]
+    idx._plugins = [fake_plugin()]  # type: ignore[list-item]
 
     mock_client = MagicMock()
     idx.ch_writer._client = mock_client  # type: ignore[attr-defined]
@@ -486,7 +486,7 @@ def test_ensure_plugin_tables_no_schema_is_skipped(monkeypatch) -> None:  # type
 def test_ensure_plugin_tables_no_clickhouse_skips_gracefully(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """When ClickHouse is unavailable, _ensure_plugin_tables skips without error."""
     from lite_indexer.indexer import LiteIndexer
-    from lite_indexer.plugin.base import PluginManifest, EventSpec, ContractSpec, PluginSchema
+    from lite_indexer.plugin.base import ContractSpec, EventSpec, PluginManifest, PluginSchema
 
     manifest = PluginManifest(
         name="test_plugin",
@@ -510,10 +510,10 @@ def test_ensure_plugin_tables_no_clickhouse_skips_gracefully(monkeypatch) -> Non
         ),
     )
 
-    FakePlugin = type("FakePlugin", (), {"name": "test_plugin", "manifest": manifest})
+    fake_plugin = type("fake_plugin", (), {"name": "test_plugin", "manifest": manifest})
 
     idx = LiteIndexer(chain="ethereum")
-    idx._plugins = [FakePlugin()]  # type: ignore[list-item]
+    idx._plugins = [fake_plugin()]  # type: ignore[list-item]
 
     # Patch client() to return None (ClickHouse unavailable).
     def _fake_client():

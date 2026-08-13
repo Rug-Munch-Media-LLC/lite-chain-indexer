@@ -18,7 +18,6 @@ Hermetic — no ClickHouse, no RPC, no network.
 
 from __future__ import annotations
 
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -165,7 +164,6 @@ class TestMemoryGate:
 
     def test_gate_closes_over_threshold(self):
         from lite_indexer.indexer import MemoryGate
-        from lite_indexer.indexer import get_process_rss_mb
 
         with patch("lite_indexer.indexer.get_process_rss_mb", return_value=9999):
             gate = MemoryGate(high_mb=1024)

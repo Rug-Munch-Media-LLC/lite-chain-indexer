@@ -16,6 +16,7 @@ Install::
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from lite_indexer.plugin import BasePlugin, DecodedEvent, PluginContext
@@ -53,11 +54,9 @@ class NFTTransfersPlugin(BasePlugin):
         if client is None:
             return
 
-        try:
+        # Best-effort — never break the sync loop.
+        with contextlib.suppress(Exception):
             client.execute(
                 "INSERT INTO nft_transfers (sender, receiver, token_id, _block_number, _tx_hash, _timestamp) VALUES",
                 [row],
             )
-        except Exception:
-            # Best-effort — never break the sync loop.
-            pass

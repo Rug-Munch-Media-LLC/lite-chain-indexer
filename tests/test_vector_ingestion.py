@@ -305,7 +305,7 @@ async def test_interval_gating_runs_when_elapsed(tmp_path) -> None:
         def client(self) -> FakeCHClient:
             return FakeCHClient()
 
-    setattr(indexer, "_ch_writer", FakeWriter())
+    indexer._ch_writer = FakeWriter()
     indexer._vector_store = LanceVectorStore(path=str(tmp_path / "lance"), embedder=FakeEmbedder())
 
     # 1105 - 1000 = 105 >= interval (100) → pipeline runs and the marker
