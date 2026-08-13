@@ -27,7 +27,7 @@ from api import __version__
 from api.config import API_TITLE, API_VERSION, RATE_LIMIT_KEY_PREFIX, RATE_LIMIT_PER_MINUTE
 from api.db import get_historical
 from api.graphql import graphql_router
-from api.routers import deployers, intel, search, stats, system, trace, transfers, whales
+from api.routers import deployers, search, stats, system, transfers, whales
 from api.routers import query as query_router
 from lite_indexer.config import WEBHOOK_MAX_PER_IP
 from lite_indexer.webhooks import router as webhooks
@@ -121,17 +121,6 @@ def create_app() -> FastAPI:
     # Raw SQL is expensive — stricter per-IP limit.
     query_router.post_query = limiter.limit("30/minute")(query_router.post_query)
     app.include_router(query_router.router)
-
-    # Fund tracing fans out over many queries — stricter per-IP limit.
-    trace.trace_tx = limiter.limit("10/minute")(trace.trace_tx)  # type: ignore[no-untyped-call]
-    trace.trace_backward_address = limiter.limit("10/minute")(trace.trace_backward_address)  # type: ignore[no-untyped-call]
-    trace.bridge_usage = limiter.limit("20/minute")(trace.bridge_usage)  # type: ignore[no-untyped-call]
-    trace.cex_deposits = limiter.limit("20/minute")(trace.cex_deposits)  # type: ignore[no-untyped-call]
-    trace.cross_chain_path = limiter.limit("10/minute")(trace.cross_chain_path)  # type: ignore[no-untyped-call]
-    app.include_router(trace.router)
-
-    # Wallet intelligence — rate-limited per-IP.
-    app.include_router(intel.router)
 
     # Webhook management — registrations are the only mutating endpoint,
     # capped per IP (default 10/hour) to bound abuse surface.
