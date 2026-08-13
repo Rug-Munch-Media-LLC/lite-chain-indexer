@@ -2,11 +2,12 @@
 Tests for the webhook delivery platform (lite_indexer.webhooks).
 
 Covers:
-  1. NATS subject matching + event/chain parsing + HMAC signing
+  1. NATS subject matching + event/chain parsing + Standard-Webhooks signing
   2. SQLite store CRUD (subscriptions + delivery log)
   3. WebhookDelivery subscribe / unsubscribe / list
-  4. deliver(): success, non-2xx retry, transport-error retry,
-     signature headers, budget exhaustion
+  4. deliver(): success, Standard-Webhooks signature headers, DLQ parking
+     on failure, Svix-schedule retries via the DLQ worker, dead-lettering,
+     budget exhaustion
   5. NATS start/stop lifecycle with a fake connection
   6. Indexer wiring (webhook_delivery property + lazy start)
   7. API endpoints (register, list, delete, logs, validation)
@@ -21,6 +22,7 @@ import hashlib
 # mypy: disable-error-code="no-untyped-def"
 import hmac
 import time
+from collections import Counter
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -30,7 +32,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from lite_indexer.webhooks import WebhookDelivery
-from lite_indexer.webhooks.delivery import _parse_subject, _sign
+from lite_indexer.webhooks.delivery import _parse_subject, _sign, verify_signature
 from lite_indexer.webhooks.storage import WebhookStore, _subject_matches
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -46,9 +48,10 @@ def _make_delivery(
     timeout: float = 10.0,
     clock: Any = time.monotonic,
     enabled: bool = True,
+    worker: bool = False,
 ) -> WebhookDelivery:
     store = WebhookStore(tmp_path / "webhooks.db")
-    return WebhookDelivery(
+    delivery = WebhookDelivery(
         enabled=enabled,
         store=store,
         max_retries=max_retries,
@@ -58,16 +61,27 @@ def _make_delivery(
         transport=transport,
         clock=clock,
     )
+    if worker:
+        # Simulate a live DLQ worker: retries are driven explicitly via
+        # _retry_entry() instead of auto-scheduled background tasks, so
+        # the retry tests are deterministic.
+        delivery._worker_running = True
+    return delivery
 
 
 def _echo_handler(secret: str = ""):
-    """MockTransport handler that verifies headers + signature and returns 200."""
+    """MockTransport handler that verifies the Standard-Webhooks signature
+    headers (webhook-id / webhook-timestamp / webhook-signature: v1,<b64>)
+    with the reference verifier and returns 200."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        sig = request.headers.get("X-LCI-Signature", "")
-        assert sig.startswith("sha256=")
-        expected = hmac.new(secret.encode(), request.content, hashlib.sha256).hexdigest()
-        assert sig == f"sha256={expected}"
+        webhook_id = request.headers.get("webhook-id", "")
+        timestamp = request.headers.get("webhook-timestamp", "")
+        signature = request.headers.get("webhook-signature", "")
+        assert webhook_id, "missing webhook-id header"
+        assert timestamp, "missing webhook-timestamp header"
+        assert signature.startswith("v1,"), "missing v1 signature token"
+        assert verify_signature(request.content, webhook_id, timestamp, signature, [secret])
         assert request.headers["X-LCI-Event"]
         assert request.headers["X-LCI-Chain"]
         return httpx.Response(200, json={"received": True})
@@ -283,49 +297,85 @@ class TestDeliver:
 
     async def test_deliver_retries_non_2xx_then_succeeds(self, tmp_path):
         transport = httpx.MockTransport(_status_handler([500, 500, 200]))
-        delivery = _make_delivery(tmp_path, transport=transport)
+        delivery = _make_delivery(tmp_path, transport=transport, worker=True)
         await delivery.subscribe("https://hook.example.com/ev", ["chain.ethereum.transfer"])
 
-        with patch("lite_indexer.webhooks.delivery.asyncio.sleep", new=AsyncMock()):
-            results = await delivery.deliver("chain.ethereum.transfer", b"{}")
-        assert results == [True]
+        # The initial POST fails (500) — deliver() reports only the first
+        # attempt; the message is parked in the DLQ for the worker to retry.
+        results = await delivery.deliver("chain.ethereum.transfer", b"{}")
+        assert results == [False]
+
+        due = delivery._dlq_due_rows(time.time())
+        assert len(due) == 1  # exactly one message parked for retry
+        entry_id = str(due[0]["id"])
+
+        # The DLQ worker drains due entries: one more 500, then 200.
+        await delivery._retry_entry(entry_id)
+        await delivery._retry_entry(entry_id)
 
         sub_id = delivery.list_subscriptions()[0].id
         log = delivery.delivery_log(sub_id)
-        # delivery_log returns newest-first.
-        assert [a.status for a in log] == ["success", "failed", "failed"]
+        assert Counter(a.status for a in log) == Counter(["success", "failed", "failed"])
+        assert delivery._get_dlq_entry(entry_id) is None  # resolved on success
+        assert delivery.list_subscriptions()[0].failure_count == 0
 
     async def test_deliver_retries_transport_error(self, tmp_path):
         async def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("refused")
 
-        delivery = _make_delivery(tmp_path, transport=httpx.MockTransport(handler))
+        delivery = _make_delivery(tmp_path, transport=httpx.MockTransport(handler), worker=True)
         await delivery.subscribe("https://hook.example.com/ev", ["chain.ethereum.transfer"])
 
-        with patch("lite_indexer.webhooks.delivery.asyncio.sleep", new=AsyncMock()):
-            results = await delivery.deliver("chain.ethereum.transfer", b"{}")
+        results = await delivery.deliver("chain.ethereum.transfer", b"{}")
         assert results == [False]
+
+        due = delivery._dlq_due_rows(time.time())
+        assert len(due) == 1
+        entry_id = str(due[0]["id"])
+
+        # Three worker retries exhaust the 4-attempt budget (Svix-style:
+        # initial + 3 retries), then the entry is dead-lettered.
+        for _ in range(3):
+            await delivery._retry_entry(entry_id)
 
         sub_id = delivery.list_subscriptions()[0].id
         log = delivery.delivery_log(sub_id)
-        assert len(log) == 4  # initial + 3 retries
-        assert all(a.status == "error" for a in log)
+        assert len(log) == 5  # initial + 3 retries + deadletter row
+        assert Counter(a.status for a in log) == Counter({"deadletter": 1, "error": 4})
+
+        entry = delivery._get_dlq_entry(entry_id)
+        assert entry is not None and entry.status == "dead"
+        assert entry.attempts == 4
 
     async def test_deliver_stops_retrying_after_max_retries(self, tmp_path):
         transport = httpx.MockTransport(_status_handler([500]))
-        delivery = _make_delivery(tmp_path, transport=transport)
+        delivery = _make_delivery(tmp_path, transport=transport, worker=True)
         await delivery.subscribe("https://hook.example.com/ev", ["chain.ethereum.transfer"])
 
-        with patch("lite_indexer.webhooks.delivery.asyncio.sleep", new=AsyncMock()):
-            results = await delivery.deliver("chain.ethereum.transfer", b"{}")
+        results = await delivery.deliver("chain.ethereum.transfer", b"{}")
         assert results == [False]
+
+        due = delivery._dlq_due_rows(time.time())
+        assert len(due) == 1
+        entry_id = str(due[0]["id"])
+
+        # Retry until the max_attempts budget is exhausted; the entry is
+        # dead-lettered (status='dead') and kept as an audit record.
+        for _ in range(3):
+            await delivery._retry_entry(entry_id)
+
+        entry = delivery._get_dlq_entry(entry_id)
+        assert entry is not None and entry.status == "dead"
+        assert entry.attempts == 4
+
+        # A further retry is a no-op once dead-lettered.
+        await delivery._retry_entry(entry_id)
 
         sub_id = delivery.list_subscriptions()[0].id
         log = delivery.delivery_log(sub_id)
-        assert len(log) == 4  # initial + 3 retries, never more
-        assert all(a.status == "failed" for a in log)
-        sub = delivery.list_subscriptions()[0]
-        assert sub.failure_count == 4
+        assert len(log) == 5  # initial + 3 retries + deadletter row
+        assert Counter(a.status for a in log) == Counter({"deadletter": 1, "failed": 4})
+        assert delivery.list_subscriptions()[0].failure_count == 5
 
     async def test_deliver_budget_exhaustion_drops(self, tmp_path):
         # total_timeout=0 → the first deadline check fails immediately.
@@ -342,59 +392,63 @@ class TestDeliver:
         assert log[0].status_code is None
 
     async def test_deliver_uses_exponential_backoff_schedule(self, tmp_path, monkeypatch):
-        sleeps: list[float] = []
         now = [1000.0]
+        monkeypatch.setattr("lite_indexer.webhooks.delivery.time.time", lambda: now[0])
 
-        def clock() -> float:
-            return now[0]
-
-        async def fake_sleep(seconds: float) -> None:
-            sleeps.append(seconds)
-            now[0] += seconds
-
-        monkeypatch.setattr("lite_indexer.webhooks.delivery.asyncio.sleep", fake_sleep)
         transport = httpx.MockTransport(_status_handler([500, 500, 500]))
         delivery = _make_delivery(
             tmp_path,
             transport=transport,
             max_retries=3,
-            backoffs=(1.0, 4.0, 16.0),
-            clock=clock,
+            backoffs=(1.0, 4.0, 16.0),  # explicit schedule disables jitter
+            worker=True,
         )
         await delivery.subscribe("https://hook.example.com/ev", ["chain.ethereum.transfer"])
 
         results = await delivery.deliver("chain.ethereum.transfer", b"{}")
         assert results == [False]
-        assert sleeps == [1.0, 4.0, 16.0], "backoff schedule must be 1s, 4s, 16s"
 
-    async def test_deliver_never_sleeps_past_budget(self, tmp_path, monkeypatch):
-        sleeps: list[float] = []
+        due = delivery._dlq_due_rows(now[0] + 10.0)
+        assert len(due) == 1
+        entry_id = str(due[0]["id"])
+
+        # Svix-style schedule: index 0 is the immediate initial POST, so
+        # the first retry is scheduled at schedule[1] = 4.0s.
+        entry = delivery._get_dlq_entry(entry_id)
+        assert entry is not None
+        assert entry.attempts == 1
+        assert entry.max_attempts == 4
+        assert entry.next_attempt_at == 1000.0 + 4.0
+
+        # One worker retry fails → the next attempt is 16.0s out.
+        await delivery._retry_entry(entry_id)
+        entry = delivery._get_dlq_entry(entry_id)
+        assert entry is not None
+        assert entry.attempts == 2
+        assert entry.next_attempt_at == 1000.0 + 16.0
+
+    async def test_deliver_never_retries_before_its_slot(self, tmp_path, monkeypatch):
+        # Retries are timer-driven by the DLQ worker: an entry is never
+        # drained before its scheduled next_attempt_at arrives.
         now = [1000.0]
+        monkeypatch.setattr("lite_indexer.webhooks.delivery.time.time", lambda: now[0])
 
-        def clock() -> float:
-            return now[0]
-
-        async def fake_sleep(seconds: float) -> None:
-            sleeps.append(seconds)
-            now[0] += seconds
-
-        monkeypatch.setattr("lite_indexer.webhooks.delivery.asyncio.sleep", fake_sleep)
         transport = httpx.MockTransport(_status_handler([500]))
         delivery = _make_delivery(
             tmp_path,
             transport=transport,
             max_retries=3,
-            backoffs=(1.0, 4.0, 16.0),
-            total_timeout=5.0,  # 1s + 4s fit, 16s would blow the budget
-            clock=clock,
+            backoffs=(1.0, 4.0, 16.0),  # explicit schedule disables jitter
+            worker=True,
         )
         await delivery.subscribe("https://hook.example.com/ev", ["chain.ethereum.transfer"])
 
         results = await delivery.deliver("chain.ethereum.transfer", b"{}")
         assert results == [False]
-        # 1s fits under the 5s budget; 4s would land exactly on the
-        # deadline and 16s would exceed it — neither is slept.
-        assert sleeps == [1.0]
+
+        # First retry is 4s out: not due at +3s, due at +4s.
+        assert delivery._dlq_due_rows(now[0] + 3.0) == []
+        assert len(delivery._dlq_due_rows(now[0] + 4.0)) == 1
 
 
 # ── NATS lifecycle ──────────────────────────────────────────────────

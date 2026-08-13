@@ -97,6 +97,8 @@ class TestSubjectMap:
             "evm_transfer",
             "dex_swap",
             "deployer_event",
+            "launch",
+            "jito_bundle",
             "whale_alert",
         }
 

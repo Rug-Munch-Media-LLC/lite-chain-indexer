@@ -19,6 +19,7 @@ answerable.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import UTC, datetime
 from typing import Any
@@ -132,6 +133,33 @@ async def _resolve_deployer_eoas(chain: str, events: list[dict[str, Any]]) -> di
     return mapping
 
 
+def _serialize_raw_payload(event: dict[str, Any]) -> str:
+    """Serialize the raw RPC dict carried on an event (best-effort).
+
+    Events may carry the raw RPC payload under ``raw_payload`` (or ``raw``)
+    as a dict, so it can be re-decoded later without a re-fetch (see
+    migrations/010_raw_payload_parent_hash.sql). Absent or unserializable
+    payloads degrade to ``''`` — the column default — so parsers that do
+    not emit the raw payload never break the writer.
+
+    Args:
+        event: Parsed event dict.
+
+    Returns:
+        Compact JSON string, or ``''`` when no payload is in hand.
+    """
+    raw = event.get("raw_payload") or event.get("raw")
+    if not raw:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    try:
+        return json.dumps(raw, default=str, separators=(",", ":"))
+    except (TypeError, ValueError):
+        logger.debug("raw_payload_serialize_skip")
+        return ""
+
+
 class ClickHouseWriter:
     """Insert events into ClickHouse tables.
 
@@ -211,6 +239,33 @@ class ClickHouseWriter:
             if "already exists" in str(exc) or "privileges" in str(exc).lower():
                 return
             logger.debug("source_column_skip", error=str(exc)[:80])
+
+    def _ensure_raw_payload_column(self, client: Any, table: str) -> None:
+        """Ensure raw_payload exists so writers can name it in INSERTs.
+
+        Older deployments predate the column, so add it idempotently with
+        ``DEFAULT ''`` — historical rows stay valid and every new row
+        carries the serialized raw RPC payload when the parser emitted one.
+        Mirrors ``_ensure_source_column`` (migrations/010 adds the same
+        column to ``wallet_memory.transactions`` for operator provisioning).
+        """
+        try:
+            result = client.execute(
+                "SELECT name FROM system.columns "
+                "WHERE database = %(database)s AND table = %(table)s AND name = 'raw_payload'",
+                {
+                    "database": table.split(".")[0] if "." in table else "wallet_memory",
+                    "table": table.split(".")[-1],
+                },
+            )
+            if result:
+                return
+            client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS raw_payload String DEFAULT ''")
+            logger.info("raw_payload_column_added", table=table)
+        except Exception as exc:
+            if "already exists" in str(exc) or "privileges" in str(exc).lower():
+                return
+            logger.debug("raw_payload_column_skip", error=str(exc)[:80])
 
     def _ensure_dex_usd_columns(self, client: Any) -> None:
         """Ensure dex_events has price_usd/volume_usd columns.
@@ -457,6 +512,7 @@ class ClickHouseWriter:
         # column. The INSERT no longer names it (so it defaults to ''), but
         # ensure the column exists for any scanner that still reads it.
         self._ensure_source_column(client, CH_TABLE)
+        self._ensure_raw_payload_column(client, CH_TABLE)
         if CH_TTL_ENABLED:
             self.ensure_ttl_policies(client)
 
@@ -485,6 +541,7 @@ class ClickHouseWriter:
                     ts,
                     event["logIndex"],
                     now,
+                    _serialize_raw_payload(event),
                 )
             )
 
@@ -493,7 +550,7 @@ class ClickHouseWriter:
                 f"INSERT INTO {CH_TABLE} "
                 "(chain, block_number, tx_hash, from_address, to_address, "
                 "token_address, value, block_timestamp, log_index, "
-                "ingested_at) VALUES",
+                "ingested_at, raw_payload) VALUES",
                 rows,
             )
             logger.info("clickhouse_inserted", chain=chain, rows=len(rows))
@@ -528,6 +585,7 @@ class ClickHouseWriter:
 
         self._ensure_source_column(client, CH_DEX_TABLE)
         self._ensure_dex_usd_columns(client)
+        self._ensure_raw_payload_column(client, CH_DEX_TABLE)
         if CH_TTL_ENABLED:
             self.ensure_ttl_policies(client)
 
@@ -578,6 +636,7 @@ class ClickHouseWriter:
                     volume_usd,
                     now,
                     event.get("source", "lite_indexer"),
+                    _serialize_raw_payload(event),
                 )
             )
 
@@ -587,7 +646,8 @@ class ClickHouseWriter:
                 "(type, chain, block_number, block_timestamp, tx_hash, log_index, "
                 "contract_address, dex, version, token0, token1, sender, recipient, "
                 "amount0_in, amount1_in, amount0_out, amount1_out, "
-                "amount0, amount1, whale, price_usd, volume_usd, ingested_at, source) VALUES",
+                "amount0, amount1, whale, price_usd, volume_usd, ingested_at, source, "
+                "raw_payload) VALUES",
                 rows,
             )
             logger.info("dex_clickhouse_inserted", chain=chain, rows=len(rows))

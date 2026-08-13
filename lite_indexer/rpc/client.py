@@ -27,6 +27,7 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.rpc.ledger import record_endpoint_call
 from lite_indexer.rpc.pool import (
     ban_endpoint,
     get_best_endpoint,
@@ -35,8 +36,30 @@ from lite_indexer.rpc.pool import (
     record_rate_limit,
 )
 from lite_indexer.rpc.ratelimit import apply_provider_rate_limit
+from lite_indexer.rpc.routing import (
+    decr_in_flight,
+    incr_in_flight,
+    record_endpoint_block_height,
+    record_rpc_latency,
+    record_rpc_outcome,
+)
 
 logger = get_logger(__name__)
+
+
+def _safe_record(recorder: Any, *args: Any, **kwargs: Any) -> None:
+    """Run an additive ledger/routing telemetry call without breaking RPC.
+
+    The quota ledger (``rpc/ledger.py``) and EWMA/staleness trackers
+    (``rpc/routing.py``) are best-effort observability layers: if a
+    recorder ever raises (e.g. a corrupt ledger file), the error is
+    logged and the RPC result is returned untouched.
+    """
+    try:
+        recorder(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — telemetry must never raise into the RPC path
+        logger.debug("rpc_telemetry_skipped", error=str(exc)[:80])
+
 
 # ── Pooled HTTP Clients ────────────────────────────────────────────────
 # Reuse a small set of AsyncClients across all RpcClient instances instead
@@ -116,9 +139,20 @@ class RpcClient:
         # Intelligent throttle: honor Retry-After / advertised budget /
         # per-method rate BEFORE spending another request on this endpoint.
         await throttle_before(endpoint, method)
+        started = time.perf_counter()
         try:
-            client = await _get_call_client(timeout)
-            resp = await client.post(endpoint, json=payload)
+            # Ledger + in-flight telemetry around the actual request.
+            # record_endpoint_call feeds the quota ledger; incr/decr
+            # in-flight is the guarded equivalent of track_in_flight() so
+            # the P2C damped score sees concurrent load. All best-effort.
+            _safe_record(record_endpoint_call, endpoint, method)
+            _safe_record(incr_in_flight, endpoint)
+            try:
+                client = await _get_call_client(timeout)
+                resp = await client.post(endpoint, json=payload)
+            finally:
+                _safe_record(decr_in_flight, endpoint)
+            _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
             bytes_received = len(resp.content or b"")
             record_rpc_response(endpoint, method, resp.status_code, resp.headers)
 
@@ -126,6 +160,7 @@ class RpcClient:
             if not resp.text or len(resp.text) < 5:
                 logger.debug("rpc_empty_response", endpoint=endpoint[:50], method=method)
                 record_rpc_usage(endpoint, method, ok=False, error="empty_response")
+                _safe_record(record_rpc_outcome, endpoint, ok=False)
                 return None
 
             resp.raise_for_status()
@@ -141,6 +176,7 @@ class RpcClient:
                     error=str(exc)[:60],
                 )
                 record_rpc_usage(endpoint, method, ok=False, error="malformed_json", bytes_received=bytes_received)
+                _safe_record(record_rpc_outcome, endpoint, ok=False)
                 return None
 
             ok = bool("error" not in data or data.get("error") is None)
@@ -159,15 +195,18 @@ class RpcClient:
                     error=str(data.get("error", ""))[:120],
                     bytes_received=bytes_received,
                 )
+            _safe_record(record_rpc_outcome, endpoint, ok=ok)
             return cast(dict[str, Any], data)
 
         except httpx.TimeoutException:
             logger.debug("rpc_timeout", endpoint=endpoint[:50], method=method)
             record_rpc_usage(endpoint, method, ok=False, error="timeout")
+            _safe_record(record_rpc_outcome, endpoint, ok=False)
             return None
         except (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as exc:
             logger.debug("rpc_connection_error", endpoint=endpoint[:50], method=method, error=str(exc)[:60])
             record_rpc_usage(endpoint, method, ok=False, error="connection_error")
+            _safe_record(record_rpc_outcome, endpoint, ok=False)
             return None
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
@@ -182,10 +221,12 @@ class RpcClient:
             # exponential window so we stop hammering it.
             elif status == 403:
                 ban_endpoint(endpoint, reason="http_403")
+            _safe_record(record_rpc_outcome, endpoint, ok=False)
             return None
         except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
             logger.warning("rpc_call_failed", endpoint=endpoint[:50], method=method, error=str(exc)[:80])
             record_rpc_usage(endpoint, method, ok=False, error=str(exc)[:120])
+            _safe_record(record_rpc_outcome, endpoint, ok=False)
             return None
 
     async def eth_block_number(self, endpoint: str) -> int | None:
@@ -200,10 +241,12 @@ class RpcClient:
         if not result or "result" not in result:
             return None
         try:
-            return int(result["result"], 16)
+            height = int(result["result"], 16)
         except (ValueError, TypeError) as exc:
             logger.debug("eth_block_number_non_hex", endpoint=endpoint[:50], error=str(exc)[:40])
             return None
+        _safe_record(record_endpoint_block_height, endpoint, height)
+        return height
 
     async def eth_get_block_by_number(
         self,
@@ -219,7 +262,12 @@ class RpcClient:
             timeout=TIMESTAMP_FETCH_TIMEOUT,
         )
         if result and "result" in result:
-            return cast(dict[str, Any], result["result"])
+            block = cast(dict[str, Any], result["result"])
+            if block:
+                # Feed the staleness gate (skip null blocks — a missing
+                # block would skew the median toward 0).
+                _safe_record(record_endpoint_block_height, endpoint, block_number)
+            return block
         return None
 
     async def eth_get_transaction_receipt(self, endpoint: str, tx_hash: str) -> dict[str, Any] | None:
@@ -317,8 +365,16 @@ class RpcClient:
             await throttle_before(endpoint, "eth_getLogs")
 
             try:
-                client = await self._get_client()
-                resp = await client.post(endpoint, json=payload, timeout=RPC_TIMEOUT)
+                # Ledger + in-flight telemetry around the request (best-effort).
+                _safe_record(record_endpoint_call, endpoint, "eth_getLogs")
+                started = time.perf_counter()
+                _safe_record(incr_in_flight, endpoint)
+                try:
+                    client = await self._get_client()
+                    resp = await client.post(endpoint, json=payload, timeout=RPC_TIMEOUT)
+                finally:
+                    _safe_record(decr_in_flight, endpoint)
+                _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
                 record_rpc_response(endpoint, "eth_getLogs", resp.status_code, resp.headers)
 
                 if resp.status_code == 429:
@@ -342,6 +398,7 @@ class RpcClient:
                         wait=round(wait, 1),
                     )
                     record_rate_limit(endpoint)
+                    _safe_record(record_rpc_outcome, endpoint, ok=False)
                     await asyncio.sleep(wait)
                     continue
 
@@ -350,10 +407,13 @@ class RpcClient:
                 if isinstance(data, dict) and "result" in data:
                     result = data["result"]
                     if isinstance(result, list):
+                        _safe_record(record_rpc_outcome, endpoint, ok=True)
                         return result
                     # result is null — endpoint works but no logs in range
                     if result is None:
+                        _safe_record(record_rpc_outcome, endpoint, ok=True)
                         return []
+                _safe_record(record_rpc_outcome, endpoint, ok=False)
                 return None
 
             except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError) as exc:
@@ -364,6 +424,7 @@ class RpcClient:
                 )
                 record_endpoint_failure(endpoint)
                 metrics_incr("rpc_errors")
+                _safe_record(record_rpc_outcome, endpoint, ok=False)
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
                     continue
@@ -374,6 +435,7 @@ class RpcClient:
                     endpoint=endpoint[:40],
                     error=str(exc)[:60],
                 )
+                _safe_record(record_rpc_outcome, endpoint, ok=False)
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
                     continue

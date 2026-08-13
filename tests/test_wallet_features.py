@@ -403,8 +403,9 @@ def test_write_transfers_strips_enrichment_columns(monkeypatch: pytest.MonkeyPat
     assert "source" not in insert_q[0]
 
     row = client.params[-1][0]
-    assert len(row) == 10  # chain..ingested_at only
+    assert len(row) == 11  # chain..ingested_at + raw_payload
     assert row[:7] == ("ethereum", 100, "0x100", "0xX", "0xY", "0xaaa", "100")
     assert row[7] is not None  # block_timestamp parsed from the event
     assert row[8] == 0  # log_index
     assert row[9] is not None  # ingested_at timestamp
+    assert row[10] == ""  # raw_payload empty (parsed event carries no raw log)
