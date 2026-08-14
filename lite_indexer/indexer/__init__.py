@@ -85,7 +85,7 @@ from lite_indexer.state import StateHighWater, StateManager
 from lite_indexer.storage import (
     ClickHouseWriter,
     NDJSONWriter,
-    check_disk_cap,
+    check_disk_cap_async,
     check_disk_space,
 )
 from lite_indexer.strategies import (
@@ -1223,7 +1223,7 @@ class LiteIndexer:
         disk_excludes: tuple[str, ...] = ()
         if not self.ndjson_enabled:
             disk_excludes = ("*.jsonl", "*.jsonl.zst")
-        if not check_disk_cap(self.data_dir, self.disk_cap, exclude_patterns=disk_excludes):
+        if not await check_disk_cap_async(self.data_dir, self.disk_cap, exclude_patterns=disk_excludes):
             summary["status"] = "disk_cap_exceeded"
             summary["errors"].append("disk cap exceeded")
             self._save_current_state()
@@ -1497,7 +1497,10 @@ class LiteIndexer:
         # is restart-from-state: at most one sync cycle is lost on crash
         # and re-fetched from RPC on the next cycle.
         if self.ndjson_enabled and self._ndjson_writer is not None:
-            write_ndjson(self._ndjson_writer, self.chain, events, dex_events, summary)
+            # NDJSON write runs check_write_ok → check_disk_cap → a blocking
+            # `du` subprocess; move it off the event loop so one chain's disk
+            # check never stalls the other chains' RPC/state work.
+            await asyncio.to_thread(write_ndjson, self._ndjson_writer, self.chain, events, dex_events, summary)
 
         # 7. Write ClickHouse via strategy
         # ch_available tracks whether ClickHouse is confirmed writable for

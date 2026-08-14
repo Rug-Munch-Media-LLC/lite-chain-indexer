@@ -44,7 +44,7 @@ async def test_state_skips_on_failure(tmp_path, monkeypatch):
         verified_endpoints=[],
     )
     monkeypatch.setattr("lite_indexer.indexer.verify_chain_endpoints", AsyncMock(return_value=result))
-    monkeypatch.setattr("lite_indexer.indexer.check_disk_cap", lambda *a, **k: True)
+    monkeypatch.setattr("lite_indexer.indexer.check_disk_cap_async", AsyncMock(return_value=True))
     monkeypatch.setattr("lite_indexer.indexer.check_disk_space", lambda: True)
 
     summary = await indexer.sync_loop()
@@ -200,7 +200,7 @@ async def test_verified_endpoints_applied(tmp_path, monkeypatch):
         verified_endpoints=verified,
     )
     monkeypatch.setattr("lite_indexer.indexer.verify_chain_endpoints", AsyncMock(return_value=result))
-    monkeypatch.setattr("lite_indexer.indexer.check_disk_cap", lambda *a, **k: True)
+    monkeypatch.setattr("lite_indexer.indexer.check_disk_cap_async", AsyncMock(return_value=True))
     monkeypatch.setattr("lite_indexer.indexer.check_disk_space", lambda: True)
 
     indexer.strategy.fetch_transfers = AsyncMock(return_value=[])

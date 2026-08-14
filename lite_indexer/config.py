@@ -433,10 +433,14 @@ GC_EVERY_N_CYCLES: int = int(os.environ.get("GC_EVERY_N_CYCLES", "5"))
 # threshold. This is an in-process backstop on top of the systemd
 # MemoryHigh/MemoryMax cgroup limits: it avoids the OOM-kill churn that
 # 14 parallel chains caused on 2026-08-03 by backing off *before* the
-# cgroup reaper fires. Default 3072 = 3 GiB, matching the systemd
-# MemoryHigh drop-in (3221225472 bytes). RSS is read from /proc/self/statm
-# (no psutil dependency).
-MEMORY_HIGH_MB: int = int(os.environ.get("MEMORY_HIGH_MB", "3072"))
+# cgroup reaper fires. Default 6144 = 6 GiB, matching the systemd
+# MemoryHigh drop-in (6442450944 bytes). Raised 2026-08-14 from 3072
+# after the daemon's working set (16 chains × pair caches + httpx pools +
+# event batches) grew past the 3G ceiling, which froze the process in
+# kernel cgroup throttling (mem_cgroup_handle_over_high, D-state) instead
+# of letting the gate pause ingestion gracefully. RSS is read from
+# /proc/self/statm (no psutil dependency).
+MEMORY_HIGH_MB: int = int(os.environ.get("MEMORY_HIGH_MB", "6144"))
 
 # How often (seconds) the memory watchdog may re-read RSS. Reading
 # /proc every cycle is cheap, but under heavy GC churn the value flaps;

@@ -7,6 +7,7 @@ to prevent disk-full scenarios.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import subprocess
@@ -98,6 +99,41 @@ def check_disk_cap(
 def check_write_ok(label: str = "", data_dir: Path = DATA_DIR, cap_bytes: int = DISK_CAP_BYTES) -> bool:
     """Combined disk cap + free space check before a write operation."""
     if not check_disk_cap(data_dir, cap_bytes):
+        logger.error("write_aborted_disk_cap", label=label)
+        return False
+    if not check_disk_space():
+        logger.error("write_aborted_disk_space", label=label)
+        return False
+    return True
+
+
+async def check_disk_cap_async(
+    data_dir: Path = DATA_DIR,
+    cap_bytes: int = DISK_CAP_BYTES,
+    exclude_patterns: tuple[str, ...] = (),
+) -> bool:
+    """Async ``check_disk_cap`` — runs the ``du`` subprocess in a worker thread.
+
+    The sync ``check_disk_cap`` spawns ``/usr/bin/du -sb`` via
+    ``subprocess.run`` which blocks the calling thread for up to the
+    10s timeout. Called from the async sync loop on the event loop thread
+    that would stall ALL chains (observed: multi-chain daemon freezes while
+    one chain's disk check runs). ``asyncio.to_thread`` moves the blocking
+    ``du`` off the event loop; the loop keeps serving RPC/state work.
+
+    Returns True if we can write, False if cap exceeded (same semantics as
+    the sync version).
+    """
+    return await asyncio.to_thread(check_disk_cap, data_dir, cap_bytes, exclude_patterns)
+
+
+async def check_write_ok_async(
+    label: str = "",
+    data_dir: Path = DATA_DIR,
+    cap_bytes: int = DISK_CAP_BYTES,
+) -> bool:
+    """Async ``check_write_ok`` — disk cap + free space checks off the loop."""
+    if not await check_disk_cap_async(data_dir, cap_bytes):
         logger.error("write_aborted_disk_cap", label=label)
         return False
     if not check_disk_space():

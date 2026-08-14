@@ -119,8 +119,14 @@ async def _fetch_topic(
                             )
                             if best_result is None or len(parsed) > len(best_result):
                                 best_result = parsed
-                                if len(parsed) == len(logs):
-                                    break
+                            # A 200 with a result list means this endpoint
+                            # served the range in full; all endpoints serve
+                            # identical chain data. The old guard
+                            # ``len(parsed) == len(logs)`` was unreachable
+                            # because parse_swap_logs filters non-Swap logs,
+                            # so every chunk queried ALL endpoints (5×
+                            # RPC cost, 5× latency on busy chains).
+                            break
                 elif resp.status_code == 429:
                     await handle_rate_limit(url)
                     continue

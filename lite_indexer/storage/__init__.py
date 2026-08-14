@@ -26,7 +26,13 @@ from lite_indexer.storage.balance_cache import (
     update_holder_balance,
 )
 from lite_indexer.storage.clickhouse import ClickHouseWriter
-from lite_indexer.storage.disk import check_disk_cap, check_disk_space, check_write_ok
+from lite_indexer.storage.disk import (
+    check_disk_cap,
+    check_disk_cap_async,
+    check_disk_space,
+    check_write_ok,
+    check_write_ok_async,
+)
 from lite_indexer.storage.ndjson import NDJSONWriter
 from lite_indexer.storage.parquet import ExportSummary, ParquetExporter
 from lite_indexer.storage.projections import ensure_wallet_projection
@@ -52,8 +58,10 @@ __all__ = [
     "ParquetExporter",
     "ExportSummary",
     "check_disk_cap",
+    "check_disk_cap_async",
     "check_disk_space",
     "check_write_ok",
+    "check_write_ok_async",
     "get_metrics",
     # Wallet access path (competitive features)
     "ensure_wallet_projection",
