@@ -29,15 +29,35 @@ from lite_indexer.streaming import NATSPublisher
 class FakeJetStream:
     """Stand-in for nats.js.JetStreamContext."""
 
-    def __init__(self, *, add_stream_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        add_stream_error: Exception | None = None,
+        update_stream_error: Exception | None = None,
+        stream_exists: bool = True,
+    ) -> None:
         self.published: list[tuple[str, bytes]] = []
         self.add_stream_calls: list[dict[str, Any]] = []
+        self.update_stream_calls: list[dict[str, Any]] = []
         self._add_stream_error = add_stream_error
+        self._update_stream_error = update_stream_error
+        self._stream_exists = stream_exists
 
     async def add_stream(self, **kwargs: Any) -> dict[str, Any]:
         self.add_stream_calls.append(kwargs)
         if self._add_stream_error is not None:
             raise self._add_stream_error
+        return {"name": kwargs.get("name")}
+
+    async def stream_info(self, name: str) -> dict[str, Any] | None:
+        if not self._stream_exists:
+            raise RuntimeError("stream not found")
+        return {"name": name, "config": {}}
+
+    async def update_stream(self, **kwargs: Any) -> dict[str, Any]:
+        self.update_stream_calls.append(kwargs)
+        if self._update_stream_error is not None:
+            raise self._update_stream_error
         return {"name": kwargs.get("name")}
 
     async def publish(self, subject: str, payload: bytes) -> None:
@@ -142,7 +162,9 @@ class TestPublishEvent:
         assert fake.published == []
 
     async def test_jetstream_degrades_to_core_when_unavailable(self):
-        js = FakeJetStream(add_stream_error=RuntimeError("jetstream disabled"))
+        # Server with JetStream disabled: add_stream AND stream_info both
+        # fail → reconcile cannot run → degrade to core NATS publish.
+        js = FakeJetStream(add_stream_error=RuntimeError("jetstream disabled"), stream_exists=False)
         fake = FakeNC(js=js)
         publisher = NATSPublisher(enabled=True, jetstream_enabled=True)
         with patch("lite_indexer.streaming.nats_publisher.nats.connect", new=AsyncMock(return_value=fake)):
@@ -150,6 +172,53 @@ class TestPublishEvent:
 
         assert ok is True
         # add_stream failed → fell back to core publish.
+        assert js.published == []
+        assert len(fake.published) == 1
+        assert fake.published[0][0] == "chain.bsc.deploy"
+
+    async def test_stream_config_mismatch_reconciles_via_update(self):
+        # NATS err 10058: stream exists with a different config. The
+        # publisher must reconcile with update_stream (non-destructive)
+        # instead of degrading to core NATS.
+        js = FakeJetStream(
+            add_stream_error=RuntimeError(
+                "code=400 err_code=10058 'stream name already in use with a different configuration'"
+            )
+        )
+        fake = FakeNC(js=js)
+        publisher = NATSPublisher(enabled=True, jetstream_enabled=True)
+        with patch("lite_indexer.streaming.nats_publisher.nats.connect", new=AsyncMock(return_value=fake)):
+            ok = await publisher.publish_event("base", "dex_swap", {"pair": "0xp"})
+
+        assert ok is True
+        # add_stream failed with 10058 → update_stream reconciles.
+        assert js.update_stream_calls, "update_stream should reconcile the mismatch"
+        update_cfg = js.update_stream_calls[0]
+        assert update_cfg["name"] == "CHAIN_EVENTS"
+        assert set(update_cfg["subjects"]) == {"chain.>", "alerts.>"}
+        # The desired config mirrors the deployed server (file storage).
+        assert update_cfg["storage"] == "file"
+        # Publish still goes through JetStream after reconciliation.
+        assert len(js.published) == 1
+        assert js.published[0][0] == "chain.base.dex.swap"
+        assert fake.published == []
+
+    async def test_stream_reconcile_failure_degrades_to_core(self):
+        # Stream exists, add_stream mismatches, but update_stream also
+        # fails → degrade to core NATS (never block publishing).
+        js = FakeJetStream(
+            add_stream_error=RuntimeError(
+                "code=400 err_code=10058 'stream name already in use with a different configuration'"
+            ),
+            update_stream_error=RuntimeError("permission denied"),
+        )
+        fake = FakeNC(js=js)
+        publisher = NATSPublisher(enabled=True, jetstream_enabled=True)
+        with patch("lite_indexer.streaming.nats_publisher.nats.connect", new=AsyncMock(return_value=fake)):
+            ok = await publisher.publish_event("bsc", "deployer_event", {"tx": "0x1"})
+
+        assert ok is True
+        assert js.update_stream_calls, "update_stream should be attempted"
         assert js.published == []
         assert len(fake.published) == 1
         assert fake.published[0][0] == "chain.bsc.deploy"

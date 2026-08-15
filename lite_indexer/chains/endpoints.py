@@ -40,7 +40,14 @@ from __future__ import annotations
 
 import os
 
+# Load the shared env file (ALCHEMY_KEY / INFURA_KEY / HELIUS_KEY ...)
+# BEFORE the module-level placeholder resolution below, so every import
+# path — daemon, health module, cron, manual — sees the same env as the
+# daemon's systemd unit. Idempotent and non-destructive.
+from lite_indexer.env import load_env_file
 from lite_indexer.logging import get_logger
+
+load_env_file()
 
 logger = get_logger(__name__)
 

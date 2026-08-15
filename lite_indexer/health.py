@@ -215,8 +215,17 @@ async def check_chain_lag(
 
         # A state file that hasn't been updated in 3 poll intervals is stale
         # (the daemon may be wedged, e.g. stuck on a blocking CH call).
+        #
+        # The 30-minute floor matches the daemon's state-persistence cadence:
+        # state is written only when a full sync batch completes (BATCH_SIZE
+        # = 1000 blocks), which takes 3-25 min on slow chains with
+        # rate-limited free RPCs. A 5-minute floor false-positived mid-batch,
+        # so the stall watchdog restarted the service and killed the in-flight
+        # batch every cycle (observed 2026-08-05: polygon/ethereum/optimism
+        # genuinely stalled). The watchdog's own NO_ADVANCE signal
+        # (state_age > STALL_MINUTES=30) still catches genuine wedges.
         poll_interval = _CHAIN_BLOCK_TIMES.get(chain, 12.0) * 3 + 30
-        if state_age is not None and state_age > max(300, poll_interval):
+        if state_age is not None and state_age > max(1800, poll_interval):
             result["status"] = "stale"
         elif lag == 0:
             result["status"] = "ok"

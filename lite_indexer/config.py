@@ -11,6 +11,15 @@ import json
 import os
 from pathlib import Path
 
+# Load the shared env file (same file the daemon's systemd unit sources
+# via EnvironmentFile) BEFORE any os.environ reads below, so every entry
+# point — daemon, health module, integrity checks, cron, manual runs —
+# resolves the same ${ALCHEMY_KEY} / ${INFURA_KEY} / ${HELIUS_KEY} RPC
+# placeholders. Idempotent and non-destructive (existing env wins).
+from lite_indexer.env import load_env_file
+
+load_env_file()
+
 # ── Chain-Indexer Directories ─────────────────────────────────────────
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/var/data/chain-indexer"))
 STATE_DIR = DATA_DIR / "state"
@@ -888,6 +897,21 @@ NATS_JETSTREAM_ENABLED: bool = os.environ.get("NATS_JETSTREAM_ENABLED", "1") != 
 
 # JetStream stream name auto-provisioned to capture indexed events.
 NATS_STREAM_NAME: str = os.environ.get("NATS_STREAM_NAME", "CHAIN_EVENTS")
+
+# JetStream stream config. Defaults mirror the deployed
+# lite-chain-indexer-nats server (compose.nats.yml + compose/nats-server.conf)
+# and the live CHAIN_EVENTS stream: FILE storage on the persisted
+# nats-data volume, limits retention, 3-day / 5GB cap, discard old.
+# The publisher reconciles an existing stream whose config drifts (NATS
+# err 10058) via update_stream — non-destructive, preserves messages +
+# consumers. NATS err 10058 means "stream name already in use with a
+# different configuration"; the publisher's declaration must match the
+# server, otherwise every connect logs nats_stream_ensure_failed.
+NATS_STREAM_STORAGE: str = os.environ.get("NATS_STREAM_STORAGE", "file")
+NATS_STREAM_RETENTION: str = os.environ.get("NATS_STREAM_RETENTION", "limits")
+NATS_STREAM_MAX_AGE_SECONDS: int = int(os.environ.get("NATS_STREAM_MAX_AGE_SECONDS", str(3 * 24 * 60 * 60)))
+NATS_STREAM_MAX_BYTES: int = int(os.environ.get("NATS_STREAM_MAX_BYTES", str(5 * 1024**3)))
+NATS_STREAM_DISCARD: str = os.environ.get("NATS_STREAM_DISCARD", "old")
 
 # ── Webhook Delivery (push platform) ────────────────────────────────────
 # POST every NATS event to registered webhooks (HMAC-SHA256 signed,

@@ -14,7 +14,13 @@ Tested 2026-08-12: /wallet/getnowblock, /v1/contracts/*/events.
 
 from __future__ import annotations
 
+from lite_indexer.env import load_env_file
+
 from .endpoints import _resolved_endpoints
+
+# Ensure ${ALCHEMY_KEY} / ${HELIUS_KEY} resolve before SOLANA/TRON
+# endpoint resolution below (idempotent; also loaded by endpoints.py).
+load_env_file()
 
 # ── Solana RPC Endpoints ─────────────────────────────────────────────
 

@@ -50,7 +50,7 @@ def sync_batch_for_chain(chain: str, default: int) -> int:
     ``_determine_block_range`` fetches at most ``default`` blocks per sync
     cycle (``BATCH_SIZE``). A per-chain ``{CHAIN}_SYNC_BATCH`` env var
     (e.g. ``ETH_SYNC_BATCH=200``) overrides the cap so a cycle finishes
-    inside the stall watchdog's stale window (max(300s, 3 poll intervals)).
+    inside the stall watchdog's stale window (max(1800s, 3 poll intervals)).
 
     During catch-up a 1000-block Ethereum cycle is 100 ten-block chunks —
     with rate-limited free RPCs that exceeds the watchdog threshold and the

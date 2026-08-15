@@ -42,7 +42,12 @@ from lite_indexer.config import (
     NATS_CIRCUIT_FAILURE_THRESHOLD,
     NATS_ENABLED,
     NATS_JETSTREAM_ENABLED,
+    NATS_STREAM_DISCARD,
+    NATS_STREAM_MAX_AGE_SECONDS,
+    NATS_STREAM_MAX_BYTES,
     NATS_STREAM_NAME,
+    NATS_STREAM_RETENTION,
+    NATS_STREAM_STORAGE,
     NATS_URL,
 )
 from lite_indexer.logging import get_logger
@@ -188,6 +193,26 @@ class NATSPublisher:
         self._stream_ensured = False
         self._close_lock = asyncio.Lock()
 
+    def _stream_config(self) -> dict[str, Any]:
+        """Desired JetStream stream config.
+
+        Mirrors the deployed ``lite-chain-indexer-nats`` server
+        (compose.nats.yml + compose/nats-server.conf): FILE storage on
+        the persisted nats-data volume, limits retention, 3-day / 5GB
+        cap, discard old. Keeping this aligned with the server avoids
+        NATS err 10058 ("stream name already in use with a different
+        configuration") on every connect.
+        """
+        return {
+            "name": self._stream_name,
+            "subjects": list(self._STREAM_SUBJECTS),
+            "storage": NATS_STREAM_STORAGE,
+            "retention": NATS_STREAM_RETENTION,
+            "max_age": NATS_STREAM_MAX_AGE_SECONDS,
+            "max_bytes": NATS_STREAM_MAX_BYTES,
+            "discard": NATS_STREAM_DISCARD,
+        }
+
     # ── Subject mapping ────────────────────────────────────────────
 
     @classmethod
@@ -254,23 +279,65 @@ class NATSPublisher:
 
         A stream capturing ``chain.>`` / ``alerts.>`` makes publishes
         durable and replayable. When JetStream is disabled on the server,
-        or the stream already exists with a different configuration, the
-        publisher degrades to core NATS publish.
+        or the stream cannot be created/reconciled, the publisher
+        degrades to core NATS publish.
+
+        The desired config (see :meth:`_stream_config`) mirrors the
+        deployed server. If the stream already exists with a *different*
+        configuration, ``add_stream`` fails with NATS err 10058; the
+        publisher then reconciles via ``update_stream`` — non-destructive,
+        preserves buffered messages and consumers — instead of logging a
+        warning on every connect.
         """
         if self._stream_ensured or self._nc is None:
             return
         self._stream_ensured = True
         try:
             self._js = self._nc.jetstream()
-            await self._js.add_stream(
-                name=self._stream_name,
-                subjects=list(self._STREAM_SUBJECTS),
-                storage="memory",
-            )
-            logger.info("nats_stream_ensured", stream=self._stream_name)
+            config = self._stream_config()
+            try:
+                await self._js.add_stream(**config)
+                logger.info("nats_stream_ensured", stream=self._stream_name)
+            except Exception:  # noqa: BLE001 — reconcile on mismatch
+                if await self._reconcile_stream(config):
+                    logger.info("nats_stream_reconciled", stream=self._stream_name)
+                else:
+                    raise
         except Exception as exc:  # noqa: BLE001 — provisioning is best-effort
             self._js = None
             logger.warning("nats_stream_ensure_failed", error=str(exc)[:120])
+
+    async def _reconcile_stream(self, config: dict[str, Any]) -> bool:
+        """Align an existing stream to the desired config via update_stream.
+
+        ``add_stream`` returns NATS err 10058 when the stream exists with
+        a different configuration. ``update_stream`` is non-destructive:
+        buffered messages and consumers are preserved, which is safe for
+        this replayable fan-out stream (no delete/recreate needed).
+
+        Returns True when the stream now matches the desired config;
+        False when the stream is absent, JetStream is unavailable, or the
+        server rejected the update (caller degrades to core NATS).
+        """
+        if self._js is None:
+            return False
+        try:
+            await self._js.stream_info(self._stream_name)
+        except Exception as exc:  # noqa: BLE001 — stream absent / JetStream off
+            logger.debug("nats_stream_reconcile_no_info", error=str(exc)[:120])
+            return False
+        try:
+            await self._js.update_stream(**config)
+            logger.info(
+                "nats_stream_reconciled",
+                stream=self._stream_name,
+                storage=config.get("storage"),
+                max_age_s=config.get("max_age"),
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 — update rejected
+            logger.warning("nats_stream_reconcile_failed", error=str(exc)[:120])
+            return False
 
     async def close(self) -> None:
         """Close the NATS connection (idempotent, never raises)."""
