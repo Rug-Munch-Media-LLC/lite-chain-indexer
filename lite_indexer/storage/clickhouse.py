@@ -176,6 +176,9 @@ class ClickHouseWriter:
         self._balance_cache_ready = False
         self._holder_mv_ready = False
         self._trace_table_ready = False
+        # Schema probe cache for dex_events amount columns (None = unknown).
+        # See _dex_amounts_numeric / write_dex_events (2026-08-19 incident).
+        self._dex_numeric_amounts: bool | None = None
 
     def _connect(self) -> Any | None:
         """Lazy-init ClickHouse native protocol client."""
@@ -561,6 +564,36 @@ class ClickHouseWriter:
             logger.error("clickhouse_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
             return 0
 
+    def _dex_amounts_numeric(self, client: Any) -> bool:
+        """Return True when dex_events amount columns are Float (not String).
+
+        Schema-adaptive probe for the 2026-08-19 dex_events incident: the
+        canonical schema (bootstrap.py) stores raw uint256 swap amounts as
+        String, but an ad-hoc ALTER (no repo source) converted the six
+        amount columns to Nullable(Float64) on 08-18 ~21:39. Every string
+        INSERT since failed with Code 53 ("argument is not a float") and
+        dex_events silently stalled until this probe let the writer match
+        the live schema. Migration 013 restores the canonical String
+        columns; this probe makes the writer correct under either schema.
+
+        Result is cached per process; the schema never changes mid-run
+        (migration 013 is applied while the indexer is stopped).
+        """
+        if self._dex_numeric_amounts is not None:
+            return self._dex_numeric_amounts
+        try:
+            types = self._column_types(client, CH_DEX_TABLE)
+            amount_type = types.get("amount0_in", "")
+            self._dex_numeric_amounts = "Float" in amount_type or "Decimal" in amount_type
+            logger.info(
+                "dex_amount_schema_probed",
+                column_type=amount_type or "unknown",
+                numeric=self._dex_numeric_amounts,
+            )
+        except Exception:  # noqa: BLE001 — probe failure falls back to canonical
+            self._dex_numeric_amounts = False
+        return self._dex_numeric_amounts
+
     def write_dex_events(self, chain: str, events: list[dict[str, Any]]) -> int:
         """Insert DEX swap events into ClickHouse. Returns rows inserted.
 
@@ -588,6 +621,21 @@ class ClickHouseWriter:
         self._ensure_raw_payload_column(client, CH_DEX_TABLE)
         if CH_TTL_ENABLED:
             self.ensure_ttl_policies(client)
+
+        # Match the live amount-column types (String canonical vs the
+        # 08-18 ad-hoc Float64 ALTER). Sending strings into Float64
+        # columns is what stalled dex_events on 08-19 (Code 53).
+        numeric_amounts = self._dex_amounts_numeric(client)
+
+        def _amount(value: Any) -> Any:
+            if numeric_amounts:
+                if value in (None, ""):
+                    return None
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+            return "" if value is None else str(value)
 
         now = datetime.now(UTC)
         rows: list[tuple[Any, ...]] = []
@@ -625,12 +673,12 @@ class ClickHouseWriter:
                     event.get("token1", ""),
                     event.get("sender", ""),
                     event.get("recipient", ""),
-                    event.get("amount0In", "0"),
-                    event.get("amount1In", "0"),
-                    event.get("amount0Out", "0"),
-                    event.get("amount1Out", "0"),
-                    amt0,
-                    amt1,
+                    _amount(event.get("amount0In", "0")),
+                    _amount(event.get("amount1In", "0")),
+                    _amount(event.get("amount0Out", "0")),
+                    _amount(event.get("amount1Out", "0")),
+                    _amount(amt0),
+                    _amount(amt1),
                     whale,
                     price_usd,
                     volume_usd,
