@@ -97,6 +97,25 @@ pre-commit:
       glob: "Dockerfile*"
       run: hadolint {staged_files}
 
+    # -- SQL lint general (2026-08-21 hardening) ---------------
+    sqlfluff:
+      glob: "*.sql"
+      run: |
+        if command -v sqlfluff >/dev/null 2>&1; then
+          sqlfluff lint --dialect postgres {staged_files} 2>/dev/null || echo "[sqlfluff] findings above"
+        fi
+
+    # -- Dependency supply-chain (blocks hallucinated deps) ----
+    osv-deps:
+      glob: "{requirements*.txt,package-lock.json,pnpm-lock.yaml,yarn.lock,Cargo.lock,go.mod}"
+      run: |
+        if command -v osv-scanner >/dev/null 2>&1; then
+          FILES=$(printf '%s\n' {staged_files} | grep -E '(requirements.*\.txt|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|go\.mod)$' | tr '\n' ' ')
+          if [ -n "$FILES" ]; then
+            osv-scanner scan source $FILES || echo "[osv] vulnerable deps in lockfile — CI blocks new findings; see FRONTEND-STANDARD work order"
+          fi
+        fi
+
 pre-push:
   parallel: true
   commands:
@@ -156,6 +175,37 @@ pre-push:
     attw:
       glob: "*.{ts,tsx}"
       run: npx attw@latest --pack . 2>/dev/null || true
+
+    # -- Live-secret verification (2026-08-21 hardening) -------
+    trufflehog-verified:
+      run: |
+        if command -v trufflehog >/dev/null 2>&1; then
+          RANGE=$(git rev-parse @{u} 2>/dev/null || echo "")
+          if [ -n "$RANGE" ]; then
+            trufflehog git file://. --since-commit "$RANGE" --results=verified --fail --no-update || {
+              echo "TRUFFLEHOG: verified-LIVE secret in pushed commits. Rotate now."
+              exit 1
+            }
+          fi
+        fi
+
+    # -- Module boundary contracts (opt-in via .importlinter) ---
+    import-boundaries:
+      glob: "*.py"
+      run: |
+        if command -v lint-imports >/dev/null 2>&1 || [ -x ".venv/bin/lint-imports" ]; then
+          if grep -qE '\[importlinter\]' pyproject.toml setup.cfg .importlinter 2>/dev/null; then
+            LINT_IMPORTS="lint-imports"; [ -x ".venv/bin/lint-imports" ] && LINT_IMPORTS=".venv/bin/lint-imports"
+            $LINT_IMPORTS || { echo "IMPORT-LINTER: boundary violated"; exit 1; }
+          fi
+        fi
+
+    # -- Security/PII scan (advisory at push; CI blocks diffs) --
+    bearer-scan:
+      run: |
+        if command -v bearer >/dev/null 2>&1; then
+          bearer scan --scanner=sast,secrets --hide-progress . 2>/dev/null | tail -15 || true
+        fi
 
 commit-msg:
   commands:
