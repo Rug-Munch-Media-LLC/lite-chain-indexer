@@ -42,3 +42,53 @@ jobs:
 
       - name: Check import
         run: python -c "from lite_indexer import LiteIndexer; print('Package import OK')"
+
+  # ── Coverage gates (blocking) ─────────────────────────────────
+  # Single Python version (no matrix) — coverage is version-independent.
+  # Smoke-marked tests need live ClickHouse/RPC endpoints and are excluded.
+  coverage-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history: the per-diff coverage gate (diff-cover) needs
+          # origin/main as the diff base.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" diff-cover
+
+      - name: Unit tests with coverage (BLOCKING)
+        # Tests MUST pass and global coverage must meet the 60% floor.
+        # covgate (the Rust CLI used by frontend repos) does not parse Python
+        # coverage output; diff-cover provides the same per-diff gate below.
+        run: |
+          pytest -m "not smoke" -q --tb=short \
+            --cov=lite_indexer \
+            --cov-report=term \
+            --cov-report=xml:coverage.xml \
+            --cov-report=lcov:coverage.lcov \
+            --cov-fail-under=60
+
+      - name: Per-diff coverage gate (diff-cover — BLOCKING)
+        # Ratchet: lines CHANGED vs origin/main must be >=60% covered.
+        # On pushes to main the diff is empty and this passes trivially.
+        run: diff-cover coverage.xml --compare-branch=origin/main --fail-under=60
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            coverage.lcov
