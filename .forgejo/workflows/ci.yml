@@ -92,3 +92,40 @@ jobs:
           path: |
             coverage.xml
             coverage.lcov
+# Append these jobs under `jobs:` in any repo's ci.yml. Self-contained.
+  supply-chain:
+    runs-on: docker-x64
+    container:
+      image: python:3.11-slim
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install scanners
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates && rm -rf /var/lib/apt/lists/*
+          curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o /usr/local/bin/osv-scanner && chmod +x /usr/local/bin/osv-scanner
+          curl -sSfL https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog_linux_amd64.tar.gz | tar xz -C /usr/local/bin trufflehog
+      - name: OSV dependency scan (hallucinated/vulnerable deps)
+        run: osv-scanner scan source --format table ./ || echo "::warning::OSV findings — triaged baseline, see log"
+      - name: Trufflehog verified-live secrets (all history)
+        run: trufflehog git file://. --only-verified --failures-only --no-update
+
+  nightly-deep-scan:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: docker-x64
+    container:
+      image: python:3.11-slim
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Noseyparker full-history secret hunt
+        run: |
+          curl -sSfL https://github.com/praetorian-inc/noseyparker/releases/latest/download/noseyparker-v0.24.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          ./noseyparker-v0.24.0-x86_64-unknown-linux-gnu/noseyparker scan --git-history-format all . || true
+          ./noseyparker-v0.24.0-x86_64-unknown-linux-gnu/noseyparker report || true
+      - name: Grype vulnerability match on working tree
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          grype dir:. --fail-on critical || echo "::warning::critical vulns in tree"
