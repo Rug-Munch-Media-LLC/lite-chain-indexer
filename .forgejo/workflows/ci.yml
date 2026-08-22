@@ -109,7 +109,7 @@ jobs:
       - name: OSV dependency scan (hallucinated/vulnerable deps)
         run: osv-scanner scan source --format table ./ || echo "::warning::OSV findings — triaged baseline, see log"
       - name: Trufflehog verified-live secrets (all history)
-        run: trufflehog git file://. --only-verified --failures-only --no-update
+        run: trufflehog git file://. --only-verified --fail --no-update
 
   nightly-deep-scan:
     if: ${{ github.event_name == 'schedule' }}
