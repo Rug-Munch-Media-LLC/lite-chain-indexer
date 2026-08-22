@@ -96,7 +96,7 @@ jobs:
   supply-chain:
     runs-on: docker-x64
     container:
-      image: python:3.11-slim
+      image: nikolaik/python-nodejs:python3.11-nodejs22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -115,7 +115,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' }}
     runs-on: docker-x64
     container:
-      image: python:3.11-slim
+      image: nikolaik/python-nodejs:python3.11-nodejs22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
