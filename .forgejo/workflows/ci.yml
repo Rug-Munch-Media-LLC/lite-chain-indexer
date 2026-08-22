@@ -105,7 +105,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates && rm -rf /var/lib/apt/lists/*
           curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o /usr/local/bin/osv-scanner && chmod +x /usr/local/bin/osv-scanner
-          curl -sSfL https://github.com/trufflesecurity/trufflehog/releases/latest/download/trufflehog_linux_amd64.tar.gz | tar xz -C /usr/local/bin trufflehog
+          curl -sSfL https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.0/trufflehog_3.97.0_linux_amd64.tar.gz | tar xz -C /usr/local/bin trufflehog
       - name: OSV dependency scan (hallucinated/vulnerable deps)
         run: osv-scanner scan source --format table ./ || echo "::warning::OSV findings — triaged baseline, see log"
       - name: Trufflehog verified-live secrets (all history)
