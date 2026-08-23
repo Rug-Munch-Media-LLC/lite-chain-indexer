@@ -32,11 +32,16 @@ SOLANA_ENDPOINTS: list[str] = [
     # T4 — API-key free tiers (set env vars to activate)
     "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # Alchemy free
     "https://rpc.helius.xyz/?api-key=${HELIUS_KEY}",  # Helius free (25K req/mo)
+    # ── Freemium depth (added 2026-08-23 — activate via env) ──
+    "https://lb.drpc.org/ogrpc?network=solana&dkey=${DRPC_KEY}",  # dRPC load balancer
+    "https://rpc.ankr.com/solana/${ANKR_KEY}",  # Ankr keyed (keyless was plan-blocked)
+    "${QUICKNODE_SOLANA_URL}",  # QuickNode dedicated endpoint (full URL)
 ]
-# NOTE: solana.drpc.org and rpc.ankr.com/solana were removed 2026-08-03 —
-# confirmed unusable on the free plan ("chain is not available on free
-# plan" / "API key is not allowed"). The two public endpoints above are
-# verified alive via getSlot.
+# NOTE: solana.drpc.org and rpc.ankr.com/solana KEYLESS were removed
+# 2026-08-03 — confirmed unusable on the free plan ("chain is not available
+# on free plan" / "API key is not allowed"). The keyed variants above use
+# paid/free-tier keys and are a different access path. The two public
+# endpoints at the top are verified alive via getSlot.
 
 # ── Tron RPC Endpoints ───────────────────────────────────────────────
 

@@ -52,7 +52,7 @@ load_env_file()
 logger = get_logger(__name__)
 
 GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
-    # ── Ethereum (13 endpoints) ───────────────────────────────────────
+    # ── Ethereum ──────────────────────────────────────────────────────
     # T1: onfinality public (verified 2026-08-05 — eth_getLogs OK at
     #     10-block chunks from tip; 429-banned on 50-block catch-up,
     #     keep chunks small via ETH_BATCH_SIZE=10)
@@ -69,15 +69,21 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T5: blastapi (10-block range cap — OK with ETH_BATCH_SIZE=10),
     #     merkle (verified 2026-08-05 blockNumber; eth_getLogs returns
     #     -32601 Method not found — tip/blockNumber fallback only)
-    # NOTE: llamarpc (HTTP 521), ankr (Unauthorized without key) and
+    # NOTE: llamarpc (HTTP 521), ankr keyless (Unauthorized) and
     #       1rpc.io/eth (usage limit) were tested 2026-08-05 and failed
-    #       the eth_blockNumber probe — not added.
+    #       the eth_blockNumber probe — not added. Keyed Ankr/dRPC-lb
+    #       added 2026-08-23 (freemium depth — activate via env).
     "ethereum": [
         "https://eth.api.onfinality.io/public",
         "https://eth-pokt.nodies.app",
         "https://eth.drpc.org",
         "https://rpc.mevblocker.io",
         "https://rpc.flashbots.net",
+        # ── Freemium (keyed free tiers — activate by setting the env var) ──
+        "https://lb.drpc.org/ogrpc?network=ethereum&dkey=${DRPC_KEY}",  # dRPC load balancer
+        "https://rpc.ankr.com/eth/${ANKR_KEY}",  # Ankr keyed (keyless was Unauthorized)
+        "https://mainnet.infura.io/v3/${INFURA_KEY}",  # Infura free tier
+        "${QUICKNODE_ETH_URL}",  # QuickNode dedicated endpoint (full URL)
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -89,6 +95,10 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://base.gateway.tenderly.co",
         "https://mainnet.base.org",
         "https://base.drpc.org",
+        # ── Freemium (keyed) ──
+        "https://lb.drpc.org/ogrpc?network=base&dkey=${DRPC_KEY}",
+        "https://rpc.ankr.com/base/${ANKR_KEY}",
+        "${QUICKNODE_BASE_URL}",
     ],
     # ── BSC (8 endpoints) ─────────────────────────────────────────────
     # T1: nodereal public, 48.club (live-verified 2026-08-04 with the
@@ -114,6 +124,10 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc-dataseed1.defibit.io",  # T2 — official Binance seed mirror
         "https://bsc-dataseed1.ninicoin.io",  # T2 — official Binance seed mirror
         "https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
+        # ── Freemium (keyed) ──
+        "https://lb.drpc.org/ogrpc?network=bsc&dkey=${DRPC_KEY}",
+        "https://rpc.ankr.com/bsc/${ANKR_KEY}",
+        "${QUICKNODE_BSC_URL}",
     ],
     # ── Polygon (6 endpoints) ─────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)
@@ -135,6 +149,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://polygon.drpc.org",
         "https://polygon-mainnet.gateway.tatum.io",
         "https://rpc-mainnet.matic.quiknode.pro",
+        # ── Freemium (keyed) ──
+        "https://lb.drpc.org/ogrpc?network=polygon&dkey=${DRPC_KEY}",
+        "https://rpc.ankr.com/polygon/${ANKR_KEY}",
     ],
     # ── Arbitrum (6 endpoints) ────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)
@@ -151,6 +168,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://arbitrum.gateway.tenderly.co",
         "https://arbitrum.drpc.org",
         "https://arb1.arbitrum.io/rpc",
+        # ── Freemium (keyed) ──
+        "https://lb.drpc.org/ogrpc?network=arbitrum&dkey=${DRPC_KEY}",
+        "https://rpc.ankr.com/arbitrum/${ANKR_KEY}",
     ],
     # ── Optimism (4 endpoints) ────────────────────────────────────────
     # T1: tenderly (verified)
@@ -161,6 +181,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://optimism.gateway.tenderly.co",
         "https://mainnet.optimism.io",
         "https://optimism.drpc.org",
+        # ── Freemium (keyed) ──
+        "https://lb.drpc.org/ogrpc?network=optimism&dkey=${DRPC_KEY}",
+        "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
     ],
     # ── Avalanche (4 endpoints) ───────────────────────────────────────
     # T1: official api.avax.network, drpc.org (verified)
@@ -171,6 +194,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://avalanche.drpc.org",  # T1 — drpc.org (verified)
         "https://avalanche.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://avalanche-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
+        "https://lb.drpc.org/ogrpc?network=avalanche&dkey=${DRPC_KEY}",  # freemium
     ],
     # ── Fantom (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.fantom.network + rpcapi.fantom.network (verified)
@@ -181,6 +205,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpcapi.fantom.network",  # T1 — official-alt (verified)
         "https://fantom.drpc.org",  # T2 — drpc.org (verified)
         "https://fantom-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
+        "https://lb.drpc.org/ogrpc?network=fantom&dkey=${DRPC_KEY}",  # freemium
     ],
     # ── Linea (5 endpoints) ───────────────────────────────────────────
     # T1: official rpc.linea.build, drpc.org (verified)
@@ -193,6 +218,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://linea.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://1rpc.io/linea",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://linea-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
+        "https://lb.drpc.org/ogrpc?network=linea&dkey=${DRPC_KEY}",  # freemium
     ],
     # ── Scroll (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.scroll.io, drpc.org (verified)
@@ -203,6 +229,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://scroll.drpc.org",  # T1 — drpc.org (verified)
         "https://1rpc.io/scroll",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://scroll-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
+        "https://lb.drpc.org/ogrpc?network=scroll&dkey=${DRPC_KEY}",  # freemium
     ],
     # ── zkSync Era (4 endpoints) ──────────────────────────────────────
     # T1: official mainnet.era.zksync.io, drpc.org (verified)
@@ -213,6 +240,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://zksync.drpc.org",  # T1 — drpc.org (verified)
         "https://zksync.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://zksync-era.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
+        "https://lb.drpc.org/ogrpc?network=zksync&dkey=${DRPC_KEY}",  # freemium
     ],
     # ── Mantle (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.mantle.xyz (verified)
@@ -224,6 +252,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://mantle.drpc.org",  # T2 — drpc.org (verified)
         "https://mantle.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://1rpc.io/mantle",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
+        "https://lb.drpc.org/ogrpc?network=mantle&dkey=${DRPC_KEY}",  # freemium
     ],
     # ── Gnosis (3 endpoints) ──────────────────────────────────────────
     # T1: official rpc.gnosischain.com, drpc.org (verified)
@@ -232,6 +261,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.gnosischain.com",
         "https://gnosis.drpc.org",
         "https://gnosis.gateway.tenderly.co",
+        "https://lb.drpc.org/ogrpc?network=gnosis&dkey=${DRPC_KEY}",  # freemium
     ],
     # ── Celo (3 endpoints) ────────────────────────────────────────────
     # T1: official forno.celo.org, ankr.com/celo (verified — only working ankr)
@@ -258,16 +288,100 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 }
 
 # Summary of EVM endpoints per chain:
-#   ethereum: 13    base: 5      bsc: 8      polygon: 6
-#   arbitrum: 6     optimism: 4  avalanche: 4 fantom: 4
-#   linea: 5        scroll: 4    zksync: 4   mantle: 4
-#   gnosis: 3       celo: 3      robinhood: 1
+#   ethereum: 9     base: 6      bsc: 11     polygon: 6
+#   arbitrum: 5     optimism: 5  avalanche: 5 fantom: 5
+#   linea: 6        scroll: 5    zksync: 5   mantle: 5
+#   gnosis: 4       celo: 3      robinhood: 1
 # -------------------------------------------------------
-#   Total: 74 endpoints across 15 chains
-#   (61 free public + 13 API-key free tiers)
+#   Total source templates: 71 across 15 chains
+#   (46 free public + 25 API-key free tiers — keyed ones activate via env)
 #
-#   Non-EVM: solana (4), tron (3)
-#   Grand total: 81 endpoints across 17 chains
+#   Non-EVM: solana (7), tron (3)
+#   Grand total source templates: 81 across 17 chains
+
+
+# ── Candidate Endpoints (awaiting live verification) ────────────────
+# Unverified additions from chainlist cross-pollination + operator tips.
+# NOT part of the active pool — scripts/probe-rpc-endpoints.py probes
+# these with eth_chainId + eth_blockNumber (+ optional topic-only
+# eth_getLogs range check) and emits ready-to-paste promoted snippets.
+# Promotion criteria: chainId matches, blockNumber OK, latency < 1500ms,
+# and (for this indexer) topic-only eth_getLogs over a small tip range.
+# Rejected candidates stay documented in the probe report, never silently.
+CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
+    "ethereum": [
+        "https://eth.llamarpc.com",  # re-probe: 521 on 2026-08-05, provider since stabilized?
+        "https://1rpc.io/eth",  # re-probe: usage-limited 2026-08-05
+        "https://eth.meowrpc.com",  # getLogs unsupported — blockNumber fallback only
+        "https://ethereum.blockpi.network/v1/rpc/public",
+        "https://cloudflare-eth.com",  # reported dead 2026-08-05 — confirm before cull
+        "https://eth-mainnet.public.blastapi.io",
+        "https://virginia.rpc.blxrbdn.com",
+    ],
+    "base": [
+        "https://base.llamarpc.com",
+        "https://base-rpc.publicnode.com",  # getLogs needs address filter — fallback only
+        "https://base-meow.rpc.thirdweb.com",
+        "https://base-mainnet.public.blastapi.io",
+    ],
+    "bsc": [
+        "https://binance.llamarpc.com",
+        "https://bsc.meowrpc.com",
+        "https://bsc-blockchain.rpc.thirdweb.com",
+        "https://bsc-mainnet.public.blastapi.io",
+        "https://bsc.blockpi.network/v1/rpc/public",  # 521 on 2026-08-07 — re-probe
+    ],
+    "polygon": [
+        "https://polygon.llamarpc.com",
+        "https://polygon.meowrpc.com",
+        "https://polygon-bor-rpc.publicnode.com",  # needs address filter — fallback only
+        "https://polygon-mainnet.public.blastapi.io",
+        "https://polygon.blockpi.network/v1/rpc/public",
+    ],
+    "arbitrum": [
+        "https://arbitrum.llamarpc.com",
+        "https://arbitrum-one-rpc.publicnode.com",
+        "https://arbitrum.meowrpc.com",  # getLogs unsupported — fallback only
+        "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
+        "https://arbitrum.blockpi.network/v1/rpc/public",
+    ],
+    "optimism": [
+        "https://optimism.llamarpc.com",
+        "https://optimism-rpc.publicnode.com",
+        "https://optimism.meowrpc.com",
+        "https://opt-mainnet.public.blastapi.io",
+    ],
+    "avalanche": [
+        "https://avalanche-c-chain-rpc.publicnode.com",
+        "https://avalanche.mainnet.nodies.app",
+    ],
+    "fantom": [
+        "https://fantom-rpc.publicnode.com",
+        "https://fantom-mainnet.public.blastapi.io",
+    ],
+    "linea": [
+        "https://linea-rpc.publicnode.com",
+        "https://linea.blockpi.network/v1/rpc/public",
+    ],
+    "scroll": [
+        "https://scroll-rpc.publicnode.com",
+        "https://scroll-mainnet.public.blastapi.io",
+    ],
+    "zksync": [
+        "https://zksync-era-rpc.publicnode.com",
+        "https://mainnet.era.zksync.network",  # alternate official host
+    ],
+    "mantle": [
+        "https://mantle-rpc.publicnode.com",
+    ],
+    "gnosis": [
+        "https://gnosis-rpc.publicnode.com",
+        "https://gnosis.blockscout.com",  # likely blockNumber-only
+    ],
+    "celo": [
+        "https://celo-mainnet.public.blastapi.io",
+    ],
+}
 
 
 # ── Endpoint URL template resolution ───────────────────────────────
@@ -279,6 +393,30 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 # produces verification retry noise (verify_endpoint_failed storms). Set
 # the corresponding env var in the service environment and restart to
 # activate those endpoints.
+
+
+# ── Expected chainId map ────────────────────────────────────────────
+# Canonical EIP-155 ids per chain name. The probe script
+# (scripts/probe-rpc-endpoints.py) hard-rejects any endpoint answering
+# with a different id — a wrong chainId means impostor/misconfigured
+# endpoint regardless of latency. Solana/Tron use non-EVM probes.
+EXPECTED_CHAIN_IDS: dict[str, str] = {
+    "ethereum": "0x1",
+    "base": "0x2105",
+    "bsc": "0x38",
+    "polygon": "0x89",
+    "arbitrum": "0xa4b1",
+    "optimism": "0xa",
+    "avalanche": "0xa86a",
+    "fantom": "0xfa",
+    "linea": "0xe708",
+    "scroll": "0x82750",
+    "zksync": "0x144",
+    "mantle": "0x1388",
+    "gnosis": "0x64",
+    "celo": "0xa4ec",
+    "robinhood": "0x132c8",
+}
 
 
 def _resolve_endpoint_url(url: str) -> str:
