@@ -556,7 +556,6 @@ class LiteIndexer(
         if last is not None:
             self._last_vector_ingestion_block = last
         return stats
-        return events
 
     # ── Block Range Determination ──────────────────────────────────
 

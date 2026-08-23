@@ -9,15 +9,18 @@ from __future__ import annotations
 import gc  # noqa: F401 — used by maintenance mixin body
 from typing import Any  # noqa: F401
 
+from lite_indexer.chains import GET_LOGS_ENDPOINTS
 from lite_indexer.config import PLUGIN_ENABLED
 from lite_indexer.logging import get_logger
+from lite_indexer.plugin import BasePlugin, PluginContext, PluginLoader
+from lite_indexer.rpc import get_best_endpoint
 
 log = get_logger(__name__)
 logger = log  # god-file bodies reference `logger`; keep both names
 
-class PluginsMixin:
-    'Plugin lifecycle: loading, table provisioning, event dispatch.'
 
+class PluginsMixin:
+    "Plugin lifecycle: loading, table provisioning, event dispatch."
 
     # ── Plugins ─────────────────────────────────────────────────────
 
