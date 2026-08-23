@@ -547,6 +547,12 @@ STALENESS_MAX_BLOCKS = 3
 # health-verification penalty (+10000) and sits below the circuit-open
 # (+20000) / hard-ban (+50000) penalties so the failure path still wins.
 STALE_ENDPOINT_PENALTY = 15000
+# Success-rate damping for the P2C score: an endpoint's damped latency is
+# multiplied by ``(1 + ERROR_RATE_DAMPING * error_rate)`` so endpoints with
+# poor recent success ratios lose selections even between hard failures.
+# At the default 2.0: 30% errors -> 1.6x score, 100% errors -> 3x. Bounded,
+# smooth, and derived from the already-tracked windowed outcomes.
+ERROR_RATE_DAMPING = float(__import__("os").getenv("RPC_ERROR_RATE_DAMPING", "2.0"))
 
 
 @dataclass
@@ -583,13 +589,17 @@ class EndpointLatency:
         return sum(0 if ok else 1 for ok in recent) / len(recent)
 
     def damped_score(self) -> float:
-        """P2C selection score: EWMA latency damped by in-flight load.
+        """P2C selection score: EWMA latency damped by in-flight load AND
+        recent success ratio.
 
-        ``score = ewma_ms * (1 + in_flight)`` per the audit spec — an
-        endpoint that is already serving many in-flight requests is
-        penalized so load spreads across the pool.
+        ``score = ewma_ms * (1 + in_flight) * (1 + ERROR_RATE_DAMPING * error_rate)``
+        — an endpoint already serving many in-flight requests is penalized
+        (load spreads), and one with a poor windowed error rate is damped
+        even between recorded failures, so P2C stops drawing flaky
+        endpoints that recover latency-wise but fail half their calls.
         """
-        return self.ewma_ms * (1.0 + self.in_flight)
+        base = self.ewma_ms * (1.0 + self.in_flight)
+        return base * (1.0 + ERROR_RATE_DAMPING * self.error_rate())
 
 
 # Module-level latency state shared across the codebase.

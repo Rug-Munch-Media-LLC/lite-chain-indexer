@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import time
+
 import pytest
 
 from lite_indexer.rpc.routing import (
@@ -369,3 +371,55 @@ class TestRpcCircuitBreaker:
 def test_module_breaker_not_dirty():
     """The shared breaker should not leak state across test modules."""
     assert CIRCUIT_BREAKER.state("https://unused.example") == "closed"
+
+
+# ── Success-rate damping in the P2C score (2026-08-23) ────────────────
+
+
+class TestErrorRateDamping:
+    """damped_score() multiplies by (1 + ERROR_RATE_DAMPING * error_rate)."""
+
+    def test_zero_errors_unchanged(self):
+        from lite_indexer.rpc.routing import EndpointLatency
+
+        e = EndpointLatency(endpoint="https://a")
+        e.ewma_ms = 100.0
+        assert e.damped_score() == pytest.approx(100.0)
+
+    def test_error_rate_damps_score(self, monkeypatch: pytest.MonkeyPatch):
+        from lite_indexer.rpc import routing as rm
+
+        monkeypatch.setattr(rm, "ERROR_RATE_DAMPING", 2.0)
+        e = rm.EndpointLatency(endpoint="https://b")
+        e.ewma_ms = 100.0
+        now = time.time()
+        # 7 ok / 3 errors in window → error_rate 0.3 → factor 1.6.
+        e._outcomes = [(now - i, i < 7) for i in range(10)]
+        assert e.error_rate(now) == pytest.approx(0.3)
+        assert e.damped_score() == pytest.approx(160.0)
+
+    def test_flaky_endpoint_loses_p2c(self, monkeypatch: pytest.MonkeyPatch):
+        """Equal latency; the flaky endpoint must lose the P2C draw."""
+        from lite_indexer.rpc import routing as rm
+
+        good, flaky = "https://good", "https://flaky"
+        for ep in (good, flaky):
+            st = rm._stats(ep)
+            st.ewma_ms = 50.0
+        now = time.time()
+        rm._stats(flaky)._outcomes = [(now - i, False) for i in range(10)]  # 100% errors
+
+        # Deterministic draw of both candidates — flaky always loses.
+        monkeypatch.setattr(rm.random, "sample", lambda pop, k: [good, flaky])
+        for _ in range(20):
+            assert rm.select_p2c([good, flaky]) == good
+
+    def test_env_override(self, monkeypatch: pytest.MonkeyPatch):
+        import importlib
+
+        monkeypatch.setenv("RPC_ERROR_RATE_DAMPING", "5.0")
+        from lite_indexer.rpc import routing as rm
+
+        importlib.reload(rm)
+        assert rm.ERROR_RATE_DAMPING == 5.0
+        monkeypatch.setattr(rm, "ERROR_RATE_DAMPING", 2.0)  # restore for others
