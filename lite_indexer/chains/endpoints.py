@@ -76,6 +76,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     "ethereum": [
         "https://eth.api.onfinality.io/public",
         "https://eth-pokt.nodies.app",
+        "https://eth.nownodes.io/${NOWNODES_API_KEY}",  # NOWNodes (verified 2026-08-23, 100k req/mo plan)
         "https://eth.drpc.org",
         "https://rpc.mevblocker.io",
         "https://rpc.flashbots.net",

@@ -39,6 +39,7 @@ SOLANA_ENDPOINTS: list[str] = [
     "${QUICKNODE_SOLANA_URL}",  # QuickNode dedicated endpoint (full URL)
     "${CHAINSTACK_SOLANA_URL}",  # Chainstack shared node (live-verified 2026-08-23: getSlot ok, ~250ms)
     "${GETBLOCK_SOLANA_URL}",  # GetBlock shared (live-verified 2026-08-23)
+    "https://sol.nownodes.io/${NOWNODES_API_KEY}",  # NOWNodes (verified 2026-08-23)
 ]
 # NOTE: solana.drpc.org and rpc.ankr.com/solana KEYLESS were removed
 # 2026-08-03 — confirmed unusable on the free plan ("chain is not available
