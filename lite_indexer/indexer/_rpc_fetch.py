@@ -189,3 +189,9 @@ class RpcFetchMixin:
                 event["blockTimestamp"] = timestamps[bn]
             elif not event.get("blockTimestamp"):
                 event["blockTimestamp"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Degod-split regression fix: the tail `return events` was dropped
+        # when this body moved out of the god-file, so every enriched batch
+        # returned None and the sync loop crashed on iteration
+        # ('NoneType' object is not iterable) chain-wide.
+        return events
