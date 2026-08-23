@@ -284,6 +284,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://forno.celo.org",  # T1 — official forno (verified)
         "https://rpc.ankr.com/celo",  # T1 — ankr (verified — celo only)
         "https://celo.drpc.org",  # T2 — drpc.org (verified)
+        "https://lb.drpc.org/ogrpc?network=celo&dkey=${DRPC_KEY}",  # freemium
     ],
     # ── Robinhood (1 endpoint) ────────────────────────────────────────
     # T1: official rpc.robinhood.org (Arbitrum Orbit L2, chainId 78600,

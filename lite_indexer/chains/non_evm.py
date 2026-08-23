@@ -33,7 +33,8 @@ SOLANA_ENDPOINTS: list[str] = [
     "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # Alchemy free
     "https://rpc.helius.xyz/?api-key=${HELIUS_KEY}",  # Helius free (25K req/mo)
     # ── Freemium depth (added 2026-08-23 — activate via env) ──
-    "https://lb.drpc.org/ogrpc?network=solana&dkey=${DRPC_KEY}",  # dRPC load balancer
+    # NOTE: dRPC-lb solana is PAID-ONLY ("chain is not available on free plan"
+    #       re-confirmed 2026-08-23 with a live free key) — no template added.
     "https://rpc.ankr.com/solana/${ANKR_KEY}",  # Ankr keyed (keyless was plan-blocked)
     "${QUICKNODE_SOLANA_URL}",  # QuickNode dedicated endpoint (full URL)
 ]
