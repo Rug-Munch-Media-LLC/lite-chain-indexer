@@ -59,6 +59,7 @@ from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.query.cache import QueryCache
 from lite_indexer.rpc import RpcClient, get_best_endpoint, select_endpoint_for_method
 from lite_indexer.rpc.client import fetch_block_timestamps
+from lite_indexer.rpc.hedging import hedged_rpc
 from lite_indexer.storage.parquet import ParquetExporter
 
 logger = get_logger(__name__)
@@ -536,10 +537,23 @@ class RPCFetcher:
         if cached is not None:
             return list(cached)
 
-        endpoint = await self._select_endpoint(chain, "eth_getLogs")
-        if endpoint is None:
+        endpoints = self.endpoints_for(chain)
+        if not endpoints:
             return []
-        raw = await self._client.get_logs(endpoint, from_block, to_block, TRANSFER_EVENT_TOPIC, address=address)
+
+        async def _get_logs_at(endpoint: str):
+            return await self._client.get_logs(
+                endpoint, from_block, to_block, TRANSFER_EVENT_TOPIC, address=address
+            )
+
+        # Hedged dispatch (NodeCore-style): a slow primary no longer stalls
+        # the fetch — a second leg fires after RPC_HEDGE_DELAY and the first
+        # success wins. Fail-open to plain behaviour on any issue.
+        try:
+            raw = await hedged_rpc(_get_logs_at, endpoints)
+        except Exception:  # noqa: BLE001 — hedge is an optimization
+            endpoint = await self._select_endpoint(chain, "eth_getLogs")
+            raw = None if endpoint is None else await _get_logs_at(endpoint)
         if raw is None:
             self._cache_negative(key)
             return []
