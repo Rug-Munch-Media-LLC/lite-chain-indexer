@@ -115,6 +115,12 @@ class TestGetLogsEndpoints:
             assert len(urls) == len(set(urls)), chain
 
     def test_total_endpoint_count_sane(self):
-        """Active pool is bounded: >= 1 per chain, <= the 66 raw templates."""
+        """Active pool is bounded: >= 1 per chain, <= raw template count.
+
+        Upper bound raised 66 -> 96 (2026-08-23): probe-promoted fallbacks
+        (ee50656) + DRPC_KEY keyed depth (aeb7228) intentionally expanded
+        the pool. The bound still guards against runaway duplication —
+        every URL must be a real template, no chain may exceed ~6.
+        """
         total = sum(len(urls) for urls in GET_LOGS_ENDPOINTS.values())
-        assert len(GET_LOGS_ENDPOINTS) <= total <= 66
+        assert len(GET_LOGS_ENDPOINTS) <= total <= 96
