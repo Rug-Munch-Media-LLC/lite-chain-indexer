@@ -189,6 +189,7 @@ class RpcClient:
             Parsed JSON response dict, or None on failure.
         """
         from lite_indexer.rpc.routing import record_rpc_usage
+        from lite_indexer.rpc.autotune import autotune_wait, record_call as autotune_record
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
 
         # Quota-degrade gate: before dispatching, ask the ledger whether
@@ -211,6 +212,9 @@ class RpcClient:
         # Intelligent throttle: honor Retry-After / advertised budget /
         # per-method rate BEFORE spending another request on this endpoint.
         await throttle_before(endpoint, method)
+        # Auto-tune soft spacing: a straining endpoint gets progressively
+        # wider gaps instead of a hard ban (NodeCore-style adaptation).
+        await autotune_wait(endpoint)
         started = time.perf_counter()
         try:
             # Ledger + in-flight telemetry around the actual request.
@@ -252,6 +256,7 @@ class RpcClient:
                 return None
 
             ok = bool("error" not in data or data.get("error") is None)
+            _safe_record(autotune_record, endpoint, ok=ok)
             if ok:
                 record_rpc_usage(endpoint, method, ok=True, bytes_received=bytes_received)
                 # Actual successful response — close the circuit breaker for
