@@ -185,6 +185,12 @@ async def test_verified_endpoints_applied(tmp_path, monkeypatch):
 
     indexer = LiteIndexer(chain="ethereum", from_block=100, to_block=200, data_dir=tmp_path)
 
+    # ISOLATION (found 2026-08-23): a live NATS server runs on this host and
+    # NATS_ENABLED defaults on — without this flag the suite publishes REAL
+    # messages into local infra during tests. Same for NDJSON writer (None
+    # unless enabled) and traces/CH below.
+    indexer.nats_enabled = False
+
     # Capture the endpoint actually used by the strategy during the sync
     used_endpoints: list[str] = []
 
@@ -204,6 +210,21 @@ async def test_verified_endpoints_applied(tmp_path, monkeypatch):
     monkeypatch.setattr("lite_indexer.indexer.check_disk_space", lambda: True)
 
     indexer.strategy.fetch_transfers = AsyncMock(return_value=[])
+
+    # Isolation seams (mirror test_reorg_flag_resets): without these the
+    # sync makes REAL trace-RPC / ClickHouse / NDJSON calls and hangs the
+    # suite (found 2026-08-23 — this test wedged pytest at ~9% three runs
+    # in a row under load).
+    indexer.traces_enabled = False
+    ch = Mock()
+    ch.write_dex_events.return_value = 0
+    ch.write_wallet_features = AsyncMock(return_value={})
+    ch.client.return_value = None
+    indexer._ch_writer = ch
+    indexer._ch_health = type("_ChHealthStub", (), {"ok": lambda self: True})()
+    indexer._enrich_timestamps = AsyncMock(side_effect=lambda events: events)
+    if indexer._ndjson_writer is not None:
+        indexer._ndjson_writer.write_events = Mock(return_value=0)
 
     await indexer.sync_loop()
 

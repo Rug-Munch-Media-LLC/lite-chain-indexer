@@ -14,11 +14,49 @@ Isolation guarantees:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-from lite_indexer.rpc.throttle import RPCRateTracker
+# ── Live-infra isolation: NATS ──────────────────────────────────────────────
+# NATS_ENABLED is captured at IMPORT time (lite_indexer/config.py) and a real
+# NATS server listens on this host (127.0.0.1:4222). Without forcing it off,
+# any test that constructs LiteIndexer and drives sync publishes REAL
+# messages into local infra (found 2026-08-23 via pending-task spam from
+# nats-py client loops). This line MUST stay above every lite_indexer import.
+os.environ["NATS_ENABLED"] = "0"
+
+from lite_indexer.rpc.throttle import RPCRateTracker  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_live_nats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Belt-and-braces: force the already-imported flag off for every test.
+
+    Covers the case where some earlier importer captured NATS_ENABLED=1
+    before conftest's env override could apply.
+    """
+    monkeypatch.setattr("lite_indexer.indexer.NATS_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_clickhouse(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default-isolate every test from the real ClickHouse on this host.
+
+    ``ClickHouseWriter._connect()`` falls back to 127.0.0.1:9000 when no CH
+    env vars are set — and a production-local ClickHouse actually listens
+    there, so "no client" tests silently connected to it and even ran DDL
+    (found 2026-08-23 in test_write_wallet_features_no_client). Pointing the
+    port at 1 makes TCP refuse instantly → ``_connect()`` returns None.
+
+    Tests that need a writer mock their client explicitly; smoke-marked
+    tests (intentional live-service integration) are exempt.
+    """
+    if request.node.get_closest_marker("smoke"):
+        return
+    monkeypatch.setenv("CH_PORT", "1")
+    monkeypatch.setenv("CLICKHOUSE_PORT", "1")
 
 
 @pytest.fixture(autouse=True)

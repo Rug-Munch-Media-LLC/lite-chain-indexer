@@ -362,8 +362,15 @@ async def test_write_wallet_features_other_features_disabled(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
-async def test_write_wallet_features_no_client() -> None:
-    writer = ClickHouseWriter()  # no client, no CH env → _connect() returns None
+async def test_write_wallet_features_no_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    # ISOLATION (found 2026-08-23): this host runs a real ClickHouse and
+    # _connect() defaults to it — without pinning an unreachable port the
+    # writer CONNECTED to prod-local CH and even ran ensure_wallet_projection
+    # DDL against it. Port 1 refuses instantly → _connect() returns None,
+    # which is the exact condition this test exists to exercise.
+    monkeypatch.setenv("CH_PORT", "1")
+    monkeypatch.setenv("CLICKHOUSE_PORT", "1")
+    writer = ClickHouseWriter()  # no client, unreachable CH → _connect() returns None
     stats = await writer.write_wallet_features("ethereum", [])
     assert stats == {}
 
