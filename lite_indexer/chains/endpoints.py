@@ -129,6 +129,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc-dataseed1.ninicoin.io",  # T2 — official Binance seed mirror
         "https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
         "https://bsc-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "${GETBLOCK_BSC_URL}",  # GetBlock shared (live-verified 2026-08-23: chainId 0x38)
         # ── Freemium (keyed) ──
         "https://lb.drpc.org/ogrpc?network=bsc&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/bsc/${ANKR_KEY}",
@@ -377,8 +378,7 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
         "https://zksync-era-rpc.publicnode.com",
         "https://mainnet.era.zksync.network",  # alternate official host
     ],
-    "mantle": [
-    ],
+    "mantle": [],
     "gnosis": [
         "https://gnosis.blockscout.com",  # likely blockNumber-only
     ],
