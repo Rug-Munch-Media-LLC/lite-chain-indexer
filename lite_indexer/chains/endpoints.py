@@ -293,6 +293,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #     chainid.network/chainlist still map 78600 to "Vanguard" (VANRY)
     #     — the chain may be newly launched / geo-restricted. Registered
     #     per spec (single official endpoint) and left for live re-verify.
+    #     2026-08-23: dRPC now lists "robinhood" but their network
+    #     answers chainId 0x1237 (4663) != spec 0x132c8 (78600) — identity
+    #     conflict; rejected per probe rules pending clarification.
     #     Candidates rejected 2026-08-13: robinhood.rpc.publicnode.com
     #     (TLS handshake failure — subdomain not served), robinhood.drpc.org
     #     (302 to drpc.org homepage — no chain configured), robinhoodchain.org
