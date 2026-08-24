@@ -53,6 +53,27 @@ RESTART_MARKER="${RESTART_MARKER:-/var/data/chain-indexer/lite-indexer-last-rest
 # shellcheck disable=SC2317
 log() { echo "[$(date -Iseconds)] $*"; }
 
+# ── Alert ladder (house pattern: webhook -> n8n -> redis telegram) ────
+# Stall events must page humans, not just restart silently. The 2026-08-24
+# incident (ethereum 23h stale, bsc 357h) went unnoticed because every
+# watchdog action was log-only.
+alert_json() {
+    local title="$1" message="$2" severity="${3:-warning}"
+    local payload
+    payload=$(printf '{"title":"%s","message":"%s","severity":"%s","source":"%s","timestamp":"%s"}' \
+      "$title" "$message" "$severity" "lite-indexer@$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+    curl -sSf -X POST "http://127.0.0.1:9099/alert" \
+      -H "Content-Type: application/json" -d "$payload" \
+      --connect-timeout 5 -m 15 >/dev/null 2>&1 && return 0
+    curl -sSf -X POST "http://127.0.0.1:5678/webhook/alert" \
+      -H "Content-Type: application/json" -d "$payload" \
+      --connect-timeout 5 -m 15 >/dev/null 2>&1 && return 0
+    if command -v redis-cli >/dev/null 2>&1; then
+        redis-cli LPUSH rag:telegram_queue "$payload" >/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
+
 # ── Restart helper with cooldown ──────────────────────────────────────
 # shellcheck disable=SC2317
 restart_if_cooldown_elapsed() {
@@ -65,11 +86,15 @@ restart_if_cooldown_elapsed() {
     elapsed=$((now - last_restart))
     if [ "${elapsed}" -lt $((RESTART_COOLDOWN_MIN * 60)) ]; then
         log "restart throttled: ${reason} — last restart ${elapsed}s ago (<${RESTART_COOLDOWN_MIN}min cooldown); skipping to let RPC circuit breakers recover"
+        alert_json "LiteIndexer STILL stalled (restart throttled)" \
+          "${reason}; last restart ${elapsed}s ago — if this repeats, investigate RPC providers manually" \
+          "critical" || true
         return 1
     fi
     log "restarting ${SERVICE}: ${reason}"
     systemctl restart "${SERVICE}" 2>&1 | log || true
     date +%s >"${RESTART_MARKER}" 2>/dev/null || true
+    alert_json "LiteIndexer restarted" "${reason}" "warning" || true
     return 0
 }
 

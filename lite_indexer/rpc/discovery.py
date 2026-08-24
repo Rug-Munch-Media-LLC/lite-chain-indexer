@@ -218,6 +218,7 @@ async def validate_rpc_candidates(
         async with semaphore:
             try:
                 async with _httpx.AsyncClient(timeout=_httpx.Timeout(timeout)) as client:
+                    # Gate 1: liveness.
                     resp = await client.post(
                         url,
                         json={"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},
@@ -225,7 +226,32 @@ async def validate_rpc_candidates(
                     if resp.status_code != 200:
                         return False
                     data = resp.json()
-                    return isinstance(data, dict) and bool(data.get("result"))
+                    if not (isinstance(data, dict) and bool(data.get("result"))):
+                        return False
+
+                    # Gate 2: getLogs capability (audit fix). The indexer's
+                    # core workload is eth_getLogs; endpoints that only serve
+                    # basic methods (baseazul-class) pass a blockNumber probe
+                    # then 429/405 on every real request and poison the pool.
+                    tip_hex = data.get("result", "0x0")
+                    try:
+                        tip = int(tip_hex, 16)
+                    except (TypeError, ValueError):
+                        return False
+                    from_block = hex(max(0, tip - 2))
+                    gl = await client.post(
+                        url,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "eth_getLogs",
+                            "params": [{"fromBlock": from_block, "toBlock": "latest"}],
+                        },
+                    )
+                    if gl.status_code != 200:
+                        return False
+                    gl_data = gl.json()
+                    return isinstance(gl_data, dict) and isinstance(gl_data.get("result"), list)
             except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
                 logger.debug("rpc_probe_failed", url=url[:60], error=str(exc)[:80])
                 return False

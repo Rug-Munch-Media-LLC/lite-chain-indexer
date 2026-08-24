@@ -35,6 +35,7 @@ from lite_indexer.rpc.pool import (
     record_endpoint_failure,
     record_endpoint_success,
     record_rate_limit,
+    unban_endpoint,
 )
 from lite_indexer.rpc.routing import RpcCircuitBreaker
 
@@ -266,21 +267,63 @@ class TestSingleEndpointFailure:
 
 class TestRateLimitDoesNotTripCircuit:
     def test_rate_limits_never_open_circuit(self, clock: _Clock):
-        """Even dozens of 429s must not trip the breaker (threshold 10/120s)."""
+        """429s never trip the BREAKER (that is for genuine failures).
+
+        Sustained consecutive 429s DO escalate to a soft-ban window since
+        2026-08-24 (production incident: a dying provider absorbed an
+        unbounded retry storm because 429s could never ban). The breaker
+        itself stays closed — bans are the escalation path, not circuits.
+        """
         ep = "https://ratelimited.invalid"
-        for _ in range(50):
-            record_rate_limit(ep)
         from lite_indexer.rpc.routing import CIRCUIT_BREAKER
 
-        assert CIRCUIT_BREAKER.is_open(ep) is False
+        try:
+            for _ in range(50):
+                record_rate_limit(ep)
+            assert CIRCUIT_BREAKER.is_open(ep) is False
+            # Streak far past threshold → soft-banned (capped at 1h).
+            assert is_endpoint_banned(ep) is True
+        finally:
+            unban_endpoint(ep)
+
+    def test_transient_429s_do_not_ban(self, clock: _Clock):
+        """1-2 consecutive 429s = ordinary throttling: backoff only."""
+        ep = "https://transient.invalid"
+        record_rate_limit(ep)
+        record_rate_limit(ep)
         assert is_endpoint_banned(ep) is False
 
-    def test_rate_limit_does_not_hard_ban(self, clock: _Clock):
-        """A 429 must not put the endpoint under the exponential ban window."""
-        ep = "https://ratelimited.invalid"
-        record_rate_limit(ep)
-        record_rate_limit(ep)
-        assert is_endpoint_banned(ep) is False
+    def test_sustained_429_streak_escalates_to_softban(self, clock: _Clock):
+        """Streak >= 3 → escalating soft-ban: 5min, then doubling, cap 1h.
+
+        This is the anti-ban guard: parallel chunk workers must stop
+        aggregating into a permanent 429 storm against a dying provider.
+        """
+        ep = "https://streaky.invalid"
+        try:
+            record_rate_limit(ep)
+            record_rate_limit(ep)
+            assert is_endpoint_banned(ep) is False  # still transient
+            record_rate_limit(ep)  # streak 3 → first soft-ban
+            assert is_endpoint_banned(ep) is True
+        finally:
+            unban_endpoint(ep)
+
+    def test_success_clears_429_streak(self, clock: _Clock):
+        """A success anywhere resets the streak — recovery is honored."""
+        ep = "https://recovering.invalid"
+        try:
+            for _ in range(3):
+                record_rate_limit(ep)
+            assert is_endpoint_banned(ep) is True
+            record_endpoint_success(ep)
+            assert is_endpoint_banned(ep) is False
+            # And the slate is clean: two more 429s stay transient.
+            record_rate_limit(ep)
+            record_rate_limit(ep)
+            assert is_endpoint_banned(ep) is False
+        finally:
+            unban_endpoint(ep)
 
     def test_rate_limit_still_deprioritizes_endpoint(self, clock: _Clock):
         """Recent 429s must still add pool penalty (backoff) for selection."""

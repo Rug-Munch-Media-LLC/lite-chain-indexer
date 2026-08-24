@@ -29,6 +29,13 @@ logger = get_logger(__name__)
 
 # ── State ──────────────────────────────────────────────────────────────
 _endpoint_failures: dict[str, list[float]] = {}
+# Consecutive-429 tracking (WIN: never get banned from public RPCs).
+# A provider that 429s occasionally is throttling us briefly; a provider
+# that 429s CONSECUTIVELY is dying/dead — retrying every few seconds is
+# how accounts get banned. Escalate to a soft-ban window on streaks.
+_endpoint_429_streaks: dict[str, int] = {}
+_RATE_LIMIT_STREAK_BAN_THRESHOLD = 3
+_RATE_LIMIT_STREAK_BAN_BASE_S = 300  # 5 min first soft-ban, doubles per repeat
 # Hard bans for 403/429 responses: url -> banned_until (epoch seconds).
 # These providers explicitly rate-limit / blacklist the endpoint for a
 # while — hammering them only deepens the ban, so they get an
@@ -328,6 +335,29 @@ def record_rate_limit(endpoint: str) -> None:
     _endpoint_failures.setdefault(endpoint, []).append(time.time())
     metrics_incr("rpc_rate_limits")
 
+    # Escalating soft-ban on consecutive 429s (never resets mid-streak):
+    # streak 1-2 → plain backoff (existing behavior); streak >=3 → the
+    # endpoint sits out for minutes (doubling per repeat) so parallel
+    # chunk workers stop aggregating into a permanent 429 storm. Success
+    # anywhere clears the streak (see record_endpoint_success).
+    streak = _endpoint_429_streaks.get(endpoint, 0) + 1
+    _endpoint_429_streaks[endpoint] = streak
+    if streak >= _RATE_LIMIT_STREAK_BAN_THRESHOLD:
+        ban_s = min(
+            _RATE_LIMIT_STREAK_BAN_BASE_S * (2 ** (streak - _RATE_LIMIT_STREAK_BAN_THRESHOLD)),
+            3600,
+        )
+        # Apply the streak-computed window directly (not ban_endpoint's own
+        # exponential) so the logged duration is the enforced duration.
+        _endpoint_bans[endpoint] = time.time() + ban_s
+        metrics_incr("endpoints_banned")
+        logger.warning(
+            "rpc_rate_limit_streak_softban",
+            endpoint=endpoint[:60],
+            streak=streak,
+            banned_seconds=ban_s,
+        )
+
 
 def record_endpoint_success(endpoint: str) -> None:
     """Record a success for this endpoint (closes its circuit + unban)."""
@@ -335,6 +365,7 @@ def record_endpoint_success(endpoint: str) -> None:
 
     CIRCUIT_BREAKER.record_success(endpoint)
     unban_endpoint(endpoint)
+    _endpoint_429_streaks.pop(endpoint, None)
 
 
 async def apply_endpoint_backoff(url: str) -> None:
