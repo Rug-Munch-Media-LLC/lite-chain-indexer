@@ -9,7 +9,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from lite_indexer.config import RETENTION_DAYS
+from lite_indexer.config import (
+    CH_DEPLOYER_TABLE,
+    CH_DEX_TABLE,
+    CH_TABLE,
+    DEX_SUMMARY_COLUMNS,
+    EVT_SUMMARY_COLUMNS,
+    RETENTION_DAYS,
+    SOLANA_CH_TABLE,
+)
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
