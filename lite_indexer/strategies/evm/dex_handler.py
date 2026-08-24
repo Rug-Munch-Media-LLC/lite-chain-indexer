@@ -24,6 +24,7 @@ from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
     RpcClient,
     apply_endpoint_backoff,
+    ban_endpoint,
     get_best_endpoint,
     handle_rate_limit,
     record_endpoint_failure,
@@ -90,18 +91,31 @@ async def _fetch_topic(
         rotated = endpoints[start_idx:] + endpoints[:start_idx]
 
         best_result: list[dict[str, Any]] | None = None
+        # Hard deadline per endpoint attempt (incident 2026-08-24): a
+        # trickling getLogs response body defeated httpx's per-read
+        # timeout and wedged the ethereum dex pipeline for ~20h inside
+        # resp.text streaming. wait_for makes the ENTIRE attempt —
+        # connect + headers + full body read — bounded, no exceptions.
+        attempt_deadline = RPC_TIMEOUT * 2 + 10
         for url in rotated:
             await apply_endpoint_backoff(url)
             try:
-                resp = await client.post(url, json=body, timeout=RPC_TIMEOUT)
+                resp = await asyncio.wait_for(
+                    client.post(url, json=body, timeout=RPC_TIMEOUT),
+                    timeout=attempt_deadline,
+                )
                 if resp.status_code == 200:
-                    # Empty response check
-                    if not resp.text or len(resp.text) < 10:
+                    # Body read under the same hard deadline — this is
+                    # exactly where the wedge lived.
+                    resp_text = await asyncio.wait_for(
+                        asyncio.to_thread(lambda r=resp: r.text), timeout=attempt_deadline
+                    )
+                    if not resp_text or len(resp_text) < 10:
                         record_endpoint_failure(url)
                         continue
 
                     try:
-                        data = resp.json()
+                        data = json.loads(resp_text)
                     except (json.JSONDecodeError, ValueError):
                         record_endpoint_failure(url)
                         continue
@@ -133,6 +147,12 @@ async def _fetch_topic(
                 else:
                     record_endpoint_failure(url)
                     continue
+            except asyncio.TimeoutError:
+                # Hard deadline blown: wedged/slow-loris endpoint. Ban it so
+                # no other chunk task lands here again this cycle.
+                ban_endpoint(url, reason="wedged_response_deadline")
+                logger.warning("dex_fetch_wedged_endpoint_banned", endpoint=url[:60], deadline_s=attempt_deadline)
+                continue
             except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError):
                 record_endpoint_failure(url)
                 continue
