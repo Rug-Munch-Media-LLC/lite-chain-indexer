@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from lite_indexer.config import RETENTION_DAYS
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
