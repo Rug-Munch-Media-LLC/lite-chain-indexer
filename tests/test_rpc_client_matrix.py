@@ -54,11 +54,11 @@ def _quiet_side_channels(monkeypatch):
     """Stub throttle/autotune/ledger side channels — this suite tests the
     call() decision matrix, not those subsystems (own test files)."""
     monkeypatch.setattr(rc, "_defer_reason_for", lambda ep, m: None)
-    monkeypatch.setattr("lite_indexer.rpc.throttle.throttle_before", AsyncNone())
+    monkeypatch.setattr("lite_indexer.rpc.throttle.throttle_before", async_none())
     yield
 
 
-def AsyncNone():
+def async_none():
     async def _f(*a, **k):
         return None
 
