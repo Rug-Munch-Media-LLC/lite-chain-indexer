@@ -76,17 +76,15 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     "ethereum": [
         "https://eth.api.onfinality.io/public",
         "https://eth-pokt.nodies.app",
-        "https://eth.nownodes.io/${NOWNODES_API_KEY}",  # NOWNodes (verified 2026-08-23, 100k req/mo plan)
         "https://eth.drpc.org",
         "https://rpc.mevblocker.io",
         "https://rpc.flashbots.net",
         "https://virginia.rpc.blxrbdn.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://eth-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        # ── Freemium (keyed free tiers — activate by setting the env var) ──
+        "https://eth.nownodes.io/${NOWNODES_API_KEY}",  # NOWNodes (verified 2026-08-23, 100k req/mo plan)
         "https://lb.drpc.org/ogrpc?network=ethereum&dkey=${DRPC_KEY}",  # dRPC load balancer
         "https://rpc.ankr.com/eth/${ANKR_KEY}",  # Ankr keyed (keyless was Unauthorized)
         "https://mainnet.infura.io/v3/${INFURA_KEY}",  # Infura free tier
-        "${QUICKNODE_ETH_URL}",  # QuickNode dedicated endpoint (full URL)
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -98,12 +96,10 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://base.gateway.tenderly.co",
         "https://mainnet.base.org",
         "https://base.drpc.org",
-        # ── Freemium (keyed) ──
         "https://base-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://base-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://lb.drpc.org/ogrpc?network=base&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/base/${ANKR_KEY}",
-        "${QUICKNODE_BASE_URL}",
     ],
     # ── BSC (8 endpoints) ─────────────────────────────────────────────
     # T1: nodereal public, 48.club (live-verified 2026-08-04 with the
@@ -128,13 +124,10 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc-dataseed1.binance.org",  # T2 — official Binance seed mirror
         "https://bsc-dataseed1.defibit.io",  # T2 — official Binance seed mirror
         "https://bsc-dataseed1.ninicoin.io",  # T2 — official Binance seed mirror
-        "https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
         "https://bsc-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        "${GETBLOCK_BSC_URL}",  # GetBlock shared (live-verified 2026-08-23: chainId 0x38)
-        # ── Freemium (keyed) ──
+        "https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
         "https://lb.drpc.org/ogrpc?network=bsc&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/bsc/${ANKR_KEY}",
-        "${QUICKNODE_BSC_URL}",
     ],
     # ── Polygon (6 endpoints) ─────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)
@@ -157,7 +150,6 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://polygon-mainnet.gateway.tatum.io",
         "https://polygon-bor-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://rpc-mainnet.matic.quiknode.pro",
-        # ── Freemium (keyed) ──
         "https://lb.drpc.org/ogrpc?network=polygon&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/polygon/${ANKR_KEY}",
     ],
@@ -178,7 +170,6 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://arb1.arbitrum.io/rpc",
         "https://arbitrum-one-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://arbitrum.meowrpc.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        # ── Freemium (keyed) ──
         "https://lb.drpc.org/ogrpc?network=arbitrum&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/arbitrum/${ANKR_KEY}",
     ],
@@ -192,7 +183,6 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://mainnet.optimism.io",
         "https://optimism.drpc.org",
         "https://optimism-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        # ── Freemium (keyed) ──
         "https://lb.drpc.org/ogrpc?network=optimism&dkey=${DRPC_KEY}",
         "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
     ],

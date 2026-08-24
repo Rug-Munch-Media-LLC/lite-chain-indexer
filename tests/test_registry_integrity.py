@@ -81,3 +81,30 @@ def test_last_resort_subset_of_active_templates() -> None:
         active = set(GET_LOGS_ENDPOINTS.get(chain, []))
         strays = [u for u in urls if u not in active]
         assert not strays, f"last-resort strays in {chain}: {strays}"
+
+
+def test_free_first_ordering_active_pools() -> None:
+    """Free-first product principle: within each active chain pool, every
+    keyless public endpoint must precede all keyed (freemium) templates.
+
+    Position feeds the pool scoring penalty (+i), so a keyed endpoint
+    sitting before free publics would outrank them on ties — violating
+    the 'free data first always' rule. Enforced structurally here.
+    """
+    for chain, urls in GET_LOGS_ENDPOINTS.items():
+        seen_keyed = False
+        for url in urls:
+            if "${" in url:
+                seen_keyed = True
+            else:
+                assert not seen_keyed, (
+                    f"{chain}: free endpoint after keyed template violates "
+                    f"free-first ordering: {url}"
+                )
+    for urls in (SOLANA_ENDPOINTS, TRON_ENDPOINTS):
+        seen_keyed = False
+        for url in urls:
+            if "${" in url:
+                seen_keyed = True
+            else:
+                assert not seen_keyed, f"non-EVM ordering violation: {url}"
