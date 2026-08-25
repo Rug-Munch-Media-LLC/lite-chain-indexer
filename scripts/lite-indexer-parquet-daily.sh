@@ -2,7 +2,7 @@
 # Daily: export yesterday's data to Parquet, upload to B2, prune ClickHouse
 #
 # Runs from cron at 03:30 UTC (see the "Wire into cron" step):
-#   30 3 * * * /bin/bash /srv/work/repos/lite-chain-indexer/scripts/lite-indexer-parquet-daily.sh >> /backups/lite-indexer-parquet.log 2>&1
+#   30 3 * * * /bin/bash /opt/lite-chain-indexer/scripts/lite-indexer-parquet-daily.sh >> /backups/lite-indexer-parquet.log 2>&1
 #
 # For each supported chain this:
 #   1. exports yesterday's rows from ClickHouse to Parquet

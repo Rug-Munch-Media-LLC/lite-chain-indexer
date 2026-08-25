@@ -23,7 +23,7 @@
 #   Description=RugMunch B2 parquet HTTP proxy (THA)
 #   After=network-online.target
 #   [Service]
-#   ExecStart=/srv/work/repos/lite-chain-indexer/scripts/serve-b2-http.sh
+#   ExecStart=/opt/lite-chain-indexer/scripts/serve-b2-http.sh
 #   Restart=always
 #   [Install]
 #   WantedBy=multi-user.target

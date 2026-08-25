@@ -12,7 +12,7 @@ snippets for:
 Usage:
     CHAINSTACK_API_KEY=... python3 scripts/discover-chainstack.py
     # or after storing in gopass:
-    gopass show rmi/infra/chainstack_api_key | \
+    secrets-manager show chainstack_api_key | \
         python3 scripts/discover-chainstack.py --stdin
 """
 

@@ -3,8 +3,8 @@
 # Multi-stage build: builder installs dependencies, runtime copies only what's needed.
 # Runs as unprivileged user (UID 1000) with minimal attack surface.
 #
-# Build: docker build -t lite-chain-indexer:latest /srv/work/repos/lite-chain-indexer
-# Run:   docker compose -f /srv/work/repos/fleet-infra/rmi-infra/docker-compose.lite-indexer.yml up -d
+# Build: docker build -t lite-chain-indexer:latest /opt/lite-chain-indexer
+# Run:   docker compose -f [INFRA-COMPOSE-DIR]/docker-compose.lite-indexer.yml up -d
 
 # ── Builder Stage ─────────────────────────────────────────────────────────
 FROM python:3.12-slim AS builder
