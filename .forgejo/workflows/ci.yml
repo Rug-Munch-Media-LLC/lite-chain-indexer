@@ -129,3 +129,22 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
           grype dir:. --fail-on critical || echo "::warning::critical vulns in tree"
+
+  # ── SAST + secret scan (added 2026-08-25 — fleet-standard gates) ──
+  sast:
+    runs-on: docker-x64
+    container:
+      image: python:3.12-slim
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Install scanners
+        run: |
+          pip install --no-cache-dir bandit semgrep gitleaks
+      - name: Bandit (BLOCKING on high)
+        run: bandit -r lite_indexer/ --severity-level high --skip B101 -q
+      - name: Semgrep community rules (BLOCKING on ERROR)
+        run: semgrep scan --config auto --error --quiet
+      - name: Gitleaks secret scan
+        run: gitleaks detect --source . --no-banner --redact
