@@ -43,6 +43,7 @@ from lite_indexer.config import (
     NATS_ENABLED,
     NDJSON_ENABLED,
     STATE_BACKWARD_PROTECTION,
+    STATE_REGRESSION_TOLERANCE_BLOCKS,
     TRACE_ENABLED,
     VECTOR_INGESTION_ENABLED,
     WEBHOOK_ENABLED,
@@ -54,6 +55,9 @@ from lite_indexer.indexer._rpc_fetch import RpcFetchMixin
 from lite_indexer.indexer._resource_guards import (
     ClickHouseHealth,
     MemoryGate,
+)
+from lite_indexer.indexer._resource_guards import (
+    get_process_rss_mb as get_process_rss_mb,
 )
 from lite_indexer.indexer._sync_loop import SyncLoopMixin
 from lite_indexer.logging import get_logger
