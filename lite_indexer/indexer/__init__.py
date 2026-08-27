@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from lite_indexer.chains import GET_LOGS_ENDPOINTS
+from lite_indexer.chain_registry import get_chain_config, list_supported_chains, ChainConfig
 from lite_indexer.chains.demand import (
     default_enabled_events,
     get_chain_demand,
@@ -208,6 +209,9 @@ class LiteIndexer(
         # Chain type detection
         chain_info = SUPPORTED_CHAINS.get(chain, {"type": "evm"})
         self._chain_type: str = chain_info.get("type", "evm")
+
+        # Chain configuration from registry (optional enrichment)
+        self._chain_config: ChainConfig | None = get_chain_config(chain)
 
         # Chunk-based indexing: batch ranges into chunk_size-wide chunks
         # fetched in parallel. Defaults per chain type (50 EVM, 500 Solana).
