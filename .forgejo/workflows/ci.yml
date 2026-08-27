@@ -92,6 +92,25 @@ jobs:
           path: |
             coverage.xml
             coverage.lcov
+
+  # ── Docstring coverage ───────────────────────────────────────────────
+  docstring-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install interrogate
+        run: pip install interrogate
+
+      - name: Docstring coverage (BLOCKING at 60%)
+        run: interrogate lite_indexer/ --fail-under=60
+
 # Append these jobs under `jobs:` in any repo's ci.yml. Self-contained.
   supply-chain:
     runs-on: docker-x64
