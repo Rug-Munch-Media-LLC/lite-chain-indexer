@@ -40,10 +40,17 @@ Type=simple
 User=chain-api
 Group=chain-api
 WorkingDirectory=/srv/work/repos/lite-chain-indexer
+# NOTE: systemd does NOT expand ${VAR} in WorkingDirectory= (and does not
+# support ${VAR:-default} anywhere). Keep a literal path here; adjust on
+# install if the checkout lives elsewhere.
 # Optional env file: CH_API_* ClickHouse creds + bind/port overrides.
 EnvironmentFile=-/etc/lite-chain-indexer/api.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/local/bin/uvicorn api.app:app --host ${CHAIN_API_BIND:-127.0.0.1} --port ${CHAIN_API_PORT:-8100} --workers ${CHAIN_API_WORKERS:-1}
+# Defaults for ExecStart expansion (EnvironmentFile= overrides these).
+Environment=CHAIN_API_BIND=127.0.0.1
+Environment=CHAIN_API_PORT=8100
+Environment=CHAIN_API_WORKERS=1
+ExecStart=/usr/local/bin/uvicorn api.app:app --host ${CHAIN_API_BIND} --port ${CHAIN_API_PORT} --workers ${CHAIN_API_WORKERS}
 Restart=always
 RestartSec=5
 TimeoutStopSec=20
