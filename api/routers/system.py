@@ -39,7 +39,11 @@ def _check_indexer_state() -> dict[str, Any]:
     now = time.time()
 
     for chain in CRITICAL_CHAINS:
-        state_file = STATE_DIR / f"{chain}.json"
+        # The indexer daemon (lite_indexer.state) writes ``lite_{chain}.json``;
+        # accept a bare ``{chain}.json`` too for older layouts.
+        state_file = STATE_DIR / f"lite_{chain}.json"
+        if not state_file.exists():
+            state_file = STATE_DIR / f"{chain}.json"
         if not state_file.exists():
             chains_status[chain] = {
                 "status": "no_state_file",
