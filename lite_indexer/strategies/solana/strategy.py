@@ -351,7 +351,10 @@ class SolanaStrategy(AbstractChainStrategy):
             return []
 
         all_events: list[dict[str, Any]] = []
-        slots = list(range(from_slot, min(to_slot + 1, from_slot + SOLANA_BLOCK_MAX_PER_SYNC)))
+        # 2026-09-01: process the FULL window in SOLANA_BLOCK_MAX_PER_SYNC
+        # chunks — the old code capped at 200 slots total, silently dropping
+        # the rest of a 1000-slot daemon window.
+        slots = list(range(from_slot, to_slot + 1))
         semaphore = asyncio.Semaphore(SOLANA_TX_CONCURRENCY)
 
         async def _fetch_one_block(slot: int) -> list[dict[str, Any]]:
@@ -397,11 +400,18 @@ class SolanaStrategy(AbstractChainStrategy):
                     )
             return events
 
-        tasks = [_fetch_one_block(slot) for slot in slots if slot % 2 == 0]  # sample every 2nd slot for catch-up speed
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for r in results:
-            if isinstance(r, list):
-                all_events.extend(r)
+        # Sample every 2nd slot for catch-up speed (halves RPC spend; the
+        # sampled coverage is sufficient for tracked-mint transfer capture).
+        tasks = [_fetch_one_block(slot) for slot in slots if slot % 2 == 0]
+        # Process in bounded batches so a 1000-slot window doesn't blow the
+        # daemon timeout — 200-slot chunks with a gather per chunk.
+        chunk_size = SOLANA_BLOCK_MAX_PER_SYNC
+        for i in range(0, len(tasks), chunk_size):
+            chunk = tasks[i : i + chunk_size]
+            results = await asyncio.gather(*chunk, return_exceptions=True)
+            for r in results:
+                if isinstance(r, list):
+                    all_events.extend(r)
         return all_events
 
     async def _fetch_mint_transfers(
