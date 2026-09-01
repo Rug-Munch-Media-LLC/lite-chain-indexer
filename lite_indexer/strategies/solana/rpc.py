@@ -6,7 +6,7 @@ Standalone JSON-RPC client for Solana with endpoint rotation.
 
 from __future__ import annotations
 
-import asyncio
+import time
 from typing import Any
 
 import httpx
@@ -45,12 +45,21 @@ async def rpc_call(
     if endpoint:
         endpoints = [endpoint]
 
+    # 2026-09-01: skip endpoints that 429'd recently (60s cooldown) — the
+    # old code slept 1s per 429 then tried the next endpoint sequentially,
+    # so a batch of 100 calls all hit mainnet-beta first, slept, and burned
+    # the window on retries. A module-level cooldown map makes the pool
+    # actually rotate under rate-limiting.
+    live = [u for u in endpoints if _endpoint_cooldown.get(u, 0) < time.monotonic()]
+    if not live:
+        live = endpoints  # all cooling down — try anyway rather than fail
+
     last_error: str | None = None
-    for url in endpoints:
+    for url in live:
         try:
             resp = await client.post(url, json=payload, timeout=30.0)
             if resp.status_code == 429:
-                await asyncio.sleep(1)
+                _endpoint_cooldown[url] = time.monotonic() + 60.0
                 continue
             if resp.status_code == 200:
                 data = resp.json()
@@ -66,3 +75,7 @@ async def rpc_call(
 
     logger.debug("solana_rpc_failed", method=method, error=last_error)
     return None
+
+
+#: Per-endpoint 429 cooldown (url -> monotonic time when it becomes usable)
+_endpoint_cooldown: dict[str, float] = {}

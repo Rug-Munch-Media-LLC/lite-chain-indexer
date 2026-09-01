@@ -35,7 +35,7 @@ MAX_SIGNATURES_PER_TOKEN = 100
 SOLANA_SIG_MAX_PAGES = 40
 # 2026-09-01 catch-up: windows deeper than this switch to block-based
 # extraction (getBlock jsonParsed). ~2000 slots ≈ real-time polling depth.
-SIG_WINDOW_MAX_SLOTS = 2000
+SIG_WINDOW_MAX_SLOTS = 1000
 # Max slots processed per block-based catch-up sync (bounded chunks; the
 # daemon advances the highwater per window and the next window continues).
 SOLANA_BLOCK_MAX_PER_SYNC = 200
