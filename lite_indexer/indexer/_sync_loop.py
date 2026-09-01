@@ -17,8 +17,6 @@ from typing import Any
 
 from lite_indexer.chunks import sync_batch_for_chain
 from lite_indexer.config import (
-    DATA_RECONCILIATION_ENABLED,
-    GC_EVERY_N_CYCLES,
     HEAD_BUFFER,
     REORG_PROTECTION_ENABLED,
     STATE_BACKWARD_PROTECTION,
@@ -32,7 +30,6 @@ from lite_indexer.indexer._writers import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcFetchFailedError
-from lite_indexer.storage import check_disk_cap_async, check_disk_space
 from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrategy
 
 logger = get_logger(__name__)
@@ -230,7 +227,9 @@ class SyncLoopMixin:
         logger.info("sync_start", chain=self.chain, from_block=from_block, to_block=to_block)
 
         try:
-            events = await asyncio.wait_for(self.fetch_transfers(from_block, to_block), timeout=120.0)
+            # 2026-09-01: solana block-based catch-up needs more headroom (200 slots
+            # x getBlock at concurrency 10 ≈ 40-90s). 300s covers it.
+            events = await asyncio.wait_for(self.fetch_transfers(from_block, to_block), timeout=300.0)
         except (TimeoutError, RpcFetchFailedError) as exc:
             # Data-loss guard: all endpoints failed for this range. Do NOT
             # advance state — the range is retried on the next cycle.
