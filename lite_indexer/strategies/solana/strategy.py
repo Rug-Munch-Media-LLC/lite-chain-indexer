@@ -45,6 +45,7 @@ from .models import (
 )
 from .parsing import parse_solana_transfer_events
 from .rpc import rpc_call
+from .swaps import parse_solana_swap_events
 
 logger = get_logger(__name__)
 
@@ -53,6 +54,10 @@ logger = get_logger(__name__)
 # (zero extra RPC cost) and drained in write_clickhouse; the cap bounds
 # memory when CH is down between cycles (oldest rows are dropped first).
 _SOLANA_TRACE_ROW_CAP = 10_000
+
+# Upper bound on buffered dex_events swap rows awaiting the sync-loop drain
+# (same rationale as _SOLANA_TRACE_ROW_CAP).
+_SOLANA_SWAP_ROW_CAP = 10_000
 
 
 class SolanaStrategy(AbstractChainStrategy):
@@ -90,6 +95,11 @@ class SolanaStrategy(AbstractChainStrategy):
         # contained and never abort the SPL write.
         self._last_launch_events: list[Any] = []
         self._last_bundle_events: list[Any] = []
+        # DEX swap rows (wallet_memory.dex_events, chain='solana'): parsed
+        # from the same getTransaction results as SPL balance changes (no
+        # extra RPC). Buffered here and drained by the sync loop, which
+        # writes them via the shared write_dex_events path.
+        self._last_swap_events: list[dict[str, Any]] = []
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -379,8 +389,11 @@ class SolanaStrategy(AbstractChainStrategy):
                 meta = tx.get("meta") or {}
                 if meta.get("err") is not None:
                     continue
-                pre = {(b.get("mint"), b.get("owner") or "", b.get("accountIndex")): b for b in (meta.get("preTokenBalances") or [])}
-                for b in (meta.get("postTokenBalances") or []):
+                pre = {
+                    (b.get("mint"), b.get("owner") or "", b.get("accountIndex")): b
+                    for b in (meta.get("preTokenBalances") or [])
+                }
+                for b in meta.get("postTokenBalances") or []:
                     mint = b.get("mint") or ""
                     if mint not in tracked:
                         continue
@@ -404,7 +417,8 @@ class SolanaStrategy(AbstractChainStrategy):
                             "signature": tx.get("transaction", {}).get("signatures", [""])[0],
                             "mint": mint,
                             "owner": b.get("owner") or "",
-                            "token_account": b.get("address") or str(key[2]),  # accountIndex is an int — CH String column
+                            "token_account": b.get("address")
+                            or str(key[2]),  # accountIndex is an int — CH String column
                             "amount_pre": str(pre_amt),
                             "amount_post": str(post_amt),
                             "change": str(delta),
@@ -414,6 +428,16 @@ class SolanaStrategy(AbstractChainStrategy):
                             "block_timestamp": block.get("blockTime"),
                         }
                     )
+                # DEX swap detection in catch-up mode too (best-effort,
+                # zero extra RPC — same block payload).
+                try:
+                    swap_rows = parse_solana_swap_events(tx, slot)
+                    if swap_rows:
+                        self._last_swap_events.extend(swap_rows)
+                        if len(self._last_swap_events) > _SOLANA_SWAP_ROW_CAP:
+                            self._last_swap_events = self._last_swap_events[-_SOLANA_SWAP_ROW_CAP:]
+                except Exception as exc:  # noqa: BLE001 — best-effort swaps
+                    logger.warning("solana_swap_parse_failed", slot=slot, error=str(exc)[:60])
             return events
 
         # Sample every 2nd slot for catch-up speed (halves RPC spend; the
@@ -566,6 +590,21 @@ class SolanaStrategy(AbstractChainStrategy):
                         slot,
                         {mint},
                     )
+                    # DEX swap detection (best-effort): same transaction,
+                    # zero extra RPC. Rows land in wallet_memory.dex_events
+                    # via the sync loop's shared dex_events writer.
+                    try:
+                        swap_rows = parse_solana_swap_events(tx_data, slot)
+                        if swap_rows:
+                            self._last_swap_events.extend(swap_rows)
+                            if len(self._last_swap_events) > _SOLANA_SWAP_ROW_CAP:
+                                self._last_swap_events = self._last_swap_events[-_SOLANA_SWAP_ROW_CAP:]
+                    except Exception as exc:  # noqa: BLE001 — best-effort swaps
+                        logger.warning(
+                            "solana_swap_parse_failed",
+                            sig=sig[:20],
+                            error=str(exc)[:60],
+                        )
                     # Trace-level visibility: reuse the same transaction to
                     # also extract SOL transfers, CPI inner instructions and
                     # token account state changes. Pure parsing — the

@@ -315,8 +315,17 @@ class SyncLoopMixin:
             if trace_events:
                 summary["trace_events_fetched"] = len(trace_events)
 
-        # Check if we have any events or deployer tracking
-        if not events and not dex_events and not self.deployers_enabled and not trace_events:
+        # Check if we have any events or deployer tracking. Solana swap
+        # rows are buffered on the strategy during fetch_transfers, so they
+        # must be counted here too or a swap-only batch would short-circuit.
+        solana_swap_pending = bool(getattr(self.strategy, "_last_swap_events", None))
+        if (
+            not events
+            and not dex_events
+            and not solana_swap_pending
+            and not self.deployers_enabled
+            and not trace_events
+        ):
             self._clear_reorg_recovery()
             self.state.save(to_block, 0, enabled_events=self._enabled_event_types())
             self._highwater.update(to_block)
@@ -422,9 +431,22 @@ class SyncLoopMixin:
             if wallet_stats:
                 summary.update(wallet_stats)
 
+        # 7-sol. Solana DEX swaps: parsed from the same getTransaction calls
+        # as SPL balance changes and buffered on the strategy. Drain here so
+        # they ride the shared dex_events write path (chain='solana') and
+        # show up in the sync_complete dex_events count.
+        solana_swaps: list[dict[str, Any]] = []
+        if solana_strategy is not None and solana_strategy._last_swap_events:
+            solana_swaps = list(solana_strategy._last_swap_events)
+            solana_strategy._last_swap_events = []
+            dex_events.extend(solana_swaps)
+            summary["dex_events_fetched"] = summary.get("dex_events_fetched", 0) + len(solana_swaps)
+
         if dex_events:
             dex_ch_inserted = self.ch_writer.write_dex_events(self.chain, dex_events)
             summary["dex_events_written_ch"] = dex_ch_inserted
+            if solana_swaps:
+                logger.info("solana_dex_clickhouse_inserted", rows=dex_ch_inserted)
 
         # 7a2. Write internal-transfer traces (optional, best-effort).
         # Unlike transfers, a trace write failure does NOT abort the sync:
