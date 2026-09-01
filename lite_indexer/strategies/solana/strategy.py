@@ -404,7 +404,7 @@ class SolanaStrategy(AbstractChainStrategy):
                             "signature": tx.get("transaction", {}).get("signatures", [""])[0],
                             "mint": mint,
                             "owner": b.get("owner") or "",
-                            "token_account": b.get("address") or key[2],
+                            "token_account": b.get("address") or str(key[2]),  # accountIndex is an int — CH String column
                             "amount_pre": str(pre_amt),
                             "amount_post": str(post_amt),
                             "change": str(delta),
