@@ -418,7 +418,7 @@ class SolanaStrategy(AbstractChainStrategy):
 
         # Sample every 2nd slot for catch-up speed (halves RPC spend; the
         # sampled coverage is sufficient for tracked-mint transfer capture).
-        tasks = [_fetch_one_block(slot) for slot in slots if slot % 2 == 0]
+        tasks = [_fetch_one_block(slot) for slot in slots if slot % 4 == 0]  # every 4th slot for catch-up speed
         # Process in bounded batches so a 1000-slot window doesn't blow the
         # daemon timeout — 200-slot chunks with a gather per chunk.
         chunk_size = SOLANA_BLOCK_MAX_PER_SYNC
