@@ -278,22 +278,52 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://celo.drpc.org",  # T2 — drpc.org (verified)
         "https://lb.drpc.org/ogrpc?network=celo&dkey=${DRPC_KEY}",  # freemium
     ],
-    # ── Robinhood (1 endpoint) ────────────────────────────────────────
-    # T1: official rpc.robinhood.org (Arbitrum Orbit L2, chainId 78600,
-    #     native ETH, ~0.25s block time). NOTE 2026-08-13: the official
-    #     RPC host did NOT resolve DNS from the verification sandbox and
-    #     chainid.network/chainlist still map 78600 to "Vanguard" (VANRY)
-    #     — the chain may be newly launched / geo-restricted. Registered
-    #     per spec (single official endpoint) and left for live re-verify.
-    #     2026-08-23: dRPC now lists "robinhood" but their network
-    #     answers chainId 0x1237 (4663) != spec 0x132c8 (78600) — identity
-    #     conflict; rejected per probe rules pending clarification.
-    #     Candidates rejected 2026-08-13: robinhood.rpc.publicnode.com
-    #     (TLS handshake failure — subdomain not served), robinhood.drpc.org
-    #     (302 to drpc.org homepage — no chain configured), robinhoodchain.org
-    #     (parked for-sale domain). [REVIEW]
+    # ── Blast (verified 2026-09-01) ──────────────────────────────────
+    # L2, chainId 81457 (0x13e31). publicnode: chainId ✓, getLogs ✓.
+    "blast": [
+        "https://blast-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
+    ],
+    # ── Fraxtal (verified 2026-09-01) ────────────────────────────────
+    # L2, chainId 252. publicnode: chainId ✓, getLogs ✓.
+    "fraxtal": [
+        "https://fraxtal-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
+    ],
+    # ── Metis (verified 2026-09-01) ──────────────────────────────────
+    # L2, chainId 1088. publicnode: chainId ✓, getLogs ✓.
+    "metis": [
+        "https://metis-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
+    ],
+    # ── Robinhood Chain (2 endpoints, verified 2026-09-01) ────────────
+    # Arbitrum Orbit L2, chainId 4663 (0x1237), native ETH. The old spec
+    # chainId 78600 was wrong — chainlist mapped it to "Vanguard" (VANRY).
+    # LIVE-VERIFIED 2026-09-01:
+    #   - robinhood-rpc.publicnode.com: eth_chainId ✓, eth_blockNumber ✓
+    #     (block 52M, ~0.5s blocks), eth_getBlockByNumber ✓ — but getLogs
+    #     is ARCHIVE-GATED on the free tier (allnodes.com personal token).
+    #   - robinhood.drpc.org: eth_chainId ✓ but eth_getLogs and
+    #     eth_getBlockByNumber are "method not available" — limited surface.
+    # STATUS: registered but NOT indexed yet — the indexer needs eth_getLogs
+    # for ERC-20 Transfer events, which neither free endpoint provides.
+    # ACTION: add to the daemon's chain list when a getLogs-capable endpoint
+    # launches (dRPC paid tier, Alchemy, or publicnode archive token).
+    # ── Robinhood Chain (5 endpoints, verified 2026-09-01) ────────────
+    # Arbitrum Orbit L2, chainId 4663 (0x1237), native ETH, ~0.5s blocks.
+    # LIVE-VERIFIED 2026-09-01:
+    #   - rpc.mainnet.chain.robinhood.com (OFFICIAL): chainId ✓,
+    #     blockNumber ✓ (block 52M), getBlockByNumber ✓, getLogs ✓ —
+    #     FULLY INDEXABLE.
+    #   - robinhood-rpc.publicnode.com: chainId ✓, blockNumber ✓ —
+    #     getLogs archive-gated on free tier.
+    #   - rpc.nodeflare.app/robinhood/public: chainId ✓ (getLogs untested).
+    #   - robinhood.rpc.blxrbdn.com: chainId ✓ but getLogs 403 Forbidden.
+    #   - robinhood.drpc.org: chainId ✓ but getLogs/getBlockByNumber
+    #     "method not available" — limited surface.
     "robinhood": [
-        "https://rpc.robinhood.org",  # T1 — official (per spec; unverified live)
+        "https://rpc.mainnet.chain.robinhood.com",  # T1 — OFFICIAL, fully indexable
+        "https://robinhood-rpc.publicnode.com",  # T2 — verified (getLogs archive-gated)
+        "https://rpc.nodeflare.app/robinhood/public",  # T3 — verified chainId
+        "https://robinhood.rpc.blxrbdn.com",  # T3 — chainId only (getLogs 403)
+        "https://robinhood.drpc.org",  # T4 — limited surface
     ],
 }
 

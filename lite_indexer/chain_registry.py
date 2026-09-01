@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
 
 
 class ChainType(Enum):
@@ -220,6 +219,17 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         ],
         native_currency="CELO",
         block_time_seconds=5.0,
+    ),
+    "robinhood": ChainConfig(
+        name="robinhood",
+        chain_type=ChainType.EVM,
+        chain_id=4663,
+        rpc_endpoints=[
+            "https://rpc.mainnet.chain.robinhood.com",
+            "https://robinhood-rpc.publicnode.com",
+        ],
+        native_currency="ETH",
+        block_time_seconds=0.5,
     ),
     "solana": ChainConfig(
         name="solana",
