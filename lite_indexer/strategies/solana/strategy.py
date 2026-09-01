@@ -384,17 +384,25 @@ class SolanaStrategy(AbstractChainStrategy):
                     if delta == 0:
                         continue
                     tok = tracked[mint]
+                    # Emit the solana_spl_balance_changes shape that
+                    # write_clickhouse expects (owner/amount_pre/amount_post/
+                    # change/symbol/token_name) — NOT the solana_transfers
+                    # shape (the old blockwise path emitted the wrong schema
+                    # and the daemon silently wrote 0 rows).
                     events.append(
                         {
                             "chain": "solana",
                             "slot": slot,
                             "signature": tx.get("transaction", {}).get("signatures", [""])[0],
-                            "from_address": prev.get("owner") or b.get("owner") or "",
-                            "to_address": b.get("owner") or "",
-                            "amount": str(abs(delta)),
                             "mint": mint,
+                            "owner": b.get("owner") or "",
+                            "token_account": b.get("address") or key[2],
+                            "amount_pre": str(pre_amt),
+                            "amount_post": str(post_amt),
+                            "change": str(delta),
                             "decimals": tok.get("decimals", 0),
-                            "transfer_type": "transfer",
+                            "symbol": tok.get("symbol", ""),
+                            "token_name": tok.get("name", ""),
                             "block_timestamp": block.get("blockTime"),
                         }
                     )
