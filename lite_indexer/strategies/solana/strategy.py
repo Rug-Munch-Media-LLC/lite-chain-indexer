@@ -35,7 +35,12 @@ from lite_indexer.traces.solana import (
 
 from .bundles import detect_bundle
 from .launch import detect_launch
-from .models import MAX_SIGNATURES_PER_TOKEN, SOLANA_TRACKED_TOKENS, SOLANA_TX_CONCURRENCY
+from .models import (
+    MAX_SIGNATURES_PER_TOKEN,
+    SOLANA_SIG_MAX_PAGES,
+    SOLANA_TRACKED_TOKENS,
+    SOLANA_TX_CONCURRENCY,
+)
 from .parsing import parse_solana_transfer_events
 from .rpc import rpc_call
 
@@ -330,16 +335,40 @@ class SolanaStrategy(AbstractChainStrategy):
         events: list[dict[str, Any]] = []
         semaphore = asyncio.Semaphore(SOLANA_TX_CONCURRENCY)
 
-        # Step 1: Get signatures for this mint
-        result = await self._rpc_call(
-            "getSignaturesForAddress",
-            [mint, {"limit": MAX_SIGNATURES_PER_TOKEN}],
-        )
-        if not result or "result" not in result:
-            return [], False
-
-        sig_infos = result["result"]
-        if not isinstance(sig_infos, list):
+        # Step 1: Get signatures for this mint — paginated BACKWARD until the
+        # window is covered. 2026-09-01 catch-up fix: the old code fetched
+        # only the latest MAX_SIGNATURES_PER_TOKEN signatures and filtered
+        # client-side; for any sync window older than ~the latest 100 sigs
+        # (i.e. every catch-up after a stall) the relevant signatures were
+        # already out of the window => 0 events extracted forever while the
+        # highwater advanced past the data. We now walk backwards with the
+        # `before` cursor until signatures predate from_slot (bounded).
+        sig_infos: list[dict[str, Any]] = []
+        before_cursor: str | None = None
+        for _page in range(SOLANA_SIG_MAX_PAGES):
+            kwargs: dict[str, Any] = {"limit": MAX_SIGNATURES_PER_TOKEN}
+            if before_cursor:
+                kwargs["before"] = before_cursor
+            result = await self._rpc_call(
+                "getSignaturesForAddress",
+                [mint, kwargs],
+            )
+            if not result or "result" not in result or not isinstance(result["result"], list):
+                break
+            if not sig_infos:
+                sig_infos = result["result"]
+            if not result["result"]:
+                break  # exhausted history
+            oldest = result["result"][-1]
+            oldest_slot = int(oldest.get("slot") or 0)
+            # Keep walking back while the oldest signature on the page is
+            # newer than our window start.
+            if oldest_slot <= from_slot:
+                break
+            before_cursor = oldest.get("signature")
+            if not before_cursor:
+                break
+        if not sig_infos:
             return [], False
 
         # Deployer capture (universal — no factory list): when a mint's full

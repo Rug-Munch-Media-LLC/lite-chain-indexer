@@ -29,6 +29,10 @@ SOLANA_TRACKED_TOKENS: list[dict[str, Any]] = [
 
 # Maximum signatures to fetch per tracked token per cycle
 MAX_SIGNATURES_PER_TOKEN = 100
+# 2026-09-01 catch-up: max backward pages walked per mint per sync window
+# (100 sigs/page x 40 pages = 4000 sigs deep — enough for a multi-day
+# catch-up on a major mint without unbounded RPC spend).
+SOLANA_SIG_MAX_PAGES = 40
 
 # Max concurrent getTransaction calls
 SOLANA_TX_CONCURRENCY = 10

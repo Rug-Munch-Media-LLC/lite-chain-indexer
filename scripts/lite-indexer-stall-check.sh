@@ -193,6 +193,83 @@ if [ -n "${NO_ADVANCE_CHAINS}" ]; then
     exit 1
 fi
 
+# ── 2b. DATA-FRESHNESS check (2026-09-01 self-healing) ───────────────
+# Blind spot fixed: the checks above trust the STATE FILE. The 2026-08-24
+# solana incident: the strategy extracted 0 events for 8 days while the
+# highwater advanced normally — state file fresh, ZERO rows written. The
+# watchdog saw "advancing" and never fired. We now compare each chain's
+# actual last-written row (ClickHouse max(ingested_at)) against the state
+# file's last_timestamp. A chain whose data is >DATA_STALE_MIN behind its
+# state file is silently failing extraction → reset the highwater to the
+# last slot that produced real data (from the table, not the state file)
+# and restart, so the fixed strategy re-extracts the gap.
+DATA_FRESH_CHAINS="$(timeout 30 "${PYTHON}" - <<'PYEOF'
+import json, os, sys
+import clickhouse_driver
+
+STATE_DIR = "/var/data/chain-indexer/state"
+STALE_MIN = 120  # data older than this vs state file = silent extraction failure
+
+try:
+    c = clickhouse_driver.Client(
+        host=os.getenv("CLICKHOUSE_HOST", "127.0.0.1"),
+        user=os.getenv("CLICKHOUSE_USER", "rmi"),
+        password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+    )
+    # Per-chain last real data slot from the tables themselves.
+    rows = c.execute(
+        "SELECT chain, max(slot) FROM wallet_memory.solana_transfers GROUP BY chain"
+    )
+    ch_max = {r[0]: int(r[1] or 0) for r in rows}
+except Exception:
+    sys.exit(0)
+
+stale = []
+for chain in ("solana",):
+    hw_path = f"{STATE_DIR}/highwater_{chain}.json"
+    try:
+        hw = json.load(open(hw_path))
+        hw_block = int(hw.get("last_block") or 0)
+    except Exception:
+        continue
+    try:
+        (max_slot,) = c.execute(
+            f"SELECT max(slot) FROM wallet_memory.{chain}_transfers"
+        )[0]
+    except Exception:
+        continue
+    gap = int(hw.get("last_block") or 0) - int(max_slot or 0)
+    # >50k slots behind the highwater with the daemon running = the
+    # extraction is silently producing nothing (2026-08-24 mode).
+    if int(hw.get("last_block") or 0) > 0 and int(max_slot or 0) > 0 and gap := (
+        int(hw["last_block"]) - int(max_slot)
+    ) > 200000:
+        stale.append(f"{chain}:hw={hw['last_block']}:data={max_slot}")
+print(" ".join(stale))
+PYEOF
+)"
+
+if [ -n "${DATA_FRESH_CHAINS}" ]; then
+    # Reset the highwater to the last slot with REAL data so the fixed
+    # strategy re-extracts the gap instead of advancing past it.
+    for chain in solana; do
+        LAST_SLOT="$(timeout 20 "${PYTHON}" -c "
+import clickhouse_driver, os
+c = clickhouse_driver.Client(host=os.getenv('CLICKHOUSE_HOST','127.0.0.1'), user=os.getenv('CLICKHOUSE_USER','rmi'), password=os.getenv('CLICKHOUSE_PASSWORD',''))
+print(c.execute('SELECT max(slot) FROM wallet_memory.solana_transfers')[0][0])
+" 2>/dev/null || echo 0)"
+        if [ "${LAST_SLOT:-0}" -gt 0 ] 2>/dev/null; then
+            printf '{"last_block": %s, "last_timestamp": "%s", "chain": "%s", "reset_by": "watchdog-data-freshness"}
+'               "${LAST_SLOT}" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" "${chain}"               > "/var/data/chain-indexer/state/highwater_${chain}.json"
+            log "highwater_${chain} reset to last real data slot ${LAST_SLOT} (silent extraction failure detected)"
+        fi
+    done
+    if restart_if_cooldown_elapsed "data-freshness failure: ${DATA_FRESH_CHAINS} (highwater reset to last real data)"; then
+        exit 2
+    fi
+    exit 1
+fi
+
 # ── 3. Chains behind but making progress — informational ────────────
 BEHIND_CHAINS="$(printf '%s' "${LAG_OUT}" | "${PYTHON}" -c '
 import json, sys
