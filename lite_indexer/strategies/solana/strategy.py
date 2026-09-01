@@ -304,8 +304,16 @@ class SolanaStrategy(AbstractChainStrategy):
         #     parse pre/post token balances for tracked mints. ~1 RPC per
         #     slot, ALL mints covered per call.
         window = to_slot - from_slot
+        logger.info(
+            "solana_fetch_route",
+            window=window,
+            threshold=SIG_WINDOW_MAX_SLOTS,
+            path="blockwise" if window > SIG_WINDOW_MAX_SLOTS else "signature",
+        )
         if window > SIG_WINDOW_MAX_SLOTS:
-            return await self._fetch_transfers_blockwise(from_slot, to_slot)
+            events = await self._fetch_transfers_blockwise(from_slot, to_slot)
+            logger.info("solana_blockwise_result", events=len(events))
+            return events
 
         all_events: list[dict[str, Any]] = []
         failures = 0
