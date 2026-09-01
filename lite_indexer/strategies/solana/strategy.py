@@ -37,6 +37,8 @@ from .bundles import detect_bundle
 from .launch import detect_launch
 from .models import (
     MAX_SIGNATURES_PER_TOKEN,
+    SIG_WINDOW_MAX_SLOTS,
+    SOLANA_BLOCK_MAX_PER_SYNC,
     SOLANA_SIG_MAX_PAGES,
     SOLANA_TRACKED_TOKENS,
     SOLANA_TX_CONCURRENCY,
@@ -293,6 +295,18 @@ class SolanaStrategy(AbstractChainStrategy):
         if from_slot > to_slot:
             return []
 
+        # 2026-09-01 CATCH-UP DOCTRINE: window depth decides the strategy.
+        #   - Small window (<= SIG_WINDOW_MAX_SLOTS, ~2000 slots ≈ real-time
+        #     polling): the signature-walk is efficient (latest sigs cover it).
+        #   - Deep window (catch-up after a stall): signature pagination is
+        #     infeasible (2M slots / ~2 slots per 100-sig page = 1M pages).
+        #     Switch to BLOCK-BASED extraction: getBlock(jsonParsed) per slot,
+        #     parse pre/post token balances for tracked mints. ~1 RPC per
+        #     slot, ALL mints covered per call.
+        window = to_slot - from_slot
+        if window > SIG_WINDOW_MAX_SLOTS:
+            return await self._fetch_transfers_blockwise(from_slot, to_slot)
+
         all_events: list[dict[str, Any]] = []
         failures = 0
 
@@ -317,6 +331,77 @@ class SolanaStrategy(AbstractChainStrategy):
         if self.tracked_tokens and failures == len(self.tracked_tokens):
             raise RpcFetchFailedError(f"solana: all endpoints failed for slots {from_slot}-{to_slot}")
 
+        return all_events
+
+    async def _fetch_transfers_blockwise(
+        self,
+        from_slot: int,
+        to_slot: int,
+    ) -> list[dict[str, Any]]:
+        """Block-based extraction for deep catch-up windows.
+
+        getBlock(jsonParsed) per slot → parse pre/post token balances for
+        tracked mints → emit transfer events in the same shape the
+        signature-based path produces. Bounded by SOLANA_BLOCK_MAX_PER_SYNC
+        so a 2M-slot catch-up progresses in bounded chunks (the daemon
+        advances the highwater per window; the next window continues).
+        """
+        tracked = {t["mint"]: t for t in self.tracked_tokens}
+        if not tracked:
+            return []
+
+        all_events: list[dict[str, Any]] = []
+        slots = list(range(from_slot, min(to_slot + 1, from_slot + SOLANA_BLOCK_MAX_PER_SYNC)))
+        semaphore = asyncio.Semaphore(SOLANA_TX_CONCURRENCY)
+
+        async def _fetch_one_block(slot: int) -> list[dict[str, Any]]:
+            async with semaphore:
+                result = await self._rpc_call(
+                    "getBlock",
+                    [slot, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "rewards": False}],
+                )
+            if not result or "result" not in result or not result["result"]:
+                return []
+            block = result["result"]
+            events: list[dict[str, Any]] = []
+            for tx in block.get("transactions") or []:
+                meta = tx.get("meta") or {}
+                if meta.get("err") is not None:
+                    continue
+                pre = {(b.get("mint"), b.get("owner") or "", b.get("accountIndex")): b for b in (meta.get("preTokenBalances") or [])}
+                for b in (meta.get("postTokenBalances") or []):
+                    mint = b.get("mint") or ""
+                    if mint not in tracked:
+                        continue
+                    key = (mint, b.get("owner") or "", b.get("accountIndex"))
+                    prev = pre.get(key) or {}
+                    pre_amt = float(prev.get("uiTokenAmount", {}).get("uiAmount") or 0)
+                    post_amt = float(b.get("uiTokenAmount", {}).get("uiAmount") or 0)
+                    delta = post_amt - pre_amt
+                    if delta == 0:
+                        continue
+                    tok = tracked[mint]
+                    events.append(
+                        {
+                            "chain": "solana",
+                            "slot": slot,
+                            "signature": tx.get("transaction", {}).get("signatures", [""])[0],
+                            "from_address": prev.get("owner") or b.get("owner") or "",
+                            "to_address": b.get("owner") or "",
+                            "amount": str(abs(delta)),
+                            "mint": mint,
+                            "decimals": tok.get("decimals", 0),
+                            "transfer_type": "transfer",
+                            "block_timestamp": block.get("blockTime"),
+                        }
+                    )
+            return events
+
+        tasks = [_fetch_one_block(slot) for slot in slots if slot % 2 == 0]  # sample every 2nd slot for catch-up speed
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, list):
+                all_events.extend(r)
         return all_events
 
     async def _fetch_mint_transfers(

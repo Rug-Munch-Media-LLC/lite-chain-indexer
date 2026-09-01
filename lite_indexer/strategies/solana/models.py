@@ -33,6 +33,12 @@ MAX_SIGNATURES_PER_TOKEN = 100
 # (100 sigs/page x 40 pages = 4000 sigs deep — enough for a multi-day
 # catch-up on a major mint without unbounded RPC spend).
 SOLANA_SIG_MAX_PAGES = 40
+# 2026-09-01 catch-up: windows deeper than this switch to block-based
+# extraction (getBlock jsonParsed). ~2000 slots ≈ real-time polling depth.
+SIG_WINDOW_MAX_SLOTS = 2000
+# Max slots processed per block-based catch-up sync (bounded chunks; the
+# daemon advances the highwater per window and the next window continues).
+SOLANA_BLOCK_MAX_PER_SYNC = 500
 
 # Max concurrent getTransaction calls
 SOLANA_TX_CONCURRENCY = 10
