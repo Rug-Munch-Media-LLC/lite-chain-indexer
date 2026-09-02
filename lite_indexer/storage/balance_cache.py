@@ -19,7 +19,7 @@ Two independently-usable implementations:
   creates a SummingMergeTree view fed by ``evm_transfers`` inserts, so
   ClickHouse maintains balances itself. Query it with
   :func:`get_auto_holders` (reads the view's inner table
-  ``wallet_memory.inner.holder_balances_mv``).
+  ``wallet_memory.holder_balances_mv``).
 
 Both are best-effort: transient failures log at debug level and the next
 batch retries. Balance values are Int128 — tokens whose raw unit count
@@ -56,9 +56,18 @@ ORDER BY (chain, token_address, address)
 """
 
 # Auto-maintained view: fed by every evm_transfers insert. SummingMergeTree
-# sums balance/transfer_count per (chain, token_address, address) on merge.
+# sums the NET balance (credit to_address, debit from_address) and the
+# transfer count per (chain, token_address, address) on merge.
+#
+# 2026-09-02 fix: the previous DDL was invalid ClickHouse SQL — it selected
+# the non-aggregated ``value`` column alongside ``count()`` (error 215,
+# "Column ... is not under aggregate function"), so the view could NEVER be
+# created. It also only credited ``to_address``, overstating balances by
+# ignoring the debit side. The rewritten view expands each transfer into
+# two rows via ``arrayJoin`` (credit / debit) and aggregates with ``sum``.
+#
 # ClickHouse auto-creates the inner storage table
-# (wallet_memory.inner.holder_balances_mv) — query it via get_auto_holders.
+# (stored in the view itself) — query it via get_auto_holders.
 _HOLDER_BALANCES_MV_DDL = f"""
 CREATE MATERIALIZED VIEW IF NOT EXISTS {CH_HOLDER_BALANCES_MV}
 ENGINE = SummingMergeTree()
@@ -66,15 +75,37 @@ ORDER BY (chain, token_address, address)
 AS SELECT
     chain,
     token_address,
-    to_address AS address,
-    toInt128(value) AS balance,
+    address,
+    sum(delta) AS balance,
     count() AS transfer_count
-FROM wallet_memory.evm_transfers
+FROM
+(
+    SELECT
+        chain,
+        token_address,
+        address,
+        if(address = to_address, toInt128OrZero(value), -toInt128OrZero(value)) AS delta
+    FROM
+    (
+        SELECT
+            chain,
+            token_address,
+            from_address,
+            to_address,
+            value,
+            arrayJoin([from_address, to_address]) AS address
+        FROM wallet_memory.evm_transfers
+        WHERE (from_address != '') AND (to_address != '')
+    )
+)
 GROUP BY chain, token_address, address
 """
 
-# Where the auto MV stores its data (ClickHouse auto-inner-table naming).
-_HOLDER_BALANCES_MV_INNER = f"wallet_memory.inner.{CH_HOLDER_BALANCES_MV.split('.')[-1]}"
+# Where the auto MV stores its data. ClickHouse 26.x keeps the MV's inner
+# storage under the view itself — ``wallet_memory.inner.<view>`` no longer
+# parses (``inner`` is a keyword and the hidden inner table is gone), so
+# query the view directly (it acts as its own storage).
+_HOLDER_BALANCES_MV_INNER = CH_HOLDER_BALANCES_MV
 
 # Guard against Int128 overflow (absurd token supplies).
 _INT128_MAX = 2**127 - 1
@@ -247,8 +278,10 @@ async def ensure_holder_balances_mv(ch_client: Any) -> bool:
     pre-aggregated SummingMergeTree of balances per
     ``(chain, token_address, address)``. Existing rows are NOT backfilled
     automatically — to backfill, run
-    ``INSERT INTO wallet_memory.inner.holder_balances_mv
-     SELECT ... FROM wallet_memory.evm_transfers GROUP BY ...`` once.
+    ``INSERT INTO wallet_memory.holder_balances_mv
+     SELECT chain, token_address, address, sum(delta) AS balance,
+            count() AS transfer_count FROM (…same expansion as the view…)
+     GROUP BY chain, token_address, address`` once.
 
     Args:
         ch_client: ClickHouse client.
@@ -278,8 +311,8 @@ async def get_auto_holders(
 ) -> list[dict[str, Any]]:
     """Get top token holders from the auto-maintained materialized view.
 
-    Reads ``wallet_memory.inner.holder_balances_mv`` (the inner table the
-    view writes to). Useful when the manual lazy cache is disabled and
+    Reads the auto-maintained MV (ClickHouse 26.x stores the view's data
+    in the view itself). Useful when the manual lazy cache is disabled and
     only the MV is enabled.
 
     Args:

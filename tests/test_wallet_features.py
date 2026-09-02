@@ -63,10 +63,10 @@ class FakeClient:
             key = (params["chain"], params["token"], params["address"])
             row = self.balance_rows.get(key)
             return [(row[0], row[1])] if row else []
+        if query.startswith("SELECT address, balance, transfer_count FROM wallet_memory.holder_balances_mv"):
+            return self.auto_rows
         if query.startswith("SELECT address, balance, transfer_count FROM wallet_memory.holder_balances"):
             return self.holder_rows
-        if query.startswith("SELECT address, balance, transfer_count FROM wallet_memory.inner.holder_balances_mv"):
-            return self.auto_rows
         if query.startswith("SELECT chain, token_address, symbol, name, decimals, first_seen_block FROM"):
             token = params.get("token") if isinstance(params, dict) else None
             return [r for r in self.token_rows if r[1] == token]
@@ -261,8 +261,12 @@ async def test_ensure_holder_balances_mv_ddl() -> None:
     ddl = client.queries[0]
     assert "CREATE MATERIALIZED VIEW IF NOT EXISTS wallet_memory.holder_balances_mv" in ddl
     assert "ENGINE = SummingMergeTree()" in ddl
-    assert "toInt128(value) AS balance" in ddl
+    # 2026-09-02: the view aggregates NET balances (credit to_address,
+    # debit from_address) — every value must be under an aggregate fn.
+    assert "sum(delta) AS balance" in ddl
     assert "count() AS transfer_count" in ddl
+    assert "arrayJoin([from_address, to_address]) AS address" in ddl
+    assert "toInt128OrZero(value)" in ddl
     assert "GROUP BY chain, token_address, address" in ddl
 
 
@@ -272,7 +276,7 @@ async def test_get_auto_holders_reads_inner_table() -> None:
     client.auto_rows = [("0xwhale", 500, 9)]
     holders = await get_auto_holders(client, "ethereum", "0xtoken")
     assert holders == [{"address": "0xwhale", "balance": 500, "transfer_count": 9}]
-    assert "wallet_memory.inner.holder_balances_mv" in client.queries[0]
+    assert "wallet_memory.holder_balances_mv" in client.queries[0]
 
 
 # ── Integration: ClickHouseWriter.write_wallet_features ───────────────

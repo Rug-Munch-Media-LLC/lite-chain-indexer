@@ -42,6 +42,7 @@ from .models import (
     SOLANA_DISCOVERY_LOOKBACK_HOURS,
     SOLANA_DISCOVERY_MAX_PER_CYCLE,
     SOLANA_MAX_TRACKED_TOKENS,
+    SOLANA_LAUNCHPAD_MAX_BLOCKS,
     SOLANA_SIG_MAX_PAGES,
     SOLANA_TRACKED_TOKENS,
     SOLANA_TX_CONCURRENCY,
@@ -51,6 +52,11 @@ from .rpc import rpc_call
 from .swaps import parse_solana_swap_events
 
 logger = get_logger(__name__)
+
+# Wrapped-SOL mint — never a "new token"; the pumpswap venue matcher
+# (confidence "low") reports it on every swap, so the launchpad watcher
+# filters it out before buffering.
+_WSOL_MINT = "So11111111111111111111111111111111111111112"
 
 # Upper bound on buffered trace rows awaiting a ClickHouse write. Trace
 # rows are collected from the same getTransaction calls as SPL events
@@ -85,6 +91,11 @@ class SolanaStrategy(AbstractChainStrategy):
         # ``_deployer_captured_mints``.
         self._last_deployer_events: list[dict[str, Any]] = []
         self._deployer_captured_mints: set[str] = set()
+        # Mints whose deployer capture was ATTEMPTED (success or not) —
+        # bounds the fallback's RPC spend (a hot mint whose history exceeds
+        # the fetch window can never yield a creation tx; retrying it every
+        # cycle would burn getSignaturesForAddress calls forever).
+        self._deployer_attempted_mints: set[str] = set()
         # Trace-level collection: SOL transfers, CPI inner instructions and
         # token account state changes, parsed from the same getTransaction
         # result that already feeds SPL balance changes (no extra RPC
@@ -108,6 +119,10 @@ class SolanaStrategy(AbstractChainStrategy):
         # cycle). Cached ClickHouse client, lazily connected.
         self._ch_client: Any = None
         self._base_mints: frozenset[str] = frozenset(self._mint_set)
+        # Launchpad block watcher: newest slot already scanned for token
+        # creations, plus mints already buffered (dedup across cycles).
+        self._launchpad_last_slot: int = 0
+        self._launchpad_seen_mints: set[str] = set()
 
     # ── Dynamic Token Discovery ──────────────────────────────────────
 
@@ -207,6 +222,141 @@ class SolanaStrategy(AbstractChainStrategy):
                 total_tracked=len(self.tracked_tokens),
             )
         return new_tokens
+
+    # ── Launchpad Block Watcher (pump.fun creates) ───────────────────
+
+    async def poll_launchpad_blocks(self) -> int:
+        """Watch recent blocks for NEW token creations (launch detection).
+
+        Launch detection (``detect_launch``) only sees transactions that
+        were fetched for TRACKED mints — a brand-new pump.fun mint's
+        creation tx is never fetched, so ``wallet_memory.solana_launches``
+        went stale (last row 2026-08-24) and dynamic discovery + deployer
+        capture starved. This watcher fetches the newest few blocks
+        (jsonParsed) and runs ``detect_launch`` on EVERY transaction, so
+        pump.fun creates (and any other detectable venue) land in
+        ``solana_launches`` every cycle — which feeds
+        ``_discover_new_tokens`` and the deployer fallback below.
+
+        Bounded: at most ``SOLANA_LAUNCHPAD_MAX_BLOCKS`` getBlock calls per
+        cycle. Best-effort: RPC errors are contained and never abort the
+        sync.
+
+        Returns:
+            Number of launch events buffered into ``_last_launch_events``.
+        """
+        latest = await self.fetch_block_number()
+        if latest is None:
+            return 0
+        # First run after (re)start: only scan the newest block — the
+        # historical backfill is not this watcher's job.
+        start = latest - SOLANA_LAUNCHPAD_MAX_BLOCKS + 1 if self._launchpad_last_slot else latest
+        start = max(start, self._launchpad_last_slot + 1)
+        if start > latest:
+            return 0
+
+        semaphore = asyncio.Semaphore(SOLANA_TX_CONCURRENCY)
+        buffered = 0
+
+        async def _scan_block(slot: int) -> int:
+            async with semaphore:
+                result = await self._rpc_call(
+                    "getBlock",
+                    [slot, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "rewards": False}],
+                )
+            block = result.get("result") if isinstance(result, dict) else None
+            if not isinstance(block, dict):
+                return 0
+            found = 0
+            for tx in block.get("transactions") or []:
+                meta = tx.get("meta") or {}
+                if meta.get("err") is not None:
+                    continue
+                try:
+                    launch = detect_launch(tx)
+                    # Only true token CREATIONS feed discovery — the
+                    # pumpswap venue matches every PumpSwap instruction
+                    # (swaps included, confidence "low"), which would
+                    # flood solana_launches with swap noise and WSOL.
+                    if (
+                        launch is not None
+                        and launch.launch_signal
+                        and launch.mint
+                        and launch.mint != _WSOL_MINT
+                        and launch.mint not in self._mint_set
+                        and launch.mint not in self._launchpad_seen_mints
+                    ):
+                        self._launchpad_seen_mints.add(launch.mint)
+                        self._last_launch_events.append(launch)
+                        found += 1
+                except Exception as exc:  # noqa: BLE001 — best-effort detection
+                    logger.warning("solana_launchpad_detect_failed", slot=slot, error=str(exc)[:80])
+            return found
+
+        slots = list(range(start, latest + 1))
+        results = await asyncio.gather(*(_scan_block(s) for s in slots), return_exceptions=True)
+        for r in results:
+            if isinstance(r, int):
+                buffered += r
+        self._launchpad_last_slot = latest
+        if buffered:
+            logger.info("solana_launchpad_creates_detected", launches=buffered, slots=f"{start}-{latest}")
+        return buffered
+
+    async def capture_deployers_for_new_tokens(self, new_tokens: list[dict[str, Any]]) -> int:
+        """Deployer fallback for newly discovered mints.
+
+        The in-sync deployer capture (``_fetch_mint_transfers``) only fires
+        when a mint's FULL signature history fits in one fetch window —
+        by the time a hot meme token is polled it often already exceeds
+        ``MAX_SIGNATURES_PER_TOKEN`` and the creation tx is unreachable.
+        This fallback runs immediately when discovery adds a mint (fresh
+        launches have few signatures), so ``dev_sold`` / ``sniper_detect``
+        get deployer data for every new launch, not just tracked tokens.
+
+        For each new mint: fetch its signature history; when it fits in
+        one page the OLDEST signature is the creation tx and its fee payer
+        is the deployer (same structural rule as the in-sync capture).
+        Buffered into ``_last_deployer_events`` for the shared write path.
+
+        Args:
+            new_tokens: Token dicts returned by ``_discover_new_tokens``.
+
+        Returns:
+            Number of deployer events buffered.
+        """
+        if not new_tokens:
+            return 0
+        semaphore = asyncio.Semaphore(SOLANA_TX_CONCURRENCY)
+        buffered = 0
+        for token in new_tokens:
+            mint = token["mint"]
+            if mint in self._deployer_captured_mints or mint in self._deployer_attempted_mints:
+                continue
+            self._deployer_attempted_mints.add(mint)
+            try:
+                result = await self._rpc_call(
+                    "getSignaturesForAddress",
+                    [mint, {"limit": MAX_SIGNATURES_PER_TOKEN}],
+                )
+                sigs = result.get("result") if isinstance(result, dict) else None
+                if (
+                    isinstance(sigs, list)
+                    and sigs
+                    and len(sigs) < MAX_SIGNATURES_PER_TOKEN
+                    and isinstance(sigs[-1], dict)
+                    and sigs[-1].get("err") is None
+                ):
+                    deployer_event = await self._capture_deployer_event(mint, sigs[-1], semaphore)
+                    if deployer_event is not None:
+                        self._last_deployer_events.append(deployer_event)
+                        self._deployer_captured_mints.add(mint)
+                        buffered += 1
+            except Exception as exc:  # noqa: BLE001 — best-effort capture
+                logger.warning("solana_deployer_fallback_failed", mint=mint[:16], error=str(exc)[:80])
+        if buffered:
+            logger.info("solana_deployer_fallback_captured", deployers=buffered)
+        return buffered
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -416,10 +566,28 @@ class SolanaStrategy(AbstractChainStrategy):
         # wallet_memory.solana_launches) into the tracked set at the start
         # of every sync cycle so new meme tokens are indexed within one
         # cycle of their launch. Best-effort — never blocks the fetch.
+        new_tokens: list[dict[str, Any]] = []
         try:
-            self._discover_new_tokens()
+            new_tokens = self._discover_new_tokens()
         except Exception as exc:  # noqa: BLE001 — discovery is best-effort
             logger.warning("solana_discovery_failed", error=str(exc)[:80])
+
+        # Launchpad watcher: scan the newest blocks for token creations so
+        # brand-new mints land in solana_launches (launch detection from
+        # tracked-mint txs alone cannot see them — their creation tx is
+        # never fetched).
+        try:
+            await self.poll_launchpad_blocks()
+        except Exception as exc:  # noqa: BLE001 — watcher is best-effort
+            logger.warning("solana_launchpad_poll_failed", error=str(exc)[:80])
+
+        # Deployer fallback: capture the creation-tx fee payer for every
+        # newly discovered mint while its history still fits in one page.
+        if new_tokens:
+            try:
+                await self.capture_deployers_for_new_tokens(new_tokens)
+            except Exception as exc:  # noqa: BLE001 — capture is best-effort
+                logger.warning("solana_deployer_fallback_failed", error=str(exc)[:80])
 
         # 2026-09-01 CATCH-UP DOCTRINE: window depth decides the strategy.
         #   - Small window (<= SIG_WINDOW_MAX_SLOTS, ~2000 slots ≈ real-time

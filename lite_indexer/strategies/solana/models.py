@@ -55,3 +55,11 @@ SOLANA_DISCOVERY_LOOKBACK_HOURS = 24
 # Hard cap on total tracked tokens (base + dynamic). Oldest dynamic
 # tokens are evicted first; the hardcoded base set is never evicted.
 SOLANA_MAX_TRACKED_TOKENS = 300
+
+# ── Launchpad Block Watcher (pump.fun creates) ───────────────────────
+# 2026-09-02: launch detection from tracked-mint txs alone cannot see
+# brand-new pump.fun mints (their creation tx is never fetched), which
+# starved solana_launches → discovery → deployer capture. The watcher
+# scans the newest blocks (every tx) for token creations, bounded per
+# cycle by the number of getBlock calls.
+SOLANA_LAUNCHPAD_MAX_BLOCKS = 4
