@@ -24,6 +24,7 @@ from lite_indexer.storage.balance_cache import (
     get_auto_holders,
     get_token_holders,
     update_holder_balance,
+    update_holder_balances_bulk,
 )
 from lite_indexer.storage.clickhouse import ClickHouseWriter
 from lite_indexer.storage.disk import (
@@ -70,6 +71,7 @@ __all__ = [
     "resolve_token_meta",
     "ensure_balance_cache_table",
     "update_holder_balance",
+    "update_holder_balances_bulk",
     "get_token_holders",
     "ensure_holder_balances_mv",
     "get_auto_holders",

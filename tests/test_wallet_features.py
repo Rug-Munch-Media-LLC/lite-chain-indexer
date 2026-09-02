@@ -59,6 +59,17 @@ class FakeClient:
         self.queries.append(query)
         self.params.append(params)
 
+        if query.startswith("SELECT chain, token_address, address, balance, transfer_count"):
+            # Bulk balance read: params is {p{j}c/t/a: value} flat dict.
+            out = []
+            j = 0
+            while f"p{j}c" in (params or {}):
+                key = (params[f"p{j}c"], params[f"p{j}t"], params[f"p{j}a"])
+                row = self.balance_rows.get(key)
+                if row:
+                    out.append((key[0], key[1], key[2], row[0], row[1]))
+                j += 1
+            return out
         if query.startswith("SELECT balance, transfer_count FROM"):
             key = (params["chain"], params["token"], params["address"])
             row = self.balance_rows.get(key)
@@ -316,8 +327,11 @@ async def test_write_wallet_features_full(monkeypatch: pytest.MonkeyPatch) -> No
 
     # Balance cache: three distinct holders written, X's self-transfer
     # produced no extra (B,X) update.
+    # 2026-09-02 bulk path: all holder updates ride ONE INSERT (3 rows).
     balance_inserts = [q for q in client.queries if q.startswith("INSERT INTO wallet_memory.holder_balances")]
-    assert len(balance_inserts) == 3
+    assert len(balance_inserts) == 1
+    bulk_rows = client.params[client.queries.index(balance_inserts[0])]
+    assert len(bulk_rows) == 3
 
     # DDL guards: second call must not re-run DDL (projections, tables, MV).
     writer._wallet_projection_ready = True

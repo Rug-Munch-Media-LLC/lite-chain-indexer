@@ -17,6 +17,8 @@ from typing import Any
 
 from lite_indexer.chunks import sync_batch_for_chain
 from lite_indexer.config import (
+    DEX_SKIP_TO_HEAD,
+    DEX_SKIP_TO_HEAD_HOURS,
     HEAD_BUFFER,
     REORG_PROTECTION_ENABLED,
     STATE_BACKWARD_PROTECTION,
@@ -178,6 +180,8 @@ class SyncLoopMixin:
             return None
 
         to_block = self._override_to if self._override_to is not None else tip
+        # Stash the head for staleness heuristics (DEX_SKIP_TO_HEAD).
+        self._last_tip = tip
 
         if from_block >= to_block:
             logger.info("caught_up", chain=self.chain, block=tip)
@@ -189,6 +193,20 @@ class SyncLoopMixin:
             to_block = from_block + cycle_cap
 
         return from_block, to_block
+
+    def _dex_window_is_stale(self, from_block: int) -> bool:
+        """True when the sync window start is deeper than DEX_SKIP_TO_HEAD_HOURS
+        behind the chain head (approximated with the chain's average block
+        time). Used by the env-gated DEX_SKIP_TO_HEAD skip.
+        """
+        tip = getattr(self, "_last_tip", None)
+        if tip is None:
+            return False
+        from lite_indexer.config import CHAIN_BLOCK_TIMES, DEFAULT_BLOCK_TIME
+
+        avg_block_time = CHAIN_BLOCK_TIMES.get(self.chain, DEFAULT_BLOCK_TIME)
+        behind_seconds = (tip - from_block) * avg_block_time
+        return behind_seconds > DEX_SKIP_TO_HEAD_HOURS * 3600
 
     # ── Sync loop body ─────────────────────────────────────────────────
 
@@ -268,16 +286,32 @@ class SyncLoopMixin:
         # 4. Fetch DEX swap events (EVM only, if enabled)
         dex_events: list[dict[str, Any]] = []
         if self.dex_enabled and self.strategy.supports_dex():
-            dex_events = await self.fetch_swap_events(from_block, to_block)
-            if self._check_reorg(dex_events):
-                logger.warning("chain_reorg_during_dex_sync", chain=self.chain)
-                self.start_from_head = True
-                self._reorg_recovery = True
-                summary["status"] = "reorg_detected"
-                summary["duration_seconds"] = time.monotonic() - start_time
-                self._save_current_state()
-                return summary
-            summary["dex_events_fetched"] = len(dex_events)
+            # DEX_SKIP_TO_HEAD (env-gated, default off): when the sync
+            # window is deeply stale (older than DEX_SKIP_TO_HEAD_HOURS
+            # behind the chain head), skip the dex fetch for this cycle —
+            # the dex getLogs calls only serve old blocks no scanner will
+            # read, and dropping them frees RPC budget for the transfer
+            # catch-up. Dex resumes automatically once transfers reach
+            # fresh blocks. Old dex blocks stay a hole until backfilled.
+            if DEX_SKIP_TO_HEAD and self._dex_window_is_stale(from_block):
+                logger.info(
+                    "dex_skip_stale_window",
+                    chain=self.chain,
+                    from_block=from_block,
+                    to_block=to_block,
+                )
+                summary["dex_events_skipped"] = 1
+            else:
+                dex_events = await self.fetch_swap_events(from_block, to_block)
+                if self._check_reorg(dex_events):
+                    logger.warning("chain_reorg_during_dex_sync", chain=self.chain)
+                    self.start_from_head = True
+                    self._reorg_recovery = True
+                    summary["status"] = "reorg_detected"
+                    summary["duration_seconds"] = time.monotonic() - start_time
+                    self._save_current_state()
+                    return summary
+                summary["dex_events_fetched"] = len(dex_events)
 
         # 4a. Fetch pair created events for deployer tracking (EVM only).
         # Runs even when DEX is enabled — dex_handler fetches pair-created

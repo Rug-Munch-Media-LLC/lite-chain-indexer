@@ -284,6 +284,17 @@ BALANCE_CACHE_ENABLED: bool = os.environ.get("BALANCE_CACHE_ENABLED", "1") != "0
 #    maintained by ClickHouse itself (no indexer-side read-modify-write).
 HOLDER_BALANCES_MV_ENABLED: bool = os.environ.get("HOLDER_BALANCES_MV_ENABLED", "1") != "0"
 
+# 5. DEX skip-to-head (env-gated, default OFF): when the sync window is
+#    deeper than DEX_SKIP_TO_HEAD_HOURS behind the chain head, skip the
+#    dex getLogs fetch for that cycle — old-block dex rows are useless to
+#    the scanners and the freed RPC budget accelerates the transfer
+#    catch-up. Dex resumes automatically once transfers reach fresh
+#    blocks. NOTE: skipped ranges stay a hole in dex_events until a
+#    backfill runs — enable only when draining a deep backlog fast
+#    matters more than historical completeness.
+DEX_SKIP_TO_HEAD: bool = os.environ.get("DEX_SKIP_TO_HEAD", "0") != "0"
+DEX_SKIP_TO_HEAD_HOURS: int = int(os.environ.get("DEX_SKIP_TO_HEAD_HOURS", "24") or "24")
+
 # Wallet-access table / projection names.
 CH_TOKEN_META_TABLE: str = "wallet_memory.token_meta_ref"
 CH_HOLDER_BALANCES_TABLE: str = "wallet_memory.holder_balances"

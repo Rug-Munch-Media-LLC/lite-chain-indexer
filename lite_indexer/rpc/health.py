@@ -88,7 +88,14 @@ async def verify_endpoint(
                 return True
 
             if "error" in data:
-                err_msg = data["error"].get("message", str(data["error"]))
+                # 2026-09-02: some RPCs (e.g. polygon-rpc.com when the
+                # tenant/API key is disabled) return ``error`` as a plain
+                # STRING, not an object — ``.get()`` on it crashed the whole
+                # chain's sync cycle every poll (polygon hard-stuck for 9
+                # days, "daemon_chain_failed: 'str' object has no attribute
+                # 'get'").
+                err = data["error"]
+                err_msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
                 # Some endpoints restrict archive data but work for recent blocks
                 if "archive" in err_msg.lower() or "range" in err_msg.lower() or "limit" in err_msg.lower():
                     logger.debug(

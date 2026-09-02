@@ -229,6 +229,93 @@ async def update_holder_balance(
         return False
 
 
+async def update_holder_balances_bulk(
+    ch_client: Any,
+    deltas: dict[tuple[str, str, str], int],
+) -> int:
+    """Apply many holder deltas in TWO ClickHouse round-trips.
+
+    The per-holder :func:`update_holder_balance` does one SELECT + one
+    INSERT per holder — fine for live batches, but a deep catch-up batch
+    (200K+ transfers → 100K+ unique holders) needs 200K+ sequential
+    round-trips and deadlocks the sync cycle (observed 2026-09-02: zero
+    EVM sync_completes after the balance cache was re-enabled, every
+    cycle grinding 15+ min in wallet features). This bulk path reads all
+    current balances for the batch's keys in ONE query and writes all
+    updated rows in ONE insert.
+
+    Args:
+        ch_client: ClickHouse client.
+        deltas: ``{(chain, token_address, address): signed_delta}`` —
+            zero deltas are skipped.
+
+    Returns:
+        Number of holder rows written (0 when nothing to do / failure).
+    """
+    if not deltas:
+        return 0
+
+    active = {k: v for k, v in deltas.items() if v}
+    if not active:
+        return 0
+
+    try:
+        # One SELECT for all current balances (chunked IN clause).
+        keys = list(active.keys())
+        current: dict[tuple[str, str, str], tuple[int, int]] = {}
+        CHUNK = 10_000
+        for i in range(0, len(keys), CHUNK):
+            chunk = keys[i : i + CHUNK]
+            conditions = ", ".join("(%(chain)s, %(token)s, %(address)s)" for _ in chunk)
+            params: dict[str, str] = {}
+            cond_parts = []
+            for j, (chain, token, address) in enumerate(chunk):
+                cond_parts.append(f"({{p{j}c}}, {{p{j}t}}, {{p{j}a}})")
+                params[f"p{j}c"] = chain
+                params[f"p{j}t"] = token
+                params[f"p{j}a"] = address
+            rows = await asyncio.to_thread(
+                ch_client.execute,
+                f"SELECT chain, token_address, address, balance, transfer_count "
+                f"FROM {CH_HOLDER_BALANCES_TABLE} WHERE (chain, token_address, address) IN "
+                f"({', '.join(cond_parts)})",
+                params,
+            )
+            for r in rows:
+                current[(r[0], r[1], r[2])] = (int(r[3]), int(r[4]))
+
+        version = int(datetime.now(UTC).timestamp() * 1_000_000)
+        now = datetime.now(UTC)
+        rows_to_insert: list[tuple[Any, ...]] = []
+        for key, delta in active.items():
+            chain, token, address = key
+            balance, transfer_count = current.get(key, (0, 0))
+            new_balance = balance + delta
+            if new_balance > _INT128_MAX or new_balance < -_INT128_MAX:
+                logger.warning(
+                    "balance_cache_overflow_skipped",
+                    chain=chain,
+                    token=token[:12],
+                    address=address[:12],
+                )
+                continue
+            rows_to_insert.append((chain, token, address, new_balance, transfer_count + 1, now, version))
+        if not rows_to_insert:
+            return 0
+        for i in range(0, len(rows_to_insert), CHUNK):
+            await asyncio.to_thread(
+                ch_client.execute,
+                f"INSERT INTO {CH_HOLDER_BALANCES_TABLE} "
+                f"(chain, token_address, address, balance, transfer_count, last_updated, version) VALUES",
+                rows_to_insert[i : i + CHUNK],
+            )
+        metrics_incr("balance_cache_updates", len(rows_to_insert))
+        return len(rows_to_insert)
+    except Exception as exc:  # noqa: BLE001 — cache write is best-effort
+        logger.debug("balance_cache_bulk_failed", error=str(exc)[:100])
+        return 0
+
+
 async def get_token_holders(
     ch_client: Any,
     chain: str,
@@ -348,6 +435,7 @@ async def get_auto_holders(
 __all__ = [
     "ensure_balance_cache_table",
     "update_holder_balance",
+    "update_holder_balances_bulk",
     "get_token_holders",
     "ensure_holder_balances_mv",
     "get_auto_holders",

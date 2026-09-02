@@ -41,6 +41,7 @@ from lite_indexer.storage.balance_cache import (
     ensure_balance_cache_table,
     ensure_holder_balances_mv,
     update_holder_balance,
+    update_holder_balances_bulk,
 )
 from lite_indexer.storage.projections import ensure_wallet_projection
 from lite_indexer.storage.token_meta import ensure_token_meta_table, upsert_token_meta
@@ -739,11 +740,15 @@ class ClickHouseWriter(SchemaMixin):
                 stats["token_meta_upserted"] = len(seen_tokens)
 
         # 3. Manual incremental balance cache — accumulate deltas per
-        # holder so each (chain, token, holder) is written at most once.
+        #    holder so each (chain, token, holder) is written at most once.
+        #    2026-09-02: applied in ONE bulk read + ONE bulk insert (the
+        #    old per-holder read-modify-write needed 2 round-trips per
+        #    holder — 100K+ holders in a catch-up batch deadlocked every
+        #    EVM sync cycle for 15+ min, zero sync_completes).
         if BALANCE_CACHE_ENABLED:
             if not self._balance_cache_ready and await ensure_balance_cache_table(client):
                 self._balance_cache_ready = True
-            deltas: dict[tuple[str, str], int] = {}
+            deltas: dict[tuple[str, str, str], int] = {}
             for event in events:
                 try:
                     amount = int(event.get("value") or "0")
@@ -753,14 +758,12 @@ class ClickHouseWriter(SchemaMixin):
                 to_address = event.get("to") or ""
                 from_address = event.get("from") or ""
                 if to_address:
-                    deltas[(token_address, to_address)] = deltas.get((token_address, to_address), 0) + amount
+                    key = (chain, token_address, to_address)
+                    deltas[key] = deltas.get(key, 0) + amount
                 if from_address:
-                    deltas[(token_address, from_address)] = deltas.get((token_address, from_address), 0) - amount
-            balance_updates = 0
-            for (token_address, address), delta in deltas.items():
-                if delta:
-                    balance_updates += 1
-                    await update_holder_balance(client, chain, token_address, address, delta)
+                    key = (chain, token_address, from_address)
+                    deltas[key] = deltas.get(key, 0) - amount
+            balance_updates = await update_holder_balances_bulk(client, deltas)
             if balance_updates:
                 stats["holder_balance_updates"] = balance_updates
 

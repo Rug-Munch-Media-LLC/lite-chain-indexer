@@ -52,6 +52,10 @@ from lite_indexer.rpc.routing import (
 
 logger = get_logger(__name__)
 
+# Max eth_getBlockByNumber header fetches per timestamp-enrichment call.
+# Larger sets are sampled and interpolated (see fetch_block_timestamps).
+_TS_SAMPLE_MAX_FETCHES = 64
+
 
 def _safe_record(recorder: Any, *args: Any, **kwargs: Any) -> None:
     """Run an additive ledger/routing telemetry call without breaking RPC.
@@ -566,8 +570,24 @@ async def fetch_block_timestamps(
     if not block_numbers:
         return {}
 
+    # 2026-09-02 catch-up fix: fetching one header PER BLOCK made deep
+    # catch-up glacial — a 1000-block cycle issued 1000 eth_getBlockByNumber
+    # calls just for timestamps (the dominant RPC cost, ~10x the getLogs
+    # work), which is why bsc/polygon/base crawled at ~95 blocks/min and
+    # dex_events sat 4-9 days behind. When the set is large, fetch a bounded
+    # SAMPLE of anchor headers and interpolate the rest linearly between
+    # anchors (real timestamps, accurate to block-time variance) — the same
+    # approximation the avg-block-time fallback already accepted.
+    batch = sorted(block_numbers)
+    if len(batch) > _TS_SAMPLE_MAX_FETCHES:
+        stride = -(-len(batch) // _TS_SAMPLE_MAX_FETCHES)  # ceil division
+        anchors = set(batch[::stride])
+        anchors.update((batch[0], batch[-1]))
+        fetch_list = sorted(anchors)
+    else:
+        fetch_list = batch
+
     timestamps: dict[int, str] = {}
-    batch = list(block_numbers)
     semaphore = asyncio.Semaphore(GET_LOGS_SEMAPHORE_LIMIT)
     endpoint = get_best_endpoint(endpoints)
 
@@ -588,26 +608,46 @@ async def fetch_block_timestamps(
                 logger.warning("block_ts_fetch_failed", block=block_num, error=str(exc)[:80])
             return block_num, None
 
-    tasks = [_get_ts(bn) for bn in batch]
+    tasks = [_get_ts(bn) for bn in fetch_list]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     for res in results:
         if isinstance(res, tuple) and res[1] is not None:
             timestamps[res[0]] = res[1]
 
-    # Fallback for missing timestamps
+    # Interpolate missing timestamps between fetched anchors (linear in
+    # block number — real anchor timestamps, so accuracy tracks actual
+    # block-time variance), and extrapolate outside the anchor range with
+    # the chain's average block time.
     if len(timestamps) < len(block_numbers):
         from datetime import datetime, timedelta
 
         avg_block_time = CHAIN_BLOCK_TIMES.get(chain, DEFAULT_BLOCK_TIME)
-        latest_block = max(block_numbers)
-        latest_ts_str = timestamps.get(latest_block)
-        if latest_ts_str:
-            latest_ts = datetime.fromisoformat(latest_ts_str.replace("Z", "+00:00"))
+        anchor_items = sorted((bn, ts) for bn, ts in timestamps.items())
+        if anchor_items:
+            parsed: list[tuple[int, datetime]] = []
+            for bn, ts_str in anchor_items:
+                try:
+                    parsed.append((bn, datetime.fromisoformat(ts_str.replace("Z", "+00:00"))))
+                except ValueError:
+                    continue
             for bn in block_numbers:
-                if bn not in timestamps:
-                    offset_seconds = avg_block_time * (latest_block - bn)
-                    est_ts = latest_ts - timedelta(seconds=offset_seconds)
-                    timestamps[bn] = est_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+                if bn in timestamps:
+                    continue
+                # Find surrounding anchors.
+                prev = next((p for p in reversed(parsed) if p[0] <= bn), None)
+                nxt = next((p for p in parsed if p[0] >= bn), None)
+                if prev and nxt and nxt[0] > prev[0]:
+                    frac = (bn - prev[0]) / (nxt[0] - prev[0])
+                    est_ts = prev[1] + (nxt[1] - prev[1]) * frac
+                elif prev:
+                    offset = avg_block_time * (bn - prev[0])
+                    est_ts = prev[1] + timedelta(seconds=offset)
+                elif nxt:
+                    offset = avg_block_time * (nxt[0] - bn)
+                    est_ts = nxt[1] - timedelta(seconds=offset)
+                else:
+                    continue
+                timestamps[bn] = est_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     return timestamps
