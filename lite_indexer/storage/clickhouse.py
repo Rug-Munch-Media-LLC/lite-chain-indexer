@@ -40,7 +40,6 @@ from lite_indexer.pricing import compute_swap_usd, detect_whale, get_price
 from lite_indexer.storage.balance_cache import (
     ensure_balance_cache_table,
     ensure_holder_balances_mv,
-    update_holder_balance,
     update_holder_balances_bulk,
 )
 from lite_indexer.storage.projections import ensure_wallet_projection

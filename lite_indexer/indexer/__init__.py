@@ -25,8 +25,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from lite_indexer.chain_registry import ChainConfig, get_chain_config, list_supported_chains
 from lite_indexer.chains import GET_LOGS_ENDPOINTS
-from lite_indexer.chain_registry import get_chain_config, list_supported_chains, ChainConfig
 from lite_indexer.chains.demand import (
     default_enabled_events,
     get_chain_demand,
@@ -49,8 +49,6 @@ from lite_indexer.config import (
 )
 from lite_indexer.indexer._maintenance import MaintenanceMixin
 from lite_indexer.indexer._plugins import PluginsMixin
-from lite_indexer.indexer._sidecars import SidecarsMixin
-from lite_indexer.indexer._rpc_fetch import RpcFetchMixin
 from lite_indexer.indexer._resource_guards import (
     ClickHouseHealth,
     MemoryGate,
@@ -58,6 +56,8 @@ from lite_indexer.indexer._resource_guards import (
 from lite_indexer.indexer._resource_guards import (
     get_process_rss_mb as get_process_rss_mb,
 )
+from lite_indexer.indexer._rpc_fetch import RpcFetchMixin
+from lite_indexer.indexer._sidecars import SidecarsMixin
 from lite_indexer.indexer._sync_loop import SyncLoopMixin
 from lite_indexer.logging import get_logger
 from lite_indexer.plugin import BasePlugin, PluginContext, PluginLoader

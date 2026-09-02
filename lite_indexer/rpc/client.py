@@ -192,8 +192,9 @@ class RpcClient:
         Returns:
             Parsed JSON response dict, or None on failure.
         """
+        from lite_indexer.rpc.autotune import autotune_wait
+        from lite_indexer.rpc.autotune import record_call as autotune_record
         from lite_indexer.rpc.routing import record_rpc_usage
-        from lite_indexer.rpc.autotune import autotune_wait, record_call as autotune_record
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
 
         # Quota-degrade gate: before dispatching, ask the ledger whether

@@ -9,11 +9,11 @@ from __future__ import annotations
 import gc  # noqa: F401 — used by maintenance mixin body
 from typing import Any  # noqa: F401
 
-from lite_indexer.config import GC_EVERY_N_CYCLES
 from lite_indexer.config import (
-    DATA_RECONCILIATION_EVERY_N_CYCLES,
     DATA_RECONCILIATION_ENABLED,
+    DATA_RECONCILIATION_EVERY_N_CYCLES,
     DATA_RECONCILIATION_MAX_DISCREPANCY_PCT,
+    GC_EVERY_N_CYCLES,
 )
 from lite_indexer.logging import get_logger
 

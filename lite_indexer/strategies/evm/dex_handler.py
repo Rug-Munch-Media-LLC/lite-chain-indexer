@@ -147,7 +147,7 @@ async def _fetch_topic(
                 else:
                     record_endpoint_failure(url)
                     continue
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Hard deadline blown: wedged/slow-loris endpoint. Ban it so
                 # no other chunk task lands here again this cycle.
                 ban_endpoint(url, reason="wedged_response_deadline")

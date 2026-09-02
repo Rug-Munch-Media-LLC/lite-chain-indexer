@@ -1,5 +1,5 @@
 """
-Solana Helius adapter — SPL token transfers via the Helius RPC.
+Solana transfer adapter — SPL token transfers via a data-first RPC pool.
 
 A focused, single-provider adapter that answers one question: "what SPL
 token transfers happened for these mints in this slot range?" It uses the
@@ -17,11 +17,12 @@ Why a dedicated adapter (vs. the existing ``SolanaStrategy``)?
     backfill job, an on-demand scanner, or a one-off enrichment pass. It
     has no state, no highwater, and no side effects beyond the table write.
 
-The Helius endpoint is resolved from the ``HELIUS_KEY`` environment
-variable (populated from gopass ``rmi/helius/api-key`` in the daemon's
-env file). When the key is unset the adapter degrades to the shared
-Solana RPC pool (``lite_indexer.chains.non_evm.SOLANA_ENDPOINTS``) so it
-never hard-fails on a missing key.
+The endpoint pool is resolved from
+``lite_indexer.config.data_sources.solana_rpc_endpoints()`` — our own /
+dedicated RPCs and verified public endpoints FIRST, Helius LAST (fallback
+only, resolved from ``HELIUS_KEY``). When no endpoints resolve the
+adapter degrades gracefully and logs, never hard-failing on a missing
+key.
 
 Rows follow the ``wallet_memory.solana_transfers`` schema (see
 ``migrations/004_solana_transfers.sql`` and
@@ -38,7 +39,6 @@ from typing import Any
 
 import httpx
 
-from lite_indexer.chains.non_evm import SOLANA_ENDPOINTS
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.traces.solana import (
@@ -85,8 +85,8 @@ class SolanaHeliusAdapter:
     Args:
         tracked_tokens: List of ``{"mint", "symbol", "decimals", "name"}``
             dicts to index. Defaults to the strategy's tracked set.
-        endpoint: Optional explicit RPC URL. Defaults to the resolved
-            Helius URL, falling back to the shared Solana pool.
+        endpoint: Optional explicit RPC URL. Defaults to the data-first
+            pool (own/dedicated + public RPCs first, Helius last).
     """
 
     def __init__(
@@ -98,8 +98,15 @@ class SolanaHeliusAdapter:
 
         self.tracked_tokens = tracked_tokens or SOLANA_TRACKED_TOKENS
         self._mint_set: set[str] = {t["mint"] for t in self.tracked_tokens}
-        self._endpoint = endpoint or helius_rpc_url()
-        self._endpoints: list[str] = [self._endpoint] if self._endpoint else list(SOLANA_ENDPOINTS)
+        # DATA-FIRST: own/dedicated + public RPC pool first, Helius LAST.
+        # An explicit ``endpoint`` override still wins (e.g. tests, ops).
+        if endpoint:
+            self._endpoints: list[str] = [endpoint]
+        else:
+            from lite_indexer.data_sources import solana_rpc_endpoints  # noqa: PLC0415
+
+            self._endpoints = solana_rpc_endpoints()
+        self._endpoint = self._endpoints[0] if self._endpoints else None
 
     # ── RPC ──────────────────────────────────────────────────────────
 

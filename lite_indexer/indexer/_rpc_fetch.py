@@ -10,9 +10,9 @@ import gc  # noqa: F401 — used by maintenance mixin body
 from datetime import UTC, datetime  # noqa: F401 — UTC/datetime used in mixin bodies
 from typing import Any  # noqa: F401
 
-from lite_indexer.strategies.evm.strategy import EVMChainStrategy
 from lite_indexer.config import TRACE_CONCURRENCY, TRACE_MAX_BLOCKS_PER_CYCLE
 from lite_indexer.logging import get_logger
+from lite_indexer.strategies.evm.strategy import EVMChainStrategy
 
 log = get_logger(__name__)
 logger = log  # god-file bodies reference `logger`; keep both names
