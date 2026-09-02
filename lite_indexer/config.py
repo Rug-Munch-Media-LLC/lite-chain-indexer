@@ -494,8 +494,11 @@ STATE_REGRESSION_TOLERANCE_BLOCKS: int = int(os.environ.get("STATE_REGRESSION_TO
 # provider for a while; hammering them only deepens the ban. These are
 # banned for an exponentially growing duration (base * 2^ban_count,
 # capped) instead of the plain 300s cooldown used for generic failures.
+# Cap reduced 3600 -> 300 (2026-09-02): public free RPCs reset rate limits
+# every minute; a 1h cap wasted recovery time during the EVM dex_events
+# staleness crisis (517 rate-limit events/hour, 190h+ lag).
 ENDPOINT_BAN_BASE_SECONDS: int = int(os.environ.get("ENDPOINT_BAN_BASE_SECONDS", "60"))
-ENDPOINT_BAN_CAP_SECONDS: int = int(os.environ.get("ENDPOINT_BAN_CAP_SECONDS", "3600"))
+ENDPOINT_BAN_CAP_SECONDS: int = int(os.environ.get("ENDPOINT_BAN_CAP_SECONDS", "300"))
 
 # ── Periodic Data Reconciliation ────────────────────────────────────────
 # Every DATA_RECONCILIATION_EVERY_N_CYCLES sync cycles, compare the

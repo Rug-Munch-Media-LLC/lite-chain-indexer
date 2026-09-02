@@ -37,6 +37,9 @@ EXPECTED_EVM_CHAINS = [
     "gnosis",
     "celo",
     "robinhood",
+    "blast",
+    "fraxtal",
+    "metis",
 ]
 
 
@@ -114,13 +117,26 @@ class TestGetLogsEndpoints:
         for chain, urls in GET_LOGS_ENDPOINTS.items():
             assert len(urls) == len(set(urls)), chain
 
+    # Chains hit hardest by the 2026-09-02 RPC rate-limit crisis
+    # (517 rate-limit events/hour, dex_events 160-210h stale). Each must
+    # keep >= 3 free (no API-key placeholder) endpoints so a single
+    # provider ban cannot take a chain's pool offline.
+    RATE_LIMIT_CRITICAL_CHAINS = ["polygon", "optimism", "bsc", "arbitrum", "avalanche"]
+
+    def test_rate_limit_critical_chains_have_at_least_3_free_endpoints(self):
+        for chain in self.RATE_LIMIT_CRITICAL_CHAINS:
+            urls = GET_LOGS_ENDPOINTS[chain]
+            free = [u for u in urls if "${" not in u]
+            assert len(free) >= 3, f"{chain}: only {len(free)} free endpoints ({free})"
+
     def test_total_endpoint_count_sane(self):
         """Active pool is bounded: >= 1 per chain, <= raw template count.
 
         Upper bound raised 66 -> 96 (2026-08-23): probe-promoted fallbacks
         (ee50656) + DRPC_KEY keyed depth (aeb7228) intentionally expanded
-        the pool. The bound still guards against runaway duplication —
-        every URL must be a real template, no chain may exceed ~6.
+        the pool. Raised 96 -> 104 (2026-09-02): rate-limit crisis
+        endpoints for polygon/bsc + blast/fraxtal/metis pools. The bound
+        still guards against runaway duplication.
         """
         total = sum(len(urls) for urls in GET_LOGS_ENDPOINTS.values())
-        assert len(GET_LOGS_ENDPOINTS) <= total <= 96
+        assert len(GET_LOGS_ENDPOINTS) <= total <= 104

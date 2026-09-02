@@ -21,13 +21,14 @@ from lite_indexer.rpc.discovery import chain_id_for
 from lite_indexer.strategies import SUPPORTED_CHAINS, create_strategy
 from lite_indexer.strategies.evm import EVMChainStrategy
 
-ROBINHOOD_ENDPOINT = "https://rpc.robinhood.org"
-ROBINHOOD_CHAIN_ID = 78600
+ROBINHOOD_ENDPOINT = "https://rpc.mainnet.chain.robinhood.com"  # official, fully indexable (verified 2026-09-01)
+ROBINHOOD_CHAIN_ID = 4663  # 0x1237 — old spec 78600 was wrong (chainlist mapped it to Vanguard)
 
 
 class TestRobinhoodEndpoints:
     def test_official_endpoint_registered(self):
-        assert GET_LOGS_ENDPOINTS["robinhood"] == [ROBINHOOD_ENDPOINT]
+        """Official endpoint is T1 (first) in the expanded 2026-09-01 pool."""
+        assert GET_LOGS_ENDPOINTS["robinhood"][0] == ROBINHOOD_ENDPOINT
 
     def test_endpoint_is_https_and_placeholder_free(self):
         urls = GET_LOGS_ENDPOINTS["robinhood"]
@@ -37,8 +38,9 @@ class TestRobinhoodEndpoints:
             assert "${" not in url
 
     def test_last_resort_includes_official_endpoint(self):
-        assert LAST_RESORT_ENDPOINTS["robinhood"] == [ROBINHOOD_ENDPOINT]
-        assert ROBINHOOD_ENDPOINT in last_resort_endpoints("robinhood")
+        # LAST_RESORT still lists the legacy rpc.robinhood.org host.
+        assert LAST_RESORT_ENDPOINTS["robinhood"] == ["https://rpc.robinhood.org"]
+        assert "https://rpc.robinhood.org" in last_resort_endpoints("robinhood")
 
     def test_no_duplicate_endpoints(self):
         assert len(GET_LOGS_ENDPOINTS["robinhood"]) == len(set(GET_LOGS_ENDPOINTS["robinhood"]))
