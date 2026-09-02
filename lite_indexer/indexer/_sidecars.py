@@ -6,7 +6,6 @@ on ``self`` attributes initialized by :class:`LiteIndexer.__init__`.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from lite_indexer.indexer._writers import (

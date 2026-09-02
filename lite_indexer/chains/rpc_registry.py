@@ -21,7 +21,7 @@ Referral-program facts below were verified against public program pages
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)

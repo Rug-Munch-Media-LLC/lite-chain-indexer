@@ -21,9 +21,7 @@ point, so at most one sync cycle (~30s) is lost and re-fetched from RPC.
 
 from __future__ import annotations
 
-import asyncio
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +87,60 @@ from lite_indexer.streaming import NATSPublisher
 from lite_indexer.webhooks import WebhookDelivery
 
 logger = get_logger(__name__)
+
+__all__ = [
+    "AbstractChainStrategy",
+    "BasePlugin",
+    "ClickHouseHealth",
+    "ClickHouseWriter",
+    "DATA_DIR",
+    "DISK_CAP_BYTES",
+    "EndpointVerifyResult",
+    "EVMChainStrategy",
+    "GC_EVERY_N_CYCLES",
+    "GET_LOGS_ENDPOINTS",
+    "LAZY_INDEXING_ENABLED",
+    "MaintenanceMixin",
+    "MemoryGate",
+    "NATS_ENABLED",
+    "NATSPublisher",
+    "NDJSON_ENABLED",
+    "NDJSONWriter",
+    "PluginContext",
+    "PluginLoader",
+    "PluginsMixin",
+    "RpcClient",
+    "RpcFetchFailedError",
+    "RpcFetchMixin",
+    "SidecarsMixin",
+    "SolanaStrategy",
+    "STATE_BACKWARD_PROTECTION",
+    "STATE_REGRESSION_TOLERANCE_BLOCKS",
+    "StateManager",
+    "StateHighWater",
+    "SUPPORTED_CHAINS",
+    "TRACE_ENABLED",
+    "TronStrategy",
+    "VECTOR_INGESTION_ENABLED",
+    "WEBHOOK_ENABLED",
+    "WebhookDelivery",
+    "ChainConfig",
+    "apply_verified_endpoints",
+    "check_disk_cap_async",
+    "check_disk_space",
+    "chunk_size_for_chain",
+    "create_strategy",
+    "default_enabled_events",
+    "get_chain_config",
+    "get_chain_demand",
+    "get_process_rss_mb",
+    "list_supported_chains",
+    "read_demand_files",
+    "record_scan_demand",
+    "restore_original_endpoints",
+    "sync_batch_for_chain",
+    "verify_chain_endpoints",
+]
 
 # Sentinel value returned by strategies when a chain reorg is detected
 _REORG_SENTINEL = "__CHAIN_REORG__"
