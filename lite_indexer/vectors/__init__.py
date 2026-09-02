@@ -10,11 +10,10 @@ Key components:
 
 * :class:`LanceVectorStore` — embedded vector store (create, index, ANN
   search, BM25+vector hybrid search, similarity by id).
-* :class:`OpenAICompatEmbedder` — embedding provider (Infinity
-  ``BAAI/bge-m3`` via its OpenAI-compatible ``/embeddings`` endpoint by
-  default; any OpenAI-compatible API as an alternative).
-* :class:`OllamaEmbedder` — legacy provider, kept for compatibility only,
-  never used by the default configuration.
+* :class:`DualLaneEmbedder` — dual-lane embedding provider: Qwen3-Embedding-4B
+  (2560-dim) via the DeepInfra API (primary, fast) with a local llama.cpp
+  backup lane on port 8004; returns ``None`` when both lanes fail so
+  ingestion skips gracefully.
 * :mod:`lite_indexer.vectors.collections` — pre-built schemas for wallet,
   contract, transaction, and token embeddings.
 """
@@ -24,15 +23,15 @@ from lite_indexer.vectors.config import (
     COLLECTION_TOKENS,
     COLLECTION_TRANSACTIONS,
     COLLECTION_WALLETS,
+    DEEPINFRA_EMBED_MODEL,
     EMBEDDING_DIM,
-    EMBEDDING_MODEL,
-    EMBEDDING_PROVIDER,
+    EMBEDDING_MODE,
     LANCE_DIR,
+    LOCAL_EMBED_MODEL,
 )
 from lite_indexer.vectors.embedder import (
+    DualLaneEmbedder,
     EmbeddingError,
-    OllamaEmbedder,
-    OpenAICompatEmbedder,
     create_embedder,
 )
 from lite_indexer.vectors.lance_store import CollectionNotFoundError, LanceVectorStore
@@ -40,14 +39,14 @@ from lite_indexer.vectors.lance_store import CollectionNotFoundError, LanceVecto
 __all__ = [
     "LanceVectorStore",
     "CollectionNotFoundError",
+    "DualLaneEmbedder",
     "EmbeddingError",
-    "OllamaEmbedder",
-    "OpenAICompatEmbedder",
     "create_embedder",
     "LANCE_DIR",
     "EMBEDDING_DIM",
-    "EMBEDDING_MODEL",
-    "EMBEDDING_PROVIDER",
+    "EMBEDDING_MODE",
+    "DEEPINFRA_EMBED_MODEL",
+    "LOCAL_EMBED_MODEL",
     "COLLECTION_WALLETS",
     "COLLECTION_CONTRACTS",
     "COLLECTION_TRANSACTIONS",

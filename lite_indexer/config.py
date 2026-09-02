@@ -857,7 +857,7 @@ DEFAULT_DECIMALS_BY_CHAIN: dict[str, int] = {
 # Optional background pipeline that turns freshly indexed ClickHouse rows
 # into semantic embeddings (see lite_indexer/vectors/ingestion.py): it reads
 # the last synced block range from ClickHouse, generates text representations
-# for wallets and contracts, embeds them via Ollama (nomic-embed-text), and
+# for wallets and contracts, embeds them via Qwen3-Embedding-4B, and
 # stores them in LanceDB collections. ON by default — the pipeline is stable
 # and best-effort: a failure is logged and never blocks the core sync loop.
 VECTOR_INGESTION_ENABLED: bool = os.environ.get("VECTOR_INGESTION_ENABLED", "1") == "1"
@@ -866,7 +866,7 @@ VECTOR_INGESTION_ENABLED: bool = os.environ.get("VECTOR_INGESTION_ENABLED", "1")
 # (checked at the end of each sync cycle; the first cycle always ingests).
 VECTOR_INGESTION_INTERVAL_BLOCKS: int = int(os.environ.get("VECTOR_INGESTION_INTERVAL_BLOCKS", "100"))
 
-# Max wallets/contracts read + embedded per ingestion run. Bounds the Ollama
+# Max wallets/contracts read + embedded per ingestion run. Bounds the embedding
 # request size and memory usage of a single ingestion pass.
 VECTOR_INGESTION_BATCH_SIZE: int = int(os.environ.get("VECTOR_INGESTION_BATCH_SIZE", "50"))
 

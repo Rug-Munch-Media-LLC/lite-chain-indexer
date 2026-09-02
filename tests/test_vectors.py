@@ -1,6 +1,6 @@
 """Hermetic tests for the LanceDB vector store (lite_indexer.vectors).
 
-Uses a deterministic fake embedder so no Ollama/OpenAI service is needed.
+Uses a deterministic fake embedder so no embedding service is needed.
 LanceDB runs embedded against a tmp directory.
 """
 

@@ -17,8 +17,8 @@ LanceDB vector store serves:
 
       contract {addr} on {chain} deployed by {deployer}, {n} interactions
 
-The pipeline is: read (ClickHouse) → represent (text) → embed (Ollama
-``nomic-embed-text`` via :mod:`lite_indexer.vectors.embedder`) → store
+The pipeline is: read (ClickHouse) → represent (text) → embed (Qwen3-Embedding-4B
+via :mod:`lite_indexer.vectors.embedder`) → store
 (LanceDB via :mod:`lite_indexer.vectors.lance_store`). It is best-effort by
 design: the indexer wraps :func:`run_vector_ingestion` so a failure logs a
 warning and never blocks the core sync loop.
@@ -394,7 +394,7 @@ async def run_vector_ingestion(
     """Run the full ingestion pipeline for a block range.
 
     Reads wallet aggregates + deployed contracts from ClickHouse, embeds
-    them (Ollama ``nomic-embed-text`` by default), and stores them in the
+    them (Qwen3-Embedding-4B by default), and stores them in the
     ``wallet_embeddings`` / ``contract_embeddings`` LanceDB collections.
 
     Best-effort per collection: a ClickHouse read failure raises

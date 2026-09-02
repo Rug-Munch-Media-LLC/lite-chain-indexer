@@ -166,7 +166,7 @@ class LiteIndexer(
         # Optional LanceDB vector ingestion (VECTOR_INGESTION_ENABLED, default
         # off). When enabled, the sync loop periodically reads the freshly
         # synced block range from ClickHouse, embeds wallet/contract text
-        # representations via Ollama, and stores them in LanceDB collections.
+        # representations via Qwen3-Embedding-4B, and stores them in LanceDB collections.
         # Best-effort: a failure logs a warning and never blocks indexing.
         self.vector_ingestion_enabled = VECTOR_INGESTION_ENABLED if vector_ingestion is None else vector_ingestion
         # Lazy LanceDB store (one per indexer; only created when enabled).

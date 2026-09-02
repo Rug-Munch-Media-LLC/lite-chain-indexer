@@ -58,13 +58,9 @@ API_VERSION: str = os.getenv("API_VERSION") or "1.0.0"
 # Vector collections are served from the same LANCE_DIR the indexer writes
 # to. When the directory is unreachable the search endpoints return 503.
 LANCE_DIR: str = os.getenv("LANCE_DIR") or "/var/data/lance"
-EMBEDDING_PROVIDER: str = (os.getenv("EMBEDDING_PROVIDER") or "infinity").lower()
-EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL") or "BAAI/bge-m3"
-EMBEDDING_BASE_URL: str = os.getenv(
-    "EMBEDDING_BASE_URL",
-    "http://localhost:8001"
-    if (os.getenv("EMBEDDING_PROVIDER") or "infinity").lower() in ("infinity", "ollama")
-    else "https://api.openai.com/v1",
-)
-EMBEDDING_API_KEY: str = os.getenv("EMBEDDING_API_KEY") or ""
+EMBEDDING_MODE: str = (os.getenv("EMBEDDING_MODE") or "auto").lower()
+EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL") or "Qwen/Qwen3-Embedding-4B"
+DEEPINFRA_EMBED_URL: str = os.getenv("DEEPINFRA_EMBED_URL") or "https://api.deepinfra.com/v1/openai"
+LOCAL_EMBED_URL: str = os.getenv("LOCAL_EMBED_URL") or "http://127.0.0.1:8004/v1"
+DEEPINFRA_API_KEY: str = os.getenv("DEEPINFRA_API_KEY") or ""
 VECTOR_SEARCH_ENABLED: bool = (os.getenv("VECTOR_SEARCH_ENABLED") or "1") == "1"

@@ -271,7 +271,7 @@ async def maybe_run_vector_ingestion(
 
     The pipeline reads the freshly synced ``[from_block, to_block]``
     range from ClickHouse, generates text representations for wallets and
-    contracts, embeds them via Ollama (``nomic-embed-text``), and stores
+    contracts, embeds them via Qwen3-Embedding-4B, and stores
     them in LanceDB collections. The first cycle always ingests (there is
     no prior block marker); afterwards ingestion runs every
     ``VECTOR_INGESTION_INTERVAL_BLOCKS`` blocks.

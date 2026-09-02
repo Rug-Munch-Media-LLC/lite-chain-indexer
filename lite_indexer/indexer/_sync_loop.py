@@ -539,7 +539,7 @@ class SyncLoopMixin:
 
         # 8a. Vector ingestion (optional, LanceDB). Reads the freshly synced
         # block range from ClickHouse, generates text representations for
-        # wallets/contracts, embeds them via Ollama (nomic-embed-text), and
+        # wallets/contracts, embeds them via Qwen3-Embedding-4B, and
         # stores them in LanceDB collections. Gated by
         # VECTOR_INGESTION_ENABLED (default off) and the block interval
         # VECTOR_INGESTION_INTERVAL_BLOCKS. Exception-guarded: a vector

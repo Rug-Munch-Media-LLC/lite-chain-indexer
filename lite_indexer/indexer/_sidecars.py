@@ -136,7 +136,7 @@ class SidecarsMixin:
         the block interval has not elapsed, ClickHouse is unreachable, or the
         pipeline raises, we log and continue. Vector data is enrichment — the
         durable store is ClickHouse, and the sync loop must proceed even if
-        Ollama / LanceDB / ClickHouse hiccup.
+        embedding / LanceDB / ClickHouse hiccup.
 
         Args:
             from_block: First block of the synced range.
@@ -168,8 +168,8 @@ class SidecarsMixin:
 
         Delegates to :func:`lite_indexer.indexer._writers.maybe_run_vector_ingestion`,
         which reads the freshly synced ``[from_block, to_block]`` range from
-        ClickHouse, embeds wallet/contract text via Ollama
-        (``nomic-embed-text``), and stores them in LanceDB collections. The
+        ClickHouse, embeds wallet/contract text via Qwen3-Embedding-4B
+        and stores them in LanceDB collections. The
         first cycle always ingests; afterwards ingestion runs every
         ``VECTOR_INGESTION_INTERVAL_BLOCKS`` blocks. Best-effort — returns
         None when the interval has not elapsed or ClickHouse is unavailable.

@@ -43,7 +43,7 @@ unexploited differentiator is unchanged: **balance-at-block / state-as-a-service
 | Plugin system (Python, YAML manifest, dependency-free ABI decoder, ClickHouse schema auto-create, install/enable/disable CLI, community registry) — **static contract addresses only** | `plugin/` (base.py, loader.py, manager.py, registry.py), `docs/PLUGINS.md` |
 | REST API (10 routers: transfers, deployers, whales, stats, raw SQL, search/vectors, trace, intel, system, webhooks) + rate limiting + Prometheus metrics | `api/app.py`, `api/routers/` |
 | GraphQL: **3 hardcoded read-only queries** (transfers, chainStats, whales) — no subscriptions, no schema-driven generation | `api/graphql.py` |
-| LanceDB vectors (wallet/contract/tx/token embeddings, BAAI/bge-m3 via Infinity, semantic + similar endpoints) | `vectors/` (lance_store.py, embedder.py, ingestion.py), `api/routers/search.py` |
+| LanceDB vectors (wallet/contract/tx/token embeddings, Qwen3-Embedding-4B (2560-dim) via DeepInfra API + local llama.cpp backup, semantic + similar endpoints) | `vectors/` (lance_store.py, embedder.py, ingestion.py), `api/routers/search.py` |
 | Self-healing: backward-state guard, `--recover`, chain auto-disable, endpoint bans + exponential backoff, integrity-check, balance reconciliation | `recovery.py`, `health.py`, `rpc/`, `state.py` |
 | Reorg staging + fork rollback (EVM), bloom pre-filtering | `state.py`, `indexer.py` |
 | Traces via `debug_traceBlockByNumber` (callTracer) + Solana trace-level transfers | `traces/` |

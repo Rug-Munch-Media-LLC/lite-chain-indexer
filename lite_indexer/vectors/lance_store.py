@@ -19,7 +19,7 @@ synchronous LanceDB API:
   collections (wallet / contract / transaction / token embeddings)
 
 Embedding generation is delegated to :mod:`lite_indexer.vectors.embedder`
-(Ollama local by default, OpenAI-compatible as an alternative).
+(DeepInfra API primary, local llama.cpp backup).
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import pyarrow as pa
 
 from lite_indexer.vectors.collections import DEFAULT_COLLECTIONS
 from lite_indexer.vectors.config import LANCE_DIR
-from lite_indexer.vectors.embedder import Embedder, create_embedder
+from lite_indexer.vectors.embedder import Embedder, EmbeddingError, create_embedder
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +75,21 @@ class LanceVectorStore:
     ) -> list[list[float]]:
         """Embed texts, switching providers when a model override is given."""
         if embedding_model is None or embedding_model == self._embedder.model:
-            return await self._embedder.embed(texts, on_progress=on_progress)
-        temp = create_embedder(model=embedding_model)
-        try:
-            return await temp.embed(texts, on_progress=on_progress)
-        finally:
-            close = getattr(temp, "aclose", None)
-            if close is not None:
-                await close()
+            vectors = await self._embedder.embed(texts, on_progress=on_progress)
+        else:
+            temp = create_embedder(model=embedding_model)
+            try:
+                vectors = await temp.embed(texts, on_progress=on_progress)
+            finally:
+                close = getattr(temp, "aclose", None)
+                if close is not None:
+                    await close()
+        if vectors is None:
+            # Both embedding lanes failed — surface as EmbeddingError so the
+            # best-effort ingestion pipeline logs and skips instead of
+            # storing garbage or crashing the indexer.
+            raise EmbeddingError("all embedding lanes failed (DeepInfra + local)")
+        return vectors
 
     # ── Collection management ──────────────────────────────────────────
 
