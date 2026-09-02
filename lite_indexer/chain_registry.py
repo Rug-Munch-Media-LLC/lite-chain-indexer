@@ -38,6 +38,10 @@ class ChainConfig:
     dex_factory_addresses: list[str] = field(default_factory=list)
     explorer_api_url: str = ""
     explorer_api_key_env: str = ""
+    #: Optional dedicated RPC URL template for a specific provider (e.g. the
+    #: Helius RPC for Solana). ``${ENV_VAR}`` placeholders are resolved at
+    #: use time; an unset key leaves the endpoint inactive.
+    provider_rpc_url: str = ""
     native_currency: str = "ETH"
     block_time_seconds: float = 12.0
     max_reorg_depth: int = 20
@@ -239,6 +243,10 @@ EVM_PRESETS: dict[str, ChainConfig] = {
             "https://api.mainnet-beta.solana.com",
             "https://solana.publicnode.com",
         ],
+        # Helius RPC (free tier, 25K req/mo) — activated when HELIUS_KEY is
+        # set (gopass rmi/helius/api-key → daemon env file). Used by the
+        # SolanaHeliusAdapter for SPL transfer indexing.
+        provider_rpc_url="https://rpc.helius.xyz/?api-key=${HELIUS_KEY}",
         poll_interval_seconds=5,
         native_currency="SOL",
         block_time_seconds=0.4,
