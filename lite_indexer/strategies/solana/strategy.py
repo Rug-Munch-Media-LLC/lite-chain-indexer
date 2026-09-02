@@ -34,11 +34,14 @@ from lite_indexer.traces.solana import (
 )
 
 from .bundles import detect_bundle
-from .launch import detect_launch
+from .launch import SOLANA_LAUNCHES_TABLE, detect_launch
 from .models import (
     MAX_SIGNATURES_PER_TOKEN,
     SIG_WINDOW_MAX_SLOTS,
     SOLANA_BLOCK_MAX_PER_SYNC,
+    SOLANA_DISCOVERY_LOOKBACK_HOURS,
+    SOLANA_DISCOVERY_MAX_PER_CYCLE,
+    SOLANA_MAX_TRACKED_TOKENS,
     SOLANA_SIG_MAX_PAGES,
     SOLANA_TRACKED_TOKENS,
     SOLANA_TX_CONCURRENCY,
@@ -100,6 +103,110 @@ class SolanaStrategy(AbstractChainStrategy):
         # extra RPC). Buffered here and drained by the sync loop, which
         # writes them via the shared write_dex_events path.
         self._last_swap_events: list[dict[str, Any]] = []
+        # Dynamic token discovery: mints picked up from
+        # wallet_memory.solana_launches (launch detection writes there every
+        # cycle). Cached ClickHouse client, lazily connected.
+        self._ch_client: Any = None
+        self._base_mints: frozenset[str] = frozenset(self._mint_set)
+
+    # ── Dynamic Token Discovery ──────────────────────────────────────
+
+    def _get_ch_client(self) -> Any | None:
+        """Lazily connect a ClickHouse client for discovery queries.
+
+        Mirrors ClickHouseWriter._connect env handling (CH_HOST/CH_PORT/
+        CH_USER/CH_PASSWORD/CH_DATABASE). Returns None when unavailable —
+        discovery is best-effort and never blocks the sync cycle.
+        """
+        if self._ch_client is not None:
+            return self._ch_client
+        try:
+            import os
+
+            from clickhouse_driver import Client as CHClient
+
+            self._ch_client = CHClient(
+                host=os.getenv("CH_HOST") or os.getenv("CLICKHOUSE_HOST", "127.0.0.1"),
+                port=int(os.getenv("CH_PORT") or os.getenv("CLICKHOUSE_PORT") or "9000"),
+                user=os.getenv("CH_USER") or os.getenv("CLICKHOUSE_USER", "default"),
+                password=os.getenv("CH_PASSWORD") or os.getenv("CLICKHOUSE_PASSWORD") or "",
+                database=os.getenv("CH_DATABASE", "wallet_memory"),
+                connect_timeout=5,
+                send_receive_timeout=15,
+            )
+            return self._ch_client
+        except Exception as exc:  # noqa: BLE001 — discovery is best-effort
+            logger.warning("solana_discovery_ch_unavailable", error=str(exc)[:80])
+            return None
+
+    def _discover_new_tokens(self) -> list[dict[str, Any]]:
+        """Discover recently launched tokens from wallet_memory.solana_launches.
+
+        The launch detector (launch.py) writes every Pump.fun/PumpSwap/
+        Raydium/LaunchLab/LetsBonk token creation to solana_launches. This
+        reads mints launched in the last SOLANA_DISCOVERY_LOOKBACK_HOURS and
+        merges them into the tracked set so their transfers get indexed via
+        getSignaturesForAddress like the hardcoded base tokens.
+
+        Bounded: at most SOLANA_DISCOVERY_MAX_PER_CYCLE new mints per cycle
+        and SOLANA_MAX_TRACKED_TOKENS total tracked (oldest dynamic tokens
+        are evicted first; the hardcoded base set is never evicted).
+
+        Returns:
+            The list of newly added token dicts (empty when CH is down or
+            nothing new was found).
+        """
+        client = self._get_ch_client()
+        if client is None:
+            return []
+        try:
+            rows = client.execute(
+                f"""
+                SELECT mint
+                FROM {SOLANA_LAUNCHES_TABLE}
+                WHERE block_timestamp >= now() - INTERVAL {SOLANA_DISCOVERY_LOOKBACK_HOURS} HOUR
+                GROUP BY mint
+                ORDER BY max(slot) DESC
+                LIMIT {SOLANA_DISCOVERY_MAX_PER_CYCLE}
+                """
+            )
+        except Exception as exc:  # noqa: BLE001 — discovery is best-effort
+            logger.warning("solana_discovery_query_failed", error=str(exc)[:100])
+            # Drop the cached client so the next cycle retries the connection.
+            self._ch_client = None
+            return []
+
+        new_tokens: list[dict[str, Any]] = []
+        for (mint,) in rows:
+            mint = str(mint)
+            if not mint or mint in self._mint_set:
+                continue
+            token = {"mint": mint, "symbol": mint[:8], "decimals": 0, "name": ""}
+            self.tracked_tokens.append(token)
+            self._mint_set.add(mint)
+            new_tokens.append(token)
+
+        # Evict oldest dynamic tokens when over the total cap (base set is
+        # protected — only tokens added by discovery are removable).
+        if len(self.tracked_tokens) > SOLANA_MAX_TRACKED_TOKENS:
+            evict = len(self.tracked_tokens) - SOLANA_MAX_TRACKED_TOKENS
+            kept: list[dict[str, Any]] = []
+            for token in reversed(self.tracked_tokens):
+                if evict > 0 and token["mint"] not in self._base_mints:
+                    evict -= 1
+                    self._mint_set.discard(token["mint"])
+                    continue
+                kept.append(token)
+            kept.reverse()
+            self.tracked_tokens = kept
+
+        if new_tokens:
+            logger.info(
+                "solana_token_discovery",
+                new_count=len(new_tokens),
+                total_tracked=len(self.tracked_tokens),
+            )
+        return new_tokens
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -304,6 +411,15 @@ class SolanaStrategy(AbstractChainStrategy):
         """
         if from_slot > to_slot:
             return []
+
+        # Dynamic token discovery: merge recently launched mints (from
+        # wallet_memory.solana_launches) into the tracked set at the start
+        # of every sync cycle so new meme tokens are indexed within one
+        # cycle of their launch. Best-effort — never blocks the fetch.
+        try:
+            self._discover_new_tokens()
+        except Exception as exc:  # noqa: BLE001 — discovery is best-effort
+            logger.warning("solana_discovery_failed", error=str(exc)[:80])
 
         # 2026-09-01 CATCH-UP DOCTRINE: window depth decides the strategy.
         #   - Small window (<= SIG_WINDOW_MAX_SLOTS, ~2000 slots ≈ real-time

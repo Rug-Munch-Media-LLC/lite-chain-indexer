@@ -42,3 +42,16 @@ SOLANA_BLOCK_MAX_PER_SYNC = 200
 
 # Max concurrent getTransaction calls
 SOLANA_TX_CONCURRENCY = 10
+
+# ── Dynamic Token Discovery (solana_launches → tracked set) ──────────
+# 2026-09-02: new meme tokens (pump.fun/Raydium launches) are written to
+# wallet_memory.solana_launches by the launch detector every cycle. The
+# strategy merges recent mints into its tracked set so their transfers
+# are indexed like the hardcoded base tokens.
+# Max new mints merged into the tracked set per sync cycle (RPC budget).
+SOLANA_DISCOVERY_MAX_PER_CYCLE = 50
+# Lookback window for launch discovery (hours).
+SOLANA_DISCOVERY_LOOKBACK_HOURS = 24
+# Hard cap on total tracked tokens (base + dynamic). Oldest dynamic
+# tokens are evicted first; the hardcoded base set is never evicted.
+SOLANA_MAX_TRACKED_TOKENS = 300
