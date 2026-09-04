@@ -167,3 +167,14 @@ jobs:
         run: semgrep scan --config auto --error --quiet
       - name: Gitleaks secret scan
         run: gitleaks detect --source . --no-banner --redact
+
+  # ── Dockerfile linting (hadolint) ─────────────────────────────────
+  docker-lint:
+    runs-on: docker-x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Hadolint root Dockerfile
+        run: docker run --rm -i hadolint/hadolint:latest --failure-threshold error < Dockerfile
+      - name: Hadolint api Dockerfile
+        run: docker run --rm -i hadolint/hadolint:latest --failure-threshold error < api/Dockerfile
