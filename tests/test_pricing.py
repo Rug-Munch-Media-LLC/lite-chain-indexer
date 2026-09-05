@@ -346,7 +346,7 @@ async def test_refresh_prices_provider_down_is_resilient() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_prices_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    import lite_indexer.pricing as pricing_mod
+    import lite_indexer.pricing.aggregators as pricing_mod
 
     monkeypatch.setattr(pricing_mod, "PRICING_ENABLED", False)
     stats = await refresh_prices(FakeClient(), tokens=[("ethereum", "0xtoken0")])
