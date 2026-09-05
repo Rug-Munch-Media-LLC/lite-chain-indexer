@@ -1,44 +1,10 @@
-# DEPRECATED: Canonical export is now /root/scripts/lite-indexer-parquet-daily.sh
-# which uses ClickHouse-native FORMAT Parquet (not pyarrow).
-# This module retained for dry-run/testing. Do not schedule.
-"""
-Parquet cold storage tier — daily rollup of old ClickHouse rows.
-
-Pipeline (idempotent, safe by default):
-
-1. For a (chain, date), read rows from ClickHouse (transfers and DEX
-   events) via the native protocol.
-2. Write ``{chain}_{date}.parquet`` (and ``{chain}_dex_{date}.parquet``)
-   locally under ``PARQUET_DIR/{chain}/{date}/`` using pyarrow, then
-   verify each file (row count + schema).
-3. Upload the directory with ``rclone copy {dir} {remote}/{chain}/{date}/``
-   and verify the upload with ``rclone check`` (only ``--upload``).
-4. Record progress in the ClickHouse ``parquet_export_state`` table
-   (statuses: pending / exporting / uploaded / deleted / failed).
-5. Delete the exported rows from ClickHouse with a lightweight
-   ``ALTER TABLE ... DELETE`` mutation — only after the upload has been
-   verified (``--delete-after-upload``), never before.
-6. Mark the (chain, date) in ``PARQUET_STATE_DIR`` so the daily cron
-   never re-exports or double-deletes.
-
-With ``publish_snapshot=True`` (CLI ``--publish-snapshot``), each exported
-(chain, date) is additionally mirrored to the bootstrap snapshot location
-``{BOOTSTRAP_B2_BUCKET}/{BOOTSTRAP_PARQUET_PATH}/{date}/{chain}/`` with a
-generated ``manifest.json`` — this is what makes ``lite-indexer bootstrap``
-able to discover and replay the snapshot (see lite_indexer.snapshot_manifest).
-
-Failures are non-fatal and logged; the state marker is only written
-after a successful export, so a partial failure retries next run.
-Rows are never deleted from ClickHouse unless the archive upload has
-been verified first.
-"""
+"""Parquet write/upload/export orchestration (ParquetExporter)."""
 
 from __future__ import annotations
 
 import json
 import shutil
 import subprocess
-from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -57,177 +23,22 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.snapshot_manifest import MANIFEST_NAME, build_manifest, manifest_json
+from lite_indexer.storage.parquet.helpers import _block_range, _local_dir, _local_path, _remote_dir, _state_marker
+from lite_indexer.storage.parquet.reader import _fetch_day_rows, _verify_parquet
+from lite_indexer.storage.parquet.schema import (
+    _STATE_TABLE_DDL,
+    _STATUS_DELETED,
+    _STATUS_EXPORTING,
+    _STATUS_FAILED,
+    _STATUS_PENDING,
+    _STATUS_UPLOADED,
+    PYARROW_AVAILABLE,
+    ExportSummary,
+    pa,
+    pq,
+)
 
 logger = get_logger(__name__)
-
-try:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    PYARROW_AVAILABLE = True
-except ImportError:  # pragma: no cover — optional dependency
-    pa = None  # type: ignore[assignment]
-    pq = None  # type: ignore[assignment]
-    PYARROW_AVAILABLE = False
-
-# ClickHouse lightweight-delete maximum mutation size guard (rows per day).
-_MAX_ROWS_PER_DAY = 5_000_000
-
-# Statuses recorded in the parquet_export_state table.
-_STATUS_PENDING = "pending"
-_STATUS_EXPORTING = "exporting"
-_STATUS_UPLOADED = "uploaded"
-_STATUS_DELETED = "deleted"
-_STATUS_FAILED = "failed"
-
-# ClickHouse state table DDL (must stay in sync with
-# CH_PARQUET_STATE_TABLE and the README). ReplacingMergeTree keeps the
-# last-inserted row per (chain, date), so plain INSERTs upsert state.
-_STATE_TABLE_DDL = f"""
-CREATE TABLE IF NOT EXISTS {CH_PARQUET_STATE_TABLE} (
-    chain LowCardinality(String),
-    date Date,
-    status LowCardinality(String),
-    evm_transfers_rows UInt64 DEFAULT 0,
-    dex_events_rows UInt64 DEFAULT 0,
-    parquet_bytes UInt64 DEFAULT 0,
-    uploaded_at Nullable(DateTime),
-    deleted_at Nullable(DateTime),
-    error_message String DEFAULT ''
-) ENGINE = ReplacingMergeTree()
-ORDER BY (chain, date)
-"""
-
-
-@dataclass
-class ExportSummary:
-    """Outcome of a parquet export run for one chain."""
-
-    chain: str
-    dates_attempted: int = 0
-    dates_exported: int = 0
-    transfers_rows: int = 0
-    dex_rows: int = 0
-    bytes_written: int = 0
-    uploaded: int = 0
-    deleted_rows: int = 0
-    skipped_existing: int = 0
-    errors: list[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serializable summary for CLI output."""
-        return {
-            "chain": self.chain,
-            "dates_attempted": self.dates_attempted,
-            "dates_exported": self.dates_exported,
-            "transfers_rows": self.transfers_rows,
-            "dex_rows": self.dex_rows,
-            "bytes_written": self.bytes_written,
-            "files_uploaded": self.uploaded,
-            "rows_deleted": self.deleted_rows,
-            "skipped_existing": self.skipped_existing,
-            "errors": self.errors,
-        }
-
-
-def _local_dir(data_dir: Path, chain: str, day: date) -> Path:
-    """Build the local parquet directory for a chain/date.
-
-    Layout: ``{chain}/{YYYY-MM-DD}/`` — one directory per chain/date
-    holding both the transfers and DEX parquet files, so the whole day
-    can be uploaded with a single ``rclone copy {dir} {remote}``.
-
-    Args:
-        data_dir: Local parquet root.
-        chain: Chain name.
-        day: Export date.
-
-    Returns:
-        Local directory path.
-    """
-    return data_dir / chain / day.isoformat()
-
-
-def _local_path(data_dir: Path, chain: str, day: date, kind: str) -> Path:
-    """Build the local parquet file path for a chain/date/kind.
-
-    Args:
-        data_dir: Local parquet root.
-        chain: Chain name.
-        day: Export date.
-        kind: ``"transfers"`` or ``"dex"``.
-
-    Returns:
-        Local file path inside the ``{chain}/{date}/`` directory.
-    """
-    fname = f"{chain}_dex_{day.isoformat()}.parquet" if kind == "dex" else f"{chain}_{day.isoformat()}.parquet"
-    return _local_dir(data_dir, chain, day) / fname
-
-
-def _remote_dir(remote: str, chain: str, day: date) -> str:
-    """Build the rclone remote directory for a chain/date.
-
-    Args:
-        remote: rclone remote root (e.g. ``b2-crypt:lite-indexer-parquet``).
-        chain: Chain name.
-        day: Export date.
-
-    Returns:
-        Remote directory path.
-    """
-    return f"{remote}/{chain}/{day.isoformat()}"
-
-
-def _remote_path(remote: str, chain: str, day: date, kind: str) -> str:
-    """Build the rclone remote file path for a chain/date/kind.
-
-    Args:
-        remote: rclone remote root.
-        chain: Chain name.
-        day: Export date.
-        kind: ``"transfers"`` or ``"dex"``.
-
-    Returns:
-        Remote file path.
-    """
-    return f"{_remote_dir(remote, chain, day)}/{_local_path(Path(''), chain, day, kind).name}"
-
-
-def _state_marker(state_dir: Path, chain: str, day: date) -> Path:
-    """Return the state marker path for a (chain, date)."""
-    return state_dir / chain / f"{day.isoformat()}.done"
-
-
-def _block_range(transfer_rows: list[dict[str, Any]], dex_rows: list[dict[str, Any]]) -> tuple[int, int]:
-    """Compute the min/max block span over exported row dicts.
-
-    The manifest records ``start_block``/``end_block`` so bootstrap can
-    set the state high-water mark to the snapshot's true coverage.
-
-    Args:
-        transfer_rows: Rows from the transfers table.
-        dex_rows: Rows from the DEX table.
-
-    Returns:
-        ``(start_block, end_block)``, both 0 when no rows carry a
-        ``block_number``.
-    """
-    start: int | None = None
-    end: int | None = None
-    for rows in (transfer_rows, dex_rows):
-        for row in rows:
-            raw = row.get("block_number")
-            if raw is None:
-                continue
-            try:
-                block = int(raw)
-            except (TypeError, ValueError):
-                continue
-            if start is None or block < start:
-                start = block
-            if end is None or block > end:
-                end = block
-    return (start if start is not None else 0, end if end is not None else 0)
 
 
 class ParquetExporter:
@@ -319,56 +130,9 @@ class ParquetExporter:
         except Exception as exc:
             logger.warning("parquet_state_record_failed", chain=chain, day=day.isoformat(), error=str(exc)[:100])
 
-    def _fetch_day_rows(
-        self,
-        client: Any,
-        table: str,
-        chain: str,
-        day: date,
-    ) -> list[dict[str, Any]]:
-        """Fetch all rows for a chain/date from a ClickHouse table.
-
-        Raises ``ValueError`` when the day exceeds ``_MAX_ROWS_PER_DAY``
-        so a truncated export is never treated as complete (and the rows
-        are therefore never deleted).
-
-        Args:
-            client: ClickHouse client.
-            table: Fully-qualified table name.
-            chain: Chain name.
-            day: Export date.
-
-        Returns:
-            Rows as list of dicts (column name → value).
-
-        Raises:
-            ValueError: If the day has more than ``_MAX_ROWS_PER_DAY`` rows.
-        """
-        query = (
-            f"SELECT * FROM {table} "
-            f"WHERE chain = %(chain)s AND toDate(block_timestamp) = %(day)s "
-            f"LIMIT {_MAX_ROWS_PER_DAY + 1}"
-        )
-        try:
-            rows, columns = client.execute(
-                query,
-                {"chain": chain, "day": day.isoformat()},
-                with_column_types=True,
-            )
-        except Exception as exc:
-            # Table may not exist yet for this chain — not an error worth
-            # failing the run over.
-            if "doesn't exist" in str(exc) or "UNKNOWN_TABLE" in str(exc):
-                logger.debug("parquet_table_missing", table=table, chain=chain, error=str(exc)[:60])
-                return []
-            logger.warning("parquet_select_failed", table=table, chain=chain, error=str(exc)[:120])
-            return []
-
-        if len(rows) > _MAX_ROWS_PER_DAY:
-            raise ValueError(f"day exceeds export cap of {_MAX_ROWS_PER_DAY} rows")
-
-        col_names = [c[0] for c in columns]
-        return [dict(zip(col_names, row, strict=False)) for row in rows]
+    def _fetch_day_rows(self, client: Any, table: str, chain: str, day: date) -> list[dict[str, Any]]:
+        """Fetch all rows for a chain/date (delegates to reader)."""
+        return _fetch_day_rows(client, table, chain, day)
 
     @staticmethod
     def _delete_day_rows(client: Any, table: str, chain: str, day: date) -> int:
@@ -438,55 +202,7 @@ class ParquetExporter:
             logger.error("parquet_fallback_write_failed", path=str(path), error=str(exc))
             return 0
 
-    @staticmethod
-    def _verify_parquet(
-        path: Path,
-        expected_rows: int,
-        expected_columns: set[str],
-    ) -> bool:
-        """Verify a written parquet file: row count + schema.
-
-        Reads the file back and checks ``num_rows == expected_rows`` and
-        that every expected column exists. Without pyarrow the JSONL
-        fallback is verified by counting rows in the gzip stream (schema
-        is not enforced).
-
-        Args:
-            path: Parquet (or fallback JSONL) file path.
-            expected_rows: Number of rows that must be in the file.
-            expected_columns: Column names that must be present.
-
-        Returns:
-            True when the file verifies.
-        """
-        if not path.exists() or path.stat().st_size == 0:
-            return False
-
-        if not PYARROW_AVAILABLE:
-            import gzip
-
-            try:
-                with gzip.open(str(path) + ".jsonl.gz", "rt", encoding="utf-8") as fh:
-                    count = sum(1 for _ in fh)
-                return count == expected_rows
-            except OSError:
-                return False
-
-        try:
-            table = pq.read_table(path)  # type: ignore[no-untyped-call]
-            if table.num_rows != expected_rows:
-                logger.warning(
-                    "parquet_verify_row_mismatch", path=str(path), expected=expected_rows, actual=table.num_rows
-                )
-                return False
-            missing = expected_columns - set(table.column_names)
-            if missing:
-                logger.warning("parquet_verify_schema_missing", path=str(path), missing=sorted(missing))
-                return False
-            return True
-        except Exception as exc:
-            logger.warning("parquet_verify_failed", path=str(path), error=str(exc)[:120])
-            return False
+    _verify_parquet = staticmethod(_verify_parquet)
 
     # ── Upload (rclone) ─────────────────────────────────────────────
 
@@ -922,14 +638,4 @@ class ParquetExporter:
         return ok
 
 
-__all__ = [
-    "ParquetExporter",
-    "ExportSummary",
-    "PYARROW_AVAILABLE",
-    "_local_dir",
-    "_local_path",
-    "_remote_dir",
-    "_remote_path",
-    "_state_marker",
-    "_block_range",
-]
+__all__ = ["ParquetExporter"]
