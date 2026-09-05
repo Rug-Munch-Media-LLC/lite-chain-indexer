@@ -494,13 +494,14 @@ class SyncLoopMixin:
             if trace_written:
                 summary["traces_written_ch"] = trace_written
 
-        # 7b. Reorg staging (EVM only, gated by REORG_PROTECTION_ENABLED):
-        # checkpoint the batch tip block hash, then verify the block at
-        # to_block - MAX_REORG_DEPTH[chain] against its checkpoint. On
+        # 7b. Reorg staging (EVM + Solana, gated by REORG_PROTECTION_ENABLED):
+        # checkpoint the batch tip block hash/slot blockhash, then verify
+        # the block/slot at tip - depth against its checkpoint. On
         # mismatch the chain reorganized underneath us: roll back
-        # evm_transfers + dex_events above the fork point and re-fetch
-        # from the fork on the next cycle (state is rewound to the fork).
-        if self._is_evm() and REORG_PROTECTION_ENABLED and isinstance(self.strategy, EVMChainStrategy):
+        # evm_transfers/solana_spl_balance_changes + dex_events above the
+        # fork point and re-fetch from the fork on the next cycle (state
+        # is rewound to the fork).
+        if REORG_PROTECTION_ENABLED and isinstance(self.strategy, (EVMChainStrategy, SolanaStrategy)):
             try:
                 ch_client = self.ch_writer.client()
             except Exception as exc:  # noqa: BLE001 — staging is best-effort

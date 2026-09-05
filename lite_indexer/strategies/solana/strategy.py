@@ -24,9 +24,17 @@ from typing import Any
 
 import httpx
 
+from lite_indexer.config import REORG_PROTECTION_ENABLED
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcFetchFailedError
 from lite_indexer.strategies.base import AbstractChainStrategy
+from lite_indexer.strategies.solana.reorg import (
+    SOLANA_REORG_DEPTH,
+    checkpoint_slot,
+    detect_reorg,
+    ensure_checkpoint_table,
+    rollback_to_slot,
+)
 from lite_indexer.traces.solana import (
     SolanaTraceCollector,
     ensure_solana_transfers_table,
@@ -940,6 +948,66 @@ class SolanaStrategy(AbstractChainStrategy):
                 logger.warning("solana_bundle_detect_failed", slot=slot, error=str(exc)[:80])
 
         return events, True
+
+    # ── Reorg Staging (slot-finality checkpointing) ──────────────────
+
+    async def reorg_stage(
+        self,
+        from_slot: int,
+        to_slot: int,
+        ch_client: Any | None = None,
+    ) -> int | None:
+        """Checkpoint slot blockhashes and roll back deep reorgs for a batch.
+
+        Solana mirror of ``EVMChainStrategy.reorg_stage``, gated by
+        ``REORG_PROTECTION_ENABLED``. Called after a batch is processed:
+
+        1. Save the batch tip slot's blockhash to the checkpoint table
+           (the last ``SOLANA_REORG_DEPTH`` slots are "unripe").
+        2. For ``to_slot - SOLANA_REORG_DEPTH``, verify the current
+           blockhash matches the checkpointed blockhash.
+        3. On mismatch: log a warning, roll back
+           ``solana_spl_balance_changes`` + ``dex_events`` (chain='solana')
+           above the fork slot, and return the fork slot so the caller can
+           re-fetch from it.
+
+        Args:
+            from_slot: Start slot of the processed batch (unused, kept for
+                signature parity with the EVM path).
+            to_slot: Tip slot of the processed batch (checkpointed).
+            ch_client: ClickHouse client (raw, from ClickHouseWriter).
+
+        Returns:
+            The fork slot when a reorg was detected and rolled back,
+            otherwise None.
+        """
+        if not REORG_PROTECTION_ENABLED or ch_client is None:
+            return None
+
+        if not await ensure_checkpoint_table(ch_client):
+            return None
+
+        client = await self._get_client()
+
+        # 1. Checkpoint the batch tip blockhash.
+        if not await checkpoint_slot(client, to_slot, ch_client):
+            logger.debug("reorg_tip_blockhash_missing", chain=self.chain, slot=to_slot)
+            return None
+
+        # 2. Verify the slot that should now be deep-confirmed.
+        fork_slot = await detect_reorg(client, to_slot, ch_client)
+        if fork_slot is None:
+            return None
+
+        # 3. Reorg detected — log, roll back to the fork slot, re-fetch.
+        logger.warning(
+            "chain_reorg_deep",
+            chain=self.chain,
+            fork_slot=fork_slot,
+            depth=SOLANA_REORG_DEPTH,
+        )
+        await rollback_to_slot(ch_client, fork_slot)
+        return fork_slot
 
     # ── ClickHouse Write ─────────────────────────────────────────────
 
