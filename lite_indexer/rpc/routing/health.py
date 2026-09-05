@@ -1,34 +1,17 @@
-"""
-Intelligent RPC routing — per-method routing, cost tracking, circuit breakers.
+"""Endpoint health tracking — circuit breaker, EWMA latency, staleness gate.
 
-Three capabilities layered on top of the existing endpoint pool:
+Per-endpoint circuit breaker (open / half-open / closed) plus the
+EWMA latency / windowed error-rate / in-flight / block-height signals
+used by P2C selection and the staleness gate. All state is in-process
+and safe under asyncio (single-threaded event loop, no locks required).
 
-1. **Per-method routing** — heavy, throughput-oriented calls
-   (``eth_getLogs``) prefer free public tiers; small, latency-sensitive
-   calls (``eth_getTransactionReceipt``, ``eth_call``) prefer dedicated
-   (API-key) nodes. :func:`select_endpoint_for_method` re-ranks the
-   pool accordingly.
-
-2. **Cost tracking** — an in-memory ledger records which endpoints are
-   actually serving data vs. returning errors/rate-limits, keyed by
-   method, so operators can see where free-tier budget is being spent.
-   :func:`log_rpc_usage` emits a periodic summary.
-
-3. **Per-endpoint circuit breaker** — unlike the existing failure
-   backoff (which only penalizes), this breaker *opens* an endpoint
-   after a burst of failures (skipping it entirely), half-opens after
-   a cooldown to probe, and closes again on success. Integrates with
-   :func:`lite_indexer.rpc.pool.get_best_endpoint` scoring.
-
-All state is in-process and safe under asyncio (single-threaded event
-loop, no locks required).
+Split out of the former monolithic ``rpc/routing.py``.
 """
 
 from __future__ import annotations
 
-import random
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -38,289 +21,10 @@ from lite_indexer.config import (
     CIRCUIT_DESPERATION_PROBE_INTERVAL,
     CIRCUIT_FAILURE_THRESHOLD,
     CIRCUIT_WINDOW_SECONDS,
-    RPC_METHOD_ROUTING,
-    RPC_USAGE_MAX_ENDPOINTS,
 )
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
-
-# ── Endpoint Tier Classification ────────────────────────────────────────
-
-# Domain substrings identifying dedicated (API-key / paid) providers.
-_DEDICATED_MARKERS = (
-    "alchemy.com",
-    "getblock.io",
-    "chainstack.com",
-    "quicknode",
-    "infura.io",
-    "helius.xyz",
-    "blastapi.io",
-)
-
-
-def endpoint_tier(endpoint: str) -> str:
-    """Classify an endpoint as ``public``, ``dedicated``, or ``unknown``.
-
-    Dedicated = API-key/paid providers that are good for small
-    latency-sensitive calls; public = free tiers that handle heavy
-    log queries. The classification is domain-based and conservative.
-
-    Args:
-        endpoint: RPC endpoint URL.
-
-    Returns:
-        One of ``"public"``, ``"dedicated"``, ``"unknown"``.
-    """
-    from urllib.parse import urlparse
-
-    domain = urlparse(endpoint).hostname or endpoint
-    for marker in _DEDICATED_MARKERS:
-        if marker in domain:
-            return "dedicated"
-    if any(m in domain for m in ("drpc.org", "publicnode.com", "tenderly.co", "gateway.tatum.io")):
-        return "public"
-    return "unknown"
-
-
-def preferred_tier_for_method(method: str) -> str:
-    """Return the preferred endpoint tier for an RPC method.
-
-    Args:
-        method: JSON-RPC method name (e.g. ``eth_getLogs``).
-
-    Returns:
-        ``"public"`` or ``"dedicated"`` per :data:`RPC_METHOD_ROUTING`.
-    """
-    return RPC_METHOD_ROUTING.get(method, "public")
-
-
-def select_endpoint_for_method(
-    method: str,
-    endpoints: list[str],
-    *,
-    chain: str | None = None,
-    base_select: Callable[[list[str]], str] | None = None,
-) -> str:
-    """Pick the best endpoint for ``method`` using per-method routing.
-
-    Endpoints matching the method's preferred tier are boosted; the
-    pool's health scoring still applies. Falls back to the pool's
-    default selection when no endpoints match the preferred tier.
-
-    Args:
-        method: JSON-RPC method name.
-        endpoints: Candidate endpoint list.
-        chain: Chain name (logging only).
-        base_select: Optional selection function with the same
-            signature as :func:`lite_indexer.rpc.pool.get_best_endpoint`
-            (defaults to it). Injectable for tests.
-
-    Returns:
-        The selected endpoint URL.
-    """
-    from lite_indexer.rpc.pool import get_best_endpoint
-
-    select = base_select or get_best_endpoint
-    preferred = preferred_tier_for_method(method)
-
-    if preferred == "dedicated":
-        dedicated = [ep for ep in endpoints if endpoint_tier(ep) == "dedicated"]
-        if dedicated:
-            return select(dedicated)
-    else:
-        public = [ep for ep in endpoints if endpoint_tier(ep) != "dedicated"]
-        if public:
-            return select(public)
-
-    if chain:
-        logger.debug(
-            "method_routing_fallback",
-            chain=chain,
-            method=method,
-            preferred=preferred,
-        )
-    return select(endpoints)
-
-
-# ── Cost / Usage Tracking ───────────────────────────────────────────────
-
-
-@dataclass
-class EndpointUsage:
-    """Per-endpoint usage ledger entry."""
-
-    endpoint: str
-    calls: int = 0
-    errors: int = 0
-    rate_limits: int = 0
-    bytes_received: int = 0
-    last_error: str = ""
-    last_ok_at: float = 0.0
-    last_error_at: float = 0.0
-    by_method: dict[str, int] = field(default_factory=dict)
-
-
-class RpcUsageTracker:
-    """Bounded in-memory ledger of per-endpoint RPC usage/cost.
-
-    Records every call (success or failure) so operators can see which
-    endpoints are actually serving data vs. burning budget on errors.
-    The ledger is bounded to :data:`RPC_USAGE_MAX_ENDPOINTS` entries.
-    """
-
-    def __init__(self, max_endpoints: int = RPC_USAGE_MAX_ENDPOINTS) -> None:
-        self._max_endpoints = max_endpoints
-        self._ledger: dict[str, EndpointUsage] = {}
-
-    def record(
-        self,
-        endpoint: str,
-        method: str,
-        *,
-        ok: bool,
-        bytes_received: int = 0,
-        error: str = "",
-        rate_limited: bool = False,
-    ) -> None:
-        """Record the outcome of one RPC call.
-
-        Args:
-            endpoint: RPC endpoint URL.
-            method: JSON-RPC method name.
-            ok: Whether the call succeeded (returned usable data).
-            bytes_received: Approximate response bytes (cost proxy).
-            error: Error message on failure.
-            rate_limited: Whether the call hit a 429.
-        """
-        now = time.time()
-        usage = self._ledger.get(endpoint)
-        if usage is None:
-            if len(self._ledger) >= self._max_endpoints:
-                # Evict the least-recently-used entry (oldest last_ok/error).
-                oldest = min(
-                    self._ledger,
-                    key=lambda ep: min(
-                        self._ledger[ep].last_ok_at or self._ledger[ep].last_error_at,
-                        self._ledger[ep].last_error_at or self._ledger[ep].last_ok_at,
-                    ),
-                )
-                del self._ledger[oldest]
-            usage = EndpointUsage(endpoint=endpoint)
-            self._ledger[endpoint] = usage
-
-        usage.calls += 1
-        usage.by_method[method] = usage.by_method.get(method, 0) + 1
-        usage.bytes_received += max(0, bytes_received)
-        if ok:
-            usage.last_ok_at = now
-        else:
-            usage.errors += 1
-            usage.last_error = (error or "unknown")[:200]
-            usage.last_error_at = now
-        if rate_limited:
-            usage.rate_limits += 1
-
-    def usage_for(self, endpoint: str) -> EndpointUsage | None:
-        """Return the ledger entry for an endpoint, or None."""
-        return self._ledger.get(endpoint)
-
-    def snapshot(self) -> dict[str, dict[str, Any]]:
-        """Return the full ledger as plain dicts (for logging/metrics)."""
-        return {
-            ep: {
-                "calls": u.calls,
-                "errors": u.errors,
-                "rate_limits": u.rate_limits,
-                "bytes": u.bytes_received,
-                "last_error": u.last_error,
-                "methods": dict(u.by_method),
-            }
-            for ep, u in self._ledger.items()
-        }
-
-    def worst_endpoints(self, limit: int = 10) -> list[tuple[str, float]]:
-        """Return the endpoints with the highest error ratio.
-
-        Args:
-            limit: Max entries to return.
-
-        Returns:
-            List of ``(endpoint, error_ratio)`` sorted worst-first.
-        """
-        ranked: list[tuple[str, float]] = []
-        for ep, u in self._ledger.items():
-            ratio = (u.errors / u.calls) if u.calls else 0.0
-            if u.calls:
-                ranked.append((ep, ratio))
-        ranked.sort(key=lambda item: item[1], reverse=True)
-        return ranked[:limit]
-
-    def reset(self) -> None:
-        """Clear the ledger."""
-        self._ledger.clear()
-
-
-# Module-level tracker shared across the codebase.
-USAGE_TRACKER = RpcUsageTracker()
-
-
-def record_rpc_usage(
-    endpoint: str,
-    method: str,
-    *,
-    ok: bool,
-    bytes_received: int = 0,
-    error: str = "",
-    rate_limited: bool = False,
-) -> None:
-    """Record usage in the shared tracker (convenience wrapper).
-
-    Args:
-        endpoint: RPC endpoint URL.
-        method: JSON-RPC method name.
-        ok: Whether the call succeeded.
-        bytes_received: Approximate response bytes.
-        error: Error message on failure.
-        rate_limited: Whether the call hit a 429.
-    """
-    USAGE_TRACKER.record(
-        endpoint,
-        method,
-        ok=ok,
-        bytes_received=bytes_received,
-        error=error,
-        rate_limited=rate_limited,
-    )
-
-
-def log_rpc_usage(limit: int = 10) -> dict[str, dict[str, Any]]:
-    """Log a summary of RPC usage (worst error ratios first) and return it.
-
-    Args:
-        limit: Max endpoints to include in the summary log.
-
-    Returns:
-        The full usage snapshot dict.
-    """
-    snapshot = USAGE_TRACKER.snapshot()
-    if not snapshot:
-        logger.info("rpc_usage_empty")
-        return snapshot
-
-    total_calls = sum(u["calls"] for u in snapshot.values())
-    total_errors = sum(u["errors"] for u in snapshot.values())
-    total_bytes = sum(u["bytes"] for u in snapshot.values())
-    worst = USAGE_TRACKER.worst_endpoints(limit)
-    logger.info(
-        "rpc_usage_summary",
-        endpoints=len(snapshot),
-        total_calls=total_calls,
-        total_errors=total_errors,
-        total_bytes_mb=round(total_bytes / 1e6, 2),
-        worst=[{"endpoint": ep[:60], "error_ratio": round(r, 3)} for ep, r in worst],
-    )
-    return snapshot
 
 
 # ── Per-Endpoint Circuit Breaker ────────────────────────────────────────
@@ -513,22 +217,28 @@ CIRCUIT_BREAKER = RpcCircuitBreaker()
 def is_circuit_open(endpoint: str) -> bool:
     """Check the shared breaker for an endpoint (convenience wrapper).
 
+    Reads ``CIRCUIT_BREAKER`` through the ``lite_indexer.rpc.routing``
+    package at call time so that monkeypatching
+    ``lite_indexer.rpc.routing.CIRCUIT_BREAKER`` (tests, operators)
+    takes effect here too.
+
     Args:
         endpoint: RPC endpoint URL.
 
     Returns:
         True when the circuit is open (skip this endpoint).
     """
-    return CIRCUIT_BREAKER.is_open(endpoint)
+    from lite_indexer.rpc import routing as _rt
+
+    return _rt.CIRCUIT_BREAKER.is_open(endpoint)
 
 
-# ── EWMA Latency / P2C Selection / Staleness Gate ─────────────────────
+# ── EWMA Latency / Staleness Gate ─────────────────────────────────────
 #
-# An additive smart-routing layer on top of the penalty scoring + circuit
-# breaker in :mod:`lite_indexer.rpc.pool`. Nothing here bypasses the
-# breaker: banned / circuit-open endpoints are still filtered out by the
-# pool scoring before P2C selection runs. All state is in-process and
-# safe under asyncio (single-threaded event loop, no locks required).
+# An additive smart-routing signal layer on top of the penalty scoring +
+# circuit breaker in :mod:`lite_indexer.rpc.pool`. Nothing here bypasses
+# the breaker: banned / circuit-open endpoints are still filtered out by
+# the pool scoring before P2C selection runs.
 
 # EWMA smoothing factor: new_sample_weight = 0.2, so
 # ``ewma = 0.8 * old + 0.2 * new`` per the audit spec.
@@ -547,12 +257,6 @@ STALENESS_MAX_BLOCKS = 3
 # health-verification penalty (+10000) and sits below the circuit-open
 # (+20000) / hard-ban (+50000) penalties so the failure path still wins.
 STALE_ENDPOINT_PENALTY = 15000
-# Success-rate damping for the P2C score: an endpoint's damped latency is
-# multiplied by ``(1 + ERROR_RATE_DAMPING * error_rate)`` so endpoints with
-# poor recent success ratios lose selections even between hard failures.
-# At the default 2.0: 30% errors -> 1.6x score, 100% errors -> 3x. Bounded,
-# smooth, and derived from the already-tracked windowed outcomes.
-ERROR_RATE_DAMPING = float(__import__("os").getenv("RPC_ERROR_RATE_DAMPING", "2.0"))
 
 
 @dataclass
@@ -597,9 +301,16 @@ class EndpointLatency:
         (load spreads), and one with a poor windowed error rate is damped
         even between recorded failures, so P2C stops drawing flaky
         endpoints that recover latency-wise but fail half their calls.
+
+        ``ERROR_RATE_DAMPING`` is read through the
+        ``lite_indexer.rpc.routing`` package at call time so that
+        monkeypatching / reloading the package takes effect here.
         """
+        from lite_indexer.rpc import routing as _rt
+
+        damping = _rt.ERROR_RATE_DAMPING
         base = self.ewma_ms * (1.0 + self.in_flight)
-        return base * (1.0 + ERROR_RATE_DAMPING * self.error_rate())
+        return base * (1.0 + damping * self.error_rate())
 
 
 # Module-level latency state shared across the codebase.
@@ -794,60 +505,6 @@ def stale_endpoints(endpoints: list[str]) -> list[str]:
     return stale
 
 
-def select_p2c(endpoints: list[str]) -> str:
-    """Power-of-two-choices endpoint selection.
-
-    Draws two candidates uniformly and returns the one with the lower
-    damped latency score ``ewma_ms * (1 + in_flight)``; ties break on
-    the windowed error rate. With a single candidate that endpoint is
-    returned directly.
-
-    Callers are expected to pass the *healthy* subset (banned /
-    circuit-open / stale endpoints already filtered out) — the pool's
-    :func:`get_best_endpoint` does this with its penalty scoring. Use
-    :func:`select_p2c_healthy` when you need the filtering done here.
-
-    Args:
-        endpoints: Candidate endpoint URLs (must be non-empty).
-
-    Returns:
-        The selected endpoint URL.
-    """
-    if not endpoints:
-        raise ValueError("select_p2c requires a non-empty endpoint list")
-    if len(endpoints) == 1:
-        return endpoints[0]
-    a, b = random.sample(endpoints, 2)  # noqa: S311
-    sa, sb = _stats(a), _stats(b)
-    score_a, score_b = sa.damped_score(), sb.damped_score()
-    if score_a != score_b:
-        return a if score_a < score_b else b
-    return a if sa.error_rate() <= sb.error_rate() else b
-
-
-def select_p2c_healthy(endpoints: list[str]) -> str:
-    """P2C selection over the healthy subset of ``endpoints``.
-
-    Filters out hard-banned, circuit-open, and stale endpoints before
-    drawing — a convenience wrapper for callers that do not already
-    maintain a healthy list (``get_best_endpoint`` does its own penalty
-    scoring and calls :func:`select_p2c` directly). Falls back to the
-    full list when fewer than two healthy candidates exist.
-
-    Args:
-        endpoints: Pool candidate URLs.
-
-    Returns:
-        The selected endpoint URL.
-    """
-    from lite_indexer.rpc.pool import is_endpoint_banned
-
-    stale = set(stale_endpoints(endpoints))
-    healthy = [ep for ep in endpoints if not is_endpoint_banned(ep) and not is_circuit_open(ep) and ep not in stale]
-    candidates = healthy if len(healthy) >= 2 else endpoints
-    return select_p2c(candidates)
-
-
 def latency_snapshot() -> dict[str, dict[str, Any]]:
     """Per-endpoint EWMA/error-rate/in-flight snapshot (for logging)."""
     return {
@@ -865,39 +522,3 @@ def latency_snapshot() -> dict[str, dict[str, Any]]:
 def reset_latency_state() -> None:
     """Clear all latency/height tracking (tests, operator reset)."""
     _LATENCY.clear()
-
-
-__all__ = [
-    "RpcUsageTracker",
-    "RpcCircuitBreaker",
-    "USAGE_TRACKER",
-    "CIRCUIT_BREAKER",
-    "EndpointLatency",
-    "EWMA_ALPHA",
-    "STALENESS_MAX_BLOCKS",
-    "STALE_ENDPOINT_PENALTY",
-    "endpoint_tier",
-    "preferred_tier_for_method",
-    "select_endpoint_for_method",
-    "record_rpc_usage",
-    "log_rpc_usage",
-    "is_circuit_open",
-    "record_rpc_latency",
-    "record_rpc_outcome",
-    "record_rpc_call",
-    "endpoint_ewma_ms",
-    "endpoint_error_rate",
-    "incr_in_flight",
-    "decr_in_flight",
-    "in_flight_count",
-    "track_in_flight",
-    "record_endpoint_block_height",
-    "endpoint_block_height",
-    "staleness_blocks",
-    "is_endpoint_stale",
-    "stale_endpoints",
-    "select_p2c",
-    "select_p2c_healthy",
-    "latency_snapshot",
-    "reset_latency_state",
-]
