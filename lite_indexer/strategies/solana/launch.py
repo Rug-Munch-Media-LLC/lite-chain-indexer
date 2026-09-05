@@ -332,8 +332,8 @@ def _iso_timestamp(value: Any) -> str:
     try:
         if isinstance(value, (int, float)) and value > 0:
             return datetime.fromtimestamp(int(value), tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except (ValueError, TypeError, OverflowError):
-        pass
+    except (ValueError, TypeError, OverflowError) as exc:
+        logger.debug("solana_launch_ts_parse_failed", error=str(exc)[:60])
     return ""
 
 

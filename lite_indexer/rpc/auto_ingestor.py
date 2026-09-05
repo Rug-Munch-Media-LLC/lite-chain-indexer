@@ -63,8 +63,8 @@ async def _fetch_registry(
             data = resp.json()
         if isinstance(data, list):
             return data
-    except (httpx.HTTPError, ValueError, json.JSONDecodeError):
-        pass
+    except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("auto_ingest_fetch_failed", error=str(exc)[:80])
     return []
 
 

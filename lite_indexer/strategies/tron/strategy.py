@@ -192,8 +192,8 @@ class TronStrategy(AbstractChainStrategy):
                                 offset = latest_ts_ms // 1000 - int((latest - bn) * avg_block_time)
                                 ts = datetime.fromtimestamp(offset, tz=UTC)
                                 timestamps[bn] = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-                    except (ValueError, TypeError, OSError):
-                        pass
+                    except (ValueError, TypeError, OSError) as exc:
+                        logger.debug("tron_block_ts_parse_failed", block=bn, error=str(exc)[:60])
 
         return timestamps
 

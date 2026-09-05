@@ -175,8 +175,8 @@ def _load_keccak() -> _KeccakFunc:
             return h.digest()
 
         return _via_crypto
-    except ImportError:
-        pass
+    except ImportError as exc:
+        logger.debug("bloom_keccak_pycryptodome_unavailable", error=str(exc)[:60])
     try:  # pysha3
         import sha3 as _sha3
 
@@ -184,14 +184,14 @@ def _load_keccak() -> _KeccakFunc:
             return cast(bytes, _sha3.keccak_256(data).digest())
 
         return _via_pysha3
-    except ImportError:
-        pass
+    except ImportError as exc:
+        logger.debug("bloom_keccak_pysha3_unavailable", error=str(exc)[:60])
     try:  # eth-hash
         from eth_hash.auto import keccak as _eth_hash_keccak
 
         return _eth_hash_keccak
-    except ImportError:
-        pass
+    except ImportError as exc:
+        logger.debug("bloom_keccak_eth_hash_unavailable", error=str(exc)[:60])
     return _keccak256_pure
 
 

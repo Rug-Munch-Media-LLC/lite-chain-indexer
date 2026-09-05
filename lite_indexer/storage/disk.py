@@ -84,8 +84,8 @@ def check_disk_cap(
                 )
                 return False
             return True
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        logger.warning("disk_quota_probe_failed", error=str(exc)[:80])
 
     # Fallback
     try:

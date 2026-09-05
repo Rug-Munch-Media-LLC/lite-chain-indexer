@@ -22,6 +22,8 @@ from lite_indexer.config import (
     GET_LOGS_SEMAPHORE_LIMIT,
     RATE_LIMIT_WAIT_CAP,
     RPC_CALL_TIMEOUT,
+    RPC_RETRY_ATTEMPTS,
+    RPC_RETRY_BASE_DELAY_S,
     RPC_TIMEOUT,
     TIMESTAMP_FETCH_TIMEOUT,
 )
@@ -194,6 +196,7 @@ class RpcClient:
         """
         from lite_indexer.rpc.autotune import autotune_wait
         from lite_indexer.rpc.autotune import record_call as autotune_record
+        from lite_indexer.rpc.circuit import circuit_open, record_circuit_failure, record_circuit_success
         from lite_indexer.rpc.routing import record_rpc_usage
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
 
@@ -206,6 +209,13 @@ class RpcClient:
         reason = _defer_reason_for(endpoint, method)
         if reason:
             _warn_deferred(endpoint, method, reason)
+            return None
+
+        # Circuit breaker gate: an endpoint that tripped (5 consecutive
+        # transient failures) is skipped for the open-TTL window; after
+        # expiry one probe passes (half-open) and success resets it.
+        if await circuit_open(endpoint):
+            logger.debug("rpc_circuit_skip", endpoint=endpoint[:50], method=method)
             return None
 
         payload = {
@@ -221,95 +231,124 @@ class RpcClient:
         # wider gaps instead of a hard ban (NodeCore-style adaptation).
         await autotune_wait(endpoint)
         started = time.perf_counter()
-        try:
-            # Ledger + in-flight telemetry around the actual request.
-            # record_endpoint_call feeds the quota ledger; incr/decr
-            # in-flight is the guarded equivalent of track_in_flight() so
-            # the P2C damped score sees concurrent load. All best-effort.
-            _safe_record(record_endpoint_call, endpoint, method)
-            _safe_record(incr_in_flight, endpoint)
+
+        # Exponential backoff retry for TRANSIENT failures only (timeouts,
+        # connection errors, 5xx, empty responses): 0.1s → 0.2s → 0.4s,
+        # max RPC_RETRY_ATTEMPTS attempts. Non-transient outcomes (429,
+        # 403, malformed JSON, JSON-RPC errors) return immediately. When
+        # all attempts fail, we return None — the existing failure shape —
+        # and the hedging layer above keeps doing its job.
+        max_attempts = RPC_RETRY_ATTEMPTS
+        delay = RPC_RETRY_BASE_DELAY_S
+        for attempt in range(1, max_attempts + 1):
+            transient = False
             try:
-                client = await _get_call_client(timeout)
-                resp = await client.post(endpoint, json=payload)
-            finally:
-                _safe_record(decr_in_flight, endpoint)
-            _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
-            bytes_received = len(resp.content or b"")
-            record_rpc_response(endpoint, method, resp.status_code, resp.headers)
+                # Ledger + in-flight telemetry around the actual request.
+                # record_endpoint_call feeds the quota ledger; incr/decr
+                # in-flight is the guarded equivalent of track_in_flight() so
+                # the P2C damped score sees concurrent load. All best-effort.
+                _safe_record(record_endpoint_call, endpoint, method)
+                _safe_record(incr_in_flight, endpoint)
+                try:
+                    client = await _get_call_client(timeout)
+                    resp = await client.post(endpoint, json=payload)
+                finally:
+                    _safe_record(decr_in_flight, endpoint)
+                _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
+                bytes_received = len(resp.content or b"")
+                record_rpc_response(endpoint, method, resp.status_code, resp.headers)
 
-            # Empty response check
-            if not resp.text or len(resp.text) < 5:
-                logger.debug("rpc_empty_response", endpoint=endpoint[:50], method=method)
-                record_rpc_usage(endpoint, method, ok=False, error="empty_response")
+                # Empty response check — often a transient gateway glitch.
+                if not resp.text or len(resp.text) < 5:
+                    logger.debug("rpc_empty_response", endpoint=endpoint[:50], method=method)
+                    record_rpc_usage(endpoint, method, ok=False, error="empty_response")
+                    _safe_record(record_rpc_outcome, endpoint, ok=False)
+                    transient = True
+                else:
+                    resp.raise_for_status()
+
+                    # Malformed JSON protection
+                    try:
+                        data = resp.json()
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        logger.debug(
+                            "rpc_malformed_json",
+                            endpoint=endpoint[:50],
+                            method=method,
+                            error=str(exc)[:60],
+                        )
+                        record_rpc_usage(
+                            endpoint, method, ok=False, error="malformed_json", bytes_received=bytes_received
+                        )
+                        _safe_record(record_rpc_outcome, endpoint, ok=False)
+                        return None
+
+                    ok = bool("error" not in data or data.get("error") is None)
+                    _safe_record(autotune_record, endpoint, ok=ok)
+                    if ok:
+                        record_rpc_usage(endpoint, method, ok=True, bytes_received=bytes_received)
+                        # Actual successful response — close the circuit breaker for
+                        # this endpoint so it doesn't stay open forever (it only ever
+                        # opens via record_endpoint_failure; without this it would
+                        # oscillate open↔half-open via cooldown and never re-close).
+                        record_endpoint_success(endpoint)
+                        await record_circuit_success(endpoint)
+                    else:
+                        record_rpc_usage(
+                            endpoint,
+                            method,
+                            ok=False,
+                            error=str(data.get("error", ""))[:120],
+                            bytes_received=bytes_received,
+                        )
+                    _safe_record(record_rpc_outcome, endpoint, ok=ok)
+                    return cast(dict[str, Any], data)
+
+            except httpx.TimeoutException:
+                logger.debug("rpc_timeout", endpoint=endpoint[:50], method=method)
+                record_rpc_usage(endpoint, method, ok=False, error="timeout")
                 _safe_record(record_rpc_outcome, endpoint, ok=False)
-                return None
-
-            resp.raise_for_status()
-
-            # Malformed JSON protection
-            try:
-                data = resp.json()
-            except (json.JSONDecodeError, ValueError) as exc:
-                logger.debug(
-                    "rpc_malformed_json",
-                    endpoint=endpoint[:50],
-                    method=method,
-                    error=str(exc)[:60],
-                )
-                record_rpc_usage(endpoint, method, ok=False, error="malformed_json", bytes_received=bytes_received)
+                transient = True
+            except (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as exc:
+                logger.debug("rpc_connection_error", endpoint=endpoint[:50], method=method, error=str(exc)[:60])
+                record_rpc_usage(endpoint, method, ok=False, error="connection_error")
                 _safe_record(record_rpc_outcome, endpoint, ok=False)
-                return None
+                transient = True
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                logger.debug("rpc_http_error", endpoint=endpoint[:50], method=method, status=status)
+                record_rpc_usage(endpoint, method, ok=False, error=f"http_{status}")
+                # 429 = provider rate-limit: backoff only (recent-failure
+                # penalty + exponential sleep) — do NOT trip the circuit
+                # breaker or hard-ban, the throttle lifts in seconds.
+                if status == 429:
+                    record_rate_limit(endpoint)
+                # 403 = provider blacklist: hard-ban the endpoint for an
+                # exponential window so we stop hammering it.
+                elif status == 403:
+                    ban_endpoint(endpoint, reason="http_403")
+                _safe_record(record_rpc_outcome, endpoint, ok=False)
+                # 5xx = upstream hiccup: transient, worth a retry.
+                transient = status >= 500
+            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
+                logger.warning("rpc_call_failed", endpoint=endpoint[:50], method=method, error=str(exc)[:80])
+                record_rpc_usage(endpoint, method, ok=False, error=str(exc)[:120])
+                _safe_record(record_rpc_outcome, endpoint, ok=False)
+                transient = True
 
-            ok = bool("error" not in data or data.get("error") is None)
-            _safe_record(autotune_record, endpoint, ok=ok)
-            if ok:
-                record_rpc_usage(endpoint, method, ok=True, bytes_received=bytes_received)
-                # Actual successful response — close the circuit breaker for
-                # this endpoint so it doesn't stay open forever (it only ever
-                # opens via record_endpoint_failure; without this it would
-                # oscillate open↔half-open via cooldown and never re-close).
-                record_endpoint_success(endpoint)
-            else:
-                record_rpc_usage(
-                    endpoint,
-                    method,
-                    ok=False,
-                    error=str(data.get("error", ""))[:120],
-                    bytes_received=bytes_received,
-                )
-            _safe_record(record_rpc_outcome, endpoint, ok=ok)
-            return cast(dict[str, Any], data)
-
-        except httpx.TimeoutException:
-            logger.debug("rpc_timeout", endpoint=endpoint[:50], method=method)
-            record_rpc_usage(endpoint, method, ok=False, error="timeout")
-            _safe_record(record_rpc_outcome, endpoint, ok=False)
-            return None
-        except (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as exc:
-            logger.debug("rpc_connection_error", endpoint=endpoint[:50], method=method, error=str(exc)[:60])
-            record_rpc_usage(endpoint, method, ok=False, error="connection_error")
-            _safe_record(record_rpc_outcome, endpoint, ok=False)
-            return None
-        except httpx.HTTPStatusError as exc:
-            status = exc.response.status_code
-            logger.debug("rpc_http_error", endpoint=endpoint[:50], method=method, status=status)
-            record_rpc_usage(endpoint, method, ok=False, error=f"http_{status}")
-            # 429 = provider rate-limit: backoff only (recent-failure
-            # penalty + exponential sleep) — do NOT trip the circuit
-            # breaker or hard-ban, the throttle lifts in seconds.
-            if status == 429:
-                record_rate_limit(endpoint)
-            # 403 = provider blacklist: hard-ban the endpoint for an
-            # exponential window so we stop hammering it.
-            elif status == 403:
-                ban_endpoint(endpoint, reason="http_403")
-            _safe_record(record_rpc_outcome, endpoint, ok=False)
-            return None
-        except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
-            logger.warning("rpc_call_failed", endpoint=endpoint[:50], method=method, error=str(exc)[:80])
-            record_rpc_usage(endpoint, method, ok=False, error=str(exc)[:120])
-            _safe_record(record_rpc_outcome, endpoint, ok=False)
-            return None
+            if transient:
+                await record_circuit_failure(endpoint)
+                if attempt < max_attempts:
+                    logger.debug(
+                        "rpc_retry",
+                        endpoint=endpoint[:50],
+                        method=method,
+                        attempt=attempt,
+                        next_delay_s=delay,
+                    )
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 1.0)
+        return None
 
     async def eth_block_number(self, endpoint: str) -> int | None:
         """Get latest block number.
