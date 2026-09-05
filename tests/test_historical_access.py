@@ -348,11 +348,13 @@ class TestUnifiedQuery:
     async def test_fully_hot_range_no_cold(self, cold_store: ColdStore):
         fake = FakeCH(hot_rows=[_hot_row()])
         ha = _make_ha(fake, cold_store)
-        now = datetime(2026, 8, 4, tzinfo=UTC)
+        # Relative to now so the range stays fully hot regardless of when
+        # the suite runs (the hot TTL is 30 days).
+        now = datetime.now(UTC)
         rows = await ha.query(
             "evm_transfers",
             "ethereum",
-            from_time=datetime(2026, 8, 1, tzinfo=UTC),
+            from_time=now - timedelta(days=1),
             to_time=now,
         )
         assert [r["tx_hash"] for r in rows] == ["0xhot"]
@@ -391,12 +393,13 @@ class TestUnifiedQuery:
     async def test_spanning_range_merges(self, cold_store: ColdStore):
         fake = FakeCH(hot_rows=[_hot_row(200, "0xhot")])
         ha = _make_ha(fake, cold_store)
-        now = datetime(2026, 8, 4, tzinfo=UTC)
+        # Upper bound = real now so the range always spans the hot/cold
+        # cutoff (cold June archive + hot side), regardless of run date.
         rows = await ha.query(
             "evm_transfers",
             "ethereum",
             from_time=datetime(2026, 6, 1, tzinfo=UTC),
-            to_time=now,
+            to_time=datetime.now(UTC),
         )
         assert len(rows) == 5  # 4 cold + 1 hot
         assert rows[0]["tx_hash"] == "0xhot"
@@ -406,12 +409,11 @@ class TestUnifiedQuery:
     async def test_limit_enforced_across_split(self, cold_store: ColdStore):
         fake = FakeCH(hot_rows=[_hot_row(200, "0xhot")])
         ha = _make_ha(fake, cold_store)
-        now = datetime(2026, 8, 4, tzinfo=UTC)
         rows = await ha.query(
             "evm_transfers",
             "ethereum",
             from_time=datetime(2026, 6, 1, tzinfo=UTC),
-            to_time=now,
+            to_time=datetime.now(UTC),
             limit=2,
         )
         assert len(rows) == 2
@@ -496,8 +498,8 @@ class TestQuerySql:
             "WHERE block_timestamp >= %(start_ts)s AND block_timestamp <= %(end_ts)s LIMIT 10"
         )
         params = {
-            "start_ts": datetime(2026, 8, 1, tzinfo=UTC),
-            "end_ts": datetime(2026, 8, 4, tzinfo=UTC),
+            "start_ts": datetime.now(UTC) - timedelta(days=1),
+            "end_ts": datetime.now(UTC),
         }
         assert ha.query_sql(sql, params) is None  # fully hot → caller runs hot SQL
 
