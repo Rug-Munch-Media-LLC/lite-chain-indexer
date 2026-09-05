@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -541,3 +542,247 @@ class TestAtomicStateWrites:
         data = json.loads(dest.read_text())
         assert data["tag"] in (1, 2)
         assert "last_block" in data
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 6. Redis-backed circuit breaker (lite_indexer/rpc/circuit.py)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class _FakeRedis:
+    """Minimal async Redis double: incr/setex/expire/exists/delete."""
+
+    def __init__(self) -> None:
+        self.strings: dict[str, str] = {}
+        self.ttls: dict[str, int] = {}
+
+    async def incr(self, key: str) -> int:
+        val = int(self.strings.get(key, "0")) + 1
+        self.strings[key] = str(val)
+        return val
+
+    async def setex(self, key: str, ttl: int, value: object) -> None:
+        self.strings[key] = str(value)
+        self.ttls[key] = ttl
+
+    async def expire(self, key: str, ttl: int) -> None:
+        if ttl <= 0:
+            self.strings.pop(key, None)
+            self.ttls.pop(key, None)
+        else:
+            self.ttls[key] = ttl
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.strings else 0
+
+    async def delete(self, *keys: str) -> None:
+        for key in keys:
+            self.strings.pop(key, None)
+            self.ttls.pop(key, None)
+
+
+@pytest.fixture()
+def fake_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
+    """Wire the circuit module to an in-memory Redis double."""
+    import lite_indexer.rpc.circuit as circuit_mod
+
+    fake = _FakeRedis()
+    monkeypatch.setattr(circuit_mod, "CB_ENABLED", True)
+    monkeypatch.setattr(circuit_mod, "REDIS_URL", "redis://fake.invalid")
+    monkeypatch.setattr(circuit_mod, "_redis", fake)
+    return fake
+
+
+class TestRedisCircuitBreaker:
+    async def test_circuit_opens_after_5_failures(self, fake_redis: _FakeRedis):
+        import lite_indexer.rpc.circuit as circuit_mod
+
+        ep = "https://cb-open.invalid"
+        for _ in range(circuit_mod.CB_FAILURE_THRESHOLD - 1):
+            await circuit_mod.record_circuit_failure(ep)
+            assert await circuit_mod.circuit_open(ep) is False
+        await circuit_mod.record_circuit_failure(ep)
+        assert await circuit_mod.circuit_open(ep) is True
+
+    async def test_circuit_half_open_after_ttl(self, fake_redis: _FakeRedis):
+        """After the open-TTL expires the circuit is half-open: calls pass,
+        and a single failed probe re-trips immediately (counter pre-seeded
+        at threshold - 1)."""
+        import lite_indexer.rpc.circuit as circuit_mod
+
+        ep = "https://cb-halfopen.invalid"
+        for _ in range(circuit_mod.CB_FAILURE_THRESHOLD):
+            await circuit_mod.record_circuit_failure(ep)
+        assert await circuit_mod.circuit_open(ep) is True
+
+        # Simulate CB_OPEN_TTL_S elapsing: the open key's TTL expires.
+        await fake_redis.expire(circuit_mod._open_key(ep), 0)
+        assert await circuit_mod.circuit_open(ep) is False  # half-open
+
+        # One failed probe → pre-seeded counter (threshold-1) + 1 → re-trip.
+        await circuit_mod.record_circuit_failure(ep)
+        assert await circuit_mod.circuit_open(ep) is True
+
+    async def test_circuit_resets_on_success(self, fake_redis: _FakeRedis):
+        """A successful half-open probe clears the failure counter, so the
+        circuit does NOT re-trip on the next single failure."""
+        import lite_indexer.rpc.circuit as circuit_mod
+
+        ep = "https://cb-reset.invalid"
+        for _ in range(circuit_mod.CB_FAILURE_THRESHOLD):
+            await circuit_mod.record_circuit_failure(ep)
+        assert await circuit_mod.circuit_open(ep) is True
+
+        await circuit_mod.record_circuit_success(ep)
+        # TTL expires, probe succeeds → counters cleared.
+        await fake_redis.expire(circuit_mod._open_key(ep), 0)
+        assert await circuit_mod.circuit_open(ep) is False
+
+        # A single fresh failure must NOT re-trip (counter was reset).
+        await circuit_mod.record_circuit_failure(ep)
+        assert await circuit_mod.circuit_open(ep) is False
+
+    async def test_circuit_disabled_when_env_off(self, fake_redis: _FakeRedis, monkeypatch: pytest.MonkeyPatch):
+        """RPC_CIRCUIT_ENABLED=0 → breaker is a no-op (fail-open)."""
+        import lite_indexer.rpc.circuit as circuit_mod
+
+        monkeypatch.setattr(circuit_mod, "CB_ENABLED", False)
+        ep = "https://cb-disabled.invalid"
+        for _ in range(circuit_mod.CB_FAILURE_THRESHOLD + 2):
+            await circuit_mod.record_circuit_failure(ep)
+        assert await circuit_mod.circuit_open(ep) is False
+        assert fake_redis.strings == {}  # nothing was ever written
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 7. RpcClient retry: exponential backoff, transient-only
+# ═══════════════════════════════════════════════════════════════════════
+
+
+async def _noop_async(*args: object, **kwargs: object) -> None:
+    return None
+
+
+@pytest.fixture()
+def hermetic_rpc(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Silence every side-effecting dependency of RpcClient.call.
+
+    Returns the list of asyncio.sleep delays observed (backoff trace).
+    """
+    import lite_indexer.rpc.autotune as autotune_mod
+    import lite_indexer.rpc.circuit as circuit_mod
+    import lite_indexer.rpc.client as client_mod
+    import lite_indexer.rpc.ledger as ledger_mod
+    import lite_indexer.rpc.routing as routing_mod
+    import lite_indexer.rpc.throttle as throttle_mod
+
+    sleeps: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    def _noop(*args: object, **kwargs: object) -> None:
+        return None
+
+    async def _circuit_open_false(endpoint: str) -> bool:
+        return False
+
+    monkeypatch.setattr(client_mod.asyncio, "sleep", _fake_sleep)
+    monkeypatch.setattr(throttle_mod, "throttle_before", _noop_async)
+    monkeypatch.setattr(throttle_mod, "record_rpc_response", _noop)
+    monkeypatch.setattr(client_mod, "record_endpoint_success", _noop)
+    monkeypatch.setattr(client_mod, "record_endpoint_failure", _noop)
+    monkeypatch.setattr(client_mod, "record_rate_limit", _noop)
+    monkeypatch.setattr(client_mod, "ban_endpoint", _noop)
+    monkeypatch.setattr(autotune_mod, "autotune_wait", _noop_async)
+    monkeypatch.setattr(autotune_mod, "record_call", _noop)
+    monkeypatch.setattr(ledger_mod, "record_endpoint_call", _noop)
+    monkeypatch.setattr(routing_mod, "incr_in_flight", _noop)
+    monkeypatch.setattr(routing_mod, "decr_in_flight", _noop)
+    monkeypatch.setattr(routing_mod, "record_rpc_latency", _noop)
+    monkeypatch.setattr(routing_mod, "record_rpc_outcome", _noop)
+    monkeypatch.setattr(routing_mod, "record_rpc_usage", _noop)
+    monkeypatch.setattr(routing_mod, "record_endpoint_block_height", _noop)
+    monkeypatch.setattr(circuit_mod, "circuit_open", _circuit_open_false)
+    monkeypatch.setattr(circuit_mod, "record_circuit_failure", _noop_async)
+    monkeypatch.setattr(circuit_mod, "record_circuit_success", _noop_async)
+    import lite_indexer.rpc.ratelimit as ratelimit_mod
+
+    monkeypatch.setattr(ratelimit_mod, "apply_provider_rate_limit", _noop_async)
+    return sleeps
+
+
+def _install_mock_transport(monkeypatch: pytest.MonkeyPatch, handler: Any) -> list[dict[str, Any]]:
+    """Route RpcClient.call through httpx.MockTransport; return sent payloads."""
+    import httpx
+
+    import lite_indexer.rpc.client as client_mod
+
+    sent: list[dict[str, Any]] = []
+
+    def _transport_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content.decode()))
+        return handler(request)
+
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(_transport_handler))
+    monkeypatch.setattr(client_mod, "_get_call_client", _mock_get_client(mock_client))
+    return sent
+
+
+def _mock_get_client(mock_client: Any) -> Any:
+    async def _get(timeout: float) -> Any:
+        return mock_client
+
+    return _get
+
+
+class TestRpcRetry:
+    async def test_retry_exponential_backoff(self, hermetic_rpc: list[float], monkeypatch: pytest.MonkeyPatch):
+        """Transient failures retry with 0.1 → 0.2 → 0.4 backoff, then give
+        up returning None (the existing failure shape)."""
+        import httpx
+
+        import lite_indexer.rpc.client as client_mod
+
+        def _always_down(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused", request=request)
+
+        _install_mock_transport(monkeypatch, _always_down)
+        result = await client_mod.RpcClient().call("https://retry.invalid", "eth_blockNumber")
+
+        assert result is None
+        assert len(hermetic_rpc) == client_mod.RPC_RETRY_ATTEMPTS - 1
+        # Exponential: each delay doubles the previous one.
+        for i in range(1, len(hermetic_rpc)):
+            assert hermetic_rpc[i] == pytest.approx(hermetic_rpc[i - 1] * 2)
+
+    async def test_retry_skips_non_transient_errors(self, hermetic_rpc: list[float], monkeypatch: pytest.MonkeyPatch):
+        """429, 403 and JSON-RPC errors return immediately — no retry, no
+        backoff sleep."""
+        import httpx
+
+        import lite_indexer.rpc.client as client_mod
+
+        def _rate_limited(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429, text="too many requests")
+
+        _install_mock_transport(monkeypatch, _rate_limited)
+        result = await client_mod.RpcClient().call("https://rl.invalid", "eth_blockNumber")
+        assert result is None
+        assert hermetic_rpc == []  # no backoff sleeps at all
+
+        def _forbidden(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(403, text="forbidden")
+
+        _install_mock_transport(monkeypatch, _forbidden)
+        result = await client_mod.RpcClient().call("https://fb.invalid", "eth_blockNumber")
+        assert result is None
+        assert hermetic_rpc == []
+
+        def _rpc_error(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "boom"}})
+
+        _install_mock_transport(monkeypatch, _rpc_error)
+        result = await client_mod.RpcClient().call("https://rpcerr.invalid", "eth_blockNumber")
+        assert result is not None and "error" in result
+        assert hermetic_rpc == []
