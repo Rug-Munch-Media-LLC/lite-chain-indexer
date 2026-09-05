@@ -59,7 +59,6 @@ from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.query.cache import QueryCache
 from lite_indexer.rpc import RpcClient, get_best_endpoint, select_endpoint_for_method
 from lite_indexer.rpc.client import fetch_block_timestamps
-from lite_indexer.rpc.hedging import hedged_rpc
 from lite_indexer.storage.parquet import ParquetExporter
 
 logger = get_logger(__name__)
@@ -513,12 +512,6 @@ class RPCFetcher:
         Returns:
             Parsed transfer rows (``evm_transfers`` canonical shape plus
             ``source="rpc"``), newest first. [] on failure or no logs.
-
-        Fetch-through: positive rows are cached with no expiry and
-        written to the B2 staging lake (``source="live_rpc"`` +
-        ``confidence`` + ``fetched_at``) unless they still sit inside the
-        chain's reorg window. An empty result is cached as a negative for
-        the negative TTL (300s).
         """
         await self._throttle()
         if from_block is None or to_block is None:
@@ -530,38 +523,17 @@ class RPCFetcher:
         if to_block - from_block > self.max_block_range:
             from_block = max(0, to_block - self.max_block_range)
 
-        key = self._cache_key_transfers(chain, address, from_block, to_block, limit)
-        cached = self._cache_hit(key)
-        if cached is _NEGATIVE:
+        endpoint = await self._select_endpoint(chain, "eth_getLogs")
+        if endpoint is None:
             return []
-        if cached is not None:
-            return list(cached)
-
-        endpoints = self.endpoints_for(chain)
-        if not endpoints:
-            return []
-
-        async def _get_logs_at(endpoint: str):
-            return await self._client.get_logs(
-                endpoint, from_block, to_block, TRANSFER_EVENT_TOPIC, address=address
-            )
-
-        # Hedged dispatch (NodeCore-style): a slow primary no longer stalls
-        # the fetch — a second leg fires after RPC_HEDGE_DELAY and the first
-        # success wins. Fail-open to plain behaviour on any issue.
-        try:
-            raw = await hedged_rpc(_get_logs_at, endpoints)
-        except Exception:  # noqa: BLE001 — hedge is an optimization
-            endpoint = await self._select_endpoint(chain, "eth_getLogs")
-            raw = None if endpoint is None else await _get_logs_at(endpoint)
+        raw = await self._client.get_logs(endpoint, from_block, to_block, TRANSFER_EVENT_TOPIC, address=address)
         if raw is None:
-            self._cache_negative(key)
             return []
         events = parse_transfer_logs(raw, chain, from_block, to_block)
         await self._attach_timestamps(chain, events)
         events.sort(key=lambda e: (int(e.get("blockNumber", 0) or 0), int(e.get("logIndex", 0) or 0)), reverse=True)
         events = events[: max(1, min(int(limit), 1000))]
-        rows = [
+        return [
             {
                 "chain": e["chain"],
                 "block_number": int(e["blockNumber"]),
@@ -577,12 +549,6 @@ class RPCFetcher:
             }
             for e in events
         ]
-        if rows:
-            self._cache_positive(key, list(rows))
-            await self._persist_rows(chain, "evm_transfers", rows)
-        else:
-            self._cache_negative(key)
-        return rows
 
     async def _attach_timestamps(self, chain: str, events: list[dict[str, Any]]) -> None:
         """Best-effort block_timestamp resolution for parsed events."""
@@ -628,22 +594,7 @@ class RPCFetcher:
         Returns:
             A deployer row shaped like the ``deployer_events`` canonical
             columns (plus ``source="rpc"``), or None when unresolvable.
-
-        Fetch-through: a resolved row is cached with no expiry and
-        written to the B2 staging lake (``source="live_rpc"`` +
-        ``confidence`` + ``fetched_at``) unless it still sits inside the
-        chain's reorg window. An unresolved lookup is cached as a negative
-        for the negative TTL (300s).
         """
-        key = self._cache_key_deployer(chain, contract_address, creation_tx)
-        cached = self._cache_hit(key)
-        if cached is _NEGATIVE:
-            return None
-        if cached is not None:
-            return cast(dict[str, Any], cached)
-
-        row: dict[str, Any] | None = None
-
         if creation_tx:
             await self._throttle()
             endpoint = await self._select_endpoint(chain, "eth_getTransactionByHash")
@@ -657,7 +608,7 @@ class RPCFetcher:
                         block = int(block_hex, 16) if isinstance(block_hex, str) else int(block_hex)
                     except (ValueError, TypeError):
                         block = 0
-                    row = {
+                    return {
                         "deployer": from_addr,
                         "deployer_eoa": from_addr,
                         "token_address": contract_address.lower(),
@@ -675,61 +626,56 @@ class RPCFetcher:
                     }
 
         # Bounded trace_filter creation scan (best-effort).
-        if row is None:
-            await self._throttle()
-            endpoint = await self._select_endpoint(chain, "trace_filter")
-            if endpoint is not None:
-                to_block = await self._tip_or(endpoint, chain)
-                if to_block > 0:
-                    from_block = max(0, to_block - _DEPLOYER_TRACE_SCAN_BLOCKS)
-                    result = await self._client.call(
-                        endpoint,
-                        "trace_filter",
-                        [{"fromBlock": hex(from_block), "toBlock": hex(to_block), "toAddress": [], "fromAddress": []}],
-                    )
-                    traces = result.get("result") if isinstance(result, dict) else None
-                    if isinstance(traces, list):
-                        for trace in traces:
-                            if not isinstance(trace, dict):
-                                continue
-                            action = trace.get("action") or {}
-                            # Contract creation traces have no `to` (None) — the created
-                            # contract lives in the trace result's `address`.
-                            created = str(action.get("to") or "").lower()
-                            creator = str(action.get("from", "")).lower()
-                            if not created:
-                                result_addr = str((trace.get("result") or {}).get("address", "")).lower()
-                                if result_addr != contract_address.lower():
-                                    continue
-                            elif created != contract_address.lower():
-                                continue
-                            if creator:
-                                row = {
-                                    "deployer": creator,
-                                    "deployer_eoa": creator,
-                                    "token_address": contract_address.lower(),
-                                    "token0": "",
-                                    "token1": "",
-                                    "pair_address": contract_address.lower(),
-                                    "chain": chain,
-                                    "block_number": int(trace.get("blockNumber", "0x0"), 16)
-                                    if isinstance(trace.get("blockNumber", "0x0"), str)
-                                    else int(trace.get("blockNumber", 0) or 0),
-                                    "block_timestamp": "",
-                                    "tx_hash": str(trace.get("transactionHash", "")).lower(),
-                                    "type": "rpc_lookup",
-                                    "factory": "",
-                                    "ingested_at": "",
-                                    "source": "rpc",
-                                }
-                                break
-
-        if row is not None:
-            self._cache_positive(key, row)
-            await self._persist_rows(chain, "deployer_events", [row])
-        else:
-            self._cache_negative(key)
-        return row
+        await self._throttle()
+        endpoint = await self._select_endpoint(chain, "trace_filter")
+        if endpoint is None:
+            return None
+        to_block = await self._tip_or(endpoint, chain)
+        if to_block <= 0:
+            return None
+        from_block = max(0, to_block - _DEPLOYER_TRACE_SCAN_BLOCKS)
+        result = await self._client.call(
+            endpoint,
+            "trace_filter",
+            [{"fromBlock": hex(from_block), "toBlock": hex(to_block), "toAddress": [], "fromAddress": []}],
+        )
+        traces = result.get("result") if isinstance(result, dict) else None
+        if not isinstance(traces, list):
+            return None
+        for trace in traces:
+            if not isinstance(trace, dict):
+                continue
+            action = trace.get("action") or {}
+            # Contract creation traces have no `to` (None) — the created
+            # contract lives in the trace result's `address`.
+            created = str(action.get("to") or "").lower()
+            creator = str(action.get("from", "")).lower()
+            if not created:
+                result_addr = str((trace.get("result") or {}).get("address", "")).lower()
+                if result_addr != contract_address.lower():
+                    continue
+            elif created != contract_address.lower():
+                continue
+            if creator:
+                return {
+                    "deployer": creator,
+                    "deployer_eoa": creator,
+                    "token_address": contract_address.lower(),
+                    "token0": "",
+                    "token1": "",
+                    "pair_address": contract_address.lower(),
+                    "chain": chain,
+                    "block_number": int(trace.get("blockNumber", "0x0"), 16)
+                    if isinstance(trace.get("blockNumber", "0x0"), str)
+                    else int(trace.get("blockNumber", 0) or 0),
+                    "block_timestamp": "",
+                    "tx_hash": str(trace.get("transactionHash", "")).lower(),
+                    "type": "rpc_lookup",
+                    "factory": "",
+                    "ingested_at": "",
+                    "source": "rpc",
+                }
+        return None
 
     async def _tip_or(self, endpoint: str, chain: str) -> int:
         """Return the chain tip via ``eth_blockNumber`` (0 on failure)."""
