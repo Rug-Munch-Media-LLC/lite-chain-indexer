@@ -79,6 +79,12 @@ jobs:
             --cov-report=lcov:coverage.lcov \
             --cov-fail-under=60
 
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
       - name: Per-diff coverage gate (diff-cover — BLOCKING)
         # Ratchet: lines CHANGED vs origin/main must be >=60% covered.
         # On pushes to main the diff is empty and this passes trivially.
