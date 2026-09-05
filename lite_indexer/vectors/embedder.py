@@ -183,12 +183,12 @@ class DualLaneEmbedder:
 
     async def embed(self, texts: list[str], on_progress: ProgressCallback | None = None) -> list[list[float]] | None:
         """Embed texts, trying lanes in order; ``None`` when all lanes fail."""
-        last_error: Exception | None = None
+        _last_error: Exception | None = None
         for lane in self._lanes:
             try:
                 return await lane.embed(texts, on_progress=on_progress)
             except EmbeddingError as exc:
-                last_error = exc
+                _last_error = exc
                 continue
         return None
 

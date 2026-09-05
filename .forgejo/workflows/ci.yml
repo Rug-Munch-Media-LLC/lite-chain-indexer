@@ -34,6 +34,9 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
+      - name: Import lint (architecture contracts)
+        run: lint-imports
+
       - name: Type check with mypy
         run: mypy lite_indexer/
 

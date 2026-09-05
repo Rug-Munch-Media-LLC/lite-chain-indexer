@@ -32,6 +32,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "pre-commit>=4.0.0",
     "gitleaks>=8.18.0",
+    "import-linter>=2.0.0",
 ]
 query = [
     "duckdb>=1.0.0",

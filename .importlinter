@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: MIT
+# lite-chain-indexer — import-linter architecture boundary contracts.
+#
+# Canonical source of truth: standards/ARCHITECTURE.md + standards/import-linter.contract.yaml
+# This file is copied from the canonical contract per-repo. The pre-push
+# `import-boundaries` lefthook hook runs `lint-imports` when [importlinter] is present.
+#
+# Layering: strategies (chain-specific sync strategies) and storage (persistence
+# backends) are independent layers. indexer is the orchestrator and may import
+# from both, but neither lower layer may import upward.
+
+[importlinter]
+root_package = lite_indexer
+include_external_packages = True
+
+[importlinter:contract:strategies-no-indexer]
+name = strategies must not import from indexer (orchestrator)
+type = forbidden
+source_modules =
+    lite_indexer.strategies
+forbidden_modules =
+    lite_indexer.indexer
+
+[importlinter:contract:storage-no-strategies]
+name = storage must not import from strategies
+type = forbidden
+source_modules =
+    lite_indexer.storage
+forbidden_modules =
+    lite_indexer.strategies
+
+[importlinter:contract:indexer-layering]
+name = indexer may import strategies and storage (layered, not forbidden)
+type = layers
+layers =
+    lite_indexer.indexer
+    lite_indexer.strategies
+    lite_indexer.storage

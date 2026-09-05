@@ -72,7 +72,7 @@ def _extract_candidates(chain_id: int, registry: list[Any]) -> list[str]:
     """Extract free, keyless RPC URLs for a chain from the registry."""
     from urllib.parse import urlparse
 
-    NON_FREE_MARKERS = ("${", "api-key", "api_key", "apikey", "key=", "token=")
+    NON_FREE_MARKERS = ("${", "api-key", "api_key", "apikey", "key=", "token=")  # noqa: N806
     candidates: list[str] = []
     seen: set[str] = set()
 

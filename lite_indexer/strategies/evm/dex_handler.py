@@ -159,7 +159,7 @@ async def _fetch_topic(
             except (httpx.RemoteProtocolError, httpx.LocalProtocolError):
                 record_endpoint_failure(url)
                 continue
-            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+            except (httpx.HTTPError, ConnectionError, OSError, ValueError, KeyError, TypeError) as exc:
                 logger.warning("dex_fetch_unexpected", chain=chain, endpoint=url[:50], error=str(exc)[:80])
                 record_endpoint_failure(url)
                 continue

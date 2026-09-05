@@ -263,10 +263,10 @@ async def update_holder_balances_bulk(
         # One SELECT for all current balances (chunked IN clause).
         keys = list(active.keys())
         current: dict[tuple[str, str, str], tuple[int, int]] = {}
-        CHUNK = 10_000
+        CHUNK = 10_000  # noqa: N806
         for i in range(0, len(keys), CHUNK):
             chunk = keys[i : i + CHUNK]
-            conditions = ", ".join("(%(chain)s, %(token)s, %(address)s)" for _ in chunk)
+            _conditions = ", ".join("(%(chain)s, %(token)s, %(address)s)" for _ in chunk)
             params: dict[str, str] = {}
             cond_parts = []
             for j, (chain, token, address) in enumerate(chunk):
