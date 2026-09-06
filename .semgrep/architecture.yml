@@ -1,0 +1,114 @@
+# Semgrep architecture rules — rmi-backend
+# Enforces architectural boundaries that lint can't catch.
+# Run: semgrep --config .semgrep/architecture.yml app/
+# Blocks CI on architectural violations (cross-service imports, layer bypasses).
+
+rules:
+  # ── No cross-service imports ───────────────────────────────────────
+  # Services should not import from each other directly. Use DI or events.
+  - id: no-cross-service-import
+    name: No cross-service imports — use dependency injection or events
+    severity: ERROR
+    languages: [python]
+    message: "Service imports from another service. Use dependency injection or events instead."
+    patterns:
+      - pattern: |
+          from app.services.$A import $B
+      - pattern-not: |
+          from app.services.$A import $B
+      - metavariable-regex:
+          metavariable: $A
+          regex: "^(?!common|base|utils|shared)"
+    paths:
+      include:
+        - "app/services/**/*.py"
+        - "app/domains/**/*.py"
+
+  # ── No router → DB direct ──────────────────────────────────────────
+  # Routers must not import from db or db_client. Go through services.
+  - id: no-router-db-import
+    name: Routers must not import from db directly — use service layer
+    severity: ERROR
+    languages: [python]
+    message: "Router imports from db. Use service layer instead — router → service → repository → db."
+    patterns:
+      - pattern-either:
+          - pattern: from app.db import $X
+          - pattern: from app.db_client import $X
+          - pattern: import app.db.$X
+          - pattern: import app.db_client.$X
+      - pattern-not: from app.db import Session
+    paths:
+      include:
+        - "app/routers/**/*.py"
+      exclude:
+        - "app/routers/admin/**"
+
+  # ── No raw SQL in routers ──────────────────────────────────────────
+  - id: no-raw-sql-in-router
+    name: No raw SQL in routers — use repository layer
+    severity: ERROR
+    languages: [python]
+    message: "Raw SQL in router. Move to repository layer. router → service → repository."
+    patterns:
+      - pattern-either:
+          - pattern: db.execute(text($SQL))
+          - pattern: db.query($MODEL)
+          - pattern: session.execute(text($SQL))
+    paths:
+      include:
+        - "app/routers/**/*.py"
+
+  # ── No models import from routers/services ─────────────────────────
+  # Models are the lowest layer — they must not import from higher layers.
+  - id: no-model-imports-upward
+    name: Models must not import from routers or services
+    severity: ERROR
+    languages: [python]
+    message: "Model imports from higher layer — models are the lowest layer. Dependencies flow down only."
+    patterns:
+      - pattern-either:
+          - pattern: from app.routers import $X
+          - pattern: from app.services import $X
+          - pattern: from app.domains import $X
+          - pattern: import app.routers.$X
+          - pattern: import app.services.$X
+    paths:
+      include:
+        - "app/models/**/*.py"
+        - "app/db/**/*.py"
+
+  # ── No bare except ─────────────────────────────────────────────────
+  - id: no-bare-except
+    name: No bare except — catch specific exceptions
+    severity: ERROR
+    languages: [python]
+    message: "Bare except catches everything including KeyboardInterrupt. Use 'except SpecificError as e:'."
+    pattern: |
+      except:
+        ...
+
+  # ── No time.sleep in async functions ───────────────────────────────
+  - id: no-sync-sleep-in-async
+    name: No time.sleep in async functions — use asyncio.sleep
+    severity: ERROR
+    languages: [python]
+    message: "time.sleep() blocks the event loop. Use await asyncio.sleep() in async functions."
+    pattern-inside: |
+      async def $FUNC(...):
+        ...
+    pattern: time.sleep($X)
+
+  # ── No f-string logging ────────────────────────────────────────────
+  - id: no-fstring-logging
+    name: No f-string logging — use structured logging
+    severity: WARNING
+    languages: [python]
+    message: "Use structured logging: logger.info('event_name', key=value) not f-strings."
+    patterns:
+      - pattern-either:
+          - pattern: logger.$LEVEL(f"...")
+          - pattern: logging.$LEVEL(f"...")
+    paths:
+      include:
+        - "app/**/*.py"
