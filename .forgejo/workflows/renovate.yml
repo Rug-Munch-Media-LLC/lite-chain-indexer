@@ -1,0 +1,23 @@
+# Renovate dependency management
+# Runs weekly on Monday 3AM UTC
+# Requires RENOVATE_TOKEN secret configured in Forgejo repo/org settings
+
+name: Renovate
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'  # Monday 3AM UTC
+  workflow_dispatch:
+
+jobs:
+  renovate:
+    name: Renovate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: renovatebot/github-action@v46.2.0
+        with:
+          token: ${{ secrets.RENOVATE_TOKEN }}
+          configurationFile: renovate.json
+        env:
+          LOG_LEVEL: debug
