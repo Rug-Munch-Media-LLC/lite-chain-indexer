@@ -1,0 +1,6 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "lite-chain-indexer — extends RugMunch shared preset",
+  "extends": ["local>RugMunchMedia/standards:renovate-presets/rugmunch.json"],
+  "assignees": ["cryptorugmunch"]
+}
