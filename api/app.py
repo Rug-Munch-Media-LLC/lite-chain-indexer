@@ -92,7 +92,11 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=[
+            "https://rugmunch.io",
+            "https://rugmaps.rugmunch.io",
+            "https://rugcharts.rugmunch.io",
+        ],
         allow_methods=["*"],
         allow_headers=["*"],
     )
