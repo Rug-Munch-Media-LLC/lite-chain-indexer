@@ -15,9 +15,8 @@ window/cooldown transitions are deterministic.
 
 from __future__ import annotations
 
-from typing import Any
-
 import time
+from typing import Any
 
 import pytest
 

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from lite_indexer.vectors.embedder import DualLaneEmbedder, EmbeddingError
+from lite_indexer.vectors.embedder import DualLaneEmbedder
 
 
 def _response(status: int, payload: dict[str, Any] | None = None) -> MagicMock:

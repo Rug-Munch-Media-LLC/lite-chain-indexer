@@ -28,7 +28,7 @@ def _no_unresolved(urls: list[str]) -> None:
 
 
 def test_active_pools_contain_only_resolved_urls() -> None:
-    for chain, urls in GET_LOGS_ENDPOINTS.items():
+    for _chain, urls in GET_LOGS_ENDPOINTS.items():
         _no_unresolved(urls)
 
 
@@ -98,8 +98,7 @@ def test_free_first_ordering_active_pools() -> None:
                 seen_keyed = True
             else:
                 assert not seen_keyed, (
-                    f"{chain}: free endpoint after keyed template violates "
-                    f"free-first ordering: {url}"
+                    f"{chain}: free endpoint after keyed template violates free-first ordering: {url}"
                 )
     for urls in (SOLANA_ENDPOINTS, TRON_ENDPOINTS):
         seen_keyed = False

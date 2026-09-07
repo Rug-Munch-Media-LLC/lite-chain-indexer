@@ -18,7 +18,6 @@ import pytest
 from lite_indexer.health import ChainStallTracker
 from lite_indexer.rpc.client import RpcClient
 
-
 # ── ChainStallTracker ───────────────────────────────────────────────────────
 
 

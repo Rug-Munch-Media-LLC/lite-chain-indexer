@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-import lite_indexer.health as H
+import lite_indexer.health as health
 
 
 def _write_state(state_dir: str, chain: str, block: int) -> str:
@@ -40,9 +40,9 @@ def _run_lag(state_dir: str, tip_holder: dict[str, Any], chain: str = "base"):
         return type("_S", (), {"fetch_block_number": staticmethod(_tip)})()
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(H, "STATE_DIR", state_dir)
-        mp.setattr(H, "create_strategy", _fake_strategy)
-        return asyncio.run(H.check_chain_lag([chain]))[chain]
+        mp.setattr(health, "STATE_DIR", state_dir)
+        mp.setattr(health, "create_strategy", _fake_strategy)
+        return asyncio.run(health.check_chain_lag([chain]))[chain]
 
 
 class TestChainLagStatuses:
@@ -92,5 +92,5 @@ class TestLagMath:
     def test_lag_seconds_uses_chain_block_time(self, tmp_path):
         _write_state(str(tmp_path), "base", 1000)
         info = _run_lag(str(tmp_path), {"fn": lambda: 1010})
-        expected_block_time = H._CHAIN_BLOCK_TIMES.get("base", 12.0)
+        expected_block_time = health._CHAIN_BLOCK_TIMES.get("base", 12.0)
         assert info["lag_seconds"] == int(10 * expected_block_time)

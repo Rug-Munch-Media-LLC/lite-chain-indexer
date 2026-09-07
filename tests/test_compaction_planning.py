@@ -52,5 +52,5 @@ class TestParsePeriod:
         assert _parse_period("2026-08", "month") == "2026-08"
 
     def test_invalid_period_raises(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             _parse_period("not-a-date", "day")

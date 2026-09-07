@@ -76,7 +76,7 @@ async def test_range_limited_errors_accepted(monkeypatch):
         monkeypatch.setattr(
             hh.httpx,
             "AsyncClient",
-            lambda **k: _Client({"error": {"message": msg}}),
+            lambda _msg=msg, **k: _Client({"error": {"message": _msg}}),
         )
         assert await hh.verify_endpoint(EP, "polygon") is True, msg
 

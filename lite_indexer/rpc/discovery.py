@@ -54,7 +54,7 @@ _CHAIN_IDS: dict[str, int] = {
     "mantle": 5000,
     "gnosis": 100,
     "celo": 42220,
-    "robinhood": 78600,
+    "robinhood": 4663,  # 0x1237 — old spec 78600 was Vanguard (VANRY)
 }
 
 # URL markers that indicate an endpoint is NOT free/public.

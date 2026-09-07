@@ -1,4 +1,4 @@
-"""Tests for the Robinhood chain registration (Arbitrum Orbit L2, chainId 78600).
+"""Tests for the Robinhood chain registration (Arbitrum Orbit L2, chainId 4663).
 
 Covers every registration point added 2026-08-13: the RPC endpoint pool
 (``GET_LOGS_ENDPOINTS`` + last-resort), the polling interval, the
@@ -37,10 +37,14 @@ class TestRobinhoodEndpoints:
             assert url.startswith("https://")
             assert "${" not in url
 
-    def test_last_resort_includes_official_endpoint(self):
-        # LAST_RESORT still lists the legacy rpc.robinhood.org host.
-        assert LAST_RESORT_ENDPOINTS["robinhood"] == ["https://rpc.robinhood.org"]
-        assert "https://rpc.robinhood.org" in last_resort_endpoints("robinhood")
+    def test_last_resort_is_official_active_pool_endpoint(self):
+        # Last-resort URLs must exist in the chain's active pool
+        # (registry-integrity contract, 2026-08-23) — a rescue list
+        # pointing at non-pool endpoints is never dialed. The legacy
+        # rpc.robinhood.org host was never a pool member; the official
+        # host is both T1 in the active pool and the rescue fallback.
+        assert LAST_RESORT_ENDPOINTS["robinhood"] == [ROBINHOOD_ENDPOINT]
+        assert ROBINHOOD_ENDPOINT in last_resort_endpoints("robinhood")
 
     def test_no_duplicate_endpoints(self):
         assert len(GET_LOGS_ENDPOINTS["robinhood"]) == len(set(GET_LOGS_ENDPOINTS["robinhood"]))

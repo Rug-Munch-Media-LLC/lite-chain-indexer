@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
-
 from lite_indexer.chain_registry import (
+    EVM_PRESETS,
     ChainConfig,
     ChainType,
-    EVM_PRESETS,
     add_chain_config,
     get_chain_config,
     list_supported_chains,
@@ -163,7 +161,7 @@ class TestAddChainConfig:
         add_chain_config("ethereum", original)
 
 
-class TestEVM_presets:
+class TestEVMPresets:
     """Tests for EVM_PRESETS dictionary."""
 
     def test_has_multiple_chains(self):

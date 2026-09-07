@@ -476,7 +476,10 @@ EXPECTED_CHAIN_IDS: dict[str, str] = {
     "mantle": "0x1388",
     "gnosis": "0x64",
     "celo": "0xa4ec",
-    "robinhood": "0x132c8",
+    "blast": "0x13e31",  # 81457 — verified 2026-09-01
+    "fraxtal": "0xfc",  # 252 — verified 2026-09-01
+    "metis": "0x440",  # 1088 — verified 2026-09-01
+    "robinhood": "0x1237",  # 4663 — old spec chainId 78600 was Vanguard
 }
 
 
@@ -577,7 +580,7 @@ LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
         "https://gnosis.gateway.tenderly.co",
     ],
     "celo": ["https://forno.celo.org"],
-    "robinhood": ["https://rpc.robinhood.org"],
+    "robinhood": ["https://rpc.mainnet.chain.robinhood.com"],
 }
 
 

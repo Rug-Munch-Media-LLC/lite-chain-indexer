@@ -84,7 +84,6 @@ def test_disabled_via_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_autotune_wait_zero_spacing_is_instant():
-    import asyncio
 
     t0 = time.perf_counter()
     await at.autotune_wait("https://nospace.example")

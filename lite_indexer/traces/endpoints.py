@@ -34,6 +34,20 @@ from __future__ import annotations
 
 import os
 
+# Load the shared env file (NODEREAL_KEY / ALCHEMY_KEY / ...) BEFORE the
+# module-level placeholder resolution below, so every import path — daemon,
+# cron, manual — resolves the same keys as the daemon's systemd unit.
+# Idempotent and non-destructive (see lite_indexer.env.load_env_file).
+from lite_indexer.chains.endpoints import require_nodereal_key
+from lite_indexer.env import load_env_file
+
+load_env_file()
+
+# NODEREAL_KEY is REQUIRED (same rule as lite_indexer.chains.endpoints):
+# the BSC trace endpoint is built from it and must never silently fall out
+# of the pool — an unset key fails startup loudly instead.
+require_nodereal_key()
+
 TRACE_ENDPOINTS: dict[str, list[str]] = {
     # ── Ethereum (3 endpoints, all verified) ─────────────────────────
     "ethereum": [
@@ -43,7 +57,7 @@ TRACE_ENDPOINTS: dict[str, list[str]] = {
     ],
     # ── BSC (2 endpoints, verified) ──────────────────────────────────
     "bsc": [
-        "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",  # trace_block (parity) — verified
+        "https://bsc-mainnet.nodereal.io/v1/${NODEREAL_KEY}",  # trace_block (parity) — verified; key from env
         "https://bsc.merkle.io",  # trace_block — verified
     ],
     # ── Base (1 endpoint, verified) ──────────────────────────────────

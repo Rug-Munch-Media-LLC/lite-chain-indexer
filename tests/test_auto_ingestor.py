@@ -9,10 +9,10 @@ import pytest
 from lite_indexer.rpc.auto_ingestor import (
     RpcIngestorStats,
     _extract_candidates,
+    auto_ingest,
+    discover_chain_rpcs,
     validate_endpoint,
     validate_endpoints,
-    discover_chain_rpcs,
-    auto_ingest,
 )
 
 

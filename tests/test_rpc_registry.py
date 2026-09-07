@@ -12,12 +12,12 @@ invariants matter more than anything else here:
 from __future__ import annotations
 
 import re
+from dataclasses import FrozenInstanceError
 
 import pytest
 
 from lite_indexer.chains.rpc_registry import (
     FREEMIUM_PROVIDERS,
-    FreemiumProvider,
     providers_with_referrals,
     signup_table,
 )
@@ -96,5 +96,5 @@ class TestReferralMetadata:
 
     def test_frozen_dataclass(self):
         p = next(iter(FREEMIUM_PROVIDERS.values()))
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             p.name = "mutated"  # type: ignore[misc]

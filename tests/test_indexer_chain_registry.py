@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 from lite_indexer.chain_registry import (
     ChainConfig,
     ChainType,
-    EVM_PRESETS,
     add_chain_config,
     get_chain_config,
     list_supported_chains,
