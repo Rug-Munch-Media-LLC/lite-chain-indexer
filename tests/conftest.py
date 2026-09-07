@@ -27,6 +27,13 @@ import pytest
 # nats-py client loops). This line MUST stay above every lite_indexer import.
 os.environ["NATS_ENABLED"] = "0"
 
+# NODEREAL_KEY is REQUIRED at import time (lite_indexer/chains/endpoints.py
+# raises a startup error when it is unset — the NodeReal BSC endpoint URL is
+# built from it and must never silently fall out of the pool). Provide a
+# stable test value so every module import below resolves it. This line MUST
+# stay above every lite_indexer import (same as NATS_ENABLED above).
+os.environ["NODEREAL_KEY"] = "test-key-123"
+
 from lite_indexer.rpc.throttle import RPCRateTracker  # noqa: E402
 
 

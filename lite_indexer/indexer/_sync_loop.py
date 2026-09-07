@@ -479,6 +479,27 @@ class SyncLoopMixin:
         if dex_events:
             dex_ch_inserted = self.ch_writer.write_dex_events(self.chain, dex_events)
             summary["dex_events_written_ch"] = dex_ch_inserted
+
+            # Data-loss guard (mirrors the transfer guard at step 7): dex
+            # events were fetched but NONE landed in ClickHouse. Do NOT
+            # advance state — abort the cycle so the range is re-fetched on
+            # the next cycle instead of silently skipping blocks whose dex
+            # rows never persisted. Dex rows are the scanner's primary
+            # feed; a 0-row insert for a non-empty batch means the table
+            # write failed wholesale.
+            if dex_ch_inserted == 0:
+                logger.error(
+                    "sync_aborted_dex_write_failed",
+                    chain=self.chain,
+                    from_block=from_block,
+                    to_block=to_block,
+                    dex_events=len(dex_events),
+                )
+                summary["status"] = "dex_write_failed"
+                summary["duration_seconds"] = time.monotonic() - start_time
+                self._save_current_state()
+                return summary
+
             if solana_swaps:
                 logger.info("solana_dex_clickhouse_inserted", rows=dex_ch_inserted)
 

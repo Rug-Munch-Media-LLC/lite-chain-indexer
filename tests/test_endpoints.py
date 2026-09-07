@@ -12,13 +12,23 @@ Covers:
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from lite_indexer.chains.endpoints import (
     GET_LOGS_ENDPOINTS,
     _resolve_endpoint_url,
     _resolved_endpoints,
+    require_nodereal_key,
 )
+
+# The NodeReal demo key previously baked into the BSC endpoint URL
+# (audit 2026-09-06) — must never appear in the repo again.
+LEAKED_NODEREAL_DEMO_KEY = "64a9df0874fb4a93b9d0a3849de012d3"
 
 # Every EVM chain the indexer supports must appear in GET_LOGS_ENDPOINTS.
 EXPECTED_EVM_CHAINS = [
@@ -140,3 +150,60 @@ class TestGetLogsEndpoints:
         """
         total = sum(len(urls) for urls in GET_LOGS_ENDPOINTS.values())
         assert len(GET_LOGS_ENDPOINTS) <= total <= 104
+
+
+class TestNoderealKeyRequired:
+    """Item 1 (2026-09-06 audit): NodeReal BSC key must come from env."""
+
+    def test_nodereal_endpoint_uses_env_key_not_leaked_demo(self):
+        """The BSC nodereal endpoint must resolve ${NODEREAL_KEY} — the old
+        baked-in demo key must be gone from the active pool."""
+        bsc = GET_LOGS_ENDPOINTS["bsc"]
+        nodereal = [u for u in bsc if "nodereal.io" in u]
+        assert nodereal, "bsc nodereal endpoint must stay in the active pool"
+        assert len(nodereal) == 1
+        url = nodereal[0]
+        assert LEAKED_NODEREAL_DEMO_KEY not in url, "leaked demo key still present"
+        assert "${" not in url  # resolved at import, never a dead placeholder
+        assert url == "https://bsc-mainnet.nodereal.io/v1/test-key-123"
+        assert os.environ.get("NODEREAL_KEY") == "test-key-123"
+
+    def test_require_nodereal_key_raises_when_unset(self, monkeypatch: pytest.MonkeyPatch):
+        """A clear startup error must be raised when NODEREAL_KEY is unset."""
+        monkeypatch.delenv("NODEREAL_KEY", raising=False)
+        with pytest.raises(RuntimeError) as excinfo:
+            require_nodereal_key()
+        message = str(excinfo.value)
+        assert "NODEREAL_KEY" in message
+        assert "required" in message.lower()
+
+    def test_require_nodereal_key_ok_when_set(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("NODEREAL_KEY", "some-rotated-key")
+        require_nodereal_key()  # must not raise
+
+    def test_module_import_fails_when_key_unset(self, tmp_path: Path):
+        """Importing lite_indexer.chains.endpoints without NODEREAL_KEY must
+        fail loudly at startup (hermetic subprocess — no in-process reload,
+        which would poison module state for the rest of the suite)."""
+        env = dict(os.environ)
+        env.pop("NODEREAL_KEY", None)
+        # Point load_env_file at a missing file so host state cannot mask
+        # the missing key.
+        env["LITE_INDEXER_ENV_FILE"] = str(tmp_path / "does-not-exist.env")
+        repo_root = Path(__file__).resolve().parents[1]
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import lite_indexer.chains.endpoints",
+            ],
+            env=env,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert proc.returncode != 0, "import should fail when NODEREAL_KEY is unset"
+        assert "NODEREAL_KEY" in proc.stderr
+        assert "required" in proc.stderr.lower()

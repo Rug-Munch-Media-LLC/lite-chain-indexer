@@ -33,6 +33,9 @@ whose key is NOT set are excluded from the active pool (they can never be
 dialed — a literal ``${...}`` in a URL only produces DNS/JSON verification
 retries). Restart the service after setting a key to activate the endpoint.
 
+Exception: ``NODEREAL_KEY`` (NodeReal BSC T1) is REQUIRED — module import
+raises a startup error when it is unset (see ``require_nodereal_key``).
+
 Total: 74 endpoints across 15 chains (61 public + 13 API-key free tiers).
 """
 
@@ -48,6 +51,36 @@ from lite_indexer.env import load_env_file
 from lite_indexer.logging import get_logger
 
 load_env_file()
+
+# NODEREAL_KEY is a REQUIRED secret — the sole exception to the
+# optional-key rule below. The NodeReal BSC endpoint previously shipped a
+# public demo key baked into the URL (audit finding 2026-09-06); that key
+# was rotated externally and every deployment now needs its own. Unlike the
+# free-tier keys, an unset NODEREAL_KEY must NOT silently drop the endpoint
+# from the active pool — that would shrink the BSC T1 tier without warning.
+# Fail startup loudly instead (the systemd EnvironmentFile must provide it).
+
+
+def require_nodereal_key() -> None:
+    """Raise a clear startup error when ``NODEREAL_KEY`` is not set.
+
+    Called at module import (service startup). The NodeReal BSC RPC
+    endpoint URL is built from ``${NODEREAL_KEY}``; an unset key must
+    never silently exclude the endpoint from the active pool.
+
+    Raises:
+        RuntimeError: If ``NODEREAL_KEY`` is missing or empty.
+    """
+    if not os.environ.get("NODEREAL_KEY"):
+        raise RuntimeError(
+            "NODEREAL_KEY is not set but is required: the NodeReal BSC RPC "
+            "endpoint resolves ${NODEREAL_KEY} from the environment. Add "
+            "NODEREAL_KEY=<rotated key> to the indexer EnvironmentFile (e.g. "
+            "/var/data/chain-indexer/lite-indexer.env, 0600) and restart."
+        )
+
+
+require_nodereal_key()
 
 logger = get_logger(__name__)
 
@@ -117,7 +150,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       2026-08-07: blockpi.bsc (HTTP 521) and 1rpc.io/bnb (usage
     #       limit) probed and rejected — official seeds added instead.
     "bsc": [
-        "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3",  # T1 — nodereal public (verified, 25.8k logs/100-blk)
+        "https://bsc-mainnet.nodereal.io/v1/${NODEREAL_KEY}",  # key rotated externally
         "https://rpc-bsc.48.club",  # T1 — 48.club (verified)
         "https://bsc.blockrazor.xyz",  # T2 — blockrazor (25-block range cap)
         "https://bsc-dataseed.binance.org",  # T2 — official Binance seed (blockNumber verified 2026-08-07)

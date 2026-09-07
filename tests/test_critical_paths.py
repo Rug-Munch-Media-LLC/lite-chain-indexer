@@ -117,6 +117,58 @@ async def test_deployers_with_dex(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dex_write_zero_aborts_and_rewinds_state(tmp_path, monkeypatch):
+    """A 0-row dex insert for a non-empty batch must abort the cycle.
+
+    Data-loss guard (2026-09-06 audit): dex events were fetched but none
+    landed in ClickHouse. State must NOT advance past the seeded block so
+    the range is re-fetched next cycle instead of being silently skipped.
+    """
+    from lite_indexer.indexer import LiteIndexer
+
+    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
+
+    indexer = LiteIndexer(
+        chain="ethereum",
+        from_block=100,
+        to_block=200,
+        data_dir=tmp_path,
+    )
+    indexer.state.save(99, 0)  # seed: last indexed block = 99
+    indexer.dex_enabled = True
+    indexer.traces_enabled = False
+
+    strategy = indexer.strategy
+    strategy.fetch_block_number = AsyncMock(return_value=500)
+    strategy.fetch_transfers = AsyncMock(return_value=[{"blockNumber": 150, "value": "1"}])
+    strategy.fetch_swap_events = AsyncMock(return_value=[{"blockNumber": 150, "logIndex": 1}])
+    # Avoid live RPC in the (lazy-default-enabled) deployer pair-created fetch.
+    strategy._fetch_pair_created_events = AsyncMock(return_value=None)
+    # Transfer insert succeeds — the batch is otherwise persistable.
+    strategy.write_clickhouse = Mock(return_value=1)
+
+    async def fake_enrich(events):
+        return [dict(e, blockTimestamp="2026-01-01T00:00:00Z") for e in events]
+
+    indexer._enrich_timestamps = AsyncMock(side_effect=fake_enrich)
+
+    ch = Mock()
+    ch.write_dex_events.return_value = 0  # dex insert silently drops everything
+    ch.write_wallet_features = AsyncMock(return_value={})
+    ch.client.return_value = None
+    indexer._ch_writer = ch
+    indexer._ch_health = type("_ChHealthStub", (), {"ok": lambda self: True})()
+
+    summary = await indexer._sync_loop_inner({"status": "ok", "errors": []}, time.monotonic())
+
+    assert summary["status"] == "dex_write_failed"
+    assert summary["dex_events_written_ch"] == 0
+    ch.write_dex_events.assert_called_once()
+    # State must NOT advance past block 99 — the range is retried next cycle.
+    assert indexer.state.load()["last_block"] == 99
+
+
+@pytest.mark.asyncio
 async def test_reorg_flag_resets(tmp_path, monkeypatch):
     """After a reorg triggers head-start recovery, a successful sync clears it."""
     from lite_indexer.indexer import LiteIndexer
