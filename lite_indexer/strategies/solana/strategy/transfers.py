@@ -217,6 +217,17 @@ class TransfersMixin:
                         self._buffer_swap_rows(swap_rows)
                 except Exception as exc:  # noqa: BLE001 — best-effort swaps
                     logger.warning("solana_swap_parse_failed", slot=slot, error=str(exc)[:60])
+                # Address-activity keystone in catch-up mode too: expand
+                # every successful block transaction into one row per
+                # involved account (zero extra RPC — same block payload).
+                try:
+                    self._ingest_address_activity(tx)
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    logger.warning(
+                        "solana_address_activity_blockwise_failed",
+                        slot=slot,
+                        error=str(exc)[:60],
+                    )
             return events
 
         # Sample every 2nd slot for catch-up speed (halves RPC spend; the
@@ -396,6 +407,18 @@ class TransfersMixin:
                     except Exception as exc:  # noqa: BLE001 — best-effort traces
                         logger.warning(
                             "solana_trace_extract_failed",
+                            sig=sig[:20],
+                            error=str(exc)[:60],
+                        )
+                    # Address-activity keystone: expand the same transaction
+                    # into one row per involved account (wallet tracing).
+                    # Pure parse + buffer — zero extra RPC; drained in
+                    # write_clickhouse. Best-effort, never blocks the fetch.
+                    try:
+                        self._ingest_address_activity(tx_data)
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        logger.warning(
+                            "solana_address_activity_failed",
                             sig=sig[:20],
                             error=str(exc)[:60],
                         )

@@ -43,6 +43,11 @@ TRACE_CONCURRENCY: int = int(os.environ.get("TRACE_CONCURRENCY", "2"))
 # ClickHouse table for internal-transfer rows.
 CH_TRACE_TABLE: str = "wallet_memory.internal_transfers"
 
+# Address-activity keystone table — every transaction an address touched
+# (free-RPC Helius getSignaturesForAddress parity). One row per
+# (address, tx_signature); provisioned by migrations/014_address_activity.sql.
+CH_ADDRESS_ACTIVITY_TABLE: str = os.environ.get("CH_ADDRESS_ACTIVITY_TABLE") or "wallet_memory.address_activity"
+
 # ── Cross-Chain Table References ───────────────────────────────────────
 # Read-side table references. The main transfer table is CH_TABLE above;
 # these aliases keep readers decoupled from the writer's naming so either
@@ -116,6 +121,7 @@ RETENTION_DAYS: dict[str, int] = {
     "dex_events": 90,
     "deployer_events": 365,
     "internal_transfers": 90,
+    "address_activity": 365,
 }
 
 # Columns to KEEP (summary) for old rows — everything else degrades.

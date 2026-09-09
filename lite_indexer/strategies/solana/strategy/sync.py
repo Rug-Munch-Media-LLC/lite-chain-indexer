@@ -597,3 +597,7 @@ class SyncMixin:
             # next write cycle. Runs in a finally so trace rows are drained
             # even when the SPL insert fails (e.g. CH hiccup).
             self._drain_trace_rows(client)
+            # 4c. Address-activity keystone rows (wallet_memory.address_activity)
+            # buffered from the same getTransaction calls — drained alongside
+            # trace rows so a CH hiccup on the SPL insert never strands them.
+            self._drain_address_activity_rows(client)

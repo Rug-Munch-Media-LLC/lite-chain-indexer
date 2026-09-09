@@ -77,5 +77,62 @@ async def rpc_call(
     return None
 
 
+async def get_transactions_for_address(
+    client: httpx.AsyncClient,
+    address: str,
+    *,
+    token_accounts: str = "all",
+    transaction_details: str = "signatures",
+    sort_order: str = "asc",
+    limit: int = 1000,
+    block_time_gte: int | None = None,
+    block_time_lt: int | None = None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Recover transaction history for an address — INCLUDING closed accounts.
+
+    ``getSignaturesForAddress`` returns ``[]`` for closed/deleted accounts
+    because the live signature index drops them. Helius's
+    ``getTransactionsForAddress`` with ``filters.tokenAccounts`` indexes
+    token-account activity, so it retains closed-account history.
+
+    See docs/closed-account-history.md for the verified capability matrix.
+
+    Args:
+        client: httpx AsyncClient.
+        address: Base-58 wallet or token-account address.
+        token_accounts: ``"none"`` | ``"balanceChanged"`` | ``"all"``
+            (default). ``"all"`` recovers closed accounts and token accounts.
+        transaction_details: ``"signatures"`` (cheap) or ``"full"`` (rich).
+        sort_order: ``"asc"`` (oldest first) or ``"desc"``.
+        limit: Max txs (up to 1000).
+        block_time_gte / block_time_lt: Unix-second window bounds.
+        status: ``"succeeded"`` | ``"failed"`` | ``"any"`` | None.
+
+    Returns:
+        Parsed JSON-RPC response dict (``{"result": {"data": [...]}}``),
+        or None on failure. The response also carries a ``paginationToken``
+        (format ``"slot:position"``) for keyset pagination.
+    """
+    params: dict[str, Any] = {
+        "transactionDetails": transaction_details,
+        "sortOrder": sort_order,
+        "limit": limit,
+        "maxSupportedTransactionVersion": 0,
+        "filters": {"tokenAccounts": token_accounts},
+    }
+    if block_time_gte is not None or block_time_lt is not None:
+        bt: dict[str, int] = {}
+        if block_time_gte is not None:
+            bt["gte"] = block_time_gte
+        if block_time_lt is not None:
+            bt["lt"] = block_time_lt
+        params["filters"]["blockTime"] = bt
+    if status is not None:
+        params["filters"]["status"] = status
+
+    return await rpc_call(client, "getTransactionsForAddress", [address, params])
+
+
 #: Per-endpoint 429 cooldown (url -> monotonic time when it becomes usable)
 _endpoint_cooldown: dict[str, float] = {}

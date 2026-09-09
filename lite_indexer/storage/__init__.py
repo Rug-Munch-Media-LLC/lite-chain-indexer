@@ -18,6 +18,11 @@ Disk cap and free-space checks are included before writes.
 from __future__ import annotations
 
 from lite_indexer.metrics import get_metrics
+from lite_indexer.storage.address_activity import (
+    ensure_address_activity_table,
+    parse_address_activity,
+    write_address_activity,
+)
 from lite_indexer.storage.balance_cache import (
     ensure_balance_cache_table,
     ensure_holder_balances_mv,
@@ -83,4 +88,8 @@ __all__ = [
     # Internal-transfer traces
     "ensure_internal_transfers_table",
     "write_internal_transfers",
+    # Address-activity keystone (wallet tracing)
+    "ensure_address_activity_table",
+    "parse_address_activity",
+    "write_address_activity",
 ]

@@ -18,12 +18,14 @@ from lite_indexer.strategies.base import AbstractChainStrategy
 from lite_indexer.strategies.solana.models import SOLANA_TRACKED_TOKENS
 from lite_indexer.traces.solana import SolanaTraceCollector
 
+from .address_activity import AddressActivityMixin
 from .dex_events import DexEventsMixin
 from .sync import SyncMixin
 from .traces import TracesMixin
 from .transfers import TransfersMixin
 
 __all__ = [
+    "AddressActivityMixin",
     "DexEventsMixin",
     "SolanaStrategy",
     "SyncMixin",
@@ -32,7 +34,9 @@ __all__ = [
 ]
 
 
-class SolanaStrategy(SyncMixin, TransfersMixin, TracesMixin, DexEventsMixin, AbstractChainStrategy):
+class SolanaStrategy(
+    AddressActivityMixin, SyncMixin, TransfersMixin, TracesMixin, DexEventsMixin, AbstractChainStrategy
+):
     """Strategy for Solana — indexes SPL token balance changes.
 
     Uses getSignaturesForAddress on tracked token mints to find recent
@@ -65,6 +69,11 @@ class SolanaStrategy(SyncMixin, TransfersMixin, TracesMixin, DexEventsMixin, Abs
         # call). Rows are buffered here and written in write_clickhouse.
         self._trace_collector = SolanaTraceCollector()
         self._trace_rows: list[dict[str, Any]] = []
+        # Address-activity keystone rows (wallet_memory.address_activity):
+        # one row per involved account of every parsed transaction — the
+        # Helius getSignaturesForAddress parity table. Buffered here and
+        # drained in write_clickhouse (see AddressActivityMixin).
+        self._address_activity_rows: list[dict[str, Any]] = []
         # Launch detection (Pump.fun/PumpSwap/Raydium/LaunchLab/LetsBonk) and
         # Jito bundle detection: parsed from the same getTransaction results
         # that feed SPL balance changes (no extra RPC). Buffered here and
