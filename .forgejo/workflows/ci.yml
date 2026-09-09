@@ -271,3 +271,75 @@ jobs:
             registry.rugmunch.io/lite-chain-indexer:${{ github.sha }}
         env:
           COSIGN_EXPERIMENTAL: "1"
+
+  # ── Migration SQL lint (sqlfluff — ClickHouse) ─────────────────
+  # DB-aware gate: every file in migrations/ is ClickHouse-dialect raw SQL
+  # (verified: all 13 parse clean under the clickhouse dialect). Squawk is
+  # Postgres-only and would false-fail ClickHouse DDL (MODIFY TTL, grants,
+  # Nullable(...)) — same reason rmi-backend scopes squawk to PG .sql only.
+  # This gate BLOCKS on unparsable syntax. Layout/style rules (LT*) are
+  # intentionally not enforced — historic noise, not correctness.
+  migration-sql-lint:
+    runs-on: docker-x64
+    container:
+      image: nikolaik/python-nodejs:python3.11-nodejs22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install sqlfluff
+        run: pip install sqlfluff==4.3.0
+      - name: Parse all ClickHouse migrations (BLOCKING on unparsable)
+        run: |
+          FAIL=0
+          for f in migrations/*.sql; do
+            echo "=== $f ==="
+            if ! sqlfluff parse "$f" --dialect clickhouse >/dev/null 2>&1; then
+              echo "❌ Unparsable ClickHouse SQL in $f"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
+  # ── Dependency vulnerability audit (pip-audit) ─────────────────
+  pip-audit:
+    runs-on: docker-x64
+    needs: [lint-and-test]
+    container:
+      image: nikolaik/python-nodejs:python3.12-nodejs22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pip-audit + runtime deps (base + api extras)
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends gcc curl git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+          python -m pip install --upgrade pip
+          pip install pip-audit
+          # Base indexer deps + the HTTP/GraphQL api extra = the full
+          # runtime surface (excludes storage/vector extras by design).
+          pip install -e ".[api]"
+      - name: Run pip-audit (blocking on HIGH/CRITICAL)
+        run: pip-audit --fail-on=high --desc
+
+  # ── Mutation testing (informational) ───────────────────────────
+  mutation-test:
+    runs-on: docker-x64
+    needs: [lint-and-test]
+    continue-on-error: true  # informational only for now
+    container:
+      image: nikolaik/python-nodejs:python3.11-nodejs22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install package + dev deps + mutmut
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends gcc curl git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" mutmut
+      - name: Mutation testing (scoped to indexer core)
+        run: mutmut run --paths-to-mutate lite_indexer/indexer/ --test-timeout 20 || echo "Mutation score noted (non-blocking)"
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: mutation-report
+          path: |
+            .mutmut-cache/
+            html/
