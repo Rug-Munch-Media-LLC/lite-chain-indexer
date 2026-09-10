@@ -189,3 +189,43 @@ class CexDepositOut(BaseModel):
     timestamp: str
     confidence: float = Field(default=1.0, ge=0, le=1)
     pattern: str = Field(default="direct", description="direct | sweep")
+
+
+class AddressActivity(BaseModel):
+    """One transaction that touched a wallet (``wallet_memory.address_activity``).
+
+    The wallet-tracing keystone row: the queried ``address`` appears in a
+    transaction, alongside every account key the transaction loaded and
+    the program ids it invoked. History is immutable, so the same row
+    shape answers for live and closed accounts alike.
+    """
+
+    address: str = Field(description="Involved account pubkey (the queried wallet)")
+    tx_signature: str = Field(description="Transaction signature (one per transaction)")
+    slot: int = Field(description="Slot the transaction landed in")
+    block_time: str = Field(description="Transaction block time (ISO-8601 UTC)")
+    involved_accounts: list[str] = Field(
+        default_factory=list,
+        description="Every account key loaded by the transaction",
+    )
+    program_ids: list[str] = Field(
+        default_factory=list,
+        description="Distinct program ids invoked (incl. CPI inner instructions)",
+    )
+    is_signer: bool = Field(description="Whether the queried address signed the transaction")
+
+
+class AddressCounterparty(BaseModel):
+    """A wallet counterparty in the inbound/outbound value trace.
+
+    ``address`` is the other side of the value movement: the funder for
+    ``/funders`` (who sent value in) or the recipient for ``/counters``
+    (who received value out). Counts and first/last-seen are aggregated
+    across every matching transfer row.
+    """
+
+    address: str = Field(description="Counterparty wallet address")
+    tx_count: int = Field(description="Distinct transactions involving this counterparty")
+    transfer_count: int = Field(description="Value-moving rows involving this counterparty")
+    first_seen: str = Field(description="Earliest transfer block time (ISO-8601 UTC)")
+    last_seen: str = Field(description="Latest transfer block time (ISO-8601 UTC)")

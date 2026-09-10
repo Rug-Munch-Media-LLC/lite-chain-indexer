@@ -30,5 +30,6 @@ publish when the server has JetStream disabled.
 from __future__ import annotations
 
 from lite_indexer.streaming.nats_publisher import NATSPublisher
+from lite_indexer.streaming.solana_ws import SolanaWebsocketConfig, SolanaWebsocketIngestor
 
-__all__ = ["NATSPublisher"]
+__all__ = ["NATSPublisher", "SolanaWebsocketConfig", "SolanaWebsocketIngestor"]

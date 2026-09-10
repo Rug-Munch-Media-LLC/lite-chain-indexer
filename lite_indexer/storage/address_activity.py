@@ -18,13 +18,37 @@ Schema matches the ClickHouse migration ``migrations/014_*.sql`` and is
 also ensured at runtime (idempotent, non-fatal) so the table appears on
 first address-activity write without operator DDL.
 
-Scope note: ``address_activity`` is Solana-shaped on purpose
-(``slot`` / ``tx_signature`` / ``program_ids`` / ``is_signer`` come from
-the parsed Solana transaction message). The table deliberately carries no
-``chain`` column today — ingestion only runs on the Solana pipeline. The
-first cross-chain consumer MUST add a ``chain`` column (and include it in
-ORDER BY) in a follow-up migration, otherwise EVM/TRON signatures will
-collide with Solana ones in the ReplacingMergeTree dedup key.
+Schema (single keystone table, multi-chain): the original table was
+Solana-shaped (``slot`` / ``tx_signature`` / ``program_ids`` /
+``is_signer`` from the parsed Solana message). Cross-chain ingestion
+(EVM + TRON) reuses the SAME table with a ``chain`` discriminator column
+rather than a sibling table, so an address-first query
+(``WHERE address = ...``) stays a single scan across every chain. The
+``chain`` column is appended to the ReplacingMergeTree sort key —
+``ORDER BY (address, tx_signature, chain)`` — which both makes the dedup
+key explicit and lets migration ``015_*.sql`` upgrade a pre-existing
+Solana table in place via ``ALTER ... MODIFY ORDER BY`` (the legacy
+``(address, tx_signature)`` prefix is preserved).
+
+* :func:`parse_address_activity` — Solana: expand one parsed transaction
+  into one row per involved account (signers, writable accounts, token
+  accounts, read-only accounts).
+* :func:`parse_evm_address_activity` — EVM: expand one parsed log-derived
+  event (transfer / swap / log group) into one row per address touched
+  (``from``/``to``, contracts, tokens, optional log/internal-call
+  addresses).
+* :func:`parse_tron_address_activity` — TRON: expand one parsed TRC20
+  event into one row per address touched.
+* :func:`ensure_address_activity_table` — idempotent CREATE of the
+  canonical multi-chain schema.
+* :func:`ensure_address_activity_chain_column` — in-place upgrade of a
+  pre-migration-015 table (ADD COLUMN + MODIFY ORDER BY).
+* :func:`write_address_activity` — batch insert of expanded rows.
+
+Schema matches the ClickHouse migrations ``014_*.sql`` +
+``015_address_activity_chain.sql`` and is also ensured at runtime
+(idempotent, non-fatal) so the table appears on first address-activity
+write without operator DDL.
 """
 
 from __future__ import annotations
@@ -36,12 +60,20 @@ from lite_indexer.config import CH_ADDRESS_ACTIVITY_TABLE, RETENTION_DAYS
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 
+# Re-export the cross-chain parsers so ``lite_indexer.storage.address_activity``
+# remains the single import surface for every address-activity consumer.
+from lite_indexer.storage.address_activity_crosschain import (
+    parse_evm_address_activity,
+    parse_tron_address_activity,
+)
+
 logger = get_logger(__name__)
 
 _ADDRESS_ACTIVITY_DDL = f"""
 CREATE TABLE IF NOT EXISTS {CH_ADDRESS_ACTIVITY_TABLE} (
     address String CODEC(ZSTD(3)),
     tx_signature String CODEC(ZSTD(3)),
+    chain String DEFAULT 'solana' CODEC(ZSTD(3)),
     slot UInt64,
     block_time DateTime,
     involved_accounts Array(String),
@@ -49,9 +81,21 @@ CREATE TABLE IF NOT EXISTS {CH_ADDRESS_ACTIVITY_TABLE} (
     is_signer Bool,
     ingested_at DateTime64(3) DEFAULT now64(3)
 ) ENGINE = ReplacingMergeTree()
-ORDER BY (address, tx_signature)
+ORDER BY (address, tx_signature, chain)
 TTL block_time + INTERVAL {RETENTION_DAYS.get("address_activity", 365)} DAY
 """
+
+# Upgrade path for a table provisioned by migration 014 (Solana-only, no
+# ``chain`` column, sort key ``(address, tx_signature)``). ``CREATE TABLE
+# IF NOT EXISTS`` is a no-op on an existing table, so
+# :func:`ensure_address_activity_chain_column` runs these ALTERs to bring
+# the live table up to the canonical schema. ``MODIFY ORDER BY`` appends
+# ``chain`` to the legacy key — ClickHouse supports this because the old
+# key remains a prefix of the new one, so no data rewrite is required.
+_ADD_CHAIN_COLUMN_DDL = (
+    f"ALTER TABLE {CH_ADDRESS_ACTIVITY_TABLE} ADD COLUMN IF NOT EXISTS chain String DEFAULT 'solana' CODEC(ZSTD(3))"
+)
+_MODIFY_ORDER_BY_DDL = f"ALTER TABLE {CH_ADDRESS_ACTIVITY_TABLE} MODIFY ORDER BY (address, tx_signature, chain)"
 
 _INSERT_COLUMNS = (
     "address",
@@ -62,7 +106,12 @@ _INSERT_COLUMNS = (
     "program_ids",
     "is_signer",
     "ingested_at",
+    "chain",
 )
+
+# Fallback chain tag for rows produced before the ``chain`` column existed
+# (e.g. Solana rows emitted by an older writer).
+_DEFAULT_CHAIN = "solana"
 
 
 def _collect_program_ids(message: dict[str, Any], meta: dict[str, Any]) -> list[str]:
@@ -172,6 +221,7 @@ def parse_address_activity(tx_data: dict[str, Any]) -> list[dict[str, Any]]:
 
     return [
         {
+            "chain": "solana",
             "address": pubkey,
             "tx_signature": tx_signature,
             "slot": slot,
@@ -184,8 +234,35 @@ def parse_address_activity(tx_data: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def ensure_address_activity_chain_column(ch_client: Any) -> None:
+    """Upgrade a pre-015 table with the ``chain`` discriminator (idempotent).
+
+    ``CREATE TABLE IF NOT EXISTS`` is a no-op on an existing table, so a
+    table provisioned by migration 014 (no ``chain`` column, sort key
+    ``(address, tx_signature)``) would never gain it from the CREATE alone.
+    These ALTERs bring such a table up to the canonical schema. They are
+    best-effort: on a fresh database the table does not exist yet, both
+    fail harmlessly, and the CREATE provisions the canonical schema.
+
+    Kept separate from :func:`ensure_address_activity_table` so the Solana
+    drain path remains a single CREATE + INSERT (migration 015 is the
+    operator-facing upgrade); the cross-chain mixin calls this first so
+    EVM/TRON ingestion self-heals an un-migrated table.
+    """
+    for ddl in (_ADD_CHAIN_COLUMN_DDL, _MODIFY_ORDER_BY_DDL):
+        try:
+            ch_client.execute(ddl)
+        except Exception as exc:  # noqa: BLE001 — table may be absent/fresh
+            logger.debug("address_activity_chain_ddl_skip", error=str(exc)[:80])
+
+
 def ensure_address_activity_table(ch_client: Any) -> bool:
     """Create ``wallet_memory.address_activity`` if it does not exist.
+
+    Provisions the canonical multi-chain schema (``chain`` discriminator +
+    extended sort key). For a pre-existing Solana-only table, apply
+    migration ``015_address_activity_chain.sql`` or call
+    :func:`ensure_address_activity_chain_column` first.
 
     Args:
         ch_client: ClickHouse client (anything with ``execute``).
@@ -249,6 +326,7 @@ def write_address_activity(ch_client: Any, rows: list[dict[str, Any]]) -> int:
                 [str(p) for p in (row.get("program_ids") or [])],
                 bool(row.get("is_signer")),
                 now,
+                str(row.get("chain") or _DEFAULT_CHAIN),
             )
         )
 
@@ -272,7 +350,10 @@ def write_address_activity(ch_client: Any, rows: list[dict[str, Any]]) -> int:
 
 __all__ = [
     "CH_ADDRESS_ACTIVITY_TABLE",
+    "ensure_address_activity_chain_column",
     "ensure_address_activity_table",
     "parse_address_activity",
+    "parse_evm_address_activity",
+    "parse_tron_address_activity",
     "write_address_activity",
 ]

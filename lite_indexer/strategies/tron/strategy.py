@@ -19,6 +19,8 @@ import httpx
 
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcFetchFailedError
+from lite_indexer.storage.address_activity import parse_tron_address_activity
+from lite_indexer.strategies.address_activity import CrossChainAddressActivityMixin
 from lite_indexer.strategies.base import AbstractChainStrategy
 
 from .launch import (
@@ -36,7 +38,7 @@ from .rpc import tron_get, tron_get_with_range, tron_post
 logger = get_logger(__name__)
 
 
-class TronStrategy(AbstractChainStrategy):
+class TronStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
     """Strategy for Tron — indexes TRC20 Transfer events via TronGrid.
 
     TRC20 is ERC20-compatible. Transfer events are fetched via TronGrid's
@@ -60,6 +62,31 @@ class TronStrategy(AbstractChainStrategy):
         # Launch detection (SunPump TokenCreate + SunSwap PairCreated):
         # buffered here, flushed in indexer.py's sync cycle. Best-effort.
         self._last_launch_events: list[Any] = []
+        # Address-activity keystone rows (wallet_memory.address_activity):
+        # one row per address touched by every TRC20 event fetched (zero
+        # extra RPC). Buffered here and drained in write_clickhouse (see
+        # CrossChainAddressActivityMixin).
+        self._init_address_activity()
+
+    # ── Address-Activity Keystone (TRON) ─────────────────────────────
+
+    def _parse_address_activity_event(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        """Expand one parsed TRC20 event into address-activity rows."""
+        return parse_tron_address_activity(event)
+
+    def write_clickhouse(self, events: list[dict[str, Any]], ch_writer: Any) -> int:
+        """Write TRC20 transfers, then buffer + drain address-activity rows.
+
+        Mirrors the Solana write path: the address rows are derived from
+        the same events already fetched (no extra RPC) and drained in a
+        best-effort step that never affects the transfer write result.
+        """
+        written = super().write_clickhouse(events, ch_writer)
+        self._ingest_address_activity_events(events)
+        client = ch_writer._connect()
+        if client is not None:
+            self._drain_address_activity_rows(client)
+        return written
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:

@@ -24,10 +24,12 @@ storage layer so rows returned from any tier have the same shape.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
 from lite_indexer.config import (
+    CH_ADDRESS_ACTIVITY_TABLE,
     CH_DEPLOYER_TABLE,
     CH_DEX_TABLE,
     CH_SOLANA_TABLE,
@@ -38,6 +40,7 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.query.address_backfill import AddressBackfill, BackfillResult
 from lite_indexer.query.cache import QueryCache
 from lite_indexer.query.rpc_fetcher import RPCFetcher
 from lite_indexer.storage.cold_store import TABLE_COLUMNS, TABLE_KINDS, TABLE_ORDER, ColdStore
@@ -141,6 +144,7 @@ class QueryRouter:
         rpc_pool: RPCFetcher | None = None,
         cache: QueryCache | None = None,
         *,
+        backfill: AddressBackfill | None = None,
         client_factory: Any | None = None,
         on_demand_enabled: bool = ON_DEMAND_RPC_ENABLED,
         max_block_range: int = ON_DEMAND_RPC_MAX_BLOCK_RANGE,
@@ -151,6 +155,7 @@ class QueryRouter:
         self.cold = cold_store
         self.rpc = rpc_pool if rpc_pool is not None else RPCFetcher(max_block_range=max_block_range)
         self.cache = cache if cache is not None else QueryCache()
+        self._backfill = backfill
         self.on_demand_enabled = bool(on_demand_enabled)
         self.max_block_range = int(max_block_range)
         self.limit_default = int(limit_default)
@@ -171,6 +176,83 @@ class QueryRouter:
         if table not in _CH_TABLE_REF or table not in TABLE_KINDS:
             raise ValueError(f"unknown table for on-demand routing: {table}")
         return table
+
+    # ── Address-activity lazy backfill ───────────────────────────────
+
+    def _get_backfill(self) -> AddressBackfill:
+        """Return the shared :class:`AddressBackfill` (lazily constructed)."""
+        if self._backfill is None:
+            self._backfill = AddressBackfill(ch_client_factory=self._ch_client)
+        return self._backfill
+
+    async def backfill_address(
+        self,
+        chain: str,
+        address: str,
+        *,
+        force: bool = False,
+        max_tx: int | None = None,
+    ) -> BackfillResult:
+        """Backfill one address's history into ``address_activity`` (guarded).
+
+        Delegates to :class:`AddressBackfill`; the never-re-fetch guard makes
+        repeated calls a no-op once the address is indexed. Best-effort —
+        never raises.
+        """
+        try:
+            return await self._get_backfill().backfill_address(address, chain=chain, force=force, max_tx=max_tx)
+        except Exception as exc:  # noqa: BLE001 — backfill is best-effort
+            logger.warning("ondemand_backfill_failed", chain=chain, address=str(address)[:12], error=str(exc)[:120])
+            return BackfillResult(address=str(address or ""), chain=chain, skipped=True, reason="error")
+
+    async def get_address_activity(
+        self,
+        chain: str,
+        address: str,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Serve a wallet's transaction history, backfilling on first touch.
+
+        Lazy backfill: on a cache miss the address is fetched once from the
+        free RPC pool and written to ``wallet_memory.address_activity``, then
+        re-read from ClickHouse. Every later call is a local read. Gated by
+        ``on_demand_enabled`` and the backfill's own guard.
+        """
+        addr = str(address or "").strip()
+        if not addr:
+            return []
+        capped = max(1, min(int(limit or self.limit_default), 1000))
+        rows = await asyncio.to_thread(self._query_address_activity, chain, addr, capped)
+        if rows or not self.on_demand_enabled:
+            return rows
+        try:
+            await self.backfill_address(chain, addr)
+        except Exception as exc:  # noqa: BLE001 — lazy backfill must not break reads
+            logger.warning("ondemand_lazy_backfill_failed", chain=chain, error=str(exc)[:120])
+            return rows
+        return await asyncio.to_thread(self._query_address_activity, chain, addr, capped)
+
+    def _query_address_activity(self, chain: str, address: str, limit: int) -> list[dict[str, Any]]:
+        """Read one address's rows from the keystone table ([] on failure)."""
+        client = self._ch_client()
+        if client is None:
+            return []
+        sql = (
+            "SELECT address, tx_signature, chain, slot, block_time, involved_accounts, program_ids, is_signer "
+            f"FROM {CH_ADDRESS_ACTIVITY_TABLE} FINAL "
+            "WHERE address = %(address)s AND chain = %(chain)s "
+            "ORDER BY block_time DESC, slot DESC "
+            f"LIMIT {int(limit)}"
+        )
+        try:
+            rows, column_types = client.execute(sql, {"address": address, "chain": chain}, with_column_types=True)
+        except Exception as exc:  # noqa: BLE001 — reads are best-effort
+            metrics_incr("ondemand_ch_errors")
+            logger.debug("ondemand_address_activity_failed", error=str(exc)[:100])
+            return []
+        names = [name for name, _ in column_types]
+        return [dict(zip(names, row, strict=False)) for row in rows]
 
     # ── Hot / cold reads ─────────────────────────────────────────────
 

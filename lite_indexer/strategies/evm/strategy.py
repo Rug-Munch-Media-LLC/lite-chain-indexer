@@ -37,6 +37,8 @@ from lite_indexer.rpc import (
     fetch_block_timestamps as rpc_fetch_block_timestamps,
 )
 from lite_indexer.state import PairCache
+from lite_indexer.storage.address_activity import parse_evm_address_activity
+from lite_indexer.strategies.address_activity import CrossChainAddressActivityMixin
 from lite_indexer.strategies.base import AbstractChainStrategy
 from lite_indexer.strategies.evm._helpers import detect_reorg, enforce_block_range
 from lite_indexer.strategies.evm.bloom import BloomCache
@@ -56,7 +58,7 @@ from lite_indexer.strategies.evm.transfer_handler import fetch_transfers as _fet
 logger = get_logger(__name__)
 
 
-class EVMChainStrategy(AbstractChainStrategy):
+class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
     """Strategy for EVM-compatible chains using eth_getLogs.
 
     Indexes ERC-20 Transfer events, DEX Swap events (V2+V3), and
@@ -90,6 +92,32 @@ class EVMChainStrategy(AbstractChainStrategy):
 
         # HTTP client for eth_getLogs batch calls
         self._client: httpx.AsyncClient | None = None
+
+        # Address-activity keystone rows (wallet_memory.address_activity):
+        # one row per address touched by every EVM event this strategy
+        # fetches (zero extra RPC). Buffered here and drained in
+        # write_clickhouse (see CrossChainAddressActivityMixin).
+        self._init_address_activity()
+
+    # ── Address-Activity Keystone (EVM) ──────────────────────────────
+
+    def _parse_address_activity_event(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        """Expand one parsed EVM event into address-activity rows."""
+        return parse_evm_address_activity(event)
+
+    def write_clickhouse(self, events: list[dict[str, Any]], ch_writer: Any) -> int:
+        """Write EVM transfers, then buffer + drain address-activity rows.
+
+        Mirrors the Solana write path: the address rows are derived from
+        the same events already fetched (no extra RPC) and drained in a
+        best-effort step that never affects the transfer write result.
+        """
+        written = super().write_clickhouse(events, ch_writer)
+        self._ingest_address_activity_events(events)
+        client = ch_writer._connect()
+        if client is not None:
+            self._drain_address_activity_rows(client)
+        return written
 
     @property
     def bloom_cache(self) -> BloomCache | None:
@@ -318,7 +346,7 @@ class EVMChainStrategy(AbstractChainStrategy):
         Delegates to :func:`dex_handler.fetch_swap_events`.
         """
         client = await self._get_client()
-        return await _fetch_swap_events(
+        events = await _fetch_swap_events(
             self.chain,
             from_block,
             to_block,
@@ -328,6 +356,15 @@ class EVMChainStrategy(AbstractChainStrategy):
             batch_size=self.batch_size,
             chunk_size=self.chunk_size,
         )
+        # Buffer address rows from the swap payloads too (sender/recipient/
+        # pair/tokens) — drained in write_clickhouse. If a cycle yields swaps
+        # but no transfers, write_clickhouse is not called and these rows
+        # drain on the next transfer cycle (bounded by the row cap). The
+        # parser also accepts ``involvedAccounts``/``addresses`` so the
+        # internal-transfer trace path can feed log/internal-call addresses
+        # in a follow-up. Best-effort.
+        self._ingest_address_activity_events(events)
+        return events
 
     # ── PairCreated Fetch (delegates to deployer_handler) ────────────
 

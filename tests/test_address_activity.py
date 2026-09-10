@@ -182,11 +182,14 @@ class TestAddressActivityStore:
     def test_ensure_creates_table(self):
         client = MagicMock()
         assert ensure_address_activity_table(client) is True
+        # ensure() executes exactly one statement (the CREATE); the pre-015
+        # upgrade ALTERs live in ensure_address_activity_chain_column().
         ddl = client.execute.call_args.args[0]
         assert "CREATE TABLE IF NOT EXISTS" in ddl
         assert CH_ADDRESS_ACTIVITY_TABLE in ddl
         assert "ReplacingMergeTree" in ddl
-        assert "ORDER BY (address, tx_signature)" in ddl
+        assert "chain String DEFAULT 'solana'" in ddl
+        assert "ORDER BY (address, tx_signature, chain)" in ddl
 
     def test_write_inserts_rows(self):
         client = MagicMock()

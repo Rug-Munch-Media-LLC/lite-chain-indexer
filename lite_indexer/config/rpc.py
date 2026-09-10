@@ -182,3 +182,76 @@ ON_DEMAND_RPC_PAUSE_SECONDS: float = float(os.environ.get("ON_DEMAND_RPC_PAUSE_S
 
 # Max entries in the on-demand RPC result cache (bounds memory).
 ON_DEMAND_RPC_CACHE_MAX_ENTRIES: int = int(os.environ.get("ON_DEMAND_RPC_CACHE_MAX_ENTRIES", "2048"))
+
+# ── Solana Address Backfill (free getSignaturesForAddress parity) ──────
+# On-demand history recovery for a single address. Public RPC first, then
+# Alchemy, then Helius (all free tiers, keys via env). The first successful
+# provider answers; a provider error falls through to the next. Results are
+# indexed into wallet_memory.address_activity so the address is served from
+# ClickHouse forever after (see ADDRESS_BACKFILL_ENABLED + the guard table).
+ADDRESS_BACKFILL_ENABLED: bool = os.environ.get("ADDRESS_BACKFILL_ENABLED", "1") != "0"
+
+# Max signatures pulled per address (one-time, then never re-fetched).
+ADDRESS_BACKFILL_MAX_SIGNATURES: int = int(os.environ.get("ADDRESS_BACKFILL_MAX_SIGNATURES", "1000"))
+
+# Max transactions fetched+parsed per backfill (bounds free-tier spend).
+ADDRESS_BACKFILL_MAX_TX: int = int(os.environ.get("ADDRESS_BACKFILL_MAX_TX", "250"))
+
+# Smaller cap for the lazy API path so a first-touch request stays bounded.
+ADDRESS_BACKFILL_LAZY_MAX_TX: int = int(os.environ.get("ADDRESS_BACKFILL_LAZY_MAX_TX", "50"))
+
+# getSignaturesForAddress page size (provider max is 1000; 100 is kind).
+ADDRESS_BACKFILL_PAGE_SIZE: int = int(os.environ.get("ADDRESS_BACKFILL_PAGE_SIZE", "100"))
+
+# Concurrent getTransaction calls during a backfill (free-tier friendly).
+ADDRESS_BACKFILL_CONCURRENCY: int = int(os.environ.get("ADDRESS_BACKFILL_CONCURRENCY", "4"))
+
+# Per-RPC timeout (seconds) for backfill calls.
+ADDRESS_BACKFILL_TIMEOUT: float = float(os.environ.get("ADDRESS_BACKFILL_TIMEOUT", "20.0"))
+
+# In-process negative cache: after a failed/unwritable attempt, don't retry
+# the same address for this many seconds (prevents read-only API processes
+# from burning free-tier RPC on every request).
+ADDRESS_BACKFILL_ATTEMPT_TTL: float = float(os.environ.get("ADDRESS_BACKFILL_ATTEMPT_TTL", "300.0"))
+
+# Guard table recording which (chain, address) pairs are already indexed.
+CH_ADDRESS_BACKFILL_STATE_TABLE: str = (
+    os.environ.get("CH_ADDRESS_BACKFILL_STATE_TABLE") or "wallet_memory.address_backfill_state"
+)
+
+# Multi-provider fallback endpoints. Public first, then keyed free tiers.
+# Keyed templates keep ${ENV_VAR} placeholders — never a real key in code;
+# unresolved templates are dropped from the provider list at import.
+SOLANA_PUBLIC_RPC: str = os.environ.get("SOLANA_PUBLIC_RPC", "https://api.mainnet-beta.solana.com")
+SOLANA_PUBLIC_RPC_FALLBACK: str = os.environ.get(
+    "SOLANA_PUBLIC_RPC_FALLBACK", "https://solana-rpc.publicnode.com"
+)
+SOLANA_ALCHEMY_RPC_TEMPLATE: str = os.environ.get(
+    "SOLANA_ALCHEMY_RPC_TEMPLATE", "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}"
+)
+SOLANA_HELIUS_RPC_TEMPLATE: str = os.environ.get(
+    "SOLANA_HELIUS_RPC_TEMPLATE", "https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}"
+)
+
+# ── Solana Real-Time Websocket Ingestion (logsSubscribe) ───────────────
+# A FREE real-time feed: subscribe to Solana RPC logsSubscribe for a
+# watchlist of program ids (and/or accountSubscribe for a watchlist of
+# accounts), fetch each notified transaction, and index it into
+# address_activity. Watchlist/program-scoped on purpose — never a
+# full-fidelity index of every transaction on the chain.
+SOLANA_WS_ENABLED: bool = os.environ.get("SOLANA_WS_ENABLED", "0") != "0"
+SOLANA_WS_URL: str = os.environ.get("SOLANA_WS_URL", "wss://api.mainnet-beta.solana.com")
+# Comma-separated program ids for logsSubscribe (mentions filter).
+SOLANA_WS_PROGRAMS: tuple[str, ...] = tuple(
+    p.strip() for p in os.environ.get("SOLANA_WS_PROGRAMS", "").split(",") if p.strip()
+)
+# Comma-separated account addresses for accountSubscribe (watchlist).
+SOLANA_WS_ACCOUNTS: tuple[str, ...] = tuple(
+    a.strip() for a in os.environ.get("SOLANA_WS_ACCOUNTS", "").split(",") if a.strip()
+)
+SOLANA_WS_COMMITMENT: str = os.environ.get("SOLANA_WS_COMMITMENT", "finalized")
+SOLANA_WS_PING_INTERVAL: float = float(os.environ.get("SOLANA_WS_PING_INTERVAL", "30.0"))
+SOLANA_WS_RECONNECT_BASE_SECONDS: float = float(os.environ.get("SOLANA_WS_RECONNECT_BASE_SECONDS", "1.0"))
+SOLANA_WS_RECONNECT_MAX_SECONDS: float = float(os.environ.get("SOLANA_WS_RECONNECT_MAX_SECONDS", "60.0"))
+# Max reconnects before giving up; 0 = retry forever.
+SOLANA_WS_MAX_RECONNECTS: int = int(os.environ.get("SOLANA_WS_MAX_RECONNECTS", "0"))

@@ -19,9 +19,14 @@ from __future__ import annotations
 
 from lite_indexer.metrics import get_metrics
 from lite_indexer.storage.address_activity import (
+    ensure_address_activity_chain_column,
     ensure_address_activity_table,
     parse_address_activity,
     write_address_activity,
+)
+from lite_indexer.storage.address_activity_crosschain import (
+    parse_evm_address_activity,
+    parse_tron_address_activity,
 )
 from lite_indexer.storage.balance_cache import (
     ensure_balance_cache_table,
@@ -89,7 +94,10 @@ __all__ = [
     "ensure_internal_transfers_table",
     "write_internal_transfers",
     # Address-activity keystone (wallet tracing)
+    "ensure_address_activity_chain_column",
     "ensure_address_activity_table",
     "parse_address_activity",
+    "parse_evm_address_activity",
+    "parse_tron_address_activity",
     "write_address_activity",
 ]

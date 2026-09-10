@@ -17,8 +17,9 @@ without indexing the whole chain:
 
 from __future__ import annotations
 
+from lite_indexer.query.address_backfill import AddressBackfill, BackfillResult
 from lite_indexer.query.cache import QueryCache
 from lite_indexer.query.router import QueryRouter
 from lite_indexer.query.rpc_fetcher import RPCFetcher
 
-__all__ = ["QueryCache", "QueryRouter", "RPCFetcher"]
+__all__ = ["AddressBackfill", "BackfillResult", "QueryCache", "QueryRouter", "RPCFetcher"]
