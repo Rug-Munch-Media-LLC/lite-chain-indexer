@@ -9,7 +9,7 @@ Index transfers, DEX swaps, deployer activity, and internal-transfer traces acro
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 [![16+ chains](https://img.shields.io/badge/chains-16-success.svg)](#chains-covered)
-[![46 tests](https://img.shields.io/badge/tests-460%2B-success.svg)](#testing)
+[![1,100+ tests](https://img.shields.io/badge/tests-1%2C100%2B-success.svg)](#testing)
 
 ---
 
@@ -270,7 +270,7 @@ pre-commit install
 ### Run Tests
 
 ```bash
-# Full suite (46 tests)
+# Full suite (1,100+ tests across 68 files)
 pytest -q
 
 # Smoke tests only
@@ -284,18 +284,17 @@ pytest --cov=lite_indexer --cov-report=term
 
 ## Testing
 
-| Test Suite | Count | Scope |
-|-----------|-------|-------|
-| `test_smoke.py` | 17 | Core integration |
-| `test_indexer.py` | 12 | Indexer state machine |
-| `test_resilience.py` | 26 | State regression, recovery |
-| `test_chain_registry.py` | 30 | Chain configuration |
-| `test_auto_ingestor.py` | 16 | RPC discovery, validation |
-| `test_rpc_*.py` | 300+ | RPC health, throttling, discovery |
-| `test_strategies.py` | 700+ | EVM, Solana, Tron strategies |
-| `test_webhooks.py` | 600+ | Webhook delivery |
-| `test_traces.py` | 600+ | Internal trace collection |
-| **Total** | **942+** | **Full coverage** |
+The suite spans **68 test files and 1,100+ test functions**. Representative
+coverage:
+
+| Area | Representative files |
+|------|----------------------|
+| Core integration & state machine | `test_smoke.py`, `test_indexer.py` |
+| Resilience & recovery | `test_resilience.py`, `test_rpc_resilience.py` |
+| Chain registry & routing | `test_chain_registry.py`, `test_routing.py`, `test_query_router.py` |
+| RPC health, throttling & discovery | `test_rpc_*.py` |
+| EVM / Solana / Tron strategies | `test_strategies.py`, `test_solana_traces.py` |
+| Webhooks, traces, NATS | `test_webhooks.py`, `test_traces.py`, `test_nats_publisher.py` |
 
 ---
 
