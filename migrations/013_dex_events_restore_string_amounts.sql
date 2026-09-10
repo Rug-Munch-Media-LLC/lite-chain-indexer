@@ -21,7 +21,7 @@
 --   above 2^53, empty strings became NULL. Reverting to String cannot
 --   restore the lost precision for pre-08-19 rows. Exact amounts for the
 --   affected range remain recoverable from NDJSON/parquet cold store
---   (/srv/data/chain-indexer) if ever needed. Rows written between the
+--   (/srv/[INTERNAL_DATA_DIR]/chain-indexer) if ever needed. Rows written between the
 --   ad-hoc ALTER and migration 013 carry float-approximated amounts.
 --
 -- WHY NOT KEEP Float64: raw swap amounts are uint256 token units; Float64

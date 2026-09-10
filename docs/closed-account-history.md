@@ -108,10 +108,10 @@ makes closed-account backfill possible — the existing
 
 | Key | Path | Status |
 |-----|------|--------|
-| Helius #1 | `rmi/helius/api-key` | ✅ works (d26c1d1c...) |
-| Helius #2 | `rmi/infra/helius_api_key_2` | ✅ works (57df1c0d...) |
-| Helius #3 | `rmi/infra/helius_api_key_3` | ✅ works (3527e878...) |
-| Alchemy | `rmi/infra/alchemy_api_key` | ❌ 403 — ROTATE |
-| Shyft | (user-provided) | ✅ works (`uwK3H356qeWgO2k8`) |
-| Dune | `rmi/infra/dune_api_key` | ✅ works (WeeY4h...) |
-| Bitquery | `rmi/backend/bitquery_api_key` | ❌ 402 — needs credits |
+| Helius #1 | `[INTERNAL_SECRET_PATH]` | ✅ works [REDACTED] |
+| Helius #2 | `[INTERNAL_SECRET_PATH]` | ✅ works [REDACTED] |
+| Helius #3 | `[INTERNAL_SECRET_PATH]` | ✅ works [REDACTED] |
+| Alchemy | `[INTERNAL_SECRET_PATH]` | ❌ 403 — ROTATE |
+| Shyft | (user-provided) | ✅ works (`[REDACTED]`) |
+| Dune | `[INTERNAL_SECRET_PATH]` | ✅ works [REDACTED] |
+| Bitquery | `[INTERNAL_SECRET_PATH]` | ❌ 402 — needs credits |

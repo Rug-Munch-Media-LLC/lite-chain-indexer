@@ -25,8 +25,8 @@ def check_disk_space(min_free_bytes: int = MIN_FREE_DISK_BYTES) -> bool:
     Returns True if OK, False if dangerously low.
     """
     try:
-        # Check the parent of DATA_DIR or /srv/data if DATA_DIR is relative
-        check_path = DATA_DIR.parent if DATA_DIR.is_absolute() else Path("/srv/data")
+        # Check the parent of DATA_DIR or /srv/[INTERNAL_DATA_DIR] if DATA_DIR is relative
+        check_path = DATA_DIR.parent if DATA_DIR.is_absolute() else Path("/srv/[INTERNAL_DATA_DIR]")
         usage = shutil.disk_usage(check_path)
         free = usage.free
         if free < min_free_bytes:

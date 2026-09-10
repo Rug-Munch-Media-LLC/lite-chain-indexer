@@ -244,7 +244,7 @@ EVM_PRESETS: dict[str, ChainConfig] = {
             "https://solana.publicnode.com",
         ],
         # Helius RPC (free tier, 25K req/mo) — activated when HELIUS_KEY is
-        # set (gopass rmi/helius/api-key → daemon env file). Used by the
+        # set (gopass [INTERNAL_SECRET_PATH] → daemon env file). Used by the
         # SolanaHeliusAdapter for SPL transfer indexing.
         provider_rpc_url="https://rpc.helius.xyz/?api-key=${HELIUS_KEY}",
         poll_interval_seconds=5,

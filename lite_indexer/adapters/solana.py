@@ -50,7 +50,7 @@ from lite_indexer.traces.solana import (
 logger = get_logger(__name__)
 
 #: Helius RPC URL template. The ``${HELIUS_KEY}`` placeholder is resolved
-#: from the environment (gopass ``rmi/helius/api-key`` → ``HELIUS_KEY``).
+#: from the environment (gopass ``[INTERNAL_SECRET_PATH]`` → ``HELIUS_KEY``).
 HELIUS_RPC_TEMPLATE: str = "https://rpc.helius.xyz/?api-key=${HELIUS_KEY}"
 
 #: Max signatures fetched per mint per call (Helius free tier is generous,
