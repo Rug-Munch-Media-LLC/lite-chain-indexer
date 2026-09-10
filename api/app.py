@@ -28,6 +28,7 @@ from api.config import API_TITLE, API_VERSION, RATE_LIMIT_KEY_PREFIX, RATE_LIMIT
 from api.db import get_historical
 from api.graphql import graphql_router
 from api.routers import address, deployers, launches, search, stats, system, transfers, whales
+from api.routers import labels as labels_router
 from api.routers import query as query_router
 from lite_indexer.config import WEBHOOK_MAX_PER_IP
 from lite_indexer.webhooks import router as webhooks
@@ -123,6 +124,11 @@ def create_app() -> FastAPI:
     app.include_router(launches.router)
     app.include_router(stats.router)
     app.include_router(search.router)
+
+    # Label graph — the canonical home of wallet labels (entity
+    # resolution + the label-growth write path). Reads are public;
+    # writes are guarded by an optional shared-secret token.
+    app.include_router(labels_router.router)
 
     # Raw SQL is expensive — stricter per-IP limit.
     query_router.post_query = limiter.limit("30/minute")(query_router.post_query)

@@ -57,6 +57,7 @@ ALLOWED_TABLES: frozenset[str] = frozenset(
         "deployer_events",
         "solana_spl_balance_changes",
         "wallet_labels",
+        "entity_labels",
         "holder_balances",
         "token_meta_ref",
         "scam_addresses",

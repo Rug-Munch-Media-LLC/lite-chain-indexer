@@ -32,6 +32,27 @@ CH_USER: str = os.getenv("CH_API_USER") or os.getenv("CH_USER") or os.getenv("CL
 CH_PASSWORD: str = os.getenv("CH_API_PASSWORD") or os.getenv("CH_PASSWORD") or os.getenv("CLICKHOUSE_PASSWORD") or ""
 CH_DATABASE: str = os.getenv("CH_API_DATABASE") or os.getenv("CH_DATABASE") or "wallet_memory"
 
+# ── ClickHouse write path (label graph) ────────────────────────────────
+# Persisting labels needs INSERT privileges, which the read-only
+# ``chain_api`` user deliberately does not have. These credentials are
+# used only by ``api/label_store.py`` for ``POST /api/v1/labels``. They
+# fall back to the generic ClickHouse vars, then to the native ``default``
+# user (the indexer's own writer identity). Never hardcode these.
+CH_WRITE_HOST: str = os.getenv("CH_WRITE_HOST") or os.getenv("CH_HOST") or os.getenv("CLICKHOUSE_HOST") or "127.0.0.1"
+CH_WRITE_PORT: int = _get_int("CH_WRITE_PORT", _get_int("CH_PORT", _get_int("CLICKHOUSE_PORT", 9000)))
+CH_WRITE_USER: str = os.getenv("CH_WRITE_USER") or os.getenv("CH_USER") or os.getenv("CLICKHOUSE_USER") or "default"
+CH_WRITE_PASSWORD: str = (
+    os.getenv("CH_WRITE_PASSWORD") or os.getenv("CH_PASSWORD") or os.getenv("CLICKHOUSE_PASSWORD") or ""
+)
+CH_WRITE_DATABASE: str = os.getenv("CH_WRITE_DATABASE") or os.getenv("CH_DATABASE") or "wallet_memory"
+
+# ── Label write API guard ──────────────────────────────────────────────
+# Optional shared-secret bearer token for POST /api/v1/labels. When unset
+# the endpoint is open on the internal network (the API itself is not
+# internet-exposed for writes) — set it in any shared deployment.
+LABEL_API_TOKEN: str = os.getenv("LABEL_API_TOKEN") or ""
+LABEL_API_WRITE_ENABLED: bool = (os.getenv("LABEL_API_WRITE_ENABLED") or "1") == "1"
+
 # Per-query guardrails (enforced client-side via clickhouse_driver settings).
 CH_QUERY_TIMEOUT: int = _get_int("CH_API_QUERY_TIMEOUT", 30)  # seconds, max_execution_time
 CH_QUERY_MAX_RESULT_ROWS: int = _get_int("CH_API_MAX_RESULT_ROWS", 10_000)

@@ -229,3 +229,74 @@ class AddressCounterparty(BaseModel):
     transfer_count: int = Field(description="Value-moving rows involving this counterparty")
     first_seen: str = Field(description="Earliest transfer block time (ISO-8601 UTC)")
     last_seen: str = Field(description="Latest transfer block time (ISO-8601 UTC)")
+
+
+class EntityLabelOut(BaseModel):
+    """One canonical entity-label row (``wallet_memory.entity_labels``).
+
+    The normalized label shape every upstream source folds into:
+    ``entity_type`` is *what kind of actor* (exchange, dex, malicious,
+    bridge, ...), ``label_type`` is *what the address is used for*
+    (cex_hot_wallet, dex_router, phishing, ...).
+    """
+
+    address: str
+    chain: str
+    entity_type: str
+    label_type: str
+    name: str = ""
+    source: str = ""
+    provenance: str = ""
+    confidence: float = Field(ge=0, le=1)
+    first_seen: str | None = Field(
+        default=None,
+        description="When the label was first observed (ISO-8601 UTC), when recorded",
+    )
+
+
+class EntityLabelCreate(BaseModel):
+    """Write payload for one label (``POST /api/v1/labels``)."""
+
+    address: str = Field(min_length=10, max_length=128)
+    chain: str = Field(min_length=1, max_length=64)
+    entity_type: str = Field(default="unknown", max_length=64)
+    label_type: str = Field(default="unknown", max_length=64)
+    name: str = Field(default="", max_length=512)
+    source: str = Field(default="", max_length=128)
+    provenance: str = Field(default="", max_length=512)
+    confidence: float = Field(default=0.8, ge=0, le=1)
+
+
+class EntityLabelBatchCreate(BaseModel):
+    """Batch write payload — the label-growth pipeline's write shape."""
+
+    labels: list[EntityLabelCreate] = Field(min_length=1, max_length=1000)
+
+
+class EntityResolutionOut(BaseModel):
+    """Entity-resolution answer for one address.
+
+    ``resolved`` is False when no label is known — an unknown address is a
+    valid answer, not an error. ``entity_type``/``label_type``/``name``
+    mirror the highest-confidence row (the primary label); ``labels``
+    carries every matching row so callers can rank for themselves.
+    """
+
+    address: str
+    chain: str | None = None
+    resolved: bool
+    entity_type: str | None = None
+    label_type: str | None = None
+    name: str | None = None
+    primary_label: str | None = Field(
+        default=None,
+        description="Display label: the row name, else its label_type",
+    )
+    labels: list[EntityLabelOut] = Field(default_factory=list)
+
+
+class EntityLabelWriteResult(BaseModel):
+    """Result of a label write (``POST /api/v1/labels``)."""
+
+    inserted: int = Field(description="Number of label rows accepted for write")
+    addresses: list[str] = Field(default_factory=list, description="Distinct addresses written")
