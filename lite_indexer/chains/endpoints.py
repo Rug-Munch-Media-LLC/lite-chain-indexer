@@ -33,8 +33,10 @@ whose key is NOT set are excluded from the active pool (they can never be
 dialed — a literal ``${...}`` in a URL only produces DNS/JSON verification
 retries). Restart the service after setting a key to activate the endpoint.
 
-Exception: ``NODEREAL_KEY`` (NodeReal BSC T1) is REQUIRED — module import
-raises a startup error when it is unset (see ``require_nodereal_key``).
+``NODEREAL_KEY`` (NodeReal BSC T1) follows the same optional-key rule:
+when unset the endpoint is excluded from the pool and a warning is logged —
+a missing free-tier key must never take the whole indexer down (free-tier
+first; add the key to restore the T1 endpoint).
 
 Total: 74 endpoints across 15 chains (61 public + 13 API-key free tiers).
 """
@@ -62,21 +64,21 @@ load_env_file()
 
 
 def require_nodereal_key() -> None:
-    """Raise a clear startup error when ``NODEREAL_KEY`` is not set.
+    """Warn when ``NODEREAL_KEY`` is not set (endpoint is then skipped).
 
-    Called at module import (service startup). The NodeReal BSC RPC
-    endpoint URL is built from ``${NODEREAL_KEY}``; an unset key must
-    never silently exclude the endpoint from the active pool.
-
-    Raises:
-        RuntimeError: If ``NODEREAL_KEY`` is missing or empty.
+    Free-tier-first policy: a missing optional provider key must never take
+    the indexer down. The placeholder resolver already drops endpoints whose
+    key is unset; this only surfaces a clear log line so the BSC T1 tier
+    shrinkage is visible in the journal.
     """
     if not os.environ.get("NODEREAL_KEY"):
-        raise RuntimeError(
-            "NODEREAL_KEY is not set but is required: the NodeReal BSC RPC "
-            "endpoint resolves ${NODEREAL_KEY} from the environment. Add "
-            "NODEREAL_KEY=<rotated key> to the indexer EnvironmentFile (e.g. "
-            "/var/data/chain-indexer/lite-indexer.env, 0600) and restart."
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "nodereal_key_unset: NodeReal BSC T1 endpoint excluded from the "
+            "pool (add NODEREAL_KEY to the indexer EnvironmentFile to restore "
+            "it; %d other BSC endpoints remain active)",
+            11,
         )
 
 
