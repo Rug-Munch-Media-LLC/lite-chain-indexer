@@ -62,7 +62,7 @@ def main() -> int:
 
     repairs = 0
     for chain in EVM_CHAINS:
-        ch_max = client.execute(CHAIN_QUERIES["evm"].format(db=CH_DB), {"chain": chain})[0][0]
+        ch_max = client.execute(CHAIN_QUERIES["evm"].format(db=CH_DB), {"chain": chain})[0][0]  # nosemgrep: sqlalchemy-execute-raw-query — template constant; values parameterized  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         ch_max = ch_max or 0
         state_path = STATE_DIR / f"lite_{chain}.json"
         if not state_path.exists():
@@ -88,7 +88,7 @@ def main() -> int:
 
     # Solana uses slot on its own table.
     solana_state = STATE_DIR / "lite_solana.json"
-    ch_solana_max = client.execute(CHAIN_QUERIES["solana"].format(db=CH_DB))[0][0] or 0
+    ch_solana_max = client.execute(CHAIN_QUERIES["solana"].format(db=CH_DB))[0][0] or 0  # nosemgrep: sqlalchemy-execute-raw-query — template constant; db name from config  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
     if solana_state.exists():
         data = json.loads(solana_state.read_text())
         state_block = int(data.get("last_block", 0))
