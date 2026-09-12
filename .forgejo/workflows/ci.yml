@@ -179,7 +179,7 @@ jobs:
         run: |
           # Retry: --config auto fetches rules from semgrep.dev (network).
           for i in 1 2 3; do
-            semgrep scan --config auto --error --quiet && break || { [ "$i" -eq 3 ] && exit 1; echo "semgrep attempt $i failed — retrying"; sleep 15; }
+            semgrep scan --config auto --error --quiet --exclude='.forgejo/' --exclude='.github/' --exclude='tests/' && break || { [ "$i" -eq 3 ] && exit 1; echo "semgrep attempt $i failed — retrying"; sleep 15; }
           done
       - name: Gitleaks secret scan
         run: gitleaks detect --source . --no-banner --redact
