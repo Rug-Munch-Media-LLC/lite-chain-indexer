@@ -162,14 +162,17 @@ jobs:
   sast:
     runs-on: docker-x64
     container:
-      image: python:3.12-slim
+      # python+node: checkout@v4 is a node20 action (python:3.12-slim has no node).
+      image: nikolaik/python-nodejs:python3.12-nodejs22
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - name: Install scanners
         run: |
-          pip install --no-cache-dir bandit semgrep gitleaks
+          pip install --no-cache-dir bandit semgrep
+          # gitleaks is a Go binary, not a pip package.
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz | tar xz -C /usr/local/bin gitleaks
       - name: Bandit (BLOCKING on high)
         run: bandit -r lite_indexer/ --severity-level high --skip B101,B413 -q  # B413: pycryptodome (maintained fork) import FP
       - name: Semgrep community rules (BLOCKING on ERROR)
@@ -183,20 +186,28 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install hadolint
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+          curl -sSfL https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 -o /usr/local/bin/hadolint && chmod +x /usr/local/bin/hadolint
       - name: Hadolint root Dockerfile
-        run: docker run --rm -i hadolint/hadolint:latest --failure-threshold error < Dockerfile
+        run: hadolint --failure-threshold error Dockerfile
       - name: Hadolint api Dockerfile
-        run: docker run --rm -i hadolint/hadolint:latest --failure-threshold error < api/Dockerfile
+        run: hadolint --failure-threshold error api/Dockerfile
 
   # ── Container scanning (trivy) ────────────────────────────────────
   container-scan:
     runs-on: docker-x64
     container:
-      image: aquasec/trivy:latest
+      # node image: checkout@v4 is a node20 action (trivy image had no node).
+      image: node:22-bookworm-slim
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Trivy scan Dockerfile
-        run: trivy fs --severity CRITICAL,HIGH --exit-code 1 .
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.57.1
+          trivy fs --severity CRITICAL,HIGH --exit-code 1 .
 
   # ── Changelog (git-cliff) ─────────────────────────────────────
   # Verify a changelog can be generated from conventional commits.
