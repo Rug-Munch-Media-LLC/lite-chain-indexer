@@ -176,7 +176,11 @@ jobs:
       - name: Bandit (BLOCKING on high)
         run: bandit -r lite_indexer/ --severity-level high --skip B101,B413 -q  # B413: pycryptodome (maintained fork) import FP
       - name: Semgrep community rules (BLOCKING on ERROR)
-        run: semgrep scan --config auto --error --quiet
+        run: |
+          # Retry: --config auto fetches rules from semgrep.dev (network).
+          for i in 1 2 3; do
+            semgrep scan --config auto --error --quiet && break || { [ "$i" -eq 3 ] && exit 1; echo "semgrep attempt $i failed — retrying"; sleep 15; }
+          done
       - name: Gitleaks secret scan
         run: gitleaks detect --source . --no-banner --redact
 
@@ -207,7 +211,10 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
           curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.57.1
-          trivy fs --severity CRITICAL,HIGH --exit-code 1 .
+          # Retry: first run downloads the vuln DB (network).
+          for i in 1 2 3; do
+            trivy fs --severity CRITICAL,HIGH --exit-code 1 . && break || { [ "$i" -eq 3 ] && exit 1; echo "trivy attempt $i failed — retrying"; sleep 15; }
+          done
 
   # ── Changelog (git-cliff) ─────────────────────────────────────
   # Verify a changelog can be generated from conventional commits.
