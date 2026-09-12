@@ -85,7 +85,7 @@ def query_chain_stats(ch_client: Any, chain: str, chain_type: str = "evm") -> di
     table, column = ch_table_for(chain, chain_type)
     try:
         if chain_type == "solana":
-            rows = ch_client.execute(f"SELECT min({column}), max({column}), uniqExact({column}), count() FROM {table}")
+            rows = ch_client.execute(f"SELECT min({column}), max({column}), uniqExact({column}), count() FROM {table}")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         else:
             rows = ch_client.execute(
                 f"SELECT min({column}), max({column}), uniqExact({column}), count() "

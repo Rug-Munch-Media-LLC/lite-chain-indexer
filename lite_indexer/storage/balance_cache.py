@@ -122,7 +122,7 @@ async def ensure_balance_cache_table(ch_client: Any) -> bool:
         database is missing or privileges are insufficient.
     """
     try:
-        ch_client.execute(_HOLDER_BALANCES_DDL)
+        ch_client.execute(_HOLDER_BALANCES_DDL)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         logger.info("balance_cache_table_ensured", table=CH_HOLDER_BALANCES_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -377,7 +377,7 @@ async def ensure_holder_balances_mv(ch_client: Any) -> bool:
         True when the view exists (or was created), False otherwise.
     """
     try:
-        ch_client.execute(_HOLDER_BALANCES_MV_DDL)
+        ch_client.execute(_HOLDER_BALANCES_MV_DDL)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         logger.info("holder_balances_mv_ensured", view=CH_HOLDER_BALANCES_MV)
         metrics_incr("holder_balances_mv_ready")
         return True

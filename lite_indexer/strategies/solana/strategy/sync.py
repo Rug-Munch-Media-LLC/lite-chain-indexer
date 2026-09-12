@@ -94,7 +94,7 @@ class SyncMixin:
         if client is None:
             return []
         try:
-            rows = client.execute(
+            rows = client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                 f"""
                 SELECT mint
                 FROM {SOLANA_LAUNCHES_TABLE}

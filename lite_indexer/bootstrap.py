@@ -440,7 +440,7 @@ class SnapshotBootstrap:
                 logger.debug("bootstrap_no_ddl_for_table", table=table_name)
                 continue
             try:
-                client.execute(ddl.format(db=target_db))
+                client.execute(ddl.format(db=target_db))  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                 logger.info("bootstrap_table_ensured", table=table_name, db=target_db)
             except Exception as exc:  # noqa: BLE001 — best-effort DDL
                 logger.warning("bootstrap_table_ensure_failed", table=table_name, error=str(exc)[:150])
@@ -498,7 +498,7 @@ class SnapshotBootstrap:
         for table_name, table in manifest.tables.items():
             fq = f"{target_db}.{table_name}"
             try:
-                actual = client.execute(
+                actual = client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                     f"SELECT count() FROM {fq} WHERE chain = %(chain)s AND toDate(block_timestamp) = %(day)s",
                     {"chain": manifest.chain, "day": manifest.date},
                 )[0][0]

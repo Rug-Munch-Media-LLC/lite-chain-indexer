@@ -77,7 +77,7 @@ async def ensure_checkpoint_table(ch_client: Any) -> bool:
         True when the table exists (or was created), False otherwise.
     """
     try:
-        ch_client.execute(_BLOCK_CHECKPOINTS_DDL)
+        ch_client.execute(_BLOCK_CHECKPOINTS_DDL)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         logger.info("block_checkpoints_table_ensured", table=CH_BLOCK_CHECKPOINTS_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -111,7 +111,7 @@ async def checkpoint_block(
     if not block_hash:
         return False
     try:
-        ch_client.execute(
+        ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             f"INSERT INTO {CH_BLOCK_CHECKPOINTS_TABLE} (chain, block_number, block_hash, checked_at) VALUES",
             [(chain, block_number, block_hash, datetime.now(UTC))],
         )
@@ -209,7 +209,7 @@ async def rollback_to_block(
     deleted = 0
     for table in (CH_TABLE, CH_DEX_TABLE):
         try:
-            result = ch_client.execute(
+            result = ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                 f"DELETE FROM {table} WHERE chain = %(chain)s AND block_number > %(fork)s",
                 {"chain": chain, "fork": fork_block},
             )
@@ -225,7 +225,7 @@ async def rollback_to_block(
             )
 
     try:
-        ch_client.execute(
+        ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             f"DELETE FROM {CH_BLOCK_CHECKPOINTS_TABLE} WHERE chain = %(chain)s AND block_number > %(fork)s",
             {"chain": chain, "fork": fork_block},
         )

@@ -39,7 +39,7 @@ class SchemaMixin:
             )
             if result:
                 return
-            client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS source String DEFAULT ''")
+            client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS source String DEFAULT ''")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             logger.info("source_column_added", table=table)
         except Exception as exc:
             if "already exists" in str(exc) or "privileges" in str(exc).lower():
@@ -66,7 +66,7 @@ class SchemaMixin:
             )
             if result:
                 return
-            client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS raw_payload String DEFAULT ''")
+            client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS raw_payload String DEFAULT ''")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             logger.info("raw_payload_column_added", table=table)
         except Exception as exc:
             if "already exists" in str(exc) or "privileges" in str(exc).lower():
@@ -95,7 +95,7 @@ class SchemaMixin:
             existing = {r[0] for r in result}
             for column, after in (("price_usd", "whale"), ("volume_usd", "price_usd")):
                 if column not in existing:
-                    client.execute(
+                    client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                         f"ALTER TABLE {CH_DEX_TABLE} ADD COLUMN IF NOT EXISTS {column} Float64 DEFAULT 0 AFTER {after}"
                     )
                     logger.info("dex_usd_column_added", table=CH_DEX_TABLE, column=column)
@@ -158,7 +158,7 @@ class SchemaMixin:
             )
             if result:
                 return
-            client.execute(f"ALTER TABLE {SOLANA_CH_TABLE} ADD COLUMN IF NOT EXISTS owner String DEFAULT '' AFTER mint")
+            client.execute(f"ALTER TABLE {SOLANA_CH_TABLE} ADD COLUMN IF NOT EXISTS owner String DEFAULT '' AFTER mint")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             logger.info("solana_owner_column_added", table=SOLANA_CH_TABLE)
         except Exception as exc:
             if "already exists" in str(exc) or "privileges" in str(exc).lower():

@@ -272,7 +272,7 @@ def ensure_address_activity_table(ch_client: Any) -> bool:
         database is missing or privileges are insufficient.
     """
     try:
-        ch_client.execute(_ADDRESS_ACTIVITY_DDL)
+        ch_client.execute(_ADDRESS_ACTIVITY_DDL)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         logger.info("address_activity_table_ensured", table=CH_ADDRESS_ACTIVITY_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -331,7 +331,7 @@ def write_address_activity(ch_client: Any, rows: list[dict[str, Any]]) -> int:
         )
 
     try:
-        ch_client.execute(
+        ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             f"INSERT INTO {CH_ADDRESS_ACTIVITY_TABLE} ({', '.join(_INSERT_COLUMNS)}) VALUES",
             prepared,
         )

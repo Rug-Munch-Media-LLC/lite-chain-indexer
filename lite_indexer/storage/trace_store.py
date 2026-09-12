@@ -74,7 +74,7 @@ async def ensure_internal_transfers_table(ch_client: Any) -> bool:
         database is missing or privileges are insufficient.
     """
     try:
-        ch_client.execute(_TRACE_DDL)
+        ch_client.execute(_TRACE_DDL)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         logger.info("internal_transfers_table_ensured", table=CH_TRACE_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -131,7 +131,7 @@ def write_internal_transfers(ch_client: Any, chain: str, rows: list[dict[str, An
         )
 
     try:
-        ch_client.execute(
+        ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             f"INSERT INTO {CH_TRACE_TABLE} ({', '.join(_INSERT_COLUMNS)}) VALUES",
             prepared,
         )

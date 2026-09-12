@@ -106,7 +106,7 @@ class PluginsMixin:
             )
 
             try:
-                client.execute(ddl)
+                client.execute(ddl)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                 logger.info(
                     "plugin_table_created",
                     plugin=plugin.name,

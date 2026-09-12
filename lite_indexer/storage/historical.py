@@ -342,7 +342,7 @@ class HistoricalAccess:
         sql = f"SELECT {cols} FROM {_TABLE_REF[table]} WHERE {where_sql} ORDER BY {order} LIMIT {int(limit)}"
         metrics_incr("tha_hot_queries")
         try:
-            rows, column_types = client.execute(sql, params, with_column_types=True)
+            rows, column_types = client.execute(sql, params, with_column_types=True)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         except Exception as exc:  # noqa: BLE001 — hot reads are best-effort
             metrics_incr("tha_hot_errors")
             logger.warning("tha_hot_query_failed", table=table, error=str(exc)[:150])

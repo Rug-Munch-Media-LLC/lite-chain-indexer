@@ -77,7 +77,7 @@ async def ensure_reconciliation_table(ch_client: Any) -> bool:
         True when the table exists (or was created), False otherwise.
     """
     try:
-        ch_client.execute(_RECONCILIATION_DDL)
+        ch_client.execute(_RECONCILIATION_DDL)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         logger.info("reconciliation_table_ensured", table=CH_RECONCILIATION_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -410,12 +410,12 @@ def check_range_completeness(
     table, column = range_table_for(chain, chain_type)
     try:
         if chain_type == "solana":
-            rows = ch_client.execute(
+            rows = ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                 f"SELECT count() FROM {table} WHERE {column} BETWEEN %(f)s AND %(t)s",
                 {"f": from_block, "t": to_block},
             )
         else:
-            rows = ch_client.execute(
+            rows = ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                 f"SELECT count() FROM {table} WHERE chain = %(chain)s AND {{column}} BETWEEN %(f)s AND %(t)s".format(
                     column=column
                 ),

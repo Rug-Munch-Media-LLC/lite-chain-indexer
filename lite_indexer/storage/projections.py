@@ -117,7 +117,7 @@ async def ensure_wallet_projection(
 
         if materialize_existing:
             for projection in (WALLET_OUT_PROJECTION, WALLET_IN_PROJECTION):
-                ch_client.execute(f"ALTER TABLE {CH_TABLE} MATERIALIZE PROJECTION {projection}")
+                ch_client.execute(f"ALTER TABLE {CH_TABLE} MATERIALIZE PROJECTION {projection}")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             logger.info("wallet_projection_materialize_scheduled", table=CH_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort

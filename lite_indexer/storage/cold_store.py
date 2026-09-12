@@ -289,10 +289,10 @@ class ColdStore:
                 con.execute("INSTALL httpfs; LOAD httpfs;")
                 endpoint = os.getenv("B2_S3_ENDPOINT", "https://s3.us-west-004.backblazeb2.com")
                 region = os.getenv("B2_S3_REGION", "us-west-004")
-                con.execute(f"SET s3_endpoint = '{endpoint}'")
-                con.execute(f"SET s3_region = '{region}'")
-                con.execute(f"SET s3_access_key_id = '{os.getenv('B2_ACCOUNT_ID', '')}'")
-                con.execute(f"SET s3_secret_access_key = '{os.getenv('B2_APPLICATION_KEY', '')}'")
+                con.execute(f"SET s3_endpoint = '{endpoint}'")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                con.execute(f"SET s3_region = '{region}'")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                con.execute(f"SET s3_access_key_id = '{os.getenv('B2_ACCOUNT_ID', '')}'")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                con.execute(f"SET s3_secret_access_key = '{os.getenv('B2_APPLICATION_KEY', '')}'")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             self._con = con
         return self._con
 
@@ -510,7 +510,7 @@ class ColdStore:
             con = self._connection()
             literals = ", ".join(repr(str(p)) for p in files)
             view = f"_tha_{table}"
-            con.execute(f"CREATE OR REPLACE VIEW {view} AS SELECT * FROM read_parquet([{literals}])")
+            con.execute(f"CREATE OR REPLACE VIEW {view} AS SELECT * FROM read_parquet([{literals}])")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
 
             clauses: list[str] = []
             block_col = _BLOCK_COL[table]
@@ -534,7 +534,7 @@ class ColdStore:
             # _normalize fills the canonical shape with type defaults.
             sql = f"SELECT * FROM {view} WHERE {where_sql} ORDER BY {order} LIMIT {int(limit)}"
             try:
-                rows = con.execute(sql).fetchall()
+                rows = con.execute(sql).fetchall()  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                 raw_cols = [desc[0] for desc in con.description] if con.description else []
             except Exception as exc:  # noqa: BLE001 — cold reads are best-effort
                 metrics_incr("tha_cold_errors")

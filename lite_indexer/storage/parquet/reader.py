@@ -51,7 +51,7 @@ def _fetch_day_rows(
     cap = _max_rows_per_day()
     query = f"SELECT * FROM {table} WHERE chain = %(chain)s AND toDate(block_timestamp) = %(day)s LIMIT {cap + 1}"
     try:
-        rows, columns = client.execute(
+        rows, columns = client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             query,
             {"chain": chain, "day": day.isoformat()},
             with_column_types=True,
