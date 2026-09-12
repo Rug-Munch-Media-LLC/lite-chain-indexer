@@ -210,7 +210,7 @@ jobs:
       - name: Trivy scan Dockerfile
         run: |
           apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
-          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.57.1
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.73.0
           # Retry: first run downloads the vuln DB (network).
           for i in 1 2 3; do
             trivy fs --severity CRITICAL,HIGH --exit-code 1 . && break || { [ "$i" -eq 3 ] && exit 1; echo "trivy attempt $i failed — retrying"; sleep 15; }
