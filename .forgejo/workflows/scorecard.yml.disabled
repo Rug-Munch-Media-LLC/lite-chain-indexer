@@ -1,3 +1,5 @@
+# DISABLED 2026-09-12 — GitHub-only tooling, cannot run on Forgejo:
+# OpenSSF Scorecard analyzes PUBLIC GITHUB repos via the GitHub API.
 # OpenSSF Scorecard — automated security assessment
 # Scores 0-10 across 18 checks (branch protection, signed releases, token permissions, etc.)
 # Runs weekly (Monday 6AM UTC) and on push to main
