@@ -46,6 +46,13 @@ These are seams we can layer on later; none blocks current operation.
 - [ ] **Enable `BACKFILL_INCLUDE_REWINDS=1`** once the transfer tables are `ReplacingMergeTree`.
 - [ ] **Reclaim the `*_old_<ts>` table** after migration verification.
 - [ ] **GraphQL / subgraph-style schema layer** over ClickHouse (query surface, additive).
+- [ ] **Expand transaction tracing** (internal transfers) from 3 chains to all where our free
+      tiers serve `trace_block`: **dRPC** = ethereum, base, optimism, gnosis, fantom, fraxtal;
+      **BlockPI** = bsc, optimism, fantom. (Alchemy/PublicNode refuse; Tenderly public rate-limits.)
+      Wire per-chain trace endpoints in `traces/endpoints.py` (add to the private overlay for keyed
+      ones). Also probe `debug_traceBlockByNumber` for chains where `trace_block` is unavailable
+      (arbitrum, polygon, avalanche, linea, scroll, zksync, mantle, celo, blast, metis).
+      Trace methods are CU-heavy (~3.0 CU) — the quota ledger already meters them.
 - [ ] **Firehose / Portal flat-file ingest** as an alternate ingest source (builds on `ingest/flatfile.py`).
 - [ ] **Browser UI / query console**.
 - [ ] More non-EVM drivers (Aptos, Sui, Cosmos) — registry presets exist; drivers missing.
