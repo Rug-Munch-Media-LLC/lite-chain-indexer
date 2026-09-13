@@ -300,6 +300,13 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.nodeflare.app/robinhood/public",  # T3 — verified chainId
         "https://robinhood.rpc.blxrbdn.com",  # T3 — chainId only (getLogs 403)
     ],
+    # ── Hyperliquid (1 endpoint, verified 2026-09-13) ─────────────────
+    # HyperEVM, chainId 999 (0x3e7), native HYPE. The official keyless RPC
+    # answers eth_chainId + eth_blockNumber and serves topic-only
+    # eth_getLogs → fully indexable (no paid tier needed).
+    "hyperliquid": [
+        "https://rpc.hyperliquid.xyz/evm",  # Hyperliquid official EVM RPC — live-verified 2026-09-13
+    ],
 }
 
 # Summary of PUBLIC (free/keyless) EVM endpoints per chain:
@@ -307,9 +314,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 #   arbitrum: 8   optimism: 7   avalanche: 6   fantom: 3
 #   linea: 7   scroll: 6   zksync: 5   mantle: 6
 #   gnosis: 7   celo: 5   blast: 4   fraxtal: 3
-#   metis: 2   robinhood: 5
+#   metis: 2   robinhood: 5   hyperliquid: 1
 # -------------------------------------------------------
-#   Total builtin public templates: 110 across 18 chains
+#   Total builtin public templates: 111 across 19 chains
 #
 # 2026-09-13: Tenderly keyless public gateway added for the 13 chains with
 #   a public/<net> endpoint (eth_chainId 200, verified here): ethereum/
@@ -436,6 +443,7 @@ EXPECTED_CHAIN_IDS: dict[str, str] = {
     "fraxtal": "0xfc",  # 252 — verified 2026-09-01
     "metis": "0x440",  # 1088 — verified 2026-09-01
     "robinhood": "0x1237",  # 4663 — old spec chainId 78600 was Vanguard
+    "hyperliquid": "0x3e7",  # 999 — HyperEVM (live-verified 2026-09-13)
 }
 
 
@@ -545,6 +553,7 @@ LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
     ],
     "celo": ["https://forno.celo.org"],
     "robinhood": ["https://rpc.mainnet.chain.robinhood.com"],
+    "hyperliquid": ["https://rpc.hyperliquid.xyz/evm"],
 }
 
 

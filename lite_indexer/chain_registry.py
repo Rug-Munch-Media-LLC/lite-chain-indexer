@@ -223,6 +223,16 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         native_currency="ETH",
         block_time_seconds=0.5,
     ),
+    "hyperliquid": ChainConfig(
+        name="hyperliquid",
+        chain_type=ChainType.EVM,
+        chain_id=999,
+        rpc_endpoints=[
+            "https://rpc.hyperliquid.xyz/evm",
+        ],
+        native_currency="HYPE",
+        block_time_seconds=1.0,
+    ),
     "solana": ChainConfig(
         name="solana",
         chain_type=ChainType.SOLANA,

@@ -71,6 +71,7 @@ EXPECTED_EVM_CHAINS = [
     "blast",
     "fraxtal",
     "metis",
+    "hyperliquid",
 ]
 
 

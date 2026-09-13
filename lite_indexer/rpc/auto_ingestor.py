@@ -220,6 +220,7 @@ async def auto_ingest(
         "mantle": 5000,
         "gnosis": 100,
         "celo": 42220,
+        "hyperliquid": 999,
     }
 
     chain_id = chain_id_map.get(chain.lower())

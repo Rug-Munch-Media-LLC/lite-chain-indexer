@@ -55,6 +55,7 @@ _CHAIN_IDS: dict[str, int] = {
     "gnosis": 100,
     "celo": 42220,
     "robinhood": 4663,  # 0x1237 — old spec 78600 was Vanguard (VANRY)
+    "hyperliquid": 999,  # 0x3e7 — HyperEVM
 }
 
 # URL markers that indicate an endpoint is NOT free/public.
