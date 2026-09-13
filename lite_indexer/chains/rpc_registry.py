@@ -104,8 +104,15 @@ FREEMIUM_PROVIDERS: dict[str, FreemiumProvider] = {
             name="Alchemy",
             env_key="ALCHEMY_KEY",
             url_example="https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
-            chains_note="90+ networks, archive + debug traces",
-            free_tier="30M CU/mo",
+            chains_note=(
+                "90+ networks, archive + debug traces. 2 INDEPENDENT free "
+                "accounts wired (${ALCHEMY_KEY} + ${ALCHEMY_KEY_2}) across the "
+                "same 13 EVM chains (eth/base/bsc/polygon/arb/opt/avax/linea/"
+                "scroll/zksync/mantle/celo/blast) + Solana (12 solana-mainnet "
+                "endpoints incl. both keys). Separate account budgets — "
+                "live-verified 2026-09-13. Neither account has Fantom."
+            ),
+            free_tier="30M CU/mo PER ACCOUNT (60M total across the 2 accounts)",
             referral_terms="developer referral program (credits)",
         ),
         FreemiumProvider(

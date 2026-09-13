@@ -92,7 +92,7 @@ follow the optional-key rule. The endpoint URL is built from it, and a
 missing key fails startup loudly (see :func:`require_nodereal_key`) so the
 BSC T1 tier can never silently shrink.
 
-Total source templates: 184 (168 EVM across 18 chains + 16 non-EVM across
+Total source templates: 200 (181 EVM across 18 chains + 19 non-EVM across
 solana/tron); the per-chain breakdown and keyed/free split live in the
 summary block below the active pool.
 """
@@ -181,6 +181,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://ethereum.blockpi.network/v1/rpc/${BLOCKPI_ETH_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs blocks 1..2 verified 2026-09-13)
         "https://eth-mainnet.blockvision.org/v1/${BLOCKVISION_ETH_KEY}",  # T2 — BlockVision — live-verified archive eth_getLogs 2026-09-13 (eth_chainId 0x1, blocks 1..2 → [])
         "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0x1)
+        "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -200,6 +201,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://base-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=8453&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0x2105)
+        "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
     ],
     # ── BSC (8 endpoints) ─────────────────────────────────────────────
     # T1: nodereal public, 48.club (live-verified 2026-08-04 with the
@@ -228,6 +230,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://bsc-rpc.publicnode.com",  # T3 — re-added 2026-09-02 during rate-limit crisis (was http_403 on 2026-08-04 — re-probe)
         "https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (old host bsc-mainnet.g.alchemy.com was WRONG — NXDOMAIN, DoH re-verify 2026-09-13; this rename live-verified 200)
+        "https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
         "https://lb.drpc.org/ogrpc?network=bsc&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/bsc/${ANKR_KEY}",
         "https://bsc-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
@@ -261,6 +264,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         # with the real key: eth_chainId 0x89, 2026-09-13) so the
         # rate-limit-critical polygon pool keeps its depth.
         "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (replaces dead matic.network)
+        "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
         "https://polygon-rpc.com",  # T3 — re-added 2026-09-02 during rate-limit crisis (was 401 on 2026-08-05 — re-probe)
         "https://rpc-mainnet.matic.quiknode.pro",
         "https://lb.drpc.org/ogrpc?network=polygon&dkey=${DRPC_KEY}",
@@ -292,6 +296,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=42161&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://arbitrum.blockpi.network/v1/rpc/${BLOCKPI_ARBITRUM_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
         "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0xa4b1; promoted from candidate pool)
+        "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
     ],
     # ── Optimism (4 endpoints) ────────────────────────────────────────
     # T1: tenderly (verified)
@@ -306,6 +311,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://optimism-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://lb.drpc.org/ogrpc?network=optimism&dkey=${DRPC_KEY}",
         "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
+        "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
         "https://optimism-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=10&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://optimism.blockpi.network/v1/rpc/${BLOCKPI_OPTIMISM_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
@@ -325,6 +331,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=43114&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://avalanche.blockpi.network/v1/rpc/${BLOCKPI_AVALANCHE_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
         "https://avax-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0xa86a)
+        "https://avax-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
     ],
     # ── Fantom (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.fantom.network + rpcapi.fantom.network (verified)
@@ -359,6 +366,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=59144&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://linea.blockpi.network/v1/rpc/${BLOCKPI_LINEA_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
         "https://linea-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0xe708)
+        "https://linea-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
     ],
     # ── Scroll (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.scroll.io, drpc.org (verified)
@@ -375,6 +383,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=534352&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://scroll.blockpi.network/v1/rpc/${BLOCKPI_SCROLL_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
         "https://scroll-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0x82750)
+        "https://scroll-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
     ],
     # ── zkSync Era (4 endpoints) ──────────────────────────────────────
     # T1: official mainnet.era.zksync.io, drpc.org (verified)
@@ -386,6 +395,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://zksync.drpc.org",  # T1 — drpc.org (verified)
         "https://zksync.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://zksync-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (old host zksync-era.g.alchemy.com was WRONG — NXDOMAIN, DoH re-verify 2026-09-13; this rename live-verified 200)
+        "https://zksync-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
         "https://zksync-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://lb.drpc.org/ogrpc?network=zksync&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=324&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
@@ -407,6 +417,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://lb.drpc.org/ogrpc?network=mantle&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=5000&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://mantle-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0x1388)
+        "https://mantle-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
     ],
     # ── Gnosis (3 endpoints) ──────────────────────────────────────────
     # T1: official rpc.gnosischain.com, drpc.org (verified)
@@ -432,6 +443,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://lb.drpc.org/ogrpc?network=celo&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=42220&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://celo-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0xa4ec)
+        "https://celo-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
     ],
     # ── Blast (verified 2026-09-01) ──────────────────────────────────
     # L2, chainId 81457 (0x13e31). publicnode: chainId ✓, getLogs ✓.
@@ -443,6 +455,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://blast.api.pocket.network",  # T3 — Pocket Network (keyless; live-verified eth_chainId 2026-09-13; getLogs returns [] which is valid on this chain)
         "https://blast-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://blast-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0x13e31)
+        "https://blast-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
     ],
     # ── Fraxtal (verified 2026-09-01) ────────────────────────────────
     # L2, chainId 252. publicnode: chainId ✓, getLogs ✓.
@@ -504,17 +517,26 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 }
 
 # Summary of EVM endpoints per chain:
-#   ethereum: 16   base: 11     bsc: 17     polygon: 12
-#   arbitrum: 12   optimism: 10 avalanche: 10 fantom: 7
-#   linea: 11      scroll: 10   zksync: 9   mantle: 10
-#   gnosis: 7      celo: 8      blast: 5    fraxtal: 3
+#   ethereum: 17   base: 12     bsc: 18     polygon: 13
+#   arbitrum: 13   optimism: 11 avalanche: 11 fantom: 7
+#   linea: 12      scroll: 11   zksync: 10  mantle: 11
+#   gnosis: 7      celo: 9      blast: 6    fraxtal: 3
 #   metis: 3       robinhood: 7
 # -------------------------------------------------------
-#   Total source templates: 168 across 18 chains
-#   (92 free/keyless + 76 API-key free tiers — keyed ones activate via env)
+#   Total source templates: 181 across 18 chains
+#   (92 free/keyless + 89 API-key free tiers — keyed ones activate via env)
 #
-#   Non-EVM: solana (11), tron (5)
-#   Grand total source templates: 184 across 18 EVM + 2 non-EVM chains
+#   Non-EVM: solana (14), tron (5)
+#   Grand total source templates: 200 across 18 EVM + 2 non-EVM chains
+#
+# 2026-09-13: SECOND Alchemy account (``ALCHEMY_KEY_2``) wired alongside
+#   account 1 for the same 13 EVM chains (eth/base/bsc/polygon/arb/opt/avax/
+#   linea/scroll/zksync/mantle/celo/blast) + Solana (solana-mainnet, both
+#   keys). Every template was live-probed in-run: 13/13 ``eth_chainId`` 200
+#   and both Solana keys ``getHealth``→ok / ``getSlot`` 200. Alchemy has no
+#   Fantom on either account. The two keys are separate ACCOUNTS: RPC caps and
+#   the quota ledger key on provider+key (:func:`account_key_for_endpoint`),
+#   so account 1 and account 2 have independent concurrency/RPS budgets.
 #
 # 2026-09-13: dead-host prune, then DoH re-verification (Google/Cloudflare
 #   DNS-over-HTTPS bypasses the filtered local resolver). Corrected picture:

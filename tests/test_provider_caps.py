@@ -19,9 +19,11 @@ import time
 
 import pytest
 
+from lite_indexer.rpc.ledger import key_id_for_endpoint
 from lite_indexer.rpc.provider_caps import (
     PROVIDER_LIMITER,
     ProviderRateLimiter,
+    account_key_for_endpoint,
     provider_slot,
     record_provider_response,
 )
@@ -123,19 +125,65 @@ class TestProviderRetryAfter:
 
 
 class TestProviderGrouping:
-    def test_record_response_groups_by_provider_account(self):
-        # Two distinct Alchemy URLs (same account) share one backoff window.
-        record_provider_response(
-            "https://eth-mainnet.g.alchemy.com/v2/key1",
-            429,
-            {"Retry-After": "25"},
-        )
-        state = PROVIDER_LIMITER.state_for("alchemy")
+    def test_record_response_groups_by_account_key(self):
+        # Two distinct Alchemy URLs with the SAME key share one backoff window.
+        eth = "https://eth-mainnet.g.alchemy.com/v2/key1"
+        polygon = "https://polygon-mainnet.g.alchemy.com/v2/key1"
+        record_provider_response(eth, 429, {"Retry-After": "25"})
+        state = PROVIDER_LIMITER.state_for(account_key_for_endpoint(eth))
         assert state["in_backoff"] is True
-        # A TIP-class call on another Alchemy URL is also gated.
-        assert PROVIDER_LIMITER.wait_seconds_for("alchemy") > 20.0
+        # A call on another Alchemy URL with the same key is also gated.
+        assert PROVIDER_LIMITER.wait_seconds_for(account_key_for_endpoint(polygon)) > 20.0
         # A different provider is untouched.
         assert PROVIDER_LIMITER.allow("infura") is True
+
+
+class TestPerKeyAccounts:
+    """Two API keys on the same host are INDEPENDENT accounts."""
+
+    URL_KEY1_ETH = "https://eth-mainnet.g.alchemy.com/v2/key1"
+    URL_KEY2_ETH = "https://eth-mainnet.g.alchemy.com/v2/key2"
+    URL_KEY1_POLYGON = "https://polygon-mainnet.g.alchemy.com/v2/key1"
+
+    def test_account_key_is_provider_plus_key(self):
+        k1 = account_key_for_endpoint(self.URL_KEY1_ETH)
+        k2 = account_key_for_endpoint(self.URL_KEY2_ETH)
+        assert k1 != k2
+        assert k1.startswith("alchemy:")
+        # Same key on another chain is the SAME account.
+        assert account_key_for_endpoint(self.URL_KEY1_POLYGON) == k1
+        # Key-less providers keep the bare provider id (behaviour unchanged).
+        assert account_key_for_endpoint("https://rpc.fantom.network") == "rpc.fantom.network"
+
+    def test_two_keys_get_independent_backoff(self):
+        record_provider_response(self.URL_KEY1_ETH, 429, {"Retry-After": "25"})
+        assert PROVIDER_LIMITER.wait_seconds_for(account_key_for_endpoint(self.URL_KEY1_ETH)) > 20.0
+        # Key 2 is a separate account — not gated by key 1's ban.
+        assert PROVIDER_LIMITER.wait_seconds_for(account_key_for_endpoint(self.URL_KEY2_ETH)) == 0.0
+
+    def test_two_keys_get_independent_rps_counters(self):
+        limiter = ProviderRateLimiter(rps=10.0, max_concurrency=0)
+        k1 = account_key_for_endpoint(self.URL_KEY1_ETH)
+        k2 = account_key_for_endpoint(self.URL_KEY2_ETH)
+        limiter.mark_sent(k1, now=1000.0)
+        assert limiter.wait_seconds_for(k1, now=1000.05) > 0.0
+        assert limiter.wait_seconds_for(k2, now=1000.05) == 0.0
+
+    @pytest.mark.asyncio
+    async def test_two_keys_get_independent_concurrency_slots(self):
+        limiter = ProviderRateLimiter(rps=0.0, max_concurrency=1)
+        k1 = account_key_for_endpoint(self.URL_KEY1_ETH)
+        k2 = account_key_for_endpoint(self.URL_KEY2_ETH)
+        await limiter.acquire_slot(k1)  # hold key 1's only slot
+        await asyncio.wait_for(limiter.acquire_slot(k2), timeout=0.5)  # key 2 still free
+        limiter.release_slot(k2)
+        limiter.release_slot(k1)
+
+    def test_key_id_is_hashed_not_raw_secret(self):
+        kid = key_id_for_endpoint("https://eth-mainnet.g.alchemy.com/v2/supersecret")
+        assert kid
+        assert "supersecret" not in kid
+        assert len(kid) == 16
 
     @pytest.mark.asyncio
     async def test_provider_slot_uses_global_limiter(self):

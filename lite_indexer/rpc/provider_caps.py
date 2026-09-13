@@ -14,9 +14,12 @@ once. We therefore cap:
     requests per provider, and
   * **rate** — at most ``RPC_PROVIDER_RPS`` requests/sec per provider,
 
-keyed by :func:`lite_indexer.rpc.ledger.provider_id_for_endpoint` (so every
-``*.alchemy.com`` URL shares one budget). When the budget is exhausted the
-caller *queues* (awaits the semaphore / paces) instead of firing.
+keyed by the ACCOUNT identity: ``provider_id`` + ``key_id``
+(:func:`account_key_for_endpoint`). Every URL of one API key shares a budget,
+but two DIFFERENT keys on the same host (e.g. two Alchemy accounts) get
+independent concurrency/RPS budgets and backoff windows. Key-less providers
+group by ``provider_id`` alone. When the budget is exhausted the caller
+*queues* (awaits the semaphore / paces) instead of firing.
 
 Provider-level ``Retry-After`` is honored too: a 429 on any endpoint of the
 account arms a backoff window for the whole account, so we stop burning the
@@ -43,10 +46,24 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
-from lite_indexer.rpc.ledger import provider_id_for_endpoint
+from lite_indexer.rpc.ledger import key_id_for_endpoint, provider_id_for_endpoint
 from lite_indexer.rpc.throttle import extract_rate_limit
 
 logger = get_logger(__name__)
+
+
+def account_key_for_endpoint(endpoint: str) -> str:
+    """Account identity for cap keying: ``provider_id`` + optional ``key_id``.
+
+    ``*.alchemy.com`` URLs with the SAME key collapse to one account key, but
+    two different keys on the same host get DIFFERENT keys (independent
+    budgets). Key-less providers return the bare ``provider_id`` so their
+    behaviour is unchanged. The ``key_id`` is a non-secret hash
+    (:func:`key_id_for_endpoint`).
+    """
+    provider_id = provider_id_for_endpoint(endpoint)
+    key_id = key_id_for_endpoint(endpoint)
+    return f"{provider_id}:{key_id}" if key_id else provider_id
 
 
 @dataclass
@@ -330,12 +347,12 @@ async def provider_throttle_before(endpoint: str) -> None:
     records the dispatch. For concurrency enforcement use the
     :func:`provider_slot` context manager, which brackets the actual call.
     """
-    provider_id = provider_id_for_endpoint(endpoint)
-    wait = PROVIDER_LIMITER.wait_seconds_for(provider_id)
+    account_key = account_key_for_endpoint(endpoint)
+    wait = PROVIDER_LIMITER.wait_seconds_for(account_key)
     if wait > 0:
-        logger.debug("provider_rate_wait", provider=provider_id, wait_s=round(wait, 2))
+        logger.debug("provider_rate_wait", provider=account_key, wait_s=round(wait, 2))
         await asyncio.sleep(wait)
-    PROVIDER_LIMITER.mark_sent(provider_id)
+    PROVIDER_LIMITER.mark_sent(account_key)
 
 
 def record_provider_response(
@@ -353,13 +370,14 @@ def record_provider_response(
         status: HTTP status code.
         headers: Response headers (``Retry-After`` is parsed).
     """
-    PROVIDER_LIMITER.record_response(provider_id_for_endpoint(endpoint), status, headers)
+    PROVIDER_LIMITER.record_response(account_key_for_endpoint(endpoint), status, headers)
 
 
 __all__ = [
     "PROVIDER_LIMITER",
     "ProviderRateLimiter",
     "ProviderState",
+    "account_key_for_endpoint",
     "provider_concurrency_slot",
     "provider_slot",
     "provider_throttle_before",

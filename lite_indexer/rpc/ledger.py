@@ -33,6 +33,7 @@ restart does not reset counters mid-period.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -216,21 +217,31 @@ def provider_id_for_endpoint(endpoint: str) -> str:
 
 
 def key_id_for_endpoint(endpoint: str) -> str:
-    """Best-effort API-key id for keyed providers (Alchemy/Infura).
+    """Best-effort, NON-SECRET API-key id for keyed providers.
 
     Account-wide keys are the last path segment of the URL
-    (``https://eth-mainnet.g.alchemy.com/v2/<KEY>``). Empty for
-    key-less endpoints — they group by provider_id alone.
+    (``https://eth-mainnet.g.alchemy.com/v2/<KEY>``); Helius carries its key
+    in the ``api-key`` query param. The raw key is HASHED (sha256, first 16
+    hex chars) so the id is stable per key-account but the secret is never
+    persisted in the quota ledger or exposed in limiter state.
+
+    Empty for key-less endpoints — they group by provider_id alone.
     """
-    from urllib.parse import urlparse
+    from urllib.parse import parse_qs, urlparse
 
     parsed = urlparse(endpoint)
     host = (parsed.hostname or "").lower()
+    raw = ""
     if "alchemy.com" in host or "infura.io" in host:
         parts = [p for p in parsed.path.split("/") if p]
         if parts:
-            return parts[-1]
-    return ""
+            raw = parts[-1]
+    elif "helius-rpc.com" in host or "helius.xyz" in host:
+        qs = parse_qs(parsed.query)
+        raw = (qs.get("api-key") or qs.get("api_key") or [""])[0]
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 class ProviderLedger:

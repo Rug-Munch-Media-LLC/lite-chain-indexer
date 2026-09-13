@@ -46,6 +46,7 @@ from lite_indexer.rpc.pool import (
     record_rate_limit,
 )
 from lite_indexer.rpc.provider_caps import (
+    account_key_for_endpoint,
     provider_concurrency_slot,
     provider_throttle_before,
     record_provider_response,
@@ -279,7 +280,7 @@ class RpcClient:
         # Per-account (provider) cap: queue when the provider's concurrency /
         # requests-per-second budget is exhausted, and honor the account-level
         # Retry-After window — providers ban the ACCOUNT, not one URL.
-        provider_id = provider_id_for_endpoint(endpoint)
+        account_key = account_key_for_endpoint(endpoint)
         # Intelligent throttle: honor Retry-After / advertised budget /
         # per-method rate BEFORE spending another request on this endpoint.
         await throttle_before(endpoint, method)
@@ -311,7 +312,7 @@ class RpcClient:
                 _safe_record(record_endpoint_call, endpoint, method)
                 _safe_record(incr_in_flight, endpoint)
                 try:
-                    async with provider_concurrency_slot(provider_id):
+                    async with provider_concurrency_slot(account_key):
                         client = await _get_call_client(timeout)
                         resp = await client.post(endpoint, json=payload)
                 finally:
@@ -568,7 +569,7 @@ class RpcClient:
 
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
 
-        provider_id = provider_id_for_endpoint(endpoint)
+        account_key = account_key_for_endpoint(endpoint)
         for attempt in range(max_retries):
             # Apply provider rate limiting before request
             await apply_provider_rate_limit(endpoint)
@@ -583,7 +584,7 @@ class RpcClient:
                 started = time.perf_counter()
                 _safe_record(incr_in_flight, endpoint)
                 try:
-                    async with provider_concurrency_slot(provider_id):
+                    async with provider_concurrency_slot(account_key):
                         client = await self._get_client()
                         resp = await client.post(endpoint, json=payload, timeout=RPC_TIMEOUT)
                 finally:

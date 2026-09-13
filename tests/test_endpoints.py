@@ -624,6 +624,12 @@ class TestDeadHostsPruned:
             expected = f'"https://{host}.g.alchemy.com/v2/${{ALCHEMY_KEY}}"'
             assert any(expected in ln for ln in self._url_lines()), f"{chain}: missing {expected}"
 
+    def test_alchemy_account2_template_present_for_every_supported_chain(self):
+        """Second independent Alchemy account (ALCHEMY_KEY_2), same 13 hosts."""
+        for chain, host in ALCHEMY_SUPPORTED_HOSTS.items():
+            expected = f'"https://{host}.g.alchemy.com/v2/${{ALCHEMY_KEY_2}}"'
+            assert any(expected in ln for ln in self._url_lines()), f"{chain}: missing {expected}"
+
     def test_no_alchemy_template_for_unsupported_chains(self):
         # Alchemy has no Fantom (and no gnosis/fraxtal/metis/robinhood)
         # endpoint — the dead host must not be swapped for an invented one.
@@ -634,7 +640,7 @@ class TestDeadHostsPruned:
         alchemy_lines = [ln for ln in self._url_lines() if ".g.alchemy.com" in ln]
         assert alchemy_lines
         for ln in alchemy_lines:
-            assert "/v2/${ALCHEMY_KEY}" in ln, ln
+            assert "/v2/${ALCHEMY_KEY}" in ln or "/v2/${ALCHEMY_KEY_2}" in ln, ln
 
 
 # ── BlockVision (per-chain keyed, archive — live-verified 2026-09-13) ──
@@ -791,6 +797,33 @@ class TestHeliusAccounts:
     def test_unresolved_helius_template_dropped(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv("HELIUS_KEY_3", raising=False)
         assert _resolved_endpoints([f"{HELIUS_RPC_PREFIX}${{HELIUS_KEY_3}}"]) == []
+
+
+SOLANA_ALCHEMY_TEMPLATE = "https://solana-mainnet.g.alchemy.com/v2/"
+
+
+class TestAlchemySolanaAccounts:
+    """Alchemy Solana is wired for BOTH independent accounts (2026-09-13)."""
+
+    def _url_lines(self) -> list[str]:
+        src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "non_evm.py").read_text()
+        return [ln for ln in src.splitlines() if ln.strip().startswith('"https://')]
+
+    def test_both_accounts_present(self):
+        for var in ("ALCHEMY_KEY", "ALCHEMY_KEY_2"):
+            expected = f'"{SOLANA_ALCHEMY_TEMPLATE}${{{var}}}"'
+            assert any(expected in ln for ln in self._url_lines()), f"missing {expected}"
+
+    def test_account2_expands(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("ALCHEMY_KEY_2", "solana-alchemy-key-2")
+        template = f"{SOLANA_ALCHEMY_TEMPLATE}${{ALCHEMY_KEY_2}}"
+        expected = f"{SOLANA_ALCHEMY_TEMPLATE}solana-alchemy-key-2"
+        assert _resolve_endpoint_url(template) == expected
+        assert _resolved_endpoints([template]) == [expected]
+
+    def test_unresolved_account2_dropped(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("ALCHEMY_KEY_2", raising=False)
+        assert _resolved_endpoints([f"{SOLANA_ALCHEMY_TEMPLATE}${{ALCHEMY_KEY_2}}"]) == []
 
 
 class TestTronGridKeyedTemplateNotWired:
