@@ -247,23 +247,34 @@ def provider_id_for_endpoint(endpoint: str) -> str:
 _KEY_QUERY_PARAMS: tuple[str, ...] = ("dkey", "apikey", "api-key", "api_key", "key", "token")
 #: A path segment this long and token-shaped is treated as an embedded key.
 _KEY_PATH_RE = re.compile(r"^[A-Za-z0-9_\-]{16,}$")
+#: ``name=<token>`` path segments (e.g. ``api=<KEY>``, ``key=<KEY>``).
+_KEY_NAME_SEG_RE = re.compile(r"^[A-Za-z0-9_.\-]+=(.+)$")
 
 
 def key_id_for_endpoint(endpoint: str) -> str:
     """Best-effort, NON-SECRET API-key id for a keyed endpoint.
 
-    Keys are detected generically: a recognised key query param
-    (``dkey``/``apiKey``/``api-key``/``api_key``/``key``/``token``) or a
-    long token-shaped trailing path segment (e.g. ``/v2/<KEY>``,
-    ``/rpc/<KEY>``). The raw value is HASHED (sha256, first 16 hex chars) so
-    the id is stable per key-account but the secret is never persisted in the
-    quota ledger or exposed in limiter state.
+    Keys are detected generically, in this precedence order:
+
+    1. a recognised key query param
+       (``dkey``/``apikey``/``api-key``/``api_key``/``key``/``token``);
+    2. URL **userinfo** (``user[:pass]@host``) — the username is hashed, or
+       ``user:pass`` when a password is present;
+    3. the longest token-shaped path segment **anywhere** in the path
+       (``/v2/<KEY>``, ``/rpc/<KEY>``, ``/<acct>/<KEY>/...``) or the value of
+       a ``name=<token>`` segment (``api=<KEY>``).
+
+    The raw value is HASHED (sha256, first 16 hex chars) so the id is stable
+    per key-account but the secret is never persisted in the quota ledger or
+    exposed in limiter state.
 
     Empty for key-less endpoints — they group by provider_id alone.
     """
-    from urllib.parse import parse_qs, urlparse
+    from urllib.parse import parse_qs, unquote, urlparse
 
     parsed = urlparse(endpoint)
+
+    # 1. Explicit query-param key (highest precedence, existing behaviour).
     raw = ""
     qs = {k.lower(): v for k, v in parse_qs(parsed.query).items()}
     for param in _KEY_QUERY_PARAMS:
@@ -271,10 +282,27 @@ def key_id_for_endpoint(endpoint: str) -> str:
         if values:
             raw = values[0]
             break
+
+    # 2. URL userinfo (e.g. https://user:pass@host/...).
+    if not raw and parsed.username is not None:
+        user = unquote(parsed.username)
+        password = unquote(parsed.password) if parsed.password is not None else ""
+        raw = f"{user}:{password}" if password else user
+
+    # 3. Path candidates: token-shaped segments or name=value values.
     if not raw:
-        parts = [p for p in parsed.path.split("/") if p]
-        if parts and _KEY_PATH_RE.match(parts[-1]):
-            raw = parts[-1]
+        candidates: list[str] = []
+        for segment in parsed.path.split("/"):
+            if not segment:
+                continue
+            name_match = _KEY_NAME_SEG_RE.match(segment)
+            if name_match:
+                candidates.append(name_match.group(1))
+            elif _KEY_PATH_RE.match(segment):
+                candidates.append(segment)
+        if candidates:
+            raw = max(candidates, key=len)
+
     if not raw:
         return ""
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
