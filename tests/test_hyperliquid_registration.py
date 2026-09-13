@@ -28,6 +28,9 @@ from lite_indexer.strategies.evm import EVMChainStrategy
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 HYPERLIQUID_ENDPOINT = "https://rpc.hyperliquid.xyz/evm"  # official keyless, live-verified 2026-09-13
+HYPERLIQUID_POCKET_ENDPOINT = (
+    "https://hyperliquid.api.pocket.network"  # Pocket keyless, live-verified getLogs 2026-09-13
+)
 HYPERLIQUID_CHAIN_ID = 999
 HYPERLIQUID_CHAIN_ID_HEX = "0x3e7"
 
@@ -62,6 +65,12 @@ class TestHyperliquidEndpoints:
         assert HYPERLIQUID_ENDPOINT in BUILTIN_ENDPOINTS["hyperliquid"]
         assert "${" not in HYPERLIQUID_ENDPOINT
 
+    def test_pocket_endpoint_registered_and_keyless(self):
+        """Pocket Network is a free/keyless second source for Hyperliquid."""
+        assert HYPERLIQUID_POCKET_ENDPOINT in GET_LOGS_ENDPOINTS["hyperliquid"]
+        assert HYPERLIQUID_POCKET_ENDPOINT in BUILTIN_ENDPOINTS["hyperliquid"]
+        assert "${" not in HYPERLIQUID_POCKET_ENDPOINT
+
     def test_endpoint_is_https_and_placeholder_free(self):
         urls = GET_LOGS_ENDPOINTS["hyperliquid"]
         assert urls
@@ -76,8 +85,11 @@ class TestHyperliquidEndpoints:
         assert LAST_RESORT_ENDPOINTS["hyperliquid"] == [HYPERLIQUID_ENDPOINT]
         assert HYPERLIQUID_ENDPOINT in last_resort_endpoints("hyperliquid")
 
-    def test_no_denylisted_provider_in_endpoint_pool(self):
-        for url in GET_LOGS_ENDPOINTS["hyperliquid"]:
+    def test_no_denylisted_provider_in_builtin_pool(self):
+        # The private runtime overlay legitimately injects keyed providers
+        # (dRPC/Dwellir) into the *active* pool; the PUBLIC builtin pool must
+        # stay free/keyless.
+        for url in BUILTIN_ENDPOINTS["hyperliquid"]:
             lowered = url.lower()
             for token in OVERLAY_ONLY_PROVIDERS:
                 assert token not in lowered, f"overlay-only provider {token!r} leaked into {url}"

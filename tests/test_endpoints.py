@@ -373,6 +373,7 @@ POCKET_SLUGS: dict[str, str] = {
     "fraxtal": "fraxtal",
     "metis": "metis",
     "robinhood": "robinhood",
+    "hyperliquid": "hyperliquid",
 }
 
 

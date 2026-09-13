@@ -300,12 +300,13 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.nodeflare.app/robinhood/public",  # T3 — verified chainId
         "https://robinhood.rpc.blxrbdn.com",  # T3 — chainId only (getLogs 403)
     ],
-    # ── Hyperliquid (1 endpoint, verified 2026-09-13) ─────────────────
+    # ── Hyperliquid (2 endpoints, verified 2026-09-13) ────────────────
     # HyperEVM, chainId 999 (0x3e7), native HYPE. The official keyless RPC
     # answers eth_chainId + eth_blockNumber and serves topic-only
     # eth_getLogs → fully indexable (no paid tier needed).
     "hyperliquid": [
         "https://rpc.hyperliquid.xyz/evm",  # Hyperliquid official EVM RPC — live-verified 2026-09-13
+        "https://hyperliquid.api.pocket.network",  # T1 — Pocket Network — keyless, live-verified getLogs 2026-09-13
     ],
 }
 
@@ -314,9 +315,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 #   arbitrum: 8   optimism: 7   avalanche: 6   fantom: 3
 #   linea: 7   scroll: 6   zksync: 5   mantle: 6
 #   gnosis: 7   celo: 5   blast: 4   fraxtal: 3
-#   metis: 2   robinhood: 5   hyperliquid: 1
+#   metis: 2   robinhood: 5   hyperliquid: 2
 # -------------------------------------------------------
-#   Total builtin public templates: 111 across 19 chains
+#   Total builtin public templates: 112 across 19 chains
 #
 # 2026-09-13: Tenderly keyless public gateway added for the 13 chains with
 #   a public/<net> endpoint (eth_chainId 200, verified here): ethereum/
