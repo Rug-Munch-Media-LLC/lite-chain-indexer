@@ -83,3 +83,11 @@ def test_filesystem_path_not_mangled():
     """Only URL path segments are masked; ordinary paths stay readable."""
     p = "/srv/secrets/lite-indexer-endpoints.json"
     assert redact_secrets(None, "debug", {"path": p})["path"] == p
+
+
+def test_short_16plus_char_path_key_redacted():
+    """Regression: an 18-char key must be masked (20-char threshold missed it)."""
+    for key in ("LhEQUVP97Rqwo8xnHm6", "r492rBxdmKhhDCvY94UIY"):
+        d = redact_secrets(None, "info", {"endpoint": f"https://polygon-mainnet.g.alchemy.com/v2/{key}"})
+        assert key not in d["endpoint"]
+        assert d["endpoint"].endswith("/***")
