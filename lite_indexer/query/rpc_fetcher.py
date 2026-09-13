@@ -539,7 +539,9 @@ class RPCFetcher:
         endpoint = await self._select_endpoint(chain, "eth_getLogs")
         if endpoint is None:
             return []
-        raw = await self._client.get_logs(endpoint, from_block, to_block, TRANSFER_EVENT_TOPIC, address=address)
+        raw = await self._client.get_logs(
+            endpoint, from_block, to_block, TRANSFER_EVENT_TOPIC, address=address, chain=chain
+        )
         if raw is None:
             return []
         events = parse_transfer_logs(raw, chain, from_block, to_block)

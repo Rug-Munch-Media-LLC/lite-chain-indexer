@@ -43,6 +43,8 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "getlogs_range_splits",
     "rpc_batch_calls",
     "rpc_batch_fallback",
+    "rpc_consensus_verified",
+    "rpc_consensus_mismatch",
     "endpoints_verified",
     "endpoints_failed_verify",
     "clickhouse_inserts",

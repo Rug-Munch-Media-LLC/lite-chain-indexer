@@ -62,7 +62,13 @@ def build_evm_backfill_executor(host: EvmBackfillHost) -> BackfillExecutor:
 
         if not host._is_evm():
             return False
-        logs = await host.rpc.get_logs(endpoint, chunk.from_block, chunk.to_block, TRANSFER_EVENT_TOPIC)
+        logs = await host.rpc.get_logs(
+            endpoint,
+            chunk.from_block,
+            chunk.to_block,
+            TRANSFER_EVENT_TOPIC,
+            chain=chunk.chain,
+        )
         if logs is None:
             return False
         events = parse_transfer_logs(logs, chunk.chain, chunk.from_block, chunk.to_block)

@@ -654,6 +654,8 @@ class RpcClient:
         topic: str,
         address: str | None = None,
         max_retries: int = 3,
+        *,
+        chain: str | None = None,
     ) -> list[dict[str, Any]] | None:
         """Fetch event logs via eth_getLogs with retry.
 
@@ -668,6 +670,9 @@ class RpcClient:
             topic: Event topic hash.
             address: Optional contract address filter.
             max_retries: Max retry attempts on rate limits.
+            chain: Chain name — required for sampled cross-provider
+                consensus verification (a chain's pool is resolved from
+                it). When omitted the read is returned unverified.
 
         Returns:
             List of raw log dicts, or None on failure.
@@ -711,7 +716,41 @@ class RpcClient:
             # of an in-call split.
             return await self._fetch_logs_many(endpoint, child_ranges, topic, address)
 
-        return await fetch_logs_split(_once, from_block, to_block, fetch_many=_many)
+        logs = await fetch_logs_split(_once, from_block, to_block, fetch_many=_many)
+
+        # Sampled cross-provider consensus: a critical getLogs range result
+        # is only trusted once a quorum of DISTINCT provider accounts returns
+        # the same content hash. Sampling keeps the extra requests off the
+        # normal path; a mismatch FAILS the read (None) so callers retry or
+        # escalate instead of committing one provider's answer.
+        from lite_indexer.rpc.consensus import should_sample, verify_across_providers
+
+        if logs is None or not chain or not should_sample():
+            return logs
+
+        try:
+            consensus = await verify_across_providers(
+                self,
+                chain,
+                "eth_getLogs",
+                [self._logs_filter(from_block, to_block, topic, address)],
+            )
+        except Exception as exc:  # noqa: BLE001 — verification must never break the read
+            logger.warning("rpc_consensus_error", chain=chain, error=str(exc)[:120])
+            return logs
+        if consensus.mismatch:
+            logger.warning(
+                "getlogs_consensus_mismatch",
+                chain=chain,
+                from_block=from_block,
+                to_block=to_block,
+                agreement=consensus.agreement,
+                total=consensus.total,
+            )
+            return None
+        if consensus.verified and isinstance(consensus.result, list):
+            return cast(list[dict[str, Any]], consensus.result)
+        return logs
 
     @staticmethod
     def _logs_filter(from_block: int, to_block: int, topic: str, address: str | None) -> dict[str, Any]:

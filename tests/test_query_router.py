@@ -561,6 +561,8 @@ class FakeRpcClient:
         topic: str,
         address: str | None = None,
         max_retries: int = 3,
+        *,
+        chain: str | None = None,
     ) -> list[dict[str, Any]] | None:
         self.get_logs_params.append(
             {"from_block": from_block, "to_block": to_block, "topic": topic, "address": address}

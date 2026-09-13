@@ -174,6 +174,7 @@ class PluginsMixin(IndexerMixinBase):
                             to_block,
                             topic=spec.topic,
                             address=contract.address,
+                            chain=self.chain,
                         )
                     except Exception as exc:  # noqa: BLE001 — best-effort
                         logger.warning(

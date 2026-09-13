@@ -306,3 +306,16 @@ SOLANA_WS_RECONNECT_BASE_SECONDS: float = float(os.environ.get("SOLANA_WS_RECONN
 SOLANA_WS_RECONNECT_MAX_SECONDS: float = float(os.environ.get("SOLANA_WS_RECONNECT_MAX_SECONDS", "60.0"))
 # Max reconnects before giving up; 0 = retry forever.
 SOLANA_WS_MAX_RECONNECTS: int = int(os.environ.get("SOLANA_WS_MAX_RECONNECTS", "0"))
+
+# ── Cross-provider consensus verification (rpc/consensus.py) ───────────
+# A sampled fraction of critical reads (eth_getLogs range results) is
+# dispatched to N endpoints owned by DISTINCT provider accounts; the answer
+# is accepted only when a quorum returns the same content hash. This is the
+# client-side equivalent of managed-tier multi-upstream quorum and is the
+# guard against a single malicious/buggy free RPC poisoning the index.
+# Sampling bounds the cost: only RPC_CONSENSUS_SAMPLE_RATE of reads pay the
+# extra requests. 0 disables sampling; >= 1 verifies every read.
+RPC_CONSENSUS_ENABLED: bool = os.environ.get("RPC_CONSENSUS_ENABLED", "1") != "0"
+RPC_CONSENSUS_MIN_AGREEMENT: int = int(os.environ.get("RPC_CONSENSUS_MIN_AGREEMENT", "2"))
+RPC_CONSENSUS_SAMPLE_RATE: float = float(os.environ.get("RPC_CONSENSUS_SAMPLE_RATE", "0.05"))
+RPC_CONSENSUS_MAX_ENDPOINTS: int = int(os.environ.get("RPC_CONSENSUS_MAX_ENDPOINTS", "3"))
