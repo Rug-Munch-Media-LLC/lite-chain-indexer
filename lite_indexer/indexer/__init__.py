@@ -54,6 +54,12 @@ from lite_indexer.indexer._resource_guards import (
     MemoryGate,
 )
 from lite_indexer.indexer._resource_guards import (
+    get_cgroup_memory_mb as get_cgroup_memory_mb,
+)
+from lite_indexer.indexer._resource_guards import (
+    get_guarded_memory_mb as get_guarded_memory_mb,
+)
+from lite_indexer.indexer._resource_guards import (
     get_process_rss_mb as get_process_rss_mb,
 )
 from lite_indexer.indexer._rpc_fetch import RpcFetchMixin
@@ -133,6 +139,8 @@ __all__ = [
     "default_enabled_events",
     "get_chain_config",
     "get_chain_demand",
+    "get_cgroup_memory_mb",
+    "get_guarded_memory_mb",
     "get_process_rss_mb",
     "list_supported_chains",
     "read_demand_files",
@@ -452,7 +460,9 @@ class LiteIndexer(
                 return None
             table, column = self._ch_table_for_chain()
             if self._chain_type == "solana":
-                rows = client.execute(f"SELECT max({column}) FROM {table}")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                rows = client.execute(
+                    f"SELECT max({column}) FROM {table}"
+                )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             else:
                 rows = client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                     f"SELECT max({column}) FROM {table} WHERE chain = %(chain)s",

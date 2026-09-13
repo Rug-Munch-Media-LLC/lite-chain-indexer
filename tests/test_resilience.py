@@ -165,7 +165,10 @@ class TestMemoryGate:
     def test_gate_closes_over_threshold(self):
         from lite_indexer.indexer import MemoryGate
 
-        with patch("lite_indexer.indexer.get_process_rss_mb", return_value=9999):
+        with (
+            patch("lite_indexer.indexer.get_process_rss_mb", return_value=9999),
+            patch("lite_indexer.indexer.get_cgroup_memory_mb", return_value=0),
+        ):
             gate = MemoryGate(high_mb=1024)
             gate._last_check = 0.0  # force a fresh read
             assert gate.ok() is False
@@ -173,7 +176,10 @@ class TestMemoryGate:
     def test_gate_open_under_threshold(self):
         from lite_indexer.indexer import MemoryGate
 
-        with patch("lite_indexer.indexer.get_process_rss_mb", return_value=100):
+        with (
+            patch("lite_indexer.indexer.get_process_rss_mb", return_value=100),
+            patch("lite_indexer.indexer.get_cgroup_memory_mb", return_value=0),
+        ):
             gate = MemoryGate(high_mb=1024)
             gate._last_check = 0.0
             assert gate.ok() is True
@@ -183,6 +189,74 @@ class TestMemoryGate:
 
         gate = MemoryGate(high_mb=0)
         assert gate.ok() is True
+
+
+class TestCgroupMemoryGate:
+    """2026-09-13 OOM post-mortem: gate must guard cgroup memory.current."""
+
+    def _fake_sysfs(self, tmp_path: Path, cgroup_line: str, current_bytes: int) -> Path:
+        root = tmp_path / "sysfs"
+        rel = cgroup_line.split("::", 1)[1].strip().lstrip("/")
+        cgdir = root / rel
+        cgdir.mkdir(parents=True)
+        (cgdir / "memory.current").write_text(str(current_bytes))
+        return root
+
+    def test_parses_v2_cgroup_and_reads_current(self, tmp_path: Path):
+        from lite_indexer.indexer._resource_guards import get_cgroup_memory_mb
+
+        root = self._fake_sysfs(tmp_path, "0::/system.slice/lite-indexer.service", 3 * 1024 * 1024 * 1024)
+        fake_proc = tmp_path / "cgroup"
+        fake_proc.write_text("0::/system.slice/lite-indexer.service\n")
+        with (
+            patch("lite_indexer.indexer._resource_guards._CGROUP_ROOT", str(root)),
+            patch("lite_indexer.indexer._resource_guards._PROC_CGROUP", str(fake_proc)),
+        ):
+            assert get_cgroup_memory_mb() == 3072
+
+    def test_returns_zero_when_cgroup_file_missing(self, tmp_path: Path):
+        from lite_indexer.indexer._resource_guards import get_cgroup_memory_mb
+
+        fake_proc = tmp_path / "cgroup"
+        fake_proc.write_text("0::/system.slice/lite-indexer.service\n")
+        with (
+            patch("lite_indexer.indexer._resource_guards._CGROUP_ROOT", str(tmp_path)),
+            patch("lite_indexer.indexer._resource_guards._PROC_CGROUP", str(fake_proc)),
+        ):
+            assert get_cgroup_memory_mb() == 0
+
+    def test_gate_closes_on_cgroup_even_when_rss_under(self):
+        from lite_indexer.indexer import MemoryGate
+
+        with (
+            patch("lite_indexer.indexer.get_process_rss_mb", return_value=100),
+            patch("lite_indexer.indexer.get_cgroup_memory_mb", return_value=8000),
+        ):
+            gate = MemoryGate(high_mb=4096)
+            gate._last_check = 0.0
+            assert gate.ok() is False
+
+    def test_gate_open_when_both_under(self):
+        from lite_indexer.indexer import MemoryGate
+
+        with (
+            patch("lite_indexer.indexer.get_process_rss_mb", return_value=100),
+            patch("lite_indexer.indexer.get_cgroup_memory_mb", return_value=200),
+        ):
+            gate = MemoryGate(high_mb=4096)
+            gate._last_check = 0.0
+            assert gate.ok() is True
+
+    def test_falls_back_to_rss_when_cgroup_unavailable(self):
+        from lite_indexer.indexer import MemoryGate
+
+        with (
+            patch("lite_indexer.indexer.get_process_rss_mb", return_value=5000),
+            patch("lite_indexer.indexer.get_cgroup_memory_mb", return_value=0),
+        ):
+            gate = MemoryGate(high_mb=4096)
+            gate._last_check = 0.0
+            assert gate.ok() is False
 
 
 # ── 4. ClickHouse health pause ─────────────────────────────────────────

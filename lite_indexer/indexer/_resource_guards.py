@@ -23,6 +23,7 @@ from collections.abc import Callable
 from typing import cast
 
 from lite_indexer.config import (
+    CGROUP_MEMORY_PATH,
     CH_HEALTH_CHECK_ENABLED,
     CH_HEALTH_INTERVAL,
     MEMORY_CHECK_INTERVAL,
@@ -33,6 +34,11 @@ from lite_indexer.logging import get_logger
 from lite_indexer.storage import ClickHouseWriter
 
 logger = get_logger(__name__)
+
+# Sysfs root for cgroup v2 files; overridable in tests.
+_CGROUP_ROOT: str = "/sys/fs/cgroup"
+# Procfs cgroup listing; overridable in tests.
+_PROC_CGROUP: str = "/proc/self/cgroup"
 
 
 def get_process_rss_mb() -> int:
@@ -55,6 +61,71 @@ def get_process_rss_mb() -> int:
         return int(pages * page_size / (1024 * 1024))
     except (OSError, ValueError, AttributeError):
         return 0
+
+
+def _cgroup_v2_path(root: str | None = None) -> str | None:
+    """Resolve this process's cgroup v2 ``memory.current`` path.
+
+    Parses ``/proc/self/cgroup`` (v2 format: ``0::/system.slice/foo.service``)
+    and joins the relative path under ``root`` (default ``_CGROUP_ROOT``).
+    Returns ``None`` on any failure (non-Linux, cgroup v1, missing file)
+    so callers fall back.
+    """
+    root = root if root is not None else _CGROUP_ROOT
+    try:
+        with open(_PROC_CGROUP) as f:
+            for line in f:
+                parts = line.rstrip("\n").split(":", 2)
+                if len(parts) == 3 and parts[0] == "0" and parts[1] == "" and parts[2]:
+                    rel = parts[2].lstrip("/")
+                    if not rel:
+                        return None
+                    return os.path.join(root, rel, "memory.current")
+    except OSError:
+        return None
+    return None
+
+
+def get_cgroup_memory_mb(root: str | None = None) -> int:
+    """Return the cgroup v2 ``memory.current`` of this process's cgroup in MiB.
+
+    This is the metric the kernel OOM killer acts on (cgroup charge:
+    anon + file cache + kernel + sock), unlike process RSS. Returns 0 on
+    any failure so callers fall back to the RSS reader.
+    """
+    path = CGROUP_MEMORY_PATH or _cgroup_v2_path(root)
+    if not path:
+        return 0
+    try:
+        with open(path) as f:
+            return int(int(f.read().strip()) / (1024 * 1024))
+    except (OSError, ValueError):
+        return 0
+
+
+def _public_cgroup_reader() -> int:
+    """Cgroup memory via the public ``lite_indexer.indexer.get_cgroup_memory_mb`` binding.
+
+    Mirrors :func:`_public_rss_reader`: tests patch the package re-export,
+    so resolve the reader at call time through the package when available.
+    """
+    module = sys.modules.get("lite_indexer.indexer")
+    reader = getattr(module, "get_cgroup_memory_mb", None) if module is not None else None
+    if reader is not None:
+        return cast(Callable[[], int], reader)()
+    return get_cgroup_memory_mb()
+
+
+def get_guarded_memory_mb() -> int:
+    """Effective memory metric the watchdog guards: max(RSS, cgroup charge).
+
+    The kernel cgroup OOM killer fires on ``memory.current``, not process
+    RSS (2026-09-13 OOM: anon-RSS 5.34 GiB < 6 GiB gate while the cgroup
+    crossed the 7 GiB MemoryMax). Guarding the max of both metrics closes
+    the gate on whichever is higher; RSS remains the fallback when the
+    cgroup file is unavailable (returns 0).
+    """
+    return max(_public_rss_reader(), _public_cgroup_reader())
 
 
 def _public_rss_reader() -> int:
@@ -104,12 +175,12 @@ class MemoryGate:
         if now - self._last_check < MEMORY_CHECK_INTERVAL:
             return self._cached_ok
         self._last_check = now
-        rss = _public_rss_reader()
-        self._cached_ok = rss < self._high_mb
+        mem = get_guarded_memory_mb()
+        self._cached_ok = mem < self._high_mb
         if not self._cached_ok:
             logger.warning(
                 "memory_gate_closed",
-                rss_mb=rss,
+                rss_mb=mem,
                 high_mb=self._high_mb,
                 pause_s=MEMORY_PAUSE_SLEEP,
             )

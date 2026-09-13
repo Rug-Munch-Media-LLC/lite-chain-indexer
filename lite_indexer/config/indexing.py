@@ -75,19 +75,30 @@ CHAIN_DISABLED_RECHECK_SECONDS: int = int(os.environ.get("CHAIN_DISABLED_RECHECK
 # LiteIndexer.sync_loop (covers daemon AND single-chain mode).
 GC_EVERY_N_CYCLES: int = int(os.environ.get("GC_EVERY_N_CYCLES", "5"))
 # ── Memory Watchdog ──────────────────────────────────────────────────────
-# When the indexer process RSS exceeds MEMORY_HIGH_MB the daemon pauses
-# NEW chain ingestion (no new sync cycles) until RSS drops back under the
+# When the indexer's guarded memory exceeds MEMORY_HIGH_MB the daemon pauses
+# NEW chain ingestion (no new sync cycles) until it drops back under the
 # threshold. This is an in-process backstop on top of the systemd
 # MemoryHigh/MemoryMax cgroup limits: it avoids the OOM-kill churn that
 # 14 parallel chains caused on 2026-08-03 by backing off *before* the
-# cgroup reaper fires. Default 6144 = 6 GiB, matching the systemd
-# MemoryHigh drop-in (6442450944 bytes). Raised 2026-08-14 from 3072
-# after the daemon's working set (16 chains × pair caches + httpx pools +
-# event batches) grew past the 3G ceiling, which froze the process in
-# kernel cgroup throttling (mem_cgroup_handle_over_high, D-state) instead
-# of letting the gate pause ingestion gracefully. RSS is read from
-# /proc/self/statm (no psutil dependency).
-MEMORY_HIGH_MB: int = int(os.environ.get("MEMORY_HIGH_MB", "6144"))
+# cgroup reaper fires.
+#
+# METRIC (2026-09-13 post-mortem): the kernel cgroup OOM killer fires on
+# cgroup charge (memory.current = anon + file cache + kernel + sock charged
+# to the cgroup), NOT process RSS. On 2026-09-13 07:24:51 the daemon was
+# OOM-killed with anon-RSS at 5.34 GiB — below the old 6 GiB RSS gate —
+# while the cgroup crossed the 7 GiB MemoryMax. The gate now guards
+# max(process RSS, cgroup memory.current) so it closes on whichever metric
+# is higher. Default 4096 = 4 GiB: real headroom under the 6 GiB
+# MemoryHigh drop-in, since cgroup overhead (page cache, kernel, sock)
+# exceeds the ~0.9 GiB nominal gap the old 6144 default left. RSS is read
+# from /proc/self/statm; cgroup memory from /sys/fs/cgroup/<path>/
+# memory.current (auto-detected via /proc/self/cgroup, or CGROUP_MEMORY_PATH).
+MEMORY_HIGH_MB: int = int(os.environ.get("MEMORY_HIGH_MB", "4096"))
+
+# Explicit path to a cgroup v2 memory.current file. Empty = auto-detect
+# from /proc/self/cgroup. Override when the process runs in a cgroup the
+# auto-detection cannot resolve (e.g. nested delegation).
+CGROUP_MEMORY_PATH: str = os.environ.get("CGROUP_MEMORY_PATH", "")
 
 # How often (seconds) the memory watchdog may re-read RSS. Reading
 # /proc every cycle is cheap, but under heavy GC churn the value flaps;
