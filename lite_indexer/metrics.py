@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from prometheus_client import Counter
+    from prometheus_client import Counter, Gauge
 
     PROMETHEUS_AVAILABLE = True
 except ImportError:  # pragma: no cover — dependency is guarded, not required
@@ -79,7 +79,12 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "backfill_completed",
     "backfill_failed",
     "backfill_memory_paused",
+    "backfill_window_deferred",
 )
+
+# Gauges report a current level (not a running total). Kept tiny: only the
+# adaptive consensus rate needs one today.
+_GAUGE_NAMES: tuple[str, ...] = ("rpc_consensus_effective_rate",)
 
 
 class _PlainCounter:
@@ -103,6 +108,23 @@ class _PlainCounter:
         self._value = value
 
 
+class _PlainGauge:
+    """Minimal ``Gauge`` stand-in when prometheus_client is missing."""
+
+    __slots__ = ("_value",)
+
+    def __init__(self) -> None:
+        self._value = 0.0
+
+    def set(self, value: float) -> None:
+        """Set the gauge to an absolute ``value``."""
+        self._value = value
+
+    def get(self) -> float:
+        """Return the current gauge value."""
+        return self._value
+
+
 def _make_counter(name: str) -> Any:
     """Create a Prometheus Counter or plain fallback for a counter name.
 
@@ -115,9 +137,18 @@ def _make_counter(name: str) -> Any:
     return _PlainCounter()
 
 
+def _make_gauge(name: str) -> Any:
+    """Create a Prometheus Gauge or plain fallback for a gauge name."""
+    if PROMETHEUS_AVAILABLE:
+        return Gauge(name, f"LiteChainIndexer {name} gauge")
+    return _PlainGauge()
+
+
 # Counter name → counter object. Populated eagerly for the known names so
 # that a stray typo surfaces early; unknown names are created lazily.
 _COUNTERS: dict[str, Any] = {name: _make_counter(name) for name in _COUNTER_NAMES}
+# Gauge name → gauge object (eager, same typo-surfacing intent).
+_GAUGES: dict[str, Any] = {name: _make_gauge(name) for name in _GAUGE_NAMES}
 
 
 def incr(name: str, amount: float = 1.0) -> None:
@@ -153,22 +184,53 @@ def get(name: str) -> float:
     return float(counter.get())
 
 
+def set_gauge(name: str, value: float) -> None:
+    """Set a named gauge, creating it lazily if unknown.
+
+    Args:
+        name: Gauge name (e.g. 'rpc_consensus_effective_rate').
+        value: Absolute value to store.
+    """
+    gauge_obj = _GAUGES.get(name)
+    if gauge_obj is None:
+        gauge_obj = _make_gauge(name)
+        _GAUGES[name] = gauge_obj
+    gauge_obj.set(float(value))
+
+
+def gauge(name: str) -> float:
+    """Return the current value of a named gauge (0.0 if never set)."""
+    gauge_obj = _GAUGES.get(name)
+    if gauge_obj is None:
+        return 0.0
+    if PROMETHEUS_AVAILABLE:
+        return float(gauge_obj._value.get())  # noqa: SLF001
+    return float(gauge_obj.get())
+
+
 def snapshot() -> dict[str, float]:
-    """Return all counter values as a plain dict.
+    """Return all counter + gauge values as a plain dict.
 
     Useful for tests and for a future /metrics endpoint that renders the
     Prometheus exposition format.
     """
-    return {name: get(name) for name in _COUNTERS}
+    out = {name: get(name) for name in _COUNTERS}
+    out.update({name: gauge(name) for name in _GAUGES})
+    return out
 
 
 def reset() -> None:
-    """Reset all counters to zero."""
+    """Reset all counters and gauges to zero."""
     for counter in _COUNTERS.values():
         if PROMETHEUS_AVAILABLE:
             counter._value.set(0.0)  # noqa: SLF001
         else:
             counter.set(0.0)
+    for gauge_obj in _GAUGES.values():
+        if PROMETHEUS_AVAILABLE:
+            gauge_obj._value.set(0.0)  # noqa: SLF001
+        else:
+            gauge_obj.set(0.0)
 
 
 def get_metrics() -> dict[str, float]:

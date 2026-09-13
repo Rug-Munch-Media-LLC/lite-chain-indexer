@@ -562,6 +562,11 @@ def latency_snapshot() -> dict[str, dict[str, Any]]:
     }
 
 
+def stale_demoted_count() -> int:
+    """Number of endpoints currently demoted by the stale-tip gate."""
+    return len(_demoted_tips)
+
+
 def reset_latency_state() -> None:
     """Clear all latency/height tracking (tests, operator reset)."""
     _LATENCY.clear()

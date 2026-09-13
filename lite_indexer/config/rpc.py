@@ -365,3 +365,16 @@ RPC_CONSENSUS_MAX_ENDPOINTS: int = int(os.environ.get("RPC_CONSENSUS_MAX_ENDPOIN
 # result is accepted. Set RPC_CONSENSUS_VALIDATORS=1 to reject violating
 # answers from the quorum (fail-closed on malformed data).
 RPC_CONSENSUS_VALIDATORS: bool = os.environ.get("RPC_CONSENSUS_VALIDATORS", "0") == "1"
+
+# Adaptive consensus budgeting: spend verification where risk is. The
+# effective sample rate moves between MIN and MAX based on an EWMA of recent
+# mismatch rate plus live health signals (endpoint error rate, stale-tip
+# demotions, unvetted endpoints). When off, the fixed RPC_CONSENSUS_SAMPLE_RATE
+# (clamped into [MIN, MAX]) is used. RPC_CONSENSUS_ENABLED still gates all
+# verification.
+RPC_CONSENSUS_ADAPTIVE: bool = os.environ.get("RPC_CONSENSUS_ADAPTIVE", "1") == "1"
+RPC_CONSENSUS_SAMPLE_MIN: float = float(os.environ.get("RPC_CONSENSUS_SAMPLE_MIN", "0.01"))
+RPC_CONSENSUS_SAMPLE_MAX: float = float(os.environ.get("RPC_CONSENSUS_SAMPLE_MAX", "0.25"))
+# An endpoint counts as "unvetted" until this many calls have been recorded;
+# adaptive risk rises while the pool is fresh.
+RPC_CONSENSUS_UNVETTED_CALLS: int = int(os.environ.get("RPC_CONSENSUS_UNVETTED_CALLS", "3"))

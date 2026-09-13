@@ -6,6 +6,8 @@ on ``self`` attributes initialized by :class:`LiteIndexer.__init__`.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from typing import Any
 
 from lite_indexer.config import (
@@ -14,6 +16,7 @@ from lite_indexer.config import (
     BACKFILL_MAX_CHUNKS_PER_CYCLE,
     BACKFILL_MAX_CONCURRENCY,
     BACKFILL_MAX_QUEUE_DEPTH,
+    BACKFILL_WINDOW_AWARE,
     MEMORY_RECYCLE_MB,
 )
 from lite_indexer.indexer._base import IndexerMixinBase
@@ -23,8 +26,10 @@ from lite_indexer.indexer._writers import (
 )
 from lite_indexer.indexer.backfill import (
     BackfillQueue,
+    WindowDecision,
     detect_gaps,
     drain_backfill_queue,
+    window_decision,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.streaming.nats_publisher import NATSPublisher
@@ -302,12 +307,26 @@ class BackfillMixin(IndexerMixinBase):
 
         mem_mb = self.guarded_memory_mb()
         memory_ok = self.memory_gate_ok() and not (MEMORY_RECYCLE_MB > 0 and mem_mb >= MEMORY_RECYCLE_MB)
+
+        # Quota-window-aware scheduling: defer a chunk whose freemium account
+        # is near its window cap instead of dispatching into a 429, and let it
+        # fire just after the window resets. Providers with no ledger window
+        # are never deferred, so backfill cannot starve.
+        window_gate: Callable[[str, str], WindowDecision] | None = None
+        if BACKFILL_WINDOW_AWARE:
+
+            def _gate(chain: str, endpoint: str) -> WindowDecision:
+                return window_decision(chain, endpoint, now=time.time())
+
+            window_gate = _gate
+
         stats = await drain_backfill_queue(
             self._get_backfill_queue(),
             executor,
             max_concurrency=BACKFILL_MAX_CONCURRENCY,
             max_chunks=BACKFILL_MAX_CHUNKS_PER_CYCLE,
             memory_ok=memory_ok,
+            window_gate=window_gate,
         )
         if stats.get("dispatched") or stats.get("memory_paused"):
             logger.info("backfill_sidecar", chain=self.chain, memory_mb=mem_mb, **stats)

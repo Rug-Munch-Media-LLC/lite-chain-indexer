@@ -42,6 +42,10 @@ Env:
     RPC_CONSENSUS_MAX_ENDPOINTS  max distinct providers queried (default 3)
     RPC_CONSENSUS_VALIDATORS     1 to reject intrinsically-invalid answers
                                  (default 0 = observe-only)
+    RPC_CONSENSUS_ADAPTIVE       1 to spend verification where risk is
+                                 (default on); 0 = fixed sample rate
+    RPC_CONSENSUS_SAMPLE_MIN     floor for the adaptive rate (default 0.01)
+    RPC_CONSENSUS_SAMPLE_MAX     ceiling for the adaptive rate (default 0.25)
 
 Logs never contain raw endpoint URLs (which may embed API keys): endpoints
 are identified by their non-secret account key (``provider_id:key_hash``).
@@ -58,14 +62,19 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from lite_indexer.config import (
+    RPC_CONSENSUS_ADAPTIVE,
     RPC_CONSENSUS_ENABLED,
     RPC_CONSENSUS_MAX_ENDPOINTS,
     RPC_CONSENSUS_MIN_AGREEMENT,
+    RPC_CONSENSUS_SAMPLE_MAX,
+    RPC_CONSENSUS_SAMPLE_MIN,
     RPC_CONSENSUS_SAMPLE_RATE,
+    RPC_CONSENSUS_UNVETTED_CALLS,
     RPC_CONSENSUS_VALIDATORS,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.metrics import set_gauge as metrics_set_gauge
 from lite_indexer.rpc.pool import record_endpoint_failure
 from lite_indexer.rpc.provider_caps import account_key_for_endpoint
 
@@ -115,15 +124,117 @@ class ConsensusResult:
     hashes: Mapping[str, str] = field(default_factory=dict)
 
 
+# ── Adaptive consensus budgeting ───────────────────────────────────────
+# EWMA of the recent decisive-verification mismatch rate (0..1). Seeded at 0
+# (a fresh, stable-looking pool samples at the floor until signal appears).
+_MISMATCH_ALPHA = 0.1
+_mismatch_ewma = 0.0
+
+
+def _record_verification(*, mismatch: bool) -> None:
+    """Update the mismatch EWMA with one decisive verification outcome."""
+    global _mismatch_ewma
+    sample = 1.0 if mismatch else 0.0
+    _mismatch_ewma = (1.0 - _MISMATCH_ALPHA) * _mismatch_ewma + _MISMATCH_ALPHA * sample
+
+
+def reset_adaptive_state() -> None:
+    """Clear the adaptive mismatch EWMA (tests / operator reset)."""
+    global _mismatch_ewma
+    _mismatch_ewma = 0.0
+
+
+def _health_risk() -> float:
+    """Average endpoint error-rate in the recent window (0..1)."""
+    try:
+        from lite_indexer.rpc.routing import latency_snapshot
+
+        rates = [float(entry.get("error_rate", 0.0) or 0.0) for entry in latency_snapshot().values()]
+    except Exception:  # noqa: BLE001 — risk signal must never break sampling
+        return 0.0
+    if not rates:
+        return 0.0
+    return _clamp(sum(rates) / len(rates), 0.0, 1.0)
+
+
+def _stale_risk() -> float:
+    """1.0 while any endpoint is demoted for a stale tip, else 0.0."""
+    try:
+        from lite_indexer.rpc.routing import stale_demoted_count
+
+        return 1.0 if stale_demoted_count() > 0 else 0.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _unvetted_risk() -> float:
+    """Fraction of pool endpoints that have too few recorded calls (0..1)."""
+    try:
+        from lite_indexer.rpc.routing import latency_snapshot
+
+        entries = list(latency_snapshot().values())
+    except Exception:  # noqa: BLE001
+        return 0.0
+    if not entries:
+        return 1.0  # no endpoint observed yet → treat the pool as unvetted
+    unvetted = sum(1 for entry in entries if int(entry.get("calls", 0) or 0) < RPC_CONSENSUS_UNVETTED_CALLS)
+    return unvetted / len(entries)
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    if hi < lo:
+        lo, hi = hi, lo
+    return max(lo, min(hi, value))
+
+
+def effective_sample_rate() -> float:
+    """Current effective consensus sample rate (data-driven when adaptive).
+
+    Bounded to ``[RPC_CONSENSUS_SAMPLE_MIN, RPC_CONSENSUS_SAMPLE_MAX]``. When
+    adaptive mode is off this is the fixed ``RPC_CONSENSUS_SAMPLE_RATE``
+    clamped into the same bounds (preserving the old semantics); when on it
+    scales with a risk score combining the recent mismatch EWMA, endpoint
+    error rate, stale-tip demotions, and unvetted-endpoint fraction.
+    """
+    if not RPC_CONSENSUS_ENABLED:
+        metrics_set_gauge("rpc_consensus_effective_rate", 0.0)
+        return 0.0
+    # Explicit operator switches keep their absolute semantics even when
+    # adaptive budgeting is on: 0 disables sampling, >=1 verifies every read.
+    base = RPC_CONSENSUS_SAMPLE_RATE
+    if base <= 0.0:
+        metrics_set_gauge("rpc_consensus_effective_rate", 0.0)
+        return 0.0
+    if base >= 1.0:
+        metrics_set_gauge("rpc_consensus_effective_rate", 1.0)
+        return 1.0
+    lo = RPC_CONSENSUS_SAMPLE_MIN
+    hi = RPC_CONSENSUS_SAMPLE_MAX
+    if not RPC_CONSENSUS_ADAPTIVE:
+        rate = _clamp(base, lo, hi)
+    else:
+        # Weighted risk with a cap: a sustained mismatch run alone saturates
+        # (1.2x) so a proven-bad pool samples at the ceiling; health/stale/
+        # unvetted signals add on top of a calmer mismatch signal.
+        risk = _clamp(
+            1.2 * _mismatch_ewma + 0.4 * _health_risk() + 0.3 * _stale_risk() + 0.2 * _unvetted_risk(),
+            0.0,
+            1.0,
+        )
+        rate = _clamp(lo + (hi - lo) * risk, lo, hi)
+    metrics_set_gauge("rpc_consensus_effective_rate", rate)
+    return rate
+
+
 def should_sample() -> bool:
     """Whether this read should be consensus-verified.
 
-    Returns False when consensus is disabled or the sample rate is <= 0;
-    otherwise draws uniformly against :data:`RPC_CONSENSUS_SAMPLE_RATE`.
+    Returns False when consensus is disabled or the effective rate is <= 0;
+    otherwise draws uniformly against :func:`effective_sample_rate`.
     """
     if not RPC_CONSENSUS_ENABLED:
         return False
-    rate = RPC_CONSENSUS_SAMPLE_RATE
+    rate = effective_sample_rate()
     if rate <= 0.0:
         return False
     if rate >= 1.0:
@@ -252,6 +363,7 @@ async def verify_across_providers(
     winning_hash, winners = max(groups.items(), key=lambda item: len(item[1]))
 
     if len(winners) >= needed:
+        _record_verification(mismatch=False)
         metrics_incr("rpc_consensus_verified")
         logger.info(
             "rpc_consensus_verified",
@@ -269,6 +381,7 @@ async def verify_across_providers(
             hashes=labels,
         )
 
+    _record_verification(mismatch=True)
     metrics_incr("rpc_consensus_mismatch")
     _penalize_disagreeing(groups, winning_hash)
     logger.warning(

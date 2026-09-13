@@ -30,7 +30,10 @@ this module focused on the queue itself.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import math
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,12 +45,15 @@ from lite_indexer.config import (
     BACKFILL_MAX_CHUNKS_PER_CYCLE,
     BACKFILL_MAX_CONCURRENCY,
     BACKFILL_MAX_QUEUE_DEPTH,
+    BACKFILL_WINDOW_INFER_S,
+    BACKFILL_WINDOW_JITTER_S,
+    BACKFILL_WINDOW_MIN_REMAINING,
     STATE_DIR,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.rpc.freemium import select_freemium_endpoint_for_chain
-from lite_indexer.rpc.ledger import provider_id_for_endpoint
+from lite_indexer.rpc.ledger import LEDGER, ProviderLedger, key_id_for_endpoint, provider_id_for_endpoint
 from lite_indexer.rpc.provider_caps import provider_concurrency_slot
 from lite_indexer.state import atomic_write_json
 
@@ -108,6 +114,92 @@ def chunk_range(chain: str, from_block: int, to_block: int, size: int) -> list[B
         chunks.append(BackfillChunk(chain=chain, from_block=start, to_block=end))
         start = end + 1
     return chunks
+
+
+@dataclass(frozen=True)
+class WindowDecision:
+    """Quota-window scheduling decision for one backfill chunk dispatch."""
+
+    allowed: bool
+    wait_seconds: float = 0.0
+    reason: str = "ok"
+
+
+def _chain_jitter(chain: str, bound: float) -> float:
+    """Deterministic per-chain jitter in ``[0, bound]`` seconds.
+
+    Spreads post-reset dispatches so every chain does not fire at the exact
+    same window boundary (stable across processes — hashed, not ``hash()``).
+    """
+    if bound <= 0.0:
+        return 0.0
+    digest = hashlib.sha256(chain.encode("utf-8")).digest()
+    fraction = int.from_bytes(digest[:4], "big") / 0xFFFFFFFF
+    return fraction * bound
+
+
+def window_decision(
+    chain: str,
+    endpoint: str,
+    *,
+    now: float | None = None,
+    min_remaining_pct: float = BACKFILL_WINDOW_MIN_REMAINING,
+    jitter_seconds: float = BACKFILL_WINDOW_JITTER_S,
+    infer_window_s: float = BACKFILL_WINDOW_INFER_S,
+    ledger: ProviderLedger | None = None,
+) -> WindowDecision:
+    """Decide whether a backfill chunk may dispatch now, window-aware.
+
+    Reads the target freemium ACCOUNT's quota state from the ledger:
+
+    * no ledger window / unseeded provider → **allow** (absence of data must
+      never starve backfill);
+    * remaining budget >= ``min_remaining_pct`` → **allow** (after a reset the
+      budget is full, so this is the "fire right after the window opens"
+      path);
+    * remaining budget below the floor → **defer** until the reset plus a
+      bounded per-chain jitter, instead of dispatching into a 429.
+
+    Args:
+        chain: Chain name (drives the deterministic jitter).
+        endpoint: Freemium endpoint whose account budget gates the dispatch.
+        now: Epoch override (tests).
+        min_remaining_pct: Remaining-budget floor (percent).
+        jitter_seconds: Upper bound on the post-reset stagger.
+        infer_window_s: Window length used when the ledger has no reset time.
+        ledger: Ledger override (tests); defaults to the shared singleton.
+    """
+    now = time.time() if now is None else now
+    active_ledger = ledger if ledger is not None else LEDGER
+    provider = provider_id_for_endpoint(endpoint)
+    key_id = key_id_for_endpoint(endpoint) or None
+    try:
+        state = active_ledger.state_for(provider, key_id, now)
+    except Exception as exc:  # noqa: BLE001 — scheduling must never raise
+        logger.debug("backfill_window_state_failed", error=str(exc)[:100])
+        return WindowDecision(allowed=True, reason="ledger_error")
+
+    if not state or not state.get("budget_units"):
+        return WindowDecision(allowed=True, reason="unknown")
+
+    consumed_pct = float(state.get("consumed_pct", 0.0) or 0.0)
+    remaining_pct = 100.0 - consumed_pct
+    reset_at = float(state.get("reset_at", 0.0) or 0.0)
+    if reset_at <= 0.0:
+        # Ledger has a budget but no window: infer a short (60s) window
+        # aligned to the next boundary rather than waiting for a reset that
+        # will never be reported.
+        reset_at = (math.floor(now / infer_window_s) + 1.0) * infer_window_s
+
+    if reset_at <= now:
+        return WindowDecision(allowed=True, reason="fresh_window")
+    if remaining_pct >= max(0.0, min_remaining_pct):
+        return WindowDecision(allowed=True, reason="budget_ok")
+    return WindowDecision(
+        allowed=False,
+        wait_seconds=(reset_at - now) + _chain_jitter(chain, jitter_seconds),
+        reason="near_cap",
+    )
 
 
 def detect_gaps(
@@ -425,13 +517,17 @@ async def drain_backfill_queue(
     max_chunks: int = BACKFILL_MAX_CHUNKS_PER_CYCLE,
     memory_ok: bool = True,
     endpoint_selector: EndpointSelector | None = None,
+    window_gate: Callable[[str, str], WindowDecision] | None = None,
 ) -> dict[str, int]:
     """Drain up to ``max_chunks`` pending chunks through ``executor``.
 
     Bounded by ``max_concurrency`` workers. When ``memory_ok`` is False the
     drain is skipped entirely (chunks stay queued) so the sidecar never
     pushes the daemon toward its recycle ceiling. A chunk with no freemium
-    endpoint is skipped (left queued, no attempt consumed).
+    endpoint is skipped (left queued, no attempt consumed). With a
+    ``window_gate``, chunks whose target account is near its quota cap are
+    deferred (left queued, no attempt consumed) until just after the window
+    resets.
 
     Args:
         queue: The persisted queue.
@@ -441,12 +537,14 @@ async def drain_backfill_queue(
         memory_ok: False pauses the drain without touching the queue.
         endpoint_selector: Freemium endpoint resolver (defaults to the
             chain-aware live-pool selector).
+        window_gate: Optional ``(chain, endpoint) -> WindowDecision`` quota
+            window rule. None disables window-aware scheduling.
 
     Returns:
         Counters: ``dispatched``, ``completed``, ``failed``, ``skipped``,
-        ``memory_paused``.
+        ``memory_paused``, ``window_deferred``.
     """
-    stats = {"dispatched": 0, "completed": 0, "failed": 0, "skipped": 0, "memory_paused": 0}
+    stats = {"dispatched": 0, "completed": 0, "failed": 0, "skipped": 0, "memory_paused": 0, "window_deferred": 0}
     if not memory_ok:
         stats["memory_paused"] = 1
         metrics_incr("backfill_memory_paused")
@@ -460,6 +558,25 @@ async def drain_backfill_queue(
     runnable = _resolve_runnable(chunks, selector, stats)
     if not runnable:
         return stats
+
+    if window_gate is not None:
+        allowed: list[tuple[BackfillChunk, str]] = []
+        for chunk, endpoint in runnable:
+            decision = window_gate(chunk.chain, endpoint)
+            if decision.allowed:
+                allowed.append((chunk, endpoint))
+                continue
+            stats["window_deferred"] += 1
+            metrics_incr("backfill_window_deferred")
+            logger.info(
+                "backfill_window_deferred",
+                chain=chunk.chain,
+                wait_seconds=round(decision.wait_seconds, 1),
+                reason=decision.reason,
+            )
+        runnable = allowed
+        if not runnable:
+            return stats
 
     semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
     stats["dispatched"] = len(runnable)
@@ -479,7 +596,9 @@ __all__ = [
     "BackfillExecutor",
     "BackfillQueue",
     "EndpointSelector",
+    "WindowDecision",
     "chunk_range",
     "detect_gaps",
     "drain_backfill_queue",
+    "window_decision",
 ]

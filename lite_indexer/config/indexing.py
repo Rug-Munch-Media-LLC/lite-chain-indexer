@@ -211,6 +211,22 @@ BACKFILL_MAX_CHUNKS_PER_CYCLE: int = int(os.environ.get("BACKFILL_MAX_CHUNKS_PER
 BACKFILL_MAX_ATTEMPTS: int = int(os.environ.get("BACKFILL_MAX_ATTEMPTS", "5"))
 # Completed chunk keys retained as the idempotency gate (LRU-pruned).
 BACKFILL_DONE_RETENTION: int = int(os.environ.get("BACKFILL_DONE_RETENTION", "4096"))
+# ── Quota-window-aware backfill scheduling ─────────────────────────────
+# Free/freemium tiers reset on a window and expose remaining budget in the
+# quota ledger. When enabled, a chunk whose target freemium account is near
+# its window cap is DEFERRED (left queued) until just after the window reset
+# instead of being dispatched into a 429. Providers with no ledger window
+# info are never deferred (no starvation); backfill stays freemium-only and
+# lower priority than the live tip.
+BACKFILL_WINDOW_AWARE: bool = os.environ.get("BACKFILL_WINDOW_AWARE", "1") == "1"
+# Minimum remaining budget (percent of the window) required to dispatch.
+# Below this the chunk waits for reset. 20 = spend only when >=20% remains.
+BACKFILL_WINDOW_MIN_REMAINING: float = float(os.environ.get("BACKFILL_WINDOW_MIN_REMAINING", "20.0"))
+# Upper bound (seconds) on the per-chain jitter added to a post-reset
+# dispatch time so every chain does not fire at the same window boundary.
+BACKFILL_WINDOW_JITTER_S: float = float(os.environ.get("BACKFILL_WINDOW_JITTER_S", "30.0"))
+# Window length (seconds) inferred when the ledger has no reset window.
+BACKFILL_WINDOW_INFER_S: float = float(os.environ.get("BACKFILL_WINDOW_INFER_S", "60.0"))
 # ── Plugin System ──────────────────────────────────────────────────────
 # Directory where user-installed plugins live (LITE_INDEXER_PLUGIN_DIR,
 # default DATA_DIR/plugins). A plugin is a folder containing a
