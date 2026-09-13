@@ -229,10 +229,30 @@ class BackfillMixin(IndexerMixinBase):
         return queue
 
     def _record_reconcile_rewind(self, from_block: int, to_block: int) -> None:
-        """Record a reconciliation rewind for the next gap enqueue (bounded)."""
+        """Record a reconciliation rewind for the next gap enqueue (bounded).
+
+        Also purges the persistent RPC response cache for the rewound range:
+        a reorg replaces the logs/blocks in that window, so any cached
+        historical reads for it are now wrong. Best-effort — cache failure
+        must never break the rewind bookkeeping.
+        """
         rewinds = self._reconcile_rewinds
         rewinds.append((int(from_block), int(to_block)))
         del rewinds[:-BACKFILL_MAX_QUEUE_DEPTH]
+        try:
+            from lite_indexer.rpc import respcache
+
+            deleted = respcache.invalidate_range(self.chain, int(from_block), int(to_block))
+            if deleted:
+                logger.info(
+                    "rpc_cache_reorg_invalidate",
+                    chain=self.chain,
+                    from_block=from_block,
+                    to_block=to_block,
+                    deleted=deleted,
+                )
+        except Exception as exc:  # noqa: BLE001 — cache invalidation is best-effort
+            logger.debug("rpc_cache_reorg_invalidate_failed", error=str(exc)[:100])
 
     def _enqueue_backfill_gaps(self, tip: int | None) -> int:
         """Detect un-indexed ranges and enqueue them (idempotent, bounded).

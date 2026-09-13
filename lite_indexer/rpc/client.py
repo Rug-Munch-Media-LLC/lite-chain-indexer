@@ -584,12 +584,26 @@ class RpcClient:
         endpoint: str,
         block_number: int,
         full_tx: bool = False,
+        *,
+        chain: str | None = None,
+        tip: int | None = None,
     ) -> dict[str, Any] | None:
-        """Get a block by its number."""
+        """Get a block by its number.
+
+        Historical blocks below ``RPC_CACHE_CONFIRMATIONS`` are served from
+        the persistent response cache; tip/near-tip reads are never cached.
+        """
+        from lite_indexer.rpc import respcache
+
+        params = [hex(block_number), full_tx]
+        cached = respcache.get("eth_getBlockByNumber", params, chain=chain, block_number=block_number, tip=tip)
+        if cached is not None and isinstance(cached.get("result"), dict):
+            return cast(dict[str, Any], cached["result"])
+
         result = await self.call(
             endpoint,
             "eth_getBlockByNumber",
-            [hex(block_number), full_tx],
+            params,
             timeout=TIMESTAMP_FETCH_TIMEOUT,
         )
         if result and "result" in result:
@@ -598,6 +612,16 @@ class RpcClient:
                 # Feed the staleness gate (skip null blocks — a missing
                 # block would skew the median toward 0).
                 _safe_record(record_endpoint_block_height, endpoint, block_number)
+                block_hash = block.get("hash")
+                respcache.put(
+                    "eth_getBlockByNumber",
+                    params,
+                    result,
+                    chain=chain,
+                    block_number=block_number,
+                    block_hash=str(block_hash) if block_hash else None,
+                    tip=tip,
+                )
             return block
         return None
 
@@ -656,6 +680,7 @@ class RpcClient:
         max_retries: int = 3,
         *,
         chain: str | None = None,
+        tip: int | None = None,
     ) -> list[dict[str, Any]] | None:
         """Fetch event logs via eth_getLogs with retry.
 
@@ -703,6 +728,36 @@ class RpcClient:
             )
             return None
 
+        # Persistent response cache: immutable historical ranges (confirmed
+        # past RPC_CACHE_CONFIRMATIONS) are served from L1/L2 without a dial.
+        # Volatile/unconfirmed ranges fall through untouched.
+        from lite_indexer.rpc import respcache
+
+        cache_params = [self._logs_filter(from_block, to_block, topic, address)]
+        cached = respcache.get(
+            "eth_getLogs",
+            cache_params,
+            chain=chain,
+            from_block=from_block,
+            to_block=to_block,
+            tip=tip,
+        )
+        if cached is not None and isinstance(cached.get("result"), list):
+            return cast(list[dict[str, Any]], cached["result"])
+
+        def _store_logs(result: list[dict[str, Any]] | None) -> None:
+            if result is None:
+                return
+            respcache.put(
+                "eth_getLogs",
+                cache_params,
+                {"jsonrpc": "2.0", "id": 1, "result": result},
+                chain=chain,
+                from_block=from_block,
+                to_block=to_block,
+                tip=tip,
+            )
+
         from lite_indexer.rpc.range_split import fetch_logs_split
 
         async def _once(child_from: int, child_to: int) -> tuple[str, list[dict[str, Any]] | None]:
@@ -726,6 +781,7 @@ class RpcClient:
         from lite_indexer.rpc.consensus import should_sample, verify_across_providers
 
         if logs is None or not chain or not should_sample():
+            _store_logs(logs)
             return logs
 
         try:
@@ -737,6 +793,7 @@ class RpcClient:
             )
         except Exception as exc:  # noqa: BLE001 — verification must never break the read
             logger.warning("rpc_consensus_error", chain=chain, error=str(exc)[:120])
+            _store_logs(logs)
             return logs
         if consensus.mismatch:
             logger.warning(
@@ -749,7 +806,10 @@ class RpcClient:
             )
             return None
         if consensus.verified and isinstance(consensus.result, list):
-            return cast(list[dict[str, Any]], consensus.result)
+            verified_logs = cast(list[dict[str, Any]], consensus.result)
+            _store_logs(verified_logs)
+            return verified_logs
+        _store_logs(logs)
         return logs
 
     @staticmethod

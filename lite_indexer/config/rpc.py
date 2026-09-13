@@ -154,6 +154,23 @@ RPC_USAGE_MAX_ENDPOINTS: int = 512
 # Persisted tracker state path (default: DATA_DIR/rpc_throttle.json).
 RPC_THROTTLE_FILE: str = os.environ.get("RPC_THROTTLE_FILE", str(DATA_DIR / "rpc_throttle.json"))
 
+# ── Persistent RPC response cache (rpc/cache_db.py + rpc/respcache.py) ──
+# L1 is the in-process LRU; L2 is a SQLite (WAL) store that survives restarts
+# so backfill/reconcile never re-fetch immutable history. Every knob is
+# failure-safe: a broken/oversized DB degrades to an L1-only cache.
+RPC_CACHE_ENABLED: bool = os.environ.get("RPC_CACHE_ENABLED", "1") != "0"
+# Persistent store path (default: DATA_DIR/rpc_cache.sqlite).
+RPC_CACHE_DB: str = os.environ.get("LITE_INDEXER_CACHE_DB", str(DATA_DIR / "rpc_cache.sqlite"))
+# Max cached entries (L2); oldest-accessed are evicted past this.
+RPC_CACHE_MAX_ENTRIES: int = int(os.environ.get("RPC_CACHE_MAX_ENTRIES", "200000"))
+# Entry TTL in seconds (default 7 days).
+RPC_CACHE_TTL_S: float = float(os.environ.get("RPC_CACHE_TTL_S", str(7 * 24 * 3600)))
+# Cap the DB size in MB (oldest entries evicted first); 0 disables the cap.
+RPC_CACHE_MAX_MB: int = int(os.environ.get("RPC_CACHE_MAX_MB", "512"))
+# Blocks closer than this to the chain tip are mutable (reorg window) and
+# are never cached; historical reads below it are immutable.
+RPC_CACHE_CONFIRMATIONS: int = int(os.environ.get("RPC_CACHE_CONFIRMATIONS", "64"))
+
 # Pre-emptive throttle threshold: when an endpoint advertises a budget via
 # X-RateLimit-Limit/Remaining and we have consumed more than this percent,
 # the next request is delayed to stay under the limit instead of waiting

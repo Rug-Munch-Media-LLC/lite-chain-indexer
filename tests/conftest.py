@@ -84,3 +84,19 @@ def _isolate_rpc_throttle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     tracker = RPCRateTracker(path=tmp_path / "rpc_throttle.json")
     monkeypatch.setattr("lite_indexer.rpc.throttle.RATE_TRACKER", tracker)
     monkeypatch.setattr("lite_indexer.rpc.RATE_TRACKER", tracker)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_rpc_cache(tmp_path: Path) -> None:
+    """Point the persistent RPC response cache (L2) at a temp DB per test.
+
+    The L2 store defaults to ``DATA_DIR/rpc_cache.sqlite`` (the live daemon's
+    file). Without this, cacheable reads in any test would write/read the
+    production cache. Each test gets a clean SQLite DB under its tmp dir;
+    L1 + head markers are reset too.
+    """
+    import lite_indexer.rpc.respcache as respcache
+
+    respcache.reset(db_path=str(tmp_path / "rpc_cache.sqlite"))
+    yield
+    respcache.reset(db_path=None)
