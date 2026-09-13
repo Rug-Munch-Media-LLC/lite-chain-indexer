@@ -31,6 +31,17 @@ class AbstractChainStrategy(ABC):
     def __init__(self, chain: str) -> None:
         self.chain = chain
 
+    # ── Optional: Resource Lifecycle ─────────────────────────────────
+
+    async def aclose(self) -> None:
+        """Release HTTP/connection resources held by this strategy.
+
+        Default is a no-op; strategies that own an
+        ``httpx.AsyncClient`` override this to ``aclose()`` it so a
+        daemon restart does not leak sockets. Idempotent.
+        """
+        return None
+
     # ── Required ─────────────────────────────────────────────────────
 
     @abstractmethod

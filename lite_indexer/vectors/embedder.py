@@ -28,6 +28,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from lite_indexer.util.http import http_limits
 from lite_indexer.vectors.config import (
     DEEPINFRA_API_KEY,
     DEEPINFRA_EMBED_MODEL,
@@ -79,7 +80,10 @@ class _Lane:
         self._api_key = api_key
         self._batch_size = batch_size
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0))
+        self._client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=10.0),
+            limits=http_limits(),
+        )
 
     @property
     def model(self) -> str:

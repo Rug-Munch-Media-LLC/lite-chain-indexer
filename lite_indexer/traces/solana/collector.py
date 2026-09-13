@@ -6,12 +6,14 @@ Split out of the former monolithic ``traces/solana.py`` (939 lines).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 import httpx
 
 from lite_indexer.chains.non_evm import SOLANA_ENDPOINTS
 from lite_indexer.logging import get_logger
+from lite_indexer.util.http import http_limits
 
 from .dex import build_transfer_graph_from_rows
 from .parsers import extract_solana_transfers
@@ -126,13 +128,15 @@ class SolanaTraceCollector:
     async def _get_client(self) -> httpx.AsyncClient:
         """Return the shared httpx client (created lazily)."""
         if self._client is None or self._client.is_closed:
-            limits = httpx.Limits(
-                max_connections=50,
-                max_keepalive_connections=10,
-                keepalive_expiry=30,
-            )
-            self._client = httpx.AsyncClient(timeout=httpx.Timeout(self.timeout), limits=limits)
+            self._client = httpx.AsyncClient(timeout=httpx.Timeout(self.timeout), limits=http_limits())
         return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client (idempotent; called on shutdown)."""
+        client, self._client = self._client, None
+        if client is not None and not client.is_closed:
+            with contextlib.suppress(Exception):
+                await client.aclose()
 
     async def _rpc_call(self, method: str, params: list[Any] | None = None) -> Any | None:
         """Call one JSON-RPC method, rotating endpoints with 429 backoff.

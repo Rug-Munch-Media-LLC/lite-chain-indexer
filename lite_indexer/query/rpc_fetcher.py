@@ -51,6 +51,7 @@ from lite_indexer.config import (
     ON_DEMAND_RPC_MAX_BLOCK_RANGE,
     ON_DEMAND_RPC_MAX_CONSECUTIVE,
     ON_DEMAND_RPC_PAUSE_SECONDS,
+    TIP_CACHE_MAX,
     TRANSFER_EVENT_TOPIC,
 )
 from lite_indexer.dex.transfers import parse_transfer_logs
@@ -60,6 +61,7 @@ from lite_indexer.query.cache import QueryCache
 from lite_indexer.rpc import RpcClient, get_best_endpoint, select_endpoint_for_method
 from lite_indexer.rpc.client import fetch_block_timestamps
 from lite_indexer.storage.parquet import ParquetExporter
+from lite_indexer.util.bounded import BoundedDict
 
 logger = get_logger(__name__)
 
@@ -152,7 +154,8 @@ class RPCFetcher:
         self._cache = cache if cache is not None else QueryCache()
         # chain → (monotonic timestamp, tip) — avoids one eth_blockNumber
         # per fetch when gating the reorg window (see _chain_tip).
-        self._tip_cache: dict[str, tuple[float, int]] = {}
+        # Bounded (2026-09-13): LRU-evict the oldest chain tip at cap.
+        self._tip_cache: BoundedDict[str, tuple[float, int]] = BoundedDict(TIP_CACHE_MAX)
 
     # ── Rate-limit protection ────────────────────────────────────────
 

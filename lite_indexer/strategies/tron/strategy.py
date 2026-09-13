@@ -12,6 +12,7 @@ with chain='tron', making them queryable alongside EVM transfers.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,6 +23,7 @@ from lite_indexer.rpc import RpcFetchFailedError
 from lite_indexer.storage.address_activity import parse_tron_address_activity
 from lite_indexer.strategies.address_activity import CrossChainAddressActivityMixin
 from lite_indexer.strategies.base import AbstractChainStrategy
+from lite_indexer.util.http import http_limits
 
 from .launch import (
     SUNPUMP_CONTRACT,
@@ -90,16 +92,18 @@ class TronStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            limits = httpx.Limits(
-                max_connections=50,
-                max_keepalive_connections=10,
-                keepalive_expiry=30,
-            )
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(30.0),
-                limits=limits,
+                limits=http_limits(),
             )
         return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client (idempotent; called on shutdown)."""
+        client, self._client = self._client, None
+        if client is not None and not client.is_closed:
+            with contextlib.suppress(Exception):
+                await client.aclose()
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """Make a GET request to TronGrid with endpoint failover.

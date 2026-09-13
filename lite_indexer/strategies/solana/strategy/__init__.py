@@ -14,9 +14,11 @@ from typing import Any
 
 import httpx
 
+from lite_indexer.config import LAUNCHPAD_SEEN_MINTS_MAX
 from lite_indexer.strategies.base import AbstractChainStrategy
 from lite_indexer.strategies.solana.models import SOLANA_TRACKED_TOKENS
 from lite_indexer.traces.solana import SolanaTraceCollector
+from lite_indexer.util.bounded import BoundedSet
 
 from .address_activity import AddressActivityMixin
 from .dex_events import DexEventsMixin
@@ -94,4 +96,6 @@ class SolanaStrategy(
         # Launchpad block watcher: newest slot already scanned for token
         # creations, plus mints already buffered (dedup across cycles).
         self._launchpad_last_slot: int = 0
-        self._launchpad_seen_mints: set[str] = set()
+        # Bounded (2026-09-13): dedup set would grow without limit over a
+        # long-running daemon; oldest mints are evicted past the cap.
+        self._launchpad_seen_mints: BoundedSet[str] = BoundedSet(LAUNCHPAD_SEEN_MINTS_MAX)

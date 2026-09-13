@@ -44,7 +44,7 @@ try:
 except ImportError:  # pragma: no cover — optional dependency
     duckdb = None  # type: ignore[assignment]
 
-from lite_indexer.config import HISTORICAL_PARQUET_REMOTE
+from lite_indexer.config import COLD_LIST_CACHE_MAX, HISTORICAL_PARQUET_REMOTE
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.storage.duckdb_query import (
@@ -53,6 +53,7 @@ from lite_indexer.storage.duckdb_query import (
     _local_path,
     _split_files,
 )
+from lite_indexer.util.bounded import BoundedDict
 
 logger = get_logger(__name__)
 
@@ -275,7 +276,8 @@ class ColdStore:
         self._con: Any | None = None
         self._lock = threading.Lock()
         # (chain, start, end) → files — avoids re-listing the same window.
-        self._list_cache: dict[tuple[str, str, str], dict[str, list[Path]]] = {}
+        # Bounded (2026-09-13): LRU-evict the oldest window listing at cap.
+        self._list_cache: BoundedDict[tuple[str, str, str], dict[str, list[Path]]] = BoundedDict(COLD_LIST_CACHE_MAX)
 
     # ── Connection ───────────────────────────────────────────────────
 
@@ -289,10 +291,18 @@ class ColdStore:
                 con.execute("INSTALL httpfs; LOAD httpfs;")
                 endpoint = os.getenv("B2_S3_ENDPOINT", "https://s3.us-west-004.backblazeb2.com")
                 region = os.getenv("B2_S3_REGION", "us-west-004")
-                con.execute(f"SET s3_endpoint = '{endpoint}'")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
-                con.execute(f"SET s3_region = '{region}'")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
-                con.execute(f"SET s3_access_key_id = '{os.getenv('B2_ACCOUNT_ID', '')}'")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
-                con.execute(f"SET s3_secret_access_key = '{os.getenv('B2_APPLICATION_KEY', '')}'")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                con.execute(
+                    f"SET s3_endpoint = '{endpoint}'"
+                )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                con.execute(
+                    f"SET s3_region = '{region}'"
+                )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                con.execute(
+                    f"SET s3_access_key_id = '{os.getenv('B2_ACCOUNT_ID', '')}'"
+                )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                con.execute(
+                    f"SET s3_secret_access_key = '{os.getenv('B2_APPLICATION_KEY', '')}'"
+                )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
             self._con = con
         return self._con
 
@@ -510,7 +520,9 @@ class ColdStore:
             con = self._connection()
             literals = ", ".join(repr(str(p)) for p in files)
             view = f"_tha_{table}"
-            con.execute(f"CREATE OR REPLACE VIEW {view} AS SELECT * FROM read_parquet([{literals}])")  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+            con.execute(
+                f"CREATE OR REPLACE VIEW {view} AS SELECT * FROM read_parquet([{literals}])"
+            )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
 
             clauses: list[str] = []
             block_col = _BLOCK_COL[table]
@@ -534,7 +546,9 @@ class ColdStore:
             # _normalize fills the canonical shape with type defaults.
             sql = f"SELECT * FROM {view} WHERE {where_sql} ORDER BY {order} LIMIT {int(limit)}"
             try:
-                rows = con.execute(sql).fetchall()  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                rows = con.execute(
+                    sql
+                ).fetchall()  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                 raw_cols = [desc[0] for desc in con.description] if con.description else []
             except Exception as exc:  # noqa: BLE001 — cold reads are best-effort
                 metrics_incr("tha_cold_errors")

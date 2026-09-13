@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from lite_indexer.util.bounded import BoundedSet
+
 if TYPE_CHECKING:
     from lite_indexer.traces.solana import SolanaTraceCollector
 
@@ -49,7 +51,7 @@ class SolanaMixinBase:
     _ch_client: Any
     _base_mints: frozenset[str]
     _launchpad_last_slot: int
-    _launchpad_seen_mints: set[str]
+    _launchpad_seen_mints: BoundedSet[str]
 
     # ── Methods owned by the concrete class / sibling mixins ──────────────
     async def fetch_block_number(self) -> int | None:

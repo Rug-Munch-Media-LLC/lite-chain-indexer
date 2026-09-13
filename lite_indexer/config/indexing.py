@@ -108,6 +108,33 @@ MEMORY_CHECK_INTERVAL: int = int(os.environ.get("MEMORY_CHECK_INTERVAL", "15"))
 # How long (seconds) a chain loop sleeps when the memory gate is closed
 # (RSS over MEMORY_HIGH_MB) before re-checking.
 MEMORY_PAUSE_SLEEP: int = int(os.environ.get("MEMORY_PAUSE_SLEEP", "30"))
+
+# ── Hard Memory Ceiling: self-recycle ────────────────────────────────────
+# Measured 2026-09-13: the daemon RSS oscillated 2.5-3.1 GiB and climbed to
+# 5.34 GiB under load, where the kernel cgroup OOM killer fired (7 GiB
+# MemoryMax). The pause gate above only *throttles* new ingestion — it does
+# not reclaim the live heap, so an unbounded long-running process can still
+# ratchet upward until it dies. MEMORY_RECYCLE_MB is the hard ceiling: after
+# a completed sync cycle (state already saved) the daemon checks its guarded
+# memory and, at or above this threshold, logs ``memory_recycle`` and exits
+# cleanly so systemd ``Restart=always`` restarts it with a fresh heap.
+# Default 3072 = 3 GiB caps max RSS at ~3.1 GiB, well under MEMORY_HIGH_MB.
+# Set MEMORY_RECYCLE_MB=0 to disable self-recycling.
+MEMORY_RECYCLE_MB: int = int(os.environ.get("MEMORY_RECYCLE_MB", "3072"))
+
+# ── Bounded cache caps ───────────────────────────────────────────────────
+# Every long-lived in-memory collection gets an explicit ceiling; see
+# lite_indexer/util/bounded.py. Without these the daemon leaks slowly.
+# Pair→tokens map persisted to disk (state.PairCache).
+PAIR_CACHE_MAX: int = int(os.environ.get("PAIR_CACHE_MAX", "50000"))
+# Launchpad mints already buffered (Solana) — dedup only, safe to roll.
+LAUNCHPAD_SEEN_MINTS_MAX: int = int(os.environ.get("LAUNCHPAD_SEEN_MINTS_MAX", "10000"))
+# ColdStore (chain, start, end) → parquet file listing.
+COLD_LIST_CACHE_MAX: int = int(os.environ.get("COLD_LIST_CACHE_MAX", "256"))
+# Historical layer TTL/view-probe caches.
+HISTORICAL_CACHE_MAX: int = int(os.environ.get("HISTORICAL_CACHE_MAX", "256"))
+# On-demand RPC chain-tip cache.
+TIP_CACHE_MAX: int = int(os.environ.get("TIP_CACHE_MAX", "256"))
 # ── State Backward Protection ───────────────────────────────────────────
 # Guard against state-file regressions (observed 08/03 + 08/04: the
 # ethereum state file was reset to ~93K / block 100 while the ClickHouse

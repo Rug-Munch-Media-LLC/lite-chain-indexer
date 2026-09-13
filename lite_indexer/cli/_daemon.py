@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 import time
+from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ from lite_indexer.config import (
     DISK_CAP_BYTES,
     MAX_CONCURRENT_CHAINS,
     MEMORY_PAUSE_SLEEP,
+    MEMORY_RECYCLE_MB,
     PRICING_ENABLED,
 )
 from lite_indexer.health import ChainStallTracker
@@ -29,6 +32,35 @@ from lite_indexer.logging import get_logger
 from lite_indexer.storage.clickhouse import ClickHouseWriter
 
 logger = get_logger(__name__)
+
+
+def memory_recycle_needed(mem_mb: int, threshold_mb: int = MEMORY_RECYCLE_MB) -> bool:
+    """Whether guarded memory has reached the hard self-recycle ceiling.
+
+    A ``threshold_mb`` of 0 disables recycling (unbounded mode).
+    """
+    return threshold_mb > 0 and mem_mb >= threshold_mb
+
+
+async def recycle_if_over_budget(
+    mem_mb: int,
+    chain: str,
+    indexers: Sequence[LiteIndexer] = (),
+) -> None:
+    """Log and exit the process when guarded memory hits the ceiling.
+
+    Called AFTER a sync cycle completes (state is saved each cycle by
+    ``sync_loop``), so no in-flight work is lost. The clients are closed
+    best-effort before ``os._exit(0)``; systemd ``Restart=always`` then
+    restarts the daemon with a fresh heap, capping max RSS at roughly
+    ``MEMORY_RECYCLE_MB``. A no-op below the threshold.
+    """
+    if not memory_recycle_needed(mem_mb):
+        return
+    logger.warning("memory_recycle", chain=chain, rss_mb=mem_mb, recycle_mb=MEMORY_RECYCLE_MB)
+    await asyncio.gather(*(ix.aclose() for ix in indexers), return_exceptions=True)
+    logger.info("memory_recycle_exit", rss_mb=mem_mb, recycle_mb=MEMORY_RECYCLE_MB)
+    os._exit(0)
 
 
 async def main_daemon(
@@ -92,6 +124,9 @@ async def main_daemon(
     # Shared concurrency cap: at most `max_concurrent` chains sync at once.
     concurrency_slot = asyncio.Semaphore(max_concurrent) if max_concurrent and max_concurrent > 0 else None
 
+    # Live indexers, kept so shutdown can close their HTTP clients.
+    indexers: list[LiteIndexer] = []
+
     async def _chain_loop(chain: str) -> None:
         """Independent per-chain polling loop with its own poll interval.
 
@@ -105,6 +140,11 @@ async def main_daemon(
         once. When the semaphore is contended, lower-priority chains wait
         for a free slot instead of piling up parallel fetches — this is
         what prevents the cgroup OOM kills.
+
+        After each completed cycle (state already persisted by
+        ``sync_loop``) the loop checks guarded memory against the hard
+        ``MEMORY_RECYCLE_MB`` ceiling; at or above it the process exits
+        cleanly for systemd to restart with a fresh heap.
         """
         nonlocal error_count
         indexer = LiteIndexer(
@@ -113,6 +153,7 @@ async def main_daemon(
             start_from_head=start_from_head,
             data_dir=data_path,
         )
+        indexers.append(indexer)
         indexer.dex_enabled = dex_enabled
         indexer.deployers_enabled = deployers_enabled
         indexer.traces_enabled = traces_enabled
@@ -173,6 +214,13 @@ async def main_daemon(
                         )
                     elif stall_tracker.disabled:
                         logger.info("chain_reenabled", chain=chain, block=state_after)
+
+                # Hard memory ceiling: AFTER this cycle's state has been
+                # persisted by sync_loop, recycle the process if guarded
+                # memory has reached MEMORY_RECYCLE_MB. systemd
+                # Restart=always gives it a fresh heap, capping max RSS.
+                # Never reached mid-cycle.
+                await recycle_if_over_budget(indexer.guarded_memory_mb(), chain, indexers)
             except Exception as exc:
                 error_count += 1
                 logger.error("daemon_chain_failed", chain=chain, error=str(exc))
@@ -232,6 +280,10 @@ async def main_daemon(
     await asyncio.gather(health_task, discovery_task, *chain_tasks, return_exceptions=True)
     if price_task is not None:
         await asyncio.gather(price_task, return_exceptions=True)
+
+    # Close every per-chain HTTP client so a clean shutdown (or restart)
+    # does not leak sockets to the next process.
+    await asyncio.gather(*(ix.aclose() for ix in indexers), return_exceptions=True)
 
     logger.info("daemon_shutdown")
     return 0 if error_count == 0 else 1

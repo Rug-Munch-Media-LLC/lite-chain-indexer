@@ -7,6 +7,7 @@ Split from the former monolithic strategy.py.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
 from typing import Any
 
@@ -31,6 +32,7 @@ from lite_indexer.strategies.solana.reorg import (
     rollback_to_slot,
 )
 from lite_indexer.strategies.solana.rpc import rpc_call
+from lite_indexer.util.http import http_limits
 
 from ._base import SolanaMixinBase
 
@@ -281,16 +283,22 @@ class SyncMixin(SolanaMixinBase):
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            limits = httpx.Limits(
-                max_connections=50,
-                max_keepalive_connections=10,
-                keepalive_expiry=30,
-            )
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(30.0),
-                limits=limits,
+                limits=http_limits(),
             )
         return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client + trace collector (idempotent)."""
+        client, self._client = self._client, None
+        if client is not None and not client.is_closed:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+        collector = getattr(self, "_trace_collector", None)
+        if collector is not None:
+            with contextlib.suppress(Exception):
+                await collector.aclose()
 
     async def _rpc_call(
         self,

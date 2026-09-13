@@ -17,6 +17,7 @@ from lite_indexer.config import (
     PRICING_BATCH_SIZE,
 )
 from lite_indexer.logging import get_logger
+from lite_indexer.util.http import http_limits
 
 logger = get_logger(__name__)
 
@@ -36,7 +37,7 @@ class PriceFetcher:
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(15.0, connect=5.0),
-            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            limits=http_limits(max_connections=10, max_keepalive_connections=5),
         )
 
     async def aclose(self) -> None:

@@ -50,6 +50,7 @@ from lite_indexer.storage.address_activity import (
     parse_address_activity,
     write_address_activity,
 )
+from lite_indexer.util.http import http_limits
 
 logger = get_logger(__name__)
 
@@ -289,7 +290,7 @@ class SolanaWebsocketIngestor:
         import httpx
 
         if self._http_client is None or getattr(self._http_client, "is_closed", True):
-            self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(20.0))
+            self._http_client = httpx.AsyncClient(timeout=httpx.Timeout(20.0), limits=http_limits())
         return self._http_client
 
     async def _default_fetch_transaction(self, signature: str) -> dict[str, Any] | None:

@@ -14,6 +14,7 @@ Manages:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 import httpx
@@ -54,6 +55,7 @@ from lite_indexer.strategies.evm.reorg import (
     detect_reorg as reorg_detect_reorg,
 )
 from lite_indexer.strategies.evm.transfer_handler import fetch_transfers as _fetch_transfers
+from lite_indexer.util.http import http_limits
 
 logger = get_logger(__name__)
 
@@ -172,16 +174,18 @@ class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create shared HTTP client for eth_getLogs calls."""
         if self._client is None or self._client.is_closed:
-            limits = httpx.Limits(
-                max_connections=100,
-                max_keepalive_connections=20,
-                keepalive_expiry=30,
-            )
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(RPC_TIMEOUT),
-                limits=limits,
+                limits=http_limits(),
             )
         return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client (idempotent; called on shutdown)."""
+        client, self._client = self._client, None
+        if client is not None and not client.is_closed:
+            with contextlib.suppress(Exception):
+                await client.aclose()
 
     # ── Endpoint Verification ────────────────────────────────────────
 

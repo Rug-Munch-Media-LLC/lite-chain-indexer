@@ -14,6 +14,7 @@ import httpx
 
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.util.http import http_limits
 from lite_indexer.webhooks.models import (
     HEALTH_BREAK,
     HEALTH_DISABLE,
@@ -183,6 +184,7 @@ class SenderMixin(DeliveryMixinBase):
             self._http_client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout_seconds),
                 transport=self._transport,
+                limits=http_limits(),
             )
         return self._http_client
 

@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import time
+from collections import OrderedDict
 from typing import Any, cast
 
 import httpx
@@ -21,6 +22,7 @@ from lite_indexer.config import (
     DEFAULT_BLOCK_TIME,
     GET_LOGS_SEMAPHORE_LIMIT,
     RATE_LIMIT_WAIT_CAP,
+    RPC_CALL_CLIENTS_MAX,
     RPC_CALL_TIMEOUT,
     RPC_RETRY_ATTEMPTS,
     RPC_RETRY_BASE_DELAY_S,
@@ -51,6 +53,7 @@ from lite_indexer.rpc.routing import (
     record_rpc_latency,
     record_rpc_outcome,
 )
+from lite_indexer.util.http import http_limits
 
 logger = get_logger(__name__)
 
@@ -134,16 +137,43 @@ def _warn_deferred(endpoint: str, method: str, reason: str) -> None:
 # timeout so callers with different timeouts don't fight over one value.
 # Safe under asyncio: creation is synchronous, so there is no await point
 # between the lookup and the assignment.
-_call_clients: dict[float, httpx.AsyncClient] = {}
+#
+# BOUNDED (2026-09-13): this map previously grew one client per distinct
+# timeout, never evicted and never closed — the primary socket leak (the
+# live process held 150 open sockets). It is now capped at
+# RPC_CALL_CLIENTS_MAX with LRU eviction, and an evicted client is closed.
+_call_clients: OrderedDict[float, httpx.AsyncClient] = OrderedDict()
 
 
 async def _get_call_client(timeout: float) -> httpx.AsyncClient:
-    """Get a pooled module-level httpx client for the given timeout."""
+    """Get a pooled module-level httpx client for the given timeout.
+
+    The pool is capped at :data:`RPC_CALL_CLIENTS_MAX`; the least-recently
+    used client is evicted and closed when the cap is exceeded. Every
+    client gets explicit connection limits so sockets stay bounded.
+    """
     client = _call_clients.get(timeout)
-    if client is None or client.is_closed:
-        client = httpx.AsyncClient(timeout=httpx.Timeout(timeout))
-        _call_clients[timeout] = client
+    if client is not None and not client.is_closed:
+        _call_clients.move_to_end(timeout)
+        return client
+    client = httpx.AsyncClient(timeout=httpx.Timeout(timeout), limits=http_limits())
+    _call_clients[timeout] = client
+    _call_clients.move_to_end(timeout)
+    while len(_call_clients) > RPC_CALL_CLIENTS_MAX:
+        _, evicted = _call_clients.popitem(last=False)
+        with contextlib.suppress(Exception):
+            await evicted.aclose()
     return client
+
+
+async def aclose_call_clients() -> None:
+    """Close and clear every pooled call client (shutdown / tests)."""
+    clients = list(_call_clients.values())
+    _call_clients.clear()
+    for client in clients:
+        if not client.is_closed:
+            with contextlib.suppress(Exception):
+                await client.aclose()
 
 
 # ── RPC Client ─────────────────────────────────────────────────────────
@@ -162,16 +192,18 @@ class RpcClient:
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create shared HTTP client."""
         if self._client is None or self._client.is_closed:
-            limits = httpx.Limits(
-                max_connections=100,
-                max_keepalive_connections=20,
-                keepalive_expiry=30,
-            )
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(RPC_TIMEOUT),
-                limits=limits,
+                limits=http_limits(),
             )
         return self._client
+
+    async def aclose(self) -> None:
+        """Close the shared HTTP client (idempotent)."""
+        client, self._client = self._client, None
+        if client is not None and not client.is_closed:
+            with contextlib.suppress(Exception):
+                await client.aclose()
 
     async def call(
         self,

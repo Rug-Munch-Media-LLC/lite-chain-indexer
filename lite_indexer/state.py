@@ -18,8 +18,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from lite_indexer.config import PAIR_CACHE_MAX
 from lite_indexer.config import STATE_DIR as STATE_DIR
 from lite_indexer.logging import get_logger
+from lite_indexer.util.bounded import BoundedDict
 
 logger = get_logger(__name__)
 
@@ -204,7 +206,9 @@ class PairCache:
 
     def __init__(self, chain: str) -> None:
         self.chain = chain
-        self._pairs: dict[str, tuple[str, str]] = {}
+        # Bounded (2026-09-13): pair keys grow without limit over a
+        # daemon's lifetime; LRU-evict the oldest at PAIR_CACHE_MAX.
+        self._pairs: BoundedDict[str, tuple[str, str]] = BoundedDict(PAIR_CACHE_MAX)
         self._load()
 
     def _cache_path(self) -> Path:
@@ -215,15 +219,16 @@ class PairCache:
         path = self._cache_path()
         if not path.exists():
             logger.debug("pair_cache_not_found", chain=self.chain, path=str(path))
-            self._pairs = {}
+            self._pairs.clear()
             return
         try:
             data = json.loads(path.read_text())
-            self._pairs = {k: (v[0], v[1]) if isinstance(v, list) else v for k, v in data.items()}
+            loaded = {k: (v[0], v[1]) if isinstance(v, list) else v for k, v in data.items()}
+            self._pairs = BoundedDict(PAIR_CACHE_MAX, loaded)
             logger.info("pair_cache_loaded", chain=self.chain, pairs=len(self._pairs))
         except (json.JSONDecodeError, OSError, TypeError) as exc:
             logger.warning("pair_cache_load_failed", chain=self.chain, error=str(exc)[:80])
-            self._pairs = {}
+            self._pairs.clear()
 
     def save(self) -> None:
         """Persist pair→tokens mapping to disk (atomic)."""
@@ -231,7 +236,7 @@ class PairCache:
             return
         try:
             path = self._cache_path()
-            atomic_write_json(path, self._pairs)
+            atomic_write_json(path, dict(self._pairs))
             logger.debug("pair_cache_saved", chain=self.chain, pairs=len(self._pairs))
         except (OSError, TypeError) as exc:
             logger.warning("pair_cache_save_failed", chain=self.chain, error=str(exc)[:80])
@@ -250,8 +255,8 @@ class PairCache:
 
     @property
     def all(self) -> dict[str, tuple[str, str]]:
-        """Get all pairs."""
-        return self._pairs
+        """Get all pairs (snapshot)."""
+        return dict(self._pairs)
 
     @property
     def count(self) -> int:

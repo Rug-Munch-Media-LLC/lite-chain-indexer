@@ -43,12 +43,14 @@ from lite_indexer.config import (
     CH_TABLE,
     CH_TRACE_TABLE,
     COLD_QUERY_TIMEOUT,
+    HISTORICAL_CACHE_MAX,
     HISTORICAL_HOT_TTL_DAYS,
     RETENTION_DAYS,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.storage.cold_store import TABLE_COLUMNS, TABLE_KINDS, ColdStore
+from lite_indexer.util.bounded import BoundedDict
 
 logger = get_logger(__name__)
 
@@ -155,8 +157,8 @@ class HistoricalAccess:
         self.rclone = rclone_binary
         self._cold = cold_store or ColdStore(remote=b2_bucket or "", rclone_bin=rclone_binary)
         self._hot_ttl_days = hot_ttl_days
-        self._ttl_cache: dict[str, int] = {}
-        self._view_cache: dict[str, bool] = {}
+        self._ttl_cache: BoundedDict[str, int] = BoundedDict(HISTORICAL_CACHE_MAX)
+        self._view_cache: BoundedDict[str, bool] = BoundedDict(HISTORICAL_CACHE_MAX)
         self._view_checked: float = 0.0
 
     # ── Clients / helpers ────────────────────────────────────────────
@@ -342,7 +344,9 @@ class HistoricalAccess:
         sql = f"SELECT {cols} FROM {_TABLE_REF[table]} WHERE {where_sql} ORDER BY {order} LIMIT {int(limit)}"
         metrics_incr("tha_hot_queries")
         try:
-            rows, column_types = client.execute(sql, params, with_column_types=True)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+            rows, column_types = client.execute(
+                sql, params, with_column_types=True
+            )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         except Exception as exc:  # noqa: BLE001 — hot reads are best-effort
             metrics_incr("tha_hot_errors")
             logger.warning("tha_hot_query_failed", table=table, error=str(exc)[:150])
@@ -490,7 +494,7 @@ class HistoricalAccess:
         """True when ``wallet_memory.<table>_historical`` exists (cached)."""
         now = time.monotonic()
         if now - self._view_checked > _VIEW_CHECK_TTL:
-            self._view_cache = {}
+            self._view_cache.clear()
             self._view_checked = now
         if table in self._view_cache:
             return self._view_cache[table]

@@ -25,6 +25,20 @@ RATE_LIMIT_WAIT_CAP = 16
 # Default timeout for RPC calls
 RPC_CALL_TIMEOUT = 15.0
 
+# ── HTTP connection-pool ceilings (2026-09-13 socket leak) ───────────────
+# Every long-lived httpx.AsyncClient must carry explicit limits so the
+# process socket count stays bounded. The daemon was measured with 150
+# open sockets before this was pinned down (default httpx pool is 100 per
+# client). See lite_indexer/util/http.py.
+HTTP_MAX_CONNECTIONS: int = int(os.environ.get("HTTP_MAX_CONNECTIONS", "20"))
+HTTP_MAX_KEEPALIVE_CONNECTIONS: int = int(os.environ.get("HTTP_MAX_KEEPALIVE_CONNECTIONS", "10"))
+HTTP_KEEPALIVE_EXPIRY: float = float(os.environ.get("HTTP_KEEPALIVE_EXPIRY", "30.0"))
+
+# Max module-global pooled call clients in rpc/client.py keyed by timeout.
+# The cache previously grew one AsyncClient per distinct timeout and never
+# evicted or closed them (the primary socket leak).
+RPC_CALL_CLIENTS_MAX: int = int(os.environ.get("RPC_CALL_CLIENTS_MAX", "4"))
+
 # Timeout for block timestamp fetch calls
 TIMESTAMP_FETCH_TIMEOUT = 15
 
@@ -223,9 +237,7 @@ CH_ADDRESS_BACKFILL_STATE_TABLE: str = (
 # Keyed templates keep ${ENV_VAR} placeholders — never a real key in code;
 # unresolved templates are dropped from the provider list at import.
 SOLANA_PUBLIC_RPC: str = os.environ.get("SOLANA_PUBLIC_RPC", "https://api.mainnet-beta.solana.com")
-SOLANA_PUBLIC_RPC_FALLBACK: str = os.environ.get(
-    "SOLANA_PUBLIC_RPC_FALLBACK", "https://solana-rpc.publicnode.com"
-)
+SOLANA_PUBLIC_RPC_FALLBACK: str = os.environ.get("SOLANA_PUBLIC_RPC_FALLBACK", "https://solana-rpc.publicnode.com")
 SOLANA_ALCHEMY_RPC_TEMPLATE: str = os.environ.get(
     "SOLANA_ALCHEMY_RPC_TEMPLATE", "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}"
 )

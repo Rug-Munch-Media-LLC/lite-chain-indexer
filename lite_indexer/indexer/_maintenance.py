@@ -16,6 +16,7 @@ from lite_indexer.config import (
     GC_EVERY_N_CYCLES,
 )
 from lite_indexer.indexer._base import IndexerMixinBase
+from lite_indexer.indexer._resource_guards import get_guarded_memory_mb
 from lite_indexer.logging import get_logger
 
 log = get_logger(__name__)
@@ -54,6 +55,29 @@ class MaintenanceMixin(IndexerMixinBase):
             True when under the threshold (or the watchdog is disabled).
         """
         return self._memory_gate.ok()
+
+    def guarded_memory_mb(self) -> int:
+        """Current guarded memory (max of process RSS and cgroup charge).
+
+        This is the metric the daemon's hard self-recycle ceiling
+        (``MEMORY_RECYCLE_MB``) is compared against. Read fresh rather
+        than from the gate cache so the recycle decision is current.
+
+        Returns:
+            Guarded memory in MiB (0 when unavailable).
+        """
+        return get_guarded_memory_mb()
+
+    async def aclose(self) -> None:
+        """Release long-lived RPC + strategy HTTP clients (idempotent).
+
+        Called by the daemon on shutdown (and before a memory self-recycle
+        exit) so sockets are not leaked to the restarted process.
+        """
+        strategy, self._strategy = self._strategy, None
+        if strategy is not None:
+            await strategy.aclose()
+        await self.rpc.aclose()
 
     def _maybe_reconcile_range(
         self,
