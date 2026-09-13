@@ -222,8 +222,11 @@ class TransfersMixin(SolanaMixinBase):
                 # Address-activity keystone in catch-up mode too: expand
                 # every successful block transaction into one row per
                 # involved account (zero extra RPC — same block payload).
+                # getBlock transaction dicts carry no top-level ``slot``,
+                # so pass the block's slot explicitly — otherwise every
+                # row is written with the sentinel 0.
                 try:
-                    self._ingest_address_activity(tx)
+                    self._ingest_address_activity(tx, slot)
                 except Exception as exc:  # noqa: BLE001 — best-effort
                     logger.warning(
                         "solana_address_activity_blockwise_failed",
@@ -367,7 +370,7 @@ class TransfersMixin(SolanaMixinBase):
                     # Raydium/LaunchLab/LetsBonk create instructions in the
                     # already-fetched transaction — zero extra RPC cost.
                     try:
-                        launch = detect_launch(tx_data)
+                        launch = detect_launch(tx_data, slot)
                         if launch is not None:
                             self._last_launch_events.append(launch)
                         slot_txs.setdefault(slot, []).append(tx_data)
@@ -417,7 +420,7 @@ class TransfersMixin(SolanaMixinBase):
                     # Pure parse + buffer — zero extra RPC; drained in
                     # write_clickhouse. Best-effort, never blocks the fetch.
                     try:
-                        self._ingest_address_activity(tx_data)
+                        self._ingest_address_activity(tx_data, slot)
                     except Exception as exc:  # noqa: BLE001 — best-effort
                         logger.warning(
                             "solana_address_activity_failed",

@@ -207,6 +207,15 @@ class TestDetectLaunchEdgeCases:
     def test_empty_tx_no_match(self):
         assert detect_launch(_tx()) is None
 
+    def test_explicit_slot_overrides_missing_payload_slot(self):
+        # getBlock per-transaction dicts carry no top-level ``slot``; the
+        # caller's block slot must win instead of the sentinel 0.
+        tx = _tx(instructions=[_pumpfun_create_ix()])
+        tx.pop("slot")
+        evt = detect_launch(tx, 441_421_301)
+        assert evt is not None
+        assert evt.slot == 441_421_301
+
 
 class TestDecodeBondingCurve:
     def _curve_bytes(self, *, with_creator: bool = False, complete: bool = False) -> bytes:

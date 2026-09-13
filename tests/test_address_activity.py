@@ -17,6 +17,7 @@ test_solana_traces.py.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
@@ -256,3 +257,42 @@ class TestAddressActivityIngestion:
         strategy = SolanaStrategy()
         assert strategy._ingest_address_activity(_sample_tx(failed=True)) == 0
         assert strategy._address_activity_rows == []
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Slot propagation — the getBlock/catch-up path carries no payload slot
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestAddressActivitySlotPropagation:
+    def test_parse_prefers_explicit_slot_over_payload(self):
+        tx = _sample_tx()
+        tx["slot"] = 1  # stale/bogus payload value
+        rows = parse_address_activity(tx, SLOT)
+        assert {row["slot"] for row in rows} == {SLOT}
+
+    def test_ingest_uses_explicit_slot_when_payload_lacks_it(self):
+        strategy = SolanaStrategy()
+        tx = _sample_tx()
+        tx.pop("slot")  # getBlock per-tx shape (no top-level slot)
+        buffered = strategy._ingest_address_activity(tx, SLOT)
+        assert buffered == 8
+        assert {row["slot"] for row in strategy._address_activity_rows} == {SLOT}
+
+    def test_blockwise_path_writes_the_real_block_slot(self):
+        strategy = SolanaStrategy(
+            tracked_tokens=[{"mint": USDC_MINT, "symbol": "USDC", "decimals": 6, "name": "USD Coin"}]
+        )
+        block_slot = 441_234_568  # divisible by the catch-up sampling stride (every 4th slot)
+        tx = _sample_tx()
+        tx.pop("slot")  # getBlock transactions carry no top-level slot
+
+        async def _fake_rpc(method: str, params: object = None, endpoint: object = None) -> dict[str, Any]:
+            assert method == "getBlock"
+            return {"result": {"blockTime": BLOCK_TIME, "transactions": [tx]}}
+
+        strategy._rpc_call = _fake_rpc  # type: ignore[method-assign]
+        asyncio.run(strategy._fetch_transfers_blockwise(block_slot, block_slot))
+
+        assert strategy._address_activity_rows
+        assert {row["slot"] for row in strategy._address_activity_rows} == {block_slot}

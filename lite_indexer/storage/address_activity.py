@@ -134,7 +134,7 @@ def _collect_program_ids(message: dict[str, Any], meta: dict[str, Any]) -> list[
     return list(dict.fromkeys(program_ids))
 
 
-def parse_address_activity(tx_data: dict[str, Any]) -> list[dict[str, Any]]:
+def parse_address_activity(tx_data: dict[str, Any], slot: int | None = None) -> list[dict[str, Any]]:
     """Expand one parsed transaction into one row per involved address.
 
     Accepts a Solana ``getTransaction`` result in ``jsonParsed`` encoding
@@ -143,6 +143,13 @@ def parse_address_activity(tx_data: dict[str, Any]) -> list[dict[str, Any]]:
     accounts, token accounts and read-only accounts — with the account
     set and program set repeated on each row so an address-first query
     (``WHERE address = ...``) needs no join.
+
+    ``slot`` is the transaction's slot when the caller already knows it
+    (e.g. the block-based extraction pass, whose per-transaction dicts
+    come from ``getBlock`` and carry no top-level ``slot``). When omitted,
+    the fallback is ``tx_data["slot"]`` (present on a ``getTransaction``
+    result). Passing it explicitly prevents rows from being written with
+    the sentinel ``0`` when the payload shape lacks the field.
 
     Account keys may be jsonParsed objects (``{"pubkey", "signer",
     "writable", "source"}``) or plain base58 strings; for the string form
@@ -154,6 +161,8 @@ def parse_address_activity(tx_data: dict[str, Any]) -> list[dict[str, Any]]:
 
     Args:
         tx_data: Parsed getTransaction result (jsonParsed encoding).
+        slot: Explicit slot for the transaction; overrides
+            ``tx_data["slot"]`` when provided.
 
     Returns:
         List of row dicts with keys ``address``, ``tx_signature``,
@@ -207,9 +216,9 @@ def parse_address_activity(tx_data: dict[str, Any]) -> list[dict[str, Any]]:
         return []
 
     try:
-        slot = int(tx_data.get("slot") or 0)
+        row_slot = int(slot) if slot is not None else int(tx_data.get("slot") or 0)
     except (TypeError, ValueError):
-        slot = 0
+        row_slot = 0
 
     block_time_raw = tx_data.get("blockTime")
     try:
@@ -227,7 +236,7 @@ def parse_address_activity(tx_data: dict[str, Any]) -> list[dict[str, Any]]:
             "chain": "solana",
             "address": pubkey,
             "tx_signature": tx_signature,
-            "slot": slot,
+            "slot": row_slot,
             "block_time": block_time,
             "involved_accounts": involved_accounts,
             "program_ids": program_ids,

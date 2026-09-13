@@ -113,7 +113,7 @@ class SolanaMixinBase:
     def _drain_trace_rows(self, client: Any) -> None:
         raise NotImplementedError
 
-    def _ingest_address_activity(self, tx_data: dict[str, Any]) -> int:
+    def _ingest_address_activity(self, tx_data: dict[str, Any], slot: int | None = None) -> int:
         raise NotImplementedError
 
     def _drain_address_activity_rows(self, client: Any) -> None:

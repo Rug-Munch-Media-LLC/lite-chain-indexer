@@ -366,7 +366,7 @@ def _match_instruction(ix: dict[str, Any], venue: VenueSpec, message_pubkeys: se
 # ── Pure Detectors ────────────────────────────────────────────────────
 
 
-def detect_launch(tx: dict[str, Any]) -> LaunchEvent | None:
+def detect_launch(tx: dict[str, Any], slot: int | None = None) -> LaunchEvent | None:
     """Detect a Solana token-launch / graduation event in a transaction.
 
     Pure function — no I/O. ``tx`` is a ``getTransaction`` result
@@ -382,6 +382,10 @@ def detect_launch(tx: dict[str, Any]) -> LaunchEvent | None:
 
     Args:
         tx: Parsed Solana transaction result dict.
+        slot: The transaction's slot when the caller already knows it
+            (e.g. the block-based extraction pass, whose per-transaction
+            dicts come from ``getBlock`` and carry no top-level
+            ``slot``). Overrides ``tx["slot"]`` when provided.
 
     Returns:
         :class:`LaunchEvent` with the new mint, creator, venue and
@@ -432,13 +436,13 @@ def detect_launch(tx: dict[str, Any]) -> LaunchEvent | None:
     signatures = transaction.get("signatures")
     signature = str(signatures[0]) if isinstance(signatures, list) and signatures else ""
     try:
-        slot = int(tx.get("slot") or 0)
+        launch_slot = int(slot) if slot is not None else int(tx.get("slot") or 0)
     except (ValueError, TypeError):
-        slot = 0
+        launch_slot = 0
 
     common: dict[str, Any] = {
         "signature": signature,
-        "slot": slot,
+        "slot": launch_slot,
         "block_timestamp": _iso_timestamp(tx.get("blockTime")),
         "mint": mint,
         "creator": _account_pubkey(account_keys, 0),

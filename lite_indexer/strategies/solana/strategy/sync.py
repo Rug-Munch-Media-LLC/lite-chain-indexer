@@ -196,7 +196,7 @@ class SyncMixin(SolanaMixinBase):
                 if meta.get("err") is not None:
                     continue
                 try:
-                    launch = detect_launch(tx)
+                    launch = detect_launch(tx, slot)
                     # Only true token CREATIONS feed discovery — the
                     # pumpswap venue matches every PumpSwap instruction
                     # (swaps included, confidence "low"), which would

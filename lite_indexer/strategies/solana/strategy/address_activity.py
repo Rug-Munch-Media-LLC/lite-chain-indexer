@@ -38,7 +38,7 @@ _ADDRESS_ACTIVITY_ROW_CAP = 20_000
 class AddressActivityMixin(SolanaMixinBase):
     """Buffering and draining of address-activity rows (best-effort)."""
 
-    def _ingest_address_activity(self, tx_data: dict[str, Any]) -> int:
+    def _ingest_address_activity(self, tx_data: dict[str, Any], slot: int | None = None) -> int:
         """Expand one parsed transaction and buffer its address rows.
 
         Best-effort and non-fatal: a parse failure loses only this
@@ -46,11 +46,15 @@ class AddressActivityMixin(SolanaMixinBase):
 
         Args:
             tx_data: Parsed getTransaction (jsonParsed) result.
+            slot: The transaction's slot when the caller already knows it.
+                Required for ``getBlock`` transactions, which carry no
+                top-level ``slot`` — without it the rows store the
+                sentinel ``0``.
 
         Returns:
             Number of rows buffered (0 when the tx yields none).
         """
-        rows = parse_address_activity(tx_data)
+        rows = parse_address_activity(tx_data, slot)
         if not rows:
             return 0
         self._address_activity_rows.extend(rows)
