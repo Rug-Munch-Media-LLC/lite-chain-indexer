@@ -1,7 +1,7 @@
 # Lite Chain Indexer 🪶
 
 **The self-hosted, zero-cost, multi-chain blockchain indexer.**
-Index transfers, DEX swaps, deployer activity, and internal-transfer traces across **20 chains (18 EVM + Solana + Tron)** using **only free public RPCs** out of the box. Zero infrastructure cost. Zero API keys required. ~2 GB RAM. **359M+ rows in production on a $5 VPS.** Optional authenticated RPCs can be layered in via the private overlay for extra throughput.
+Index transfers, DEX swaps, deployer activity, and internal-transfer traces across **20 chains (18 EVM + Solana + Tron)** using **only free public RPCs** out of the box. Zero infrastructure cost. Zero API keys required. Runs in roughly **1–3 GB RAM**, bounded by a hard memory-recycle ceiling that restarts the daemon before it can grow unbounded. **359M+ rows in production on a $5 VPS.** Optional authenticated RPCs can be layered in via the private overlay for extra throughput.
 
 [![CI](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml/badge.svg?branch=main)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-v1.3.0-blue.svg)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/tags)
@@ -216,7 +216,7 @@ missing overlay falls back to the zero-key default. See
 | `NDJSON_ENABLED` | `0` | Write-ahead NDJSON log (default off) |
 | `LAZY_INDEXING_ENABLED` | `1` | Lazy per-chain DEX/deployer indexing |
 | `REORG_PROTECTION_ENABLED` | `1` | Reorg staging / fork rollback (EVM) |
-| `MAX_CONCURRENT_CHAINS` | `14` | Max parallel chain workers |
+| `MAX_CONCURRENT_CHAINS` | `6` | Max parallel chain workers (`14` restores the old behaviour) |
 | `LITE_INDEXER_ENDPOINT_OVERLAY` | `/srv/secrets/lite-indexer-endpoints.json` | Private provider overlay (outside repo; optional) |
 
 ### CLI Reference
@@ -293,7 +293,7 @@ pre-commit install
 ### Run Tests
 
 ```bash
-# Full suite (1,100+ tests across 68 files)
+# Full suite (1,350+ tests)
 pytest -q
 
 # Smoke tests only
@@ -307,7 +307,7 @@ pytest --cov=lite_indexer --cov-report=term
 
 ## Testing
 
-The suite spans **68 test files and 1,100+ test functions**. Representative
+The suite spans **~70 test files and 1,350+ test functions**. Representative
 coverage:
 
 | Area | Representative files |

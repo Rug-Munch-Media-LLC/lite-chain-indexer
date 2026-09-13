@@ -48,7 +48,7 @@ unexploited differentiator is unchanged: **balance-at-block / state-as-a-service
 | Reorg staging + fork rollback (EVM), bloom pre-filtering | `state.py`, `indexer.py` |
 | Traces via `debug_traceBlockByNumber` (callTracer) + Solana trace-level transfers | `traces/` |
 | Whale detection + free USD price feed (DefiLlama/CoinGecko), token_prices table | `pricing.py`, migration 002 |
-| Wallet intel: risk score, behavior clustering, entity resolution, fund tracing (backward/forward/cross-chain/bridge/CEX) | `intel/`, `forensics/`, `api/routers/trace.py` |
+| Wallet intel: risk score, behavior clustering, entity resolution, fund tracing — **roadmap / separate service, NOT shipped in this repo** | `intel/`, `forensics/`, `api/routers/trace.py` (planned) |
 | Demand-aware lazy indexing (file-touch gating, persisted) | `chains/demand.py` |
 
 ### Gaps (competitor features we lack) — verified
