@@ -11,6 +11,7 @@ from datetime import UTC, datetime  # noqa: F401 — UTC/datetime used in mixin 
 from typing import Any  # noqa: F401
 
 from lite_indexer.config import TRACE_CONCURRENCY, TRACE_MAX_BLOCKS_PER_CYCLE
+from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.logging import get_logger
 from lite_indexer.strategies.evm.strategy import EVMChainStrategy
 
@@ -18,7 +19,7 @@ log = get_logger(__name__)
 logger = log  # god-file bodies reference `logger`; keep both names
 
 
-class RpcFetchMixin:
+class RpcFetchMixin(IndexerMixinBase):
     "Chain RPC fetching: blocks, transfers, swaps, timestamp enrichment."
 
     # ── RPC: Latest Block ───────────────────────────────────────────

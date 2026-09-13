@@ -15,14 +15,15 @@ from lite_indexer.config import (
     DATA_RECONCILIATION_MAX_DISCREPANCY_PCT,
     GC_EVERY_N_CYCLES,
 )
+from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.logging import get_logger
 
 log = get_logger(__name__)
 logger = log  # god-file bodies reference `logger`; keep both names
 
-class MaintenanceMixin:
-    'Memory gates, GC cycles, ClickHouse range reconciliation.'
 
+class MaintenanceMixin(IndexerMixinBase):
+    "Memory gates, GC cycles, ClickHouse range reconciliation."
 
     # ── Memory / GC / Reconciliation housekeeping ───────────────────
 

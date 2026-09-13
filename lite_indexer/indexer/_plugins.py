@@ -11,6 +11,7 @@ from typing import Any  # noqa: F401
 
 from lite_indexer.chains import GET_LOGS_ENDPOINTS
 from lite_indexer.config import PLUGIN_ENABLED
+from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.logging import get_logger
 from lite_indexer.plugin import BasePlugin, PluginContext, PluginLoader
 from lite_indexer.rpc import get_best_endpoint
@@ -19,7 +20,7 @@ log = get_logger(__name__)
 logger = log  # god-file bodies reference `logger`; keep both names
 
 
-class PluginsMixin:
+class PluginsMixin(IndexerMixinBase):
     "Plugin lifecycle: loading, table provisioning, event dispatch."
 
     # ── Plugins ─────────────────────────────────────────────────────
@@ -106,7 +107,9 @@ class PluginsMixin:
             )
 
             try:
-                client.execute(ddl)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                client.execute(
+                    ddl
+                )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
                 logger.info(
                     "plugin_table_created",
                     plugin=plugin.name,

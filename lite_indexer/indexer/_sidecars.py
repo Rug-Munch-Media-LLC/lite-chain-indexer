@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.indexer._writers import (
     build_nats_payloads,
     maybe_run_vector_ingestion,
@@ -19,7 +20,7 @@ from lite_indexer.webhooks.delivery import WebhookDelivery
 logger = get_logger(__name__)
 
 
-class SidecarsMixin:
+class SidecarsMixin(IndexerMixinBase):
     """NATS publisher, webhook delivery, and guarded vector ingestion."""
 
     @property

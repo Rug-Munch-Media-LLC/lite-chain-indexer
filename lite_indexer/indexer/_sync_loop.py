@@ -24,6 +24,7 @@ from lite_indexer.config import (
     STATE_BACKWARD_PROTECTION,
     STATE_REGRESSION_TOLERANCE_BLOCKS,
 )
+from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.indexer._writers import (
     flush_solana_launch_bundles,
     flush_tron_launch,
@@ -37,7 +38,7 @@ from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrate
 logger = get_logger(__name__)
 
 
-class SyncLoopMixin:
+class SyncLoopMixin(IndexerMixinBase):
     """Sync loop body — extracted from the former god-file.
 
     Holds the main sync cycle: block range determination, event fetching,
@@ -199,7 +200,7 @@ class SyncLoopMixin:
         behind the chain head (approximated with the chain's average block
         time). Used by the env-gated DEX_SKIP_TO_HEAD skip.
         """
-        tip = getattr(self, "_last_tip", None)
+        tip = self._last_tip
         if tip is None:
             return False
         from lite_indexer.config import CHAIN_BLOCK_TIMES, DEFAULT_BLOCK_TIME
