@@ -167,9 +167,9 @@ def parse_solana_swap_events(
     for _, ix in instructions:
         if _program_id(ix) in matched:
             accounts = ix.get("accounts") or []
-            idx = _POOL_ACCOUNT_INDEX.get(_program_id(ix))
-            if idx is not None and idx < len(accounts):
-                pool_address = str(accounts[idx])
+            pool_idx = _POOL_ACCOUNT_INDEX.get(_program_id(ix))
+            if pool_idx is not None and pool_idx < len(accounts):
+                pool_address = str(accounts[pool_idx])
             break
 
     block_time = tx_data.get("blockTime")

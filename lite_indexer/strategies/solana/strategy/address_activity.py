@@ -24,6 +24,8 @@ from lite_indexer.storage.address_activity import (
     write_address_activity,
 )
 
+from ._base import SolanaMixinBase
+
 logger = get_logger(__name__)
 
 # Upper bound on buffered address-activity rows awaiting a ClickHouse
@@ -33,7 +35,7 @@ logger = get_logger(__name__)
 _ADDRESS_ACTIVITY_ROW_CAP = 20_000
 
 
-class AddressActivityMixin:
+class AddressActivityMixin(SolanaMixinBase):
     """Buffering and draining of address-activity rows (best-effort)."""
 
     def _ingest_address_activity(self, tx_data: dict[str, Any]) -> int:

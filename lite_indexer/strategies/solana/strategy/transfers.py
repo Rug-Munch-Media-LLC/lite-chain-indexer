@@ -26,10 +26,12 @@ from lite_indexer.strategies.solana.models import (
 from lite_indexer.strategies.solana.parsing import parse_solana_transfer_events
 from lite_indexer.strategies.solana.swaps import parse_solana_swap_events
 
+from ._base import SolanaMixinBase
+
 logger = get_logger(__name__)
 
 
-class TransfersMixin:
+class TransfersMixin(SolanaMixinBase):
     """SPL token transfer extraction for the Solana strategy."""
 
     async def fetch_transfers(

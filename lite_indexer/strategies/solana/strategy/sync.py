@@ -32,6 +32,8 @@ from lite_indexer.strategies.solana.reorg import (
 )
 from lite_indexer.strategies.solana.rpc import rpc_call
 
+from ._base import SolanaMixinBase
+
 logger = get_logger(__name__)
 
 # Wrapped-SOL mint — never a "new token"; the pumpswap venue matcher
@@ -40,7 +42,7 @@ logger = get_logger(__name__)
 _WSOL_MINT = "So11111111111111111111111111111111111111112"
 
 
-class SyncMixin:
+class SyncMixin(SolanaMixinBase):
     """Sync-loop infrastructure for the Solana strategy."""
 
     # ── Dynamic Token Discovery ──────────────────────────────────────

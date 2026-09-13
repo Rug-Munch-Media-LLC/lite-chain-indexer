@@ -12,6 +12,8 @@ from typing import Any
 
 from lite_indexer.logging import get_logger
 
+from ._base import SolanaMixinBase
+
 logger = get_logger(__name__)
 
 # Upper bound on buffered dex_events swap rows awaiting the sync-loop drain
@@ -19,7 +21,7 @@ logger = get_logger(__name__)
 _SOLANA_SWAP_ROW_CAP = 10_000
 
 
-class DexEventsMixin:
+class DexEventsMixin(SolanaMixinBase):
     """Buffering of Solana DEX swap rows (best-effort)."""
 
     def _buffer_swap_rows(self, swap_rows: list[dict[str, Any]]) -> None:

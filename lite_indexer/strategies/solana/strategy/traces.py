@@ -14,6 +14,8 @@ from lite_indexer.traces.solana import (
     write_solana_transfers,
 )
 
+from ._base import SolanaMixinBase
+
 logger = get_logger(__name__)
 
 # Upper bound on buffered trace rows awaiting a ClickHouse write. Trace
@@ -23,7 +25,7 @@ logger = get_logger(__name__)
 _SOLANA_TRACE_ROW_CAP = 10_000
 
 
-class TracesMixin:
+class TracesMixin(SolanaMixinBase):
     """Buffering and draining of Solana trace rows (best-effort)."""
 
     def _buffer_trace_rows(self, trace_rows: list[dict[str, Any]]) -> None:
