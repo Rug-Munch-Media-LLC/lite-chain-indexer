@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import MutableMapping
 from typing import Any, cast
 
 import structlog
@@ -32,7 +33,7 @@ def _redact_secrets(events: str) -> str:
     return events
 
 
-def redact_secrets(_logger: Any, _method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+def redact_secrets(_logger: Any, _method: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
     """structlog processor: mask secrets in URL fields and query strings."""
     for key, value in list(event_dict.items()):
         if not isinstance(value, str):
