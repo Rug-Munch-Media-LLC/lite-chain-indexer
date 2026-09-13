@@ -184,6 +184,15 @@ PARQUET_STATE_DIR: Path = STATE_DIR / "parquet"
 # and its status (pending / exporting / uploaded / deleted / failed).
 CH_PARQUET_STATE_TABLE: str = "wallet_memory.parquet_export_state"
 
+# ── On-chain-verifiable index attestations (lite_indexer/attestation.py) ──
+# An incremental Merkle accumulator over committed (chain, range) leaves so a
+# pre-indexed dataset can be verified trustlessly against the chain without
+# trusting the producer. Write-only / observe by default and never blocks the
+# sync path (failures are logged and swallowed).
+ATTESTATION_ENABLED: bool = os.environ.get("ATTESTATION_ENABLED", "1") != "0"
+# State + manifest directory (default STATE_DIR/attestations).
+ATTESTATION_DIR: Path = Path(os.environ.get("ATTESTATION_DIR", str(STATE_DIR / "attestations")))
+
 # ── Snapshot Bootstrap (public parquet replay) ─────────────────────────
 # ``lite-indexer bootstrap`` downloads public parquet snapshots from B2
 # and imports them into ClickHouse in minutes instead of re-indexing a

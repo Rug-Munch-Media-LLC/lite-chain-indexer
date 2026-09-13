@@ -17,6 +17,7 @@ from typing import Any
 
 from lite_indexer.chunks import sync_batch_for_chain
 from lite_indexer.config import (
+    ATTESTATION_ENABLED,
     BACKFILL_ENABLED,
     DEX_SKIP_TO_HEAD,
     DEX_SKIP_TO_HEAD_HOURS,
@@ -663,6 +664,31 @@ class SyncLoopMixin(IndexerMixinBase):
         total_events = len(events) + len(dex_events) + deployer_written + len(trace_events)
         self._clear_reorg_recovery()
         self.state.save(to_block, total_events, enabled_events=self._enabled_event_types())
+
+        # 8-attest. On-chain-verifiable attestation of this committed range:
+        # append a Merkle leaf over the range's block hashes + normalized row
+        # digest to the persisted accumulator. Best-effort and off-loop
+        # (hashing a batch is CPU work); a failure logs and continues — the
+        # write path is never blocked or aborted by attestation.
+        if ATTESTATION_ENABLED and (events or dex_events):
+            try:
+                from lite_indexer.attestation import collect_block_hashes, record_range_attestation
+
+                attest_rows = events + dex_events
+                block_hashes = collect_block_hashes(events, dex_events)
+                root = await asyncio.to_thread(
+                    record_range_attestation,
+                    self.chain,
+                    from_block,
+                    to_block,
+                    attest_rows,
+                    block_hashes,
+                )
+                if root:
+                    summary["attestation_root"] = root
+            except Exception as exc:  # noqa: BLE001 — attestation is best-effort
+                logger.warning("attestation_failed", chain=self.chain, error=str(exc)[:120])
+
         # Monotonic high-water mark — only ever moves forward. Feeds the
         # backward-state guard on the next load.
         self._highwater.update(to_block)

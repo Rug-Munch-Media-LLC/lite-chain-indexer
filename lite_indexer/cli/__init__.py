@@ -26,6 +26,7 @@ import json
 import sys
 from pathlib import Path
 
+from lite_indexer.cli._attest import run_attest_cli
 from lite_indexer.cli._backfill import run_backfill_dex_prices, run_backfill_whales
 from lite_indexer.cli._bootstrap import run_bootstrap_cli
 from lite_indexer.cli._daemon import main_daemon
@@ -50,6 +51,7 @@ __all__ = [
     "async_main",
     "main_daemon",
     "parse_args",
+    "run_attest_cli",
     "run_backfill_dex_prices",
     "run_backfill_whales",
     "run_bootstrap_cli",
@@ -218,6 +220,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=RECONCILIATION_SAMPLE_SIZE,
         help=f"Wallets to sample per run (default: {RECONCILIATION_SAMPLE_SIZE})",
+    )
+
+    # ── attest subcommand (on-chain-verifiable index attestations) ───
+    attest_parser = sub.add_parser(
+        "attest",
+        help="Verify / inspect on-chain-verifiable range attestations",
+        description=(
+            "Trustless dataset verification: prove an indexed range is a "
+            "leaf of the persisted Merkle accumulator and (optionally) that "
+            "its committed block hash matches a chain-supplied block hash. "
+            "No provider or producer trust required."
+        ),
+    )
+    attest_sub = attest_parser.add_subparsers(dest="attest_action")
+    attest_verify = attest_sub.add_parser("verify", help="Verify a manifest file")
+    attest_verify.add_argument("manifest", help="Path to a manifest JSON file")
+    attest_verify.add_argument(
+        "--expected-root",
+        default=None,
+        help="Trusted accumulator root (hex) the manifest must match",
+    )
+    attest_show = attest_sub.add_parser("show", help="Show a chain's accumulator state")
+    attest_show.add_argument(
+        "--chain",
+        default="ethereum",
+        choices=sorted(SUPPORTED_CHAINS.keys()),
+        help="Chain whose attestation state to show (default: ethereum)",
     )
 
     # ── export-parquet subcommand ────────────────────────────────────
@@ -593,6 +622,10 @@ async def async_main(args: argparse.Namespace) -> int:
     # ── reconcile subcommand (TrueBlocks-style) ──────────────────────
     if args.command == "reconcile":
         return await run_reconcile_cli(args)
+
+    # ── attest subcommand (trustless dataset verification) ───────────
+    if args.command == "attest":
+        return run_attest_cli(args)
 
     if args.daemon:
         chains_list = [c.strip() for c in args.chains.split(",") if c.strip()]

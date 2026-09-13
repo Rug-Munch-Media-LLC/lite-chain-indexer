@@ -80,6 +80,7 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "backfill_failed",
     "backfill_memory_paused",
     "backfill_window_deferred",
+    "attestations_appended",
 )
 
 # Gauges report a current level (not a running total). Kept tiny: only the

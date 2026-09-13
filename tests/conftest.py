@@ -100,3 +100,14 @@ def _isolate_rpc_cache(tmp_path: Path) -> None:
     respcache.reset(db_path=str(tmp_path / "rpc_cache.sqlite"))
     yield
     respcache.reset(db_path=None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_attestation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep Merkle-attestation writes out of the live state dir during tests.
+
+    The sync-path attestation hook is default-on; without isolation any test
+    that drives a successful sync would write accumulator/manifest files under
+    the production ``ATTESTATION_DIR``. Point it at the per-test tmp dir.
+    """
+    monkeypatch.setattr("lite_indexer.attestation.ATTESTATION_DIR", tmp_path / "attestations")
