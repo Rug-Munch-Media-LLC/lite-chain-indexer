@@ -29,6 +29,8 @@ SOLANA_ENDPOINTS: list[str] = [
     "https://api.mainnet-beta.solana.com",
     # T2 — Verified free RPC with good uptime
     "https://solana-rpc.publicnode.com",
+    # T2 — Pocket Network (keyless, 2000 req/IP/min; getHealth→ok 2026-09-13)
+    "https://solana.api.pocket.network",
     # T4 — API-key free tiers (set env vars to activate)
     "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # Alchemy free
     "https://rpc.helius.xyz/?api-key=${HELIUS_KEY}",  # Helius free (25K req/mo)
@@ -55,6 +57,8 @@ SOLANA_ENDPOINTS: list[str] = [
 TRON_ENDPOINTS: list[str] = [
     # T1 — Official TronGrid (events API + full node)
     "https://api.trongrid.io",
+    # T2 — Pocket Network (keyless; live getnowblock + eth_chainId 0x2b6653dc, 2026-09-13)
+    "https://tron.api.pocket.network",
     # T2 — Verified free endpoints (block queries only)
     "https://api.tronstack.io",
     "https://tron-rpc.publicnode.com",

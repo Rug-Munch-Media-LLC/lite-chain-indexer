@@ -34,6 +34,25 @@ robinhood. The dead PublicNode hosts ``fantom-rpc.publicnode.com`` and
 ``zksync-era-rpc.publicnode.com`` (HTTP 404, re-probed 2026-09-13) were
 removed from the candidate pool.
 
+2026-09-13: Pocket Network (keyless) wired at T1 for 18 EVM chains via
+``https://<slug>.api.pocket.network`` (2000 req/IP/min; live-verified
+``eth_chainId`` for every slug, plus topic-only archive ``eth_getLogs`` for
+fraxtal/bsc/ethereum; blast returns ``[]`` which is valid). Metis is the one
+exception — Pocket has no archival-capable endpoint there ("no
+archival-capable endpoints"), so its Pocket entry is a NON-archive fallback
+and Uniblock remains metis's archive source. Infura keyed templates
+(``https://<net>.infura.io/v3/${INFURA_KEY}``) added for its 13 verified
+chains (T2/T3, archive-capable). Robinhood was NOT in Pocket's published
+list but ``robinhood.api.pocket.network`` answered ``eth_chainId 0x1237``
+here — added as a keyless fallback.
+
+ANKR FREE-KEY LIMITATION (live-probed 2026-09-13): the provisioned
+``${ANKR_KEY}`` works for ONLY eth, bsc, polygon, arbitrum, avalanche,
+base, celo, gnosis. It returns HTTP 403 "API key is not allowed to access
+blockchain" for optimism, fantom, linea, blast, fraxtal, metis — no Ankr
+templates are registered for those six so the pool stays honest (a dead
+keyed entry only produces verification-retry noise).
+
 Some endpoints require an API key from a free-tier provider (Alchemy,
 GetBlock, Chainstack, QuickNode, Infura). Set the corresponding ${ENV_VAR}
 in your environment — the indexer resolves placeholders at import time via
@@ -119,6 +138,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       added 2026-08-23 (freemium depth — activate via env).
     "ethereum": [
         "https://eth.api.onfinality.io/public",
+        "https://eth.api.pocket.network",  # T1 — Pocket Network (keyless, 2000 req/IP/min, archive-capable; live-verified eth_chainId + eth_getLogs 2026-09-13)
         "https://eth-pokt.nodies.app",
         "https://eth.drpc.org",
         "https://rpc.mevblocker.io",
@@ -127,7 +147,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://eth-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://eth.nownodes.io/${NOWNODES_API_KEY}",  # NOWNodes (verified 2026-08-23, 100k req/mo plan)
         "https://lb.drpc.org/ogrpc?network=ethereum&dkey=${DRPC_KEY}",  # dRPC load balancer
-        "https://rpc.ankr.com/eth/${ANKR_KEY}",  # Ankr keyed (keyless was Unauthorized)
+        "https://rpc.ankr.com/eth/${ANKR_KEY}",  # Ankr keyed — free key works ONLY for eth/bsc/polygon/arbitrum/avalanche/base/celo/gnosis (HTTP 403 elsewhere: optimism/fantom/linea/blast/fraxtal/metis)
         "https://mainnet.infura.io/v3/${INFURA_KEY}",  # Infura free tier
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=1&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
@@ -139,12 +159,14 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       serve topic-only eth_getLogs on free tier and were removed.
     "base": [
         "https://base.gateway.tenderly.co",
+        "https://base.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://mainnet.base.org",
         "https://base.drpc.org",
         "https://base-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://base-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://lb.drpc.org/ogrpc?network=base&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/base/${ANKR_KEY}",
+        "https://base-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=8453&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── BSC (8 endpoints) ─────────────────────────────────────────────
@@ -164,6 +186,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       limit) probed and rejected — official seeds added instead.
     "bsc": [
         "https://bsc-mainnet.nodereal.io/v1/${NODEREAL_KEY}",  # key rotated externally
+        "https://bsc.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId + eth_getLogs 2026-09-13)
         "https://rpc-bsc.48.club",  # T1 — 48.club (verified)
         "https://bsc.blockrazor.xyz",  # T2 — blockrazor (25-block range cap)
         "https://bsc-dataseed.binance.org",  # T2 — official Binance seed (blockNumber verified 2026-08-07)
@@ -175,6 +198,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
         "https://lb.drpc.org/ogrpc?network=bsc&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/bsc/${ANKR_KEY}",
+        "https://bsc-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=56&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Polygon (6 endpoints) ─────────────────────────────────────────
@@ -194,6 +218,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       rejected — publicnode added as T3 fallback instead.
     "polygon": [
         "https://polygon.gateway.tenderly.co",
+        "https://poly.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://polygon.drpc.org",
         "https://polygon-mainnet.gateway.tatum.io",
         "https://polygon-bor-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
@@ -202,6 +227,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc-mainnet.matic.quiknode.pro",
         "https://lb.drpc.org/ogrpc?network=polygon&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/polygon/${ANKR_KEY}",
+        "https://polygon-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=137&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Arbitrum (6 endpoints) ────────────────────────────────────────
@@ -217,12 +243,14 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       rejected — publicnode + meowrpc added as T3 fallbacks.
     "arbitrum": [
         "https://arbitrum.gateway.tenderly.co",
+        "https://arb-one.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://arbitrum.drpc.org",
         "https://arb1.arbitrum.io/rpc",
         "https://arbitrum-one-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://arbitrum.meowrpc.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://lb.drpc.org/ogrpc?network=arbitrum&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/arbitrum/${ANKR_KEY}",
+        "https://arbitrum-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=42161&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Optimism (4 endpoints) ────────────────────────────────────────
@@ -232,11 +260,13 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T4: alchemy
     "optimism": [
         "https://optimism.gateway.tenderly.co",
+        "https://op.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://mainnet.optimism.io",
         "https://optimism.drpc.org",
         "https://optimism-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://lb.drpc.org/ogrpc?network=optimism&dkey=${DRPC_KEY}",
         "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
+        "https://optimism-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=10&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Avalanche (4 endpoints) ───────────────────────────────────────
@@ -245,6 +275,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T4: infura (free tier)
     "avalanche": [
         "https://api.avax.network/ext/bc/C/rpc",  # T1 — official (verified)
+        "https://avax.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://avalanche.drpc.org",  # T1 — drpc.org (verified)
         "https://avalanche.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://avalanche-c-chain-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
@@ -258,6 +289,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T4: alchemy
     "fantom": [
         "https://rpc.fantom.network",  # T1 — official (verified)
+        "https://fantom.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://rpcapi.fantom.network",  # T1 — official-alt (verified)
         "https://fantom.drpc.org",  # T2 — drpc.org (verified)
         "https://fantom-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
@@ -271,6 +303,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T4: infura (free tier)
     "linea": [
         "https://rpc.linea.build",  # T1 — official (verified)
+        "https://linea.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://linea.drpc.org",  # T1 — drpc.org (verified)
         "https://linea.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://linea-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
@@ -285,6 +318,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T4: infura (free tier)
     "scroll": [
         "https://rpc.scroll.io",  # T1 — official (verified)
+        "https://scroll.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://scroll.drpc.org",  # T1 — drpc.org (verified)
         "https://1rpc.io/scroll",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://scroll-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
@@ -298,9 +332,11 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T4: alchemy (zksync-era)
     "zksync": [
         "https://mainnet.era.zksync.io",  # T1 — official (verified)
+        "https://zksync-era.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://zksync.drpc.org",  # T1 — drpc.org (verified)
         "https://zksync.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://zksync-era.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
+        "https://zksync-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://lb.drpc.org/ogrpc?network=zksync&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=324&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
@@ -311,10 +347,12 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #     verified 2026-08-03)
     "mantle": [
         "https://rpc.mantle.xyz",  # T1 — official (verified)
+        "https://mantle.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://mantle.drpc.org",  # T2 — drpc.org (verified)
         "https://mantle.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://1rpc.io/mantle",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://mantle-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://mantle-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://lb.drpc.org/ogrpc?network=mantle&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=5000&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
@@ -323,6 +361,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T2: tenderly gateway (verified 2026-08-03)
     "gnosis": [
         "https://rpc.gnosischain.com",
+        "https://gnosis.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://gnosis.drpc.org",
         "https://gnosis.gateway.tenderly.co",
         "https://gnosis-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
@@ -334,7 +373,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T2: drpc.org (verified)
     "celo": [
         "https://forno.celo.org",  # T1 — official forno (verified)
+        "https://celo.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://rpc.ankr.com/celo",  # T1 — ankr (verified — celo only)
+        "https://celo-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://celo.drpc.org",  # T2 — drpc.org (verified)
         "https://lb.drpc.org/ogrpc?network=celo&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=42220&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
@@ -346,6 +387,8 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         # T2: Uniblock — archive eth_getLogs (live-verified 2026-09-13);
         #     keyed fallback so the chain is no longer single-endpoint.
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=81457&apiKey=${UNIBLOCK_KEY}",  # T2 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://blast.api.pocket.network",  # T3 — Pocket Network (keyless; live-verified eth_chainId 2026-09-13; getLogs returns [] which is valid on this chain)
+        "https://blast-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
     ],
     # ── Fraxtal (verified 2026-09-01) ────────────────────────────────
     # L2, chainId 252. publicnode: chainId ✓, getLogs ✓.
@@ -354,6 +397,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         # T2: Uniblock — archive eth_getLogs (live-verified 2026-09-13);
         #     keyed fallback so the chain is no longer single-endpoint.
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=252&apiKey=${UNIBLOCK_KEY}",  # T2 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://fraxtal.api.pocket.network",  # T3 — Pocket Network (keyless, archive-capable; live-verified eth_chainId + eth_getLogs 2026-09-13)
     ],
     # ── Metis (verified 2026-09-01) ──────────────────────────────────
     # L2, chainId 1088. publicnode: chainId ✓, getLogs ✓.
@@ -362,6 +406,10 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         # T2: Uniblock — archive eth_getLogs (live-verified 2026-09-13);
         #     keyed fallback so the chain is no longer single-endpoint.
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=1088&apiKey=${UNIBLOCK_KEY}",  # T2 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        # T3: Pocket keyless fallback, NON-ARCHIVE for eth_getLogs ("no
+        #     archival-capable endpoints" here) — Uniblock stays the archive
+        #     source; Pocket is the non-archive tip/blockNumber fallback.
+        "https://metis.api.pocket.network",  # T3 — Pocket Network (keyless NON-archive fallback; live-verified eth_chainId 2026-09-13)
     ],
     # ── Robinhood Chain (2 endpoints, verified 2026-09-01) ────────────
     # Arbitrum Orbit L2, chainId 4663 (0x1237), native ETH. The old spec
@@ -393,6 +441,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         # Uniblock (2026-09-13): archive-capable topic-only eth_getLogs — the
         # only non-official archive source for this chain; kept high-priority.
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=4663&apiKey=${UNIBLOCK_KEY}",  # T1-high — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://robinhood.api.pocket.network",  # T3 — Pocket Network (keyless, probed live 2026-09-13: eth_chainId 0x1237 == 4663)
         "https://robinhood-rpc.publicnode.com",  # T2 — verified (getLogs archive-gated)
         "https://rpc.nodeflare.app/robinhood/public",  # T3 — verified chainId
         "https://robinhood.rpc.blxrbdn.com",  # T3 — chainId only (getLogs 403)
@@ -401,20 +450,25 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 }
 
 # Summary of EVM endpoints per chain:
-#   ethereum: 9     base: 6      bsc: 11     polygon: 6
-#   arbitrum: 5     optimism: 5  avalanche: 5 fantom: 5
-#   linea: 6        scroll: 5    zksync: 5   mantle: 5
-#   gnosis: 4       celo: 3      robinhood: 1
+#   ethereum: 13   base: 10     bsc: 15     polygon: 12
+#   arbitrum: 10   optimism: 9  avalanche: 8 fantom: 7
+#   linea: 9       scroll: 8    zksync: 8   mantle: 9
+#   gnosis: 7      celo: 7      blast: 4    fraxtal: 3
+#   metis: 3       robinhood: 7
 # -------------------------------------------------------
-#   Total source templates: 71 across 15 chains
-#   (46 free public + 25 API-key free tiers — keyed ones activate via env)
+#   Total source templates: 149 across 18 chains
+#   (118 free/keyless + 31 API-key free tiers — keyed ones activate via env)
 #
-#   Non-EVM: solana (7), tron (3)
-#   Grand total source templates: 81 across 17 chains
+#   Non-EVM: solana (9), tron (4)
+#   Grand total source templates: 162 across 18 EVM + 2 non-EVM chains
 #
 # 2026-09-13: +18 Uniblock archive templates (15 EVM chains — robinhood,
 #   blast, fraxtal, metis + 14 T3 fallbacks) and +1 Solana template. Uniblock
 #   is the only non-official archive eth_getLogs source for robinhood.
+# 2026-09-13: +18 Pocket Network keyless T1 templates (metis tagged
+#   non-archive — Uniblock stays its archive source), +9 Infura keyed archive
+#   templates (13 verified chains total incl. the 4 pre-existing), +1 Pocket
+#   solana and +1 Pocket tron fallback.
 
 
 # ── Candidate Endpoints (awaiting live verification) ────────────────

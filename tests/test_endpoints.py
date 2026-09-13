@@ -150,11 +150,12 @@ class TestGetLogsEndpoints:
         endpoints for polygon/bsc + blast/fraxtal/metis pools. Raised
         104 -> 122 (2026-09-13): +18 Uniblock archive templates (robinhood,
         blast/fraxtal/metis + 14 T3 fallbacks) — active only when
-        UNIBLOCK_KEY is set. The bound still guards against runaway
-        duplication.
+        UNIBLOCK_KEY is set. Raised 122 -> 150 (2026-09-13): +18 keyless
+        Pocket T1 templates + 9 Infura keyed archive templates + Pocket
+        solana/tron. The bound still guards against runaway duplication.
         """
         total = sum(len(urls) for urls in GET_LOGS_ENDPOINTS.values())
-        assert len(GET_LOGS_ENDPOINTS) <= total <= 122
+        assert len(GET_LOGS_ENDPOINTS) <= total <= 150
 
 
 class TestNoderealKeyRequired:
@@ -330,3 +331,151 @@ class TestDeadPublicnodeEndpointsRemoved:
     def test_live_polygon_publicnode_kept(self):
         # polygon-bor-rpc.publicnode.com is alive — do not over-cull.
         assert "https://polygon-bor-rpc.publicnode.com" in GET_LOGS_ENDPOINTS["polygon"]
+
+
+# ── Pocket Network (keyless, 2026-09-13) ──────────────────────────────
+# Template: https://<slug>.api.pocket.network — keyless, 2000 req/IP/min.
+# eth_chainId live-verified for every slug below; robinhood was not in
+# Pocket's published list but probed OK (0x1237).
+POCKET_SLUGS: dict[str, str] = {
+    "ethereum": "eth",
+    "base": "base",
+    "bsc": "bsc",
+    "polygon": "poly",
+    "arbitrum": "arb-one",
+    "optimism": "op",
+    "avalanche": "avax",
+    "fantom": "fantom",
+    "linea": "linea",
+    "scroll": "scroll",
+    "zksync": "zksync-era",
+    "mantle": "mantle",
+    "gnosis": "gnosis",
+    "celo": "celo",
+    "blast": "blast",
+    "fraxtal": "fraxtal",
+    "metis": "metis",
+    "robinhood": "robinhood",
+}
+
+
+class TestPocketEndpoints:
+    def test_pocket_present_for_every_verified_evm_chain(self):
+        for chain, slug in POCKET_SLUGS.items():
+            expected = f"https://{slug}.api.pocket.network"
+            assert expected in GET_LOGS_ENDPOINTS[chain], f"{chain}: missing {expected}"
+
+    def test_pocket_entries_are_keyless(self):
+        for _chain, slug in POCKET_SLUGS.items():
+            url = f"https://{slug}.api.pocket.network"
+            assert "${" not in url
+
+    def test_pocket_non_evm_fallbacks_present(self):
+        from lite_indexer.chains.non_evm import SOLANA_ENDPOINTS, TRON_ENDPOINTS
+
+        assert "https://solana.api.pocket.network" in SOLANA_ENDPOINTS
+        assert "https://tron.api.pocket.network" in TRON_ENDPOINTS
+
+    def test_metis_pocket_marked_non_archive(self):
+        """Metis Pocket has no archival endpoint — Uniblock stays archive."""
+        src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
+        assert "metis.api.pocket.network" in src
+        metis_block = src.split('"metis": [', 1)[1].split("],", 1)[0]
+        assert "NON-archive" in metis_block
+        assert "uniblock" in metis_block.lower()
+
+    def test_robinhood_pocket_probed_ok(self):
+        src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
+        assert "robinhood.api.pocket.network" in src
+        assert "0x1237" in src
+
+
+# ── Infura (keyed, 2026-09-13) ────────────────────────────────────────
+INFURA_CHAINS: dict[str, str] = {
+    "ethereum": "mainnet",
+    "bsc": "bsc-mainnet",
+    "polygon": "polygon-mainnet",
+    "arbitrum": "arbitrum-mainnet",
+    "optimism": "optimism-mainnet",
+    "base": "base-mainnet",
+    "linea": "linea-mainnet",
+    "scroll": "scroll-mainnet",
+    "avalanche": "avalanche-mainnet",
+    "zksync": "zksync-mainnet",
+    "blast": "blast-mainnet",
+    "mantle": "mantle-mainnet",
+    "celo": "celo-mainnet",
+}
+
+
+class TestInfuraEndpoints:
+    def test_template_expands_via_expandvars(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("INFURA_KEY", "infura-key-test")
+        template = "https://mainnet.infura.io/v3/${INFURA_KEY}"
+        assert _resolve_endpoint_url(template) == "https://mainnet.infura.io/v3/infura-key-test"
+        assert _resolved_endpoints([template]) == ["https://mainnet.infura.io/v3/infura-key-test"]
+
+    def test_unresolved_template_is_dropped(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("INFURA_KEY", raising=False)
+        assert _resolved_endpoints(["https://mainnet.infura.io/v3/${INFURA_KEY}"]) == []
+
+    def test_all_13_verified_chains_have_infura_template(self):
+        """Keyed templates are stripped from the active pool when the key is
+        unset, so assert against the source module (13 verified chains)."""
+        src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
+        for chain, slug in INFURA_CHAINS.items():
+            expected = f'"https://{slug}.infura.io/v3/${{INFURA_KEY}}"'
+            assert expected in src, f"{chain}: missing Infura template {expected}"
+
+    def test_infura_templates_use_only_env_placeholder(self):
+        src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
+        infura_lines = [ln for ln in src.splitlines() if ln.strip().startswith('"https://') and "infura.io/v3/" in ln]
+        assert len(infura_lines) == 13
+        for ln in infura_lines:
+            assert "v3/${INFURA_KEY}" in ln, ln
+
+
+# ── Ankr free-key reconciliation (2026-09-13) ─────────────────────────
+# The provisioned ${ANKR_KEY} works for only 8 chains; the other 6 return
+# HTTP 403 "API key is not allowed to access blockchain". No Ankr template
+# may exist for those six — a dead keyed entry only adds retry noise.
+ANKR_WORKING_CHAINS = {
+    "ethereum",
+    "bsc",
+    "polygon",
+    "arbitrum",
+    "avalanche",
+    "base",
+    "celo",
+    "gnosis",
+}
+ANKR_FORBIDDEN_CHAINS = ("optimism", "fantom", "linea", "blast", "fraxtal", "metis")
+
+
+class TestAnkrFreeKeyChains:
+    def _source_block(self, chain: str) -> str:
+        src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
+        return src.split(f'"{chain}": [', 1)[1].split("],", 1)[0]
+
+    def test_no_ankr_template_for_403_chains(self):
+        for chain in ANKR_FORBIDDEN_CHAINS:
+            assert "rpc.ankr.com" not in self._source_block(chain), f"{chain}: dead Ankr entry present"
+
+    def test_no_ankr_in_active_pool_for_403_chains(self):
+        for chain in ANKR_FORBIDDEN_CHAINS:
+            assert not any("rpc.ankr.com" in u for u in GET_LOGS_ENDPOINTS[chain]), chain
+
+    def test_ankr_only_for_working_chains(self):
+        """Any chain carrying an Ankr template must be in the working set."""
+        for chain in EXPECTED_EVM_CHAINS:
+            if "rpc.ankr.com" in self._source_block(chain):
+                assert chain in ANKR_WORKING_CHAINS, f"{chain}: Ankr registered but key 403s there"
+
+    def test_registered_ankr_chains_present(self):
+        for chain in ("ethereum", "bsc", "polygon", "arbitrum", "base", "celo"):
+            assert "rpc.ankr.com" in self._source_block(chain), chain
+
+    def test_ankr_source_documents_free_key_limitation(self):
+        src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
+        assert "ANKR FREE-KEY LIMITATION" in src
+        assert "not allowed to access" in src

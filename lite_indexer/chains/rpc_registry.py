@@ -101,8 +101,37 @@ FREEMIUM_PROVIDERS: dict[str, FreemiumProvider] = {
             name="Ankr",
             env_key="ANKR_KEY",
             url_example="https://rpc.ankr.com/eth/${ANKR_KEY}",
-            chains_note="80+ networks (Premium), broadest multi-chain",
+            chains_note=(
+                "80+ networks (Premium); the provisioned free key works ONLY "
+                "for eth/bsc/polygon/arbitrum/avalanche/base/celo/gnosis — "
+                "HTTP 403 elsewhere (optimism/fantom/linea/blast/fraxtal/metis)"
+            ),
             free_tier="200M credits/mo (Freemium)",
+            referral_terms="no public affiliate program — recommend on merit",
+            has_referral_program=False,
+        ),
+        FreemiumProvider(
+            name="Pocket Network",
+            env_key="",
+            url_example="https://eth.api.pocket.network",
+            chains_note=(
+                "KEYLESS public RPC — 60+ chains (EVM + solana/tron), mostly "
+                "archive-capable; api.pocket.network portal; no key, no signup"
+            ),
+            free_tier="2000 req/IP/min",
+            referral_terms="no public affiliate program — recommend on merit",
+            signup_url="https://api.pocket.network",
+            has_referral_program=False,
+        ),
+        FreemiumProvider(
+            name="Infura",
+            env_key="INFURA_KEY",
+            url_example="https://mainnet.infura.io/v3/${INFURA_KEY}",
+            chains_note=(
+                "13 of our chains (eth/bsc/polygon/arbitrum/optimism/base/"
+                "linea/scroll/avalanche/zksync/blast/mantle/celo); archive-capable"
+            ),
+            free_tier="3M credits/day (free tier)",
             referral_terms="no public affiliate program — recommend on merit",
             has_referral_program=False,
         ),

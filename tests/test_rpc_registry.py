@@ -38,6 +38,8 @@ class TestRegistryIntegrity:
             "Helius",
             "BlockPI",
             "Uniblock",
+            "Pocket Network",
+            "Infura",
         }
         assert set(FREEMIUM_PROVIDERS) == expected
 
@@ -120,3 +122,46 @@ class TestSkippedProviders:
         reason = SKIPPED_PROVIDERS["RouteMesh"]
         assert "no DNS" in reason
         assert "2026-09-13" in reason
+
+
+class TestPocketProvider:
+    """Pocket Network is KEYLESS — no env key, no placeholder."""
+
+    def test_pocket_registered_keyless(self):
+        p = FREEMIUM_PROVIDERS["Pocket Network"]
+        assert p.env_key == ""
+        assert "${" not in p.url_example
+        assert p.url_example == "https://eth.api.pocket.network"
+        assert p.has_referral_program is False
+        assert "2000 req/IP/min" in p.free_tier
+
+    def test_pocket_not_a_referral_provider(self):
+        assert "Pocket Network" not in {p.name for p in providers_with_referrals()}
+
+
+class TestInfuraProvider:
+    def test_infura_registered_with_placeholder(self):
+        p = FREEMIUM_PROVIDERS["Infura"]
+        assert p.env_key == "INFURA_KEY"
+        assert "${INFURA_KEY}" in p.url_example
+        assert p.url_example.startswith("https://mainnet.infura.io/v3/")
+        assert p.has_referral_program is False
+        assert "archive" in p.chains_note
+
+    def test_infura_not_a_referral_provider(self):
+        assert "Infura" not in {p.name for p in providers_with_referrals()}
+
+
+class TestAnkrFreeKeyLimitation:
+    """The provisioned Ankr free key only serves 8 chains (403 elsewhere)."""
+
+    def test_ankr_note_documents_403_chains(self):
+        p = FREEMIUM_PROVIDERS["Ankr"]
+        assert "403" in p.chains_note
+        for chain in ("optimism", "fantom", "linea", "blast", "fraxtal", "metis"):
+            assert chain in p.chains_note
+
+    def test_ankr_note_lists_working_chains(self):
+        p = FREEMIUM_PROVIDERS["Ankr"]
+        for chain in ("eth", "bsc", "polygon", "arbitrum", "avalanche", "base", "celo", "gnosis"):
+            assert chain in p.chains_note
