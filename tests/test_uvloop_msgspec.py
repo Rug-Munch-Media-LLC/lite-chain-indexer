@@ -122,3 +122,31 @@ class TestDecodeResponse:
     def test_empty_content_falls_back(self):
         resp = _FakeResp(b"", parsed={"result": None})
         assert jsonparse.decode_response(resp) == {"result": None}
+
+
+class TestDecodeResponseAsync:
+    """The off-loop wrappers must be byte-for-byte equivalent to the sync path."""
+
+    def test_async_prefers_bytes_content(self):
+        payload = _logs_payload(5)
+        resp = _FakeResp(payload, parsed={"should": "not be used"})
+        assert asyncio.run(jsonparse.decode_response_async(resp)) == json.loads(payload)
+
+    def test_async_falls_back_to_json_method_without_content(self):
+        resp = _FakeResp(None, parsed={"result": []})
+        assert asyncio.run(jsonparse.decode_response_async(resp)) == {"result": []}
+
+    def test_async_empty_content_falls_back(self):
+        resp = _FakeResp(b"", parsed={"result": None})
+        assert asyncio.run(jsonparse.decode_response_async(resp)) == {"result": None}
+
+    def test_async_bytes_matches_sync(self):
+        payload = _logs_payload(50)
+        assert asyncio.run(jsonparse.decode_bytes_async(payload)) == jsonparse.decode_bytes(payload)
+
+    def test_async_malformed_raises_like_sync(self):
+        payload = b"{not json"
+        with pytest.raises(ValueError):
+            asyncio.run(jsonparse.decode_bytes_async(payload))
+        with pytest.raises(ValueError):
+            jsonparse.decode_bytes(payload)

@@ -57,6 +57,15 @@ CHAIN_AFFINITY_ENABLED: bool = os.environ.get("CHAIN_AFFINITY_ENABLED", "0") == 
 # slots free. Set MAX_CONCURRENT_CHAINS=14 to restore old behavior.
 MAX_CONCURRENT_CHAINS: int = int(os.environ.get("MAX_CONCURRENT_CHAINS", "6"))
 
+# Bounded worker count for offloading RPC JSON decode off the event loop.
+# py-spy sampling of the live daemon (2026-09-13) showed the single event
+# loop thread holding the GIL ~63% of wall time, with JSON decode done
+# inline; a burst of eth_getLogs responses could stall the loop for >100ms.
+# Decode now runs in a dedicated, bounded pool so one chain's decode no
+# longer blocks the other chains' network/state work. Kept small: decode is
+# not the loop's dominant cost and more threads only add GIL contention.
+JSON_DECODE_THREADS: int = max(1, int(os.environ.get("JSON_DECODE_THREADS", "4")))
+
 # ── Chain-Level Health / Auto-Disable (daemon) ────────────────────────
 # If a chain's state has not advanced for CHAIN_STALL_DISABLE_SECONDS
 # (default 2h) the daemon marks it disabled and stops spending RPC budget

@@ -14,9 +14,14 @@ fields, malformed, non-UTF8, empty) are identical to the previous behaviour.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+
+from lite_indexer.config import JSON_DECODE_THREADS
 
 _decoder: Callable[[bytes], Any] | None
 try:
@@ -59,4 +64,54 @@ def decode_response(resp: Any) -> Any:
     return resp.json()
 
 
-__all__ = ["decode_bytes", "decode_response", "msgspec_available"]
+# ── Event-loop offload ────────────────────────────────────────────────
+# Decode is a synchronous C call. Doing it inline on the event loop
+# serializes every chain's decode behind the others (head-of-line
+# blocking); a burst of large eth_getLogs responses can stall the loop
+# for >100ms. These async wrappers run the same decoder in a dedicated,
+# bounded thread pool so the loop keeps servicing other chains' I/O.
+# The pool is created lazily and capped at JSON_DECODE_THREADS (never
+# unbounded); behaviour/return values are identical to the sync path.
+_decode_pool: ThreadPoolExecutor | None = None
+_decode_pool_lock = threading.Lock()
+
+
+def _decode_executor() -> ThreadPoolExecutor:
+    """Return the process-wide bounded decode executor (created once)."""
+    global _decode_pool
+    if _decode_pool is None:
+        with _decode_pool_lock:
+            if _decode_pool is None:
+                _decode_pool = ThreadPoolExecutor(
+                    max_workers=JSON_DECODE_THREADS,
+                    thread_name_prefix="json-decode",
+                )
+    return _decode_pool
+
+
+async def decode_bytes_async(data: bytes) -> Any:
+    """Off-loop variant of :func:`decode_bytes` (same result, same errors)."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_decode_executor(), decode_bytes, data)
+
+
+async def decode_response_async(resp: Any) -> Any:
+    """Off-loop variant of :func:`decode_response`.
+
+    ``resp.content`` byte payloads (the real httpx path) are decoded in the
+    bounded pool; lightweight doubles without ``content`` fall back to the
+    synchronous ``resp.json()`` exactly as before.
+    """
+    content = getattr(resp, "content", None)
+    if isinstance(content, (bytes, bytearray)) and content:
+        return await decode_bytes_async(bytes(content))
+    return resp.json()
+
+
+__all__ = [
+    "decode_bytes",
+    "decode_bytes_async",
+    "decode_response",
+    "decode_response_async",
+    "msgspec_available",
+]

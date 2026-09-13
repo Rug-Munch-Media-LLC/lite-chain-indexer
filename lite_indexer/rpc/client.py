@@ -34,7 +34,7 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
-from lite_indexer.rpc.jsonparse import decode_response
+from lite_indexer.rpc.jsonparse import decode_response_async
 from lite_indexer.rpc.ledger import (
     LEDGER,
     defer_reason,
@@ -337,7 +337,7 @@ class RpcClient:
 
                     # Malformed JSON protection (msgspec fast path when present)
                     try:
-                        data = decode_response(resp)
+                        data = await decode_response_async(resp)
                     except (json.JSONDecodeError, ValueError) as exc:
                         logger.debug(
                             "rpc_malformed_json",
@@ -540,7 +540,7 @@ class RpcClient:
             record_rate_limit(endpoint)
             raise httpx.HTTPStatusError("batch rate limited", request=httpx.Request("POST", endpoint), response=resp)
         resp.raise_for_status()
-        return decode_response(resp)
+        return await decode_response_async(resp)
 
     async def _call_batch_fallback(
         self,
@@ -935,7 +935,7 @@ class RpcClient:
                     continue
 
                 resp.raise_for_status()
-                data = decode_response(resp)
+                data = await decode_response_async(resp)
                 if isinstance(data, dict) and "result" in data:
                     result = data["result"]
                     if isinstance(result, list):
