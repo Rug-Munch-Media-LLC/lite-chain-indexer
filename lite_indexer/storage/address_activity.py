@@ -183,7 +183,8 @@ def parse_address_activity(tx_data: dict[str, Any]) -> list[dict[str, Any]]:
     if not account_keys:
         return []
 
-    header = message.get("header") if isinstance(message.get("header"), dict) else {}
+    header_raw = message.get("header")
+    header: dict[str, Any] = header_raw if isinstance(header_raw, dict) else {}
     try:
         num_signers = int(header.get("numRequiredSignatures") or 0)
     except (TypeError, ValueError):
@@ -212,6 +213,8 @@ def parse_address_activity(tx_data: dict[str, Any]) -> list[dict[str, Any]]:
 
     block_time_raw = tx_data.get("blockTime")
     try:
+        if block_time_raw is None:
+            raise TypeError("missing blockTime")
         block_time = datetime.fromtimestamp(int(block_time_raw), tz=UTC)
     except (TypeError, ValueError, OverflowError):
         block_time = datetime.now(UTC)
@@ -272,7 +275,9 @@ def ensure_address_activity_table(ch_client: Any) -> bool:
         database is missing or privileges are insufficient.
     """
     try:
-        ch_client.execute(_ADDRESS_ACTIVITY_DDL)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        ch_client.execute(
+            _ADDRESS_ACTIVITY_DDL
+        )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
         logger.info("address_activity_table_ensured", table=CH_ADDRESS_ACTIVITY_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort

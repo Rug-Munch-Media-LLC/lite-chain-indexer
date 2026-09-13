@@ -148,8 +148,13 @@ class QueryCache:
         # Still over budget: evict the entry expiring soonest (FIFO-ish);
         # never-expiring entries sort last.
         if len(self._data) >= self._max_entries and self._data:
-            oldest = min(self._data, key=lambda k: self._data[k][0] if self._data[k][0] is not None else float("inf"))
+            oldest = min(self._data, key=self._expiry_rank)
             self._data.pop(oldest, None)
+
+    def _expiry_rank(self, key: CacheKey) -> float:
+        """Eviction sort key: expiry time, or ``+inf`` for never-expiring."""
+        expires_at = self._data[key][0]
+        return expires_at if expires_at is not None else float("inf")
 
     def clear(self) -> None:
         """Drop every cached entry."""

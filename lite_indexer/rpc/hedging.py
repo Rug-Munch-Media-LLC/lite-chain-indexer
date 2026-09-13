@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from lite_indexer.logging import get_logger
@@ -35,7 +36,7 @@ HEDGE_ENABLED = os.getenv("RPC_HEDGE_ENABLED", "1") != "0"
 
 
 async def hedged_rpc(
-    factory: Any,
+    factory: Callable[[str], Coroutine[Any, Any, dict[str, Any] | None]],
     endpoints: list[str],
 ) -> dict[str, Any] | None:
     """Race an RPC operation across the pool with a delayed hedge.
@@ -106,7 +107,8 @@ async def hedged_call(
 
     async def _factory(endpoint: str) -> dict[str, Any] | None:
         kwargs: dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
-        return await client.call(endpoint, method, params, **kwargs)
+        response: dict[str, Any] | None = await client.call(endpoint, method, params, **kwargs)
+        return response
 
     return await hedged_rpc(_factory, endpoints)
 

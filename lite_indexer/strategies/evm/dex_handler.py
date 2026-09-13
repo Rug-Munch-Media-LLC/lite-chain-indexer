@@ -37,6 +37,11 @@ from lite_indexer.strategies.pool_resolver import batch_resolve_pool_tokens
 logger = get_logger(__name__)
 
 
+def _read_response_text(response: httpx.Response) -> str:
+    """Read ``response.text`` off-thread, bounded by the caller's deadline."""
+    return response.text
+
+
 async def _fetch_topic(
     topic: str,
     label: str,
@@ -108,7 +113,7 @@ async def _fetch_topic(
                     # Body read under the same hard deadline — this is
                     # exactly where the wedge lived.
                     resp_text = await asyncio.wait_for(
-                        asyncio.to_thread(lambda r=resp: r.text), timeout=attempt_deadline
+                        asyncio.to_thread(_read_response_text, resp), timeout=attempt_deadline
                     )
                     if not resp_text or len(resp_text) < 10:
                         record_endpoint_failure(url)

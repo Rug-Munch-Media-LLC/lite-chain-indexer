@@ -42,7 +42,7 @@ BLOCK_SCOPED_METHODS = {
 }
 EMPTY_RESULTS = {'"0x"', "null", "{}", "[]"}
 
-_cache: OrderedDict[tuple[str, str], tuple[float, Any]] = OrderedDict()
+_cache: OrderedDict[tuple[str, str], tuple[float, dict[str, Any]]] = OrderedDict()
 
 
 def _canonical(params: list[Any] | None) -> str:

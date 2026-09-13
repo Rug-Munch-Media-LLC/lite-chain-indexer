@@ -11,10 +11,11 @@ import threading
 
 from lite_indexer.webhooks.models import DlqEntry
 
+from ._base import DeliveryMixinBase
 from .helpers import _DLQ_POLL_BATCH, _DLQ_SCHEMA
 
 
-class QueueMixin:
+class QueueMixin(DeliveryMixinBase):
     """DLQ SQLite access (same DB file, own connection)."""
 
     _dlq_conn: sqlite3.Connection | None
@@ -25,7 +26,7 @@ class QueueMixin:
         if self._dlq_conn is None:
             from lite_indexer.webhooks.storage import WebhookStore  # noqa: PLC0415
 
-            store: WebhookStore = self._store  # type: ignore[attr-defined]
+            store: WebhookStore = self._store
             store.db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(str(store.db_path), check_same_thread=False)
             conn.row_factory = sqlite3.Row

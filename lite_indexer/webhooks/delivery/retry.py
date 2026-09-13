@@ -15,23 +15,25 @@ from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.webhooks.models import DlqEntry, WebhookSubscription
 
+from ._base import DeliveryMixinBase
+
 logger = get_logger(__name__)
 
 
-class RetryMixin:
+class RetryMixin(DeliveryMixinBase):
     """DLQ retry worker + Svix-schedule backoff for failed deliveries."""
 
     def _start_worker(self) -> None:
         """Start the DLQ retry worker once (idempotent)."""
-        if self._worker_task is None and not self._worker_running:  # type: ignore[attr-defined]
-            self._worker_running = True  # type: ignore[attr-defined]
-            self._worker_task = asyncio.create_task(self._dlq_worker())  # type: ignore[attr-defined]
+        if self._worker_task is None and not self._worker_running:
+            self._worker_running = True
+            self._worker_task = asyncio.create_task(self._dlq_worker())
 
     async def _dlq_worker(self) -> None:
         """Background poller: drain due DLQ entries every poll interval."""
         try:
-            stop_event = self._stop_event  # type: ignore[attr-defined]
-            poll_interval = self._poll_interval  # type: ignore[attr-defined]
+            stop_event = self._stop_event
+            poll_interval = self._poll_interval
             while not stop_event.is_set():
                 self._process_due_dlq()
                 try:
@@ -39,7 +41,7 @@ class RetryMixin:
                 except TimeoutError:
                     continue
         finally:
-            self._worker_running = False  # type: ignore[attr-defined]
+            self._worker_running = False
 
     def _process_due_dlq(self) -> None:
         """Schedule retries for every DLQ entry whose time has come."""
@@ -67,7 +69,7 @@ class RetryMixin:
         retry re-sends the identical signature input (id, timestamp,
         raw body) that the subscriber saw on the initial attempt.
         """
-        schedule = self._schedule  # type: ignore[attr-defined]
+        schedule = self._schedule
         delay = self._jittered(schedule[min(attempts, len(schedule) - 1)])
         entry = DlqEntry(
             id=webhook_id,
@@ -78,7 +80,7 @@ class RetryMixin:
             chain=chain,
             timestamp=timestamp,
             attempts=attempts,
-            max_attempts=self.max_attempts,  # type: ignore[attr-defined]
+            max_attempts=self.max_attempts,
             next_attempt_at=time.time() + delay,
             status="pending",
             last_error=error,
@@ -87,7 +89,7 @@ class RetryMixin:
         )
         self._dlq_insert(entry)
         metrics_incr("webhook_dlq_enqueued")
-        if not self._worker_running:  # type: ignore[attr-defined]
+        if not self._worker_running:
             asyncio.create_task(self._retry_later(entry.id, delay))
 
     async def _retry_later(self, entry_id: str, delay: float) -> None:
@@ -103,7 +105,7 @@ class RetryMixin:
             return
         if not self._claim_dlq_entry(entry_id):
             return  # another task/worker is already handling it
-        store = self._store  # type: ignore[attr-defined]
+        store = self._store
         sub = store.get_subscription(entry.subscription_id)
         if sub is None:
             self._mark_dlq_dead(entry_id, entry.attempts, "subscription removed")
@@ -135,14 +137,14 @@ class RetryMixin:
             logger.warning("webhook_deadlettered", subscription_id=sub.id, subject=entry.subject, webhook_id=entry.id)
             return
 
-        schedule = self._schedule  # type: ignore[attr-defined]
+        schedule = self._schedule
         delay = self._jittered(schedule[min(attempts, len(schedule) - 1)])
         self._reschedule_dlq(entry_id, attempts, time.time() + delay, status_code, error)
-        if not self._worker_running:  # type: ignore[attr-defined]
+        if not self._worker_running:
             asyncio.create_task(self._retry_later(entry_id, delay))
 
     def _jittered(self, delay: float) -> float:
         """Apply ±20% jitter to a non-zero backoff (thundering-herd guard)."""
-        if delay <= 0 or not self._jitter:  # type: ignore[attr-defined]
+        if delay <= 0 or not self._jitter:
             return delay
         return delay * random.uniform(0.8, 1.2)

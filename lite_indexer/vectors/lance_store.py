@@ -31,7 +31,7 @@ import pyarrow as pa
 
 from lite_indexer.vectors.collections import DEFAULT_COLLECTIONS
 from lite_indexer.vectors.config import LANCE_DIR
-from lite_indexer.vectors.embedder import Embedder, EmbeddingError, create_embedder
+from lite_indexer.vectors.embedder import DualLaneEmbedder, Embedder, EmbeddingError, create_embedder
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +57,13 @@ class LanceVectorStore:
 
         self.path = str(path or LANCE_DIR)
         self.db = lancedb.connect(self.path)
-        self._embedder = embedder or create_embedder()
+        self._embedder: Embedder | DualLaneEmbedder = embedder or create_embedder()
         self._owns_embedder = embedder is None
 
     # ── Embedding helpers ──────────────────────────────────────────────
 
     @property
-    def embedder(self) -> Embedder:
+    def embedder(self) -> Embedder | DualLaneEmbedder:
         """The active embedding provider."""
         return self._embedder
 

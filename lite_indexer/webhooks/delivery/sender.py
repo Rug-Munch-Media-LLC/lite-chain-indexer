@@ -22,6 +22,7 @@ from lite_indexer.webhooks.models import (
     WebhookSubscription,
 )
 
+from ._base import DeliveryMixinBase
 from .helpers import (
     _SUCCESS_STATUS_LIMIT,
     _build_signature_header,
@@ -31,7 +32,7 @@ from .helpers import (
 logger = get_logger(__name__)
 
 
-class SenderMixin:
+class SenderMixin(DeliveryMixinBase):
     """NATS message fan-out and initial webhook POST delivery."""
 
     async def _on_message(self, msg: Any) -> None:
@@ -58,7 +59,7 @@ class SenderMixin:
         the first POST). Never raises — every failure is logged and
         recorded in the delivery log / DLQ.
         """
-        matches = self._store.matching_subscriptions(subject)  # type: ignore[attr-defined]
+        matches = self._store.matching_subscriptions(subject)
         if not matches:
             return []
 
@@ -69,8 +70,8 @@ class SenderMixin:
 
     async def _deliver_one(self, sub: WebhookSubscription, subject: str, payload: bytes) -> bool:
         """Initial delivery attempt for one webhook (DLQ on failure)."""
-        clock = self._clock  # type: ignore[attr-defined]
-        deadline = clock() + self.total_timeout_seconds  # type: ignore[attr-defined]
+        clock = self._clock
+        deadline = clock() + self.total_timeout_seconds
         if clock() >= deadline:
             await self._record_dropped(sub, subject)
             return False
@@ -87,13 +88,13 @@ class SenderMixin:
             sub, webhook_id, timestamp, subject, event_type, chain, payload
         )
         if delivered:
-            self._store.record_success(sub.id, subject, status_code or 0, duration_ms)  # type: ignore[attr-defined]
+            self._store.record_success(sub.id, subject, status_code or 0, duration_ms)
             metrics_incr("webhook_deliveries")
             logger.debug("webhook_delivered", subscription_id=sub.id, subject=subject, status_code=status_code)
             return True
 
         status = "failed" if status_code is not None else "error"
-        self._store.record_attempt(sub.id, subject, status, status_code, duration_ms)  # type: ignore[attr-defined]
+        self._store.record_attempt(sub.id, subject, status, status_code, duration_ms)
         self._log_failure(sub, subject, attempts=1, status_code=status_code, error=error)
         self._enqueue_dlq(
             sub,
@@ -134,7 +135,7 @@ class SenderMixin:
             "X-LCI-Chain": chain,
             "Content-Type": "application/json",
         }
-        start = self._clock()  # type: ignore[attr-defined]
+        start = self._clock()
         try:
             resp = await self._http().post(sub.url, content=payload, headers=headers, timeout=self.timeout_seconds)
             duration_ms = int((self._clock() - start) * 1000)
@@ -147,7 +148,7 @@ class SenderMixin:
 
     async def _record_dropped(self, sub: WebhookSubscription, subject: str) -> None:
         """Record a delivery abandoned when the total budget expired."""
-        self._store.record_attempt(sub.id, subject, "dropped", None, 0)  # type: ignore[attr-defined]
+        self._store.record_attempt(sub.id, subject, "dropped", None, 0)
         logger.debug(
             "webhook_budget_exhausted",
             subscription_id=sub.id,
@@ -178,12 +179,12 @@ class SenderMixin:
 
     def _http(self) -> httpx.AsyncClient:
         """Lazily-created shared httpx client (closed by ``stop``)."""
-        if self._http_client is None:  # type: ignore[attr-defined]
-            self._http_client = httpx.AsyncClient(  # type: ignore[attr-defined]
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout_seconds),
-                transport=self._transport,  # type: ignore[attr-defined]
+                transport=self._transport,
             )
-        return self._http_client  # type: ignore[attr-defined]
+        return self._http_client
 
 
 __all__ = ["SenderMixin", "DeliveryAttempt"]
