@@ -26,6 +26,7 @@ from lite_indexer.config import (
     RPC_CALL_TIMEOUT,
     RPC_RETRY_ATTEMPTS,
     RPC_RETRY_BASE_DELAY_S,
+    RPC_RETRY_MAX_DELAY_S,
     RPC_TIMEOUT,
     TIMESTAMP_FETCH_TIMEOUT,
 )
@@ -301,7 +302,6 @@ class RpcClient:
         # all attempts fail, we return None — the existing failure shape —
         # and the hedging layer above keeps doing its job.
         max_attempts = RPC_RETRY_ATTEMPTS
-        delay = RPC_RETRY_BASE_DELAY_S
         for attempt in range(1, max_attempts + 1):
             transient = False
             try:
@@ -403,15 +403,24 @@ class RpcClient:
             if transient:
                 await record_circuit_failure(endpoint)
                 if attempt < max_attempts:
+                    from lite_indexer.rpc.backoff import exponential_backoff
+
+                    # AWS full jitter: uniform(0, min(cap, base*2**attempt)).
+                    # Explicit Retry-After windows (429) are handled before
+                    # this path and stay exact.
+                    delay = exponential_backoff(
+                        attempt - 1,
+                        base=RPC_RETRY_BASE_DELAY_S,
+                        cap=RPC_RETRY_MAX_DELAY_S,
+                    )
                     logger.debug(
                         "rpc_retry",
                         endpoint=endpoint[:50],
                         method=method,
                         attempt=attempt,
-                        next_delay_s=delay,
+                        next_delay_s=round(delay, 4),
                     )
                     await asyncio.sleep(delay)
-                    delay = min(delay * 2, 1.0)
         return None
 
     async def eth_block_number(self, endpoint: str) -> int | None:
@@ -552,6 +561,31 @@ class RpcClient:
             )
             return None
 
+        from lite_indexer.rpc.range_split import fetch_logs_split
+
+        async def _once(child_from: int, child_to: int) -> tuple[str, list[dict[str, Any]] | None]:
+            return await self._fetch_logs_range(endpoint, child_from, child_to, topic, address, max_retries)
+
+        return await fetch_logs_split(_once, from_block, to_block)
+
+    async def _fetch_logs_range(
+        self,
+        endpoint: str,
+        from_block: int,
+        to_block: int,
+        topic: str,
+        address: str | None,
+        max_retries: int,
+    ) -> tuple[str, list[dict[str, Any]] | None]:
+        """Fetch ONE ``eth_getLogs`` range and classify the outcome.
+
+        Returns:
+            ``("ok", logs)`` for a list/null result, ``("range", None)``
+            when the provider rejected the range/size/result limit (the
+            caller splits and retries in-line), and ``("error", None)`` for
+            every other failure (timeout/429/auth/malformed) so those keep
+            the normal retry/throttle path.
+        """
         filter_params: dict[str, Any] = {
             "fromBlock": hex(from_block),
             "toBlock": hex(to_block),
@@ -567,6 +601,7 @@ class RpcClient:
             "params": [filter_params],
         }
 
+        from lite_indexer.rpc.range_split import classify_logs_error, is_range_error_message
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
 
         account_key = account_key_for_endpoint(endpoint)
@@ -594,19 +629,21 @@ class RpcClient:
                 _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
 
                 if resp.status_code == 429:
-                    # Respect Retry-After exactly when the endpoint tells
-                    # us how long to wait; otherwise exponential backoff.
-                    # Rate limits trigger backoff ONLY — they must not
-                    # trip the circuit breaker or hard-ban the endpoint
-                    # (the throttle lifts in seconds).
-                    from lite_indexer.rpc.throttle import RATE_TRACKER
+                    # Respect an explicit Retry-After EXACTLY; otherwise use
+                    # full-jitter exponential backoff (thundering-herd guard).
+                    # Rate limits trigger backoff ONLY — they must not trip
+                    # the circuit breaker or hard-ban the endpoint (the
+                    # throttle lifts in seconds).
+                    from lite_indexer.rpc.backoff import exponential_backoff
+                    from lite_indexer.rpc.throttle import RATE_TRACKER, extract_rate_limit
 
-                    state = RATE_TRACKER.state_for(endpoint)
-                    backoff_until = state.get("backoff_until", 0.0)
-                    if backoff_until:
-                        wait = max(0.0, backoff_until - time.time())
+                    retry_after = extract_rate_limit(resp.headers or {}).get("retry_after")
+                    if retry_after is not None and retry_after > 0:
+                        state = RATE_TRACKER.state_for(endpoint)
+                        backoff_until = state.get("backoff_until", 0.0)
+                        wait = max(0.0, backoff_until - time.time()) if backoff_until else float(retry_after)
                     else:
-                        wait = min(2**attempt, RATE_LIMIT_WAIT_CAP)
+                        wait = exponential_backoff(attempt, base=1.0, cap=float(RATE_LIMIT_WAIT_CAP))
                     logger.debug(
                         "rate_limited_retry",
                         endpoint=endpoint[:40],
@@ -624,14 +661,34 @@ class RpcClient:
                     result = data["result"]
                     if isinstance(result, list):
                         _safe_record(record_rpc_outcome, endpoint, ok=True)
-                        return result
+                        return ("ok", result)
                     # result is null — endpoint works but no logs in range
                     if result is None:
                         _safe_record(record_rpc_outcome, endpoint, ok=True)
-                        return []
+                        return ("ok", [])
+                kind = classify_logs_error(data)
                 _safe_record(record_rpc_outcome, endpoint, ok=False)
-                return None
+                return (kind, None)
 
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                body = getattr(exc.response, "text", "") or ""
+                logger.debug(
+                    "rpc_http_error",
+                    endpoint=endpoint[:40],
+                    status=status,
+                )
+                if is_range_error_message(body):
+                    # Provider rejected the range over HTTP (400/413, ...):
+                    # let the splitter re-chunk in-line.
+                    _safe_record(record_rpc_outcome, endpoint, ok=False)
+                    return ("range", None)
+                record_endpoint_failure(endpoint)
+                _safe_record(record_rpc_outcome, endpoint, ok=False)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+                    continue
+                return ("error", None)
             except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError) as exc:
                 logger.debug(
                     "rpc_connection_error",
@@ -644,7 +701,7 @@ class RpcClient:
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
                     continue
-                return None
+                return ("error", None)
             except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
                 logger.warning(
                     "rpc_unexpected_error",
@@ -655,9 +712,9 @@ class RpcClient:
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1)
                     continue
-                return None
+                return ("error", None)
 
-        return None
+        return ("error", None)
 
 
 # ── Block Timestamp Fetching ───────────────────────────────────────────

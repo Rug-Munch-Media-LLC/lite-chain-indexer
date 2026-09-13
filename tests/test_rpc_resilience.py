@@ -739,10 +739,15 @@ def _mock_get_client(mock_client: Any) -> Any:
 class TestRpcRetry:
     async def test_retry_exponential_backoff(self, hermetic_rpc: list[float], monkeypatch: pytest.MonkeyPatch):
         """Transient failures retry with 0.1 → 0.2 → 0.4 backoff, then give
-        up returning None (the existing failure shape)."""
+        up returning None (the existing failure shape). Jitter is disabled
+        here so the deterministic exponential ceiling is asserted; the
+        full-jitter behavior is covered in tests/test_backoff.py."""
         import httpx
 
+        import lite_indexer.rpc.backoff as backoff_mod
         import lite_indexer.rpc.client as client_mod
+
+        monkeypatch.setattr(backoff_mod, "RPC_BACKOFF_JITTER", False)
 
         def _always_down(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)

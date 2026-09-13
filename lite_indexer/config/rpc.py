@@ -46,6 +46,26 @@ TIMESTAMP_FETCH_TIMEOUT = 15
 # attempts at 0s, 0.1s, 0.2s, 0.4s (base doubles each attempt, capped at 1s).
 RPC_RETRY_ATTEMPTS = int(os.environ.get("RPC_RETRY_ATTEMPTS", "3"))
 RPC_RETRY_BASE_DELAY_S = float(os.environ.get("RPC_RETRY_BASE_DELAY_S", "0.1"))
+# Upper bound for a jittered transient retry delay (seconds). Full jitter is
+# uniform(0, min(cap, base * 2**attempt)); Retry-After windows stay exact.
+RPC_RETRY_MAX_DELAY_S = float(os.environ.get("RPC_RETRY_MAX_DELAY_S", "1.0"))
+
+# ── Backoff jitter (rpc/backoff.py) ──────────────────────────────────
+# AWS-style FULL jitter de-synchronizes multi-worker retries so a recovering
+# provider is not slammed by every worker at the same instant. Set
+# RPC_BACKOFF_JITTER=0 to restore deterministic retries (diagnostics only).
+# RPC_BACKOFF_JITTER_SEED makes the jitter RNG reproducible for tests.
+RPC_BACKOFF_JITTER: bool = os.environ.get("RPC_BACKOFF_JITTER", "1") != "0"
+RPC_BACKOFF_JITTER_SEED: str = os.environ.get("RPC_BACKOFF_JITTER_SEED", "")
+
+# ── In-call eth_getLogs range splitting (rpc/range_split.py) ─────────
+# When a provider rejects a getLogs range as too large, split [from,to] at
+# the midpoint and retry both halves IN-LINE (Ponder-style) so the call
+# still succeeds this cycle instead of waiting for a cross-cycle halving.
+# Bounds keep the recursion finite: at most GETLOGS_SPLIT_MAX_DEPTH levels
+# and never below GETLOGS_SPLIT_MIN_BLOCKS blocks per leaf.
+GETLOGS_SPLIT_MAX_DEPTH: int = int(os.environ.get("GETLOGS_SPLIT_MAX_DEPTH", "8"))
+GETLOGS_SPLIT_MIN_BLOCKS: int = int(os.environ.get("GETLOGS_SPLIT_MIN_BLOCKS", "1"))
 
 # Semaphore limit for parallel RPC calls
 GET_LOGS_SEMAPHORE_LIMIT = 10

@@ -84,6 +84,7 @@ from lite_indexer.rpc.routing.helpers import (
 from lite_indexer.rpc.routing.selector import (
     MIN_ARCHIVE_ENDPOINTS,
     endpoint_tier,
+    method_class,
     preferred_tier_for_method,
     select_archive_endpoint,
     select_endpoint_for_method,
@@ -113,6 +114,7 @@ __all__ = [
     "ERROR_RATE_DAMPING",
     "MIN_ARCHIVE_ENDPOINTS",
     "endpoint_tier",
+    "method_class",
     "preferred_tier_for_method",
     "select_archive_endpoint",
     "select_endpoint_for_method",

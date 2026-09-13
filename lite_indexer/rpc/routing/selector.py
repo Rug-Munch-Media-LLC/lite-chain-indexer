@@ -54,20 +54,51 @@ def _warn_archive_scarcity(chain: str | None, method: str, capable: list[str]) -
     )
 
 
+def method_class(method: str) -> str:
+    """Classify a method for spillover telemetry: ``archive`` or ``tip``."""
+    return "archive" if method_requires_archive(method) else "tip"
+
+
+def _is_endpoint_available(endpoint: str) -> bool:
+    """Whether an endpoint may be routed to *now* (not tripped/cooling).
+
+    Combines the existing health signals: hard ban, open circuit breaker,
+    failed verification, and an active throttle backoff window. Unknown
+    endpoints are treated as available (pre-verification default). Any
+    signal lookup error degrades to available so selection can never crash.
+    """
+    try:
+        from lite_indexer.rpc.health import is_endpoint_healthy
+        from lite_indexer.rpc.pool import is_endpoint_banned
+        from lite_indexer.rpc.routing.health import is_circuit_open
+        from lite_indexer.rpc.throttle import RATE_TRACKER
+    except Exception:  # noqa: BLE001 — availability must never crash selection
+        return True
+    if is_endpoint_banned(endpoint):
+        return False
+    if is_circuit_open(endpoint):
+        return False
+    if not is_endpoint_healthy(endpoint):
+        return False
+    return bool(RATE_TRACKER.allow(endpoint))
+
+
 def _archive_candidates(method: str, endpoints: list[str], chain: str | None) -> list[str]:
-    """Narrow archive-class candidates to archive-capable, fail-closed.
+    """Narrow archive-class candidates to HEALTHY archive-capable endpoints.
 
     Only endpoints with a KNOWN capability record are considered when any
     exist (an already-probed non-archive endpoint is excluded). When NO
     candidate has been probed yet, selection falls back to the legacy pool —
-    this preserves the pre-verification behavior. If the registry is known
-    and holds no archive-capable endpoint, raise :class:`NoArchiveEndpointError`
-    (never silently route historical calls at a non-archive node).
+    this preserves the pre-verification behavior. When capabilities are
+    known, candidates must be archive-capable AND currently healthy
+    (free OR keyed); if none qualify the call fails closed with
+    :class:`NoArchiveEndpointError` (never route historical calls at a
+    non-archive node).
     """
     known = [ep for ep in endpoints if get_capability(ep) is not None]
     if not known:
         return endpoints
-    capable = [ep for ep in known if is_archive_capable(ep, method)]
+    capable = [ep for ep in known if is_archive_capable(ep, method) and _is_endpoint_available(ep)]
     _warn_archive_scarcity(chain, method, capable)
     if not capable:
         raise NoArchiveEndpointError(method, chain, endpoints)
@@ -113,14 +144,10 @@ def preferred_tier_for_method(method: str) -> str:
     return RPC_METHOD_ROUTING.get(method, "public")
 
 
-def _tier_candidates(method: str, endpoints: list[str]) -> list[str]:
-    """Endpoints matching the method's preferred tier (or the full pool)."""
-    preferred = preferred_tier_for_method(method)
-    if preferred == "dedicated":
-        matching = [ep for ep in endpoints if endpoint_tier(ep) == "dedicated"]
-    else:
-        matching = [ep for ep in endpoints if endpoint_tier(ep) != "dedicated"]
-    return matching or endpoints
+def _tier_matches(endpoint: str, preferred: str) -> bool:
+    """Whether ``endpoint`` belongs to the preferred routing tier."""
+    is_dedicated = endpoint_tier(endpoint) == "dedicated"
+    return is_dedicated if preferred == "dedicated" else not is_dedicated
 
 
 def select_endpoint_for_method(
@@ -130,13 +157,17 @@ def select_endpoint_for_method(
     chain: str | None = None,
     base_select: Callable[[list[str]], str] | None = None,
 ) -> str:
-    """Pick the best endpoint for ``method`` using per-method routing.
+    """Pick the best endpoint for ``method`` with tier-aware spillover.
 
-    Endpoints matching the method's preferred tier are boosted; the
-    pool's health scoring still applies. ARCHIVE-class methods
-    (``eth_getLogs``, ``eth_getProof``, ``debug_*``, ``trace_*``) are
-    additionally restricted to archive-capable endpoints and fail closed
-    (see :func:`_archive_candidates`).
+    Endpoints matching the method's preferred tier are used first (free-first
+    for heavy methods; keyed-first for latency-sensitive ones). ARCHIVE-class
+    methods (``eth_getLogs``, ``eth_getProof``, ``debug_*``, ``trace_*``) are
+    restricted to healthy archive-capable endpoints and fail closed.
+
+    FREEMIUM SPILLOVER: when the preferred tier has NO healthy endpoint
+    (all banned/tripped/cooling), selection escalates to the other tier
+    rather than dead-ending — a keyed endpoint serves the call under its
+    account caps. Emits an ``rpc_spillover`` metric + log.
 
     Args:
         method: JSON-RPC method name.
@@ -151,7 +182,8 @@ def select_endpoint_for_method(
 
     Raises:
         NoArchiveEndpointError: ARCHIVE-class method with known
-            capabilities but no archive-capable candidate.
+            capabilities but no healthy archive-capable candidate in either
+            tier.
     """
     from lite_indexer.rpc.pool import get_best_endpoint
 
@@ -160,15 +192,39 @@ def select_endpoint_for_method(
     if method_requires_archive(method):
         candidates = _archive_candidates(method, endpoints, chain)
 
-    tiered = _tier_candidates(method, candidates)
-    if chain and tiered is candidates:
+    preferred = preferred_tier_for_method(method)
+    matching = [ep for ep in candidates if _tier_matches(ep, preferred)]
+    other = [ep for ep in candidates if not _tier_matches(ep, preferred)]
+
+    available_primary = [ep for ep in matching if _is_endpoint_available(ep)]
+    if available_primary:
+        return select(available_primary)
+
+    available_other = [ep for ep in other if _is_endpoint_available(ep)]
+    if available_other:
+        metrics_incr("rpc_spillover")
+        logger.warning(
+            "rpc_spillover",
+            chain=chain,
+            method=method,
+            method_class=method_class(method),
+            preferred_tier=preferred,
+            reason="primary_tier_exhausted",
+            spillover_endpoints=len(available_other),
+        )
+        return select(available_other)
+
+    # Neither tier healthy — preserve the legacy selection shape so callers
+    # still get an endpoint (pool scoring / desperation probe handles it).
+    fallback = matching or candidates
+    if chain:
         logger.debug(
             "method_routing_fallback",
             chain=chain,
             method=method,
-            preferred=preferred_tier_for_method(method),
+            preferred=preferred,
         )
-    return select(tiered)
+    return select(fallback)
 
 
 def select_archive_endpoint(
@@ -187,7 +243,11 @@ def select_archive_endpoint(
     """
     if not method_requires_archive(method):
         raise ValueError(f"{method} is not an archive-class method")
-    capable = [ep for ep in endpoints if get_capability(ep) is not None and is_archive_capable(ep, method)]
+    capable = [
+        ep
+        for ep in endpoints
+        if get_capability(ep) is not None and is_archive_capable(ep, method) and _is_endpoint_available(ep)
+    ]
     _warn_archive_scarcity(chain, method, capable)
     if not capable:
         raise NoArchiveEndpointError(method, chain, endpoints)

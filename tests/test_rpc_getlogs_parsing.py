@@ -61,6 +61,8 @@ def _no_throttle(monkeypatch):
         return None
 
     monkeypatch.setattr(rc, "apply_provider_rate_limit", _noop)
+    monkeypatch.setattr(rc, "provider_throttle_before", _noop)
+    monkeypatch.setattr(rc, "record_provider_response", lambda *a, **k: None)
     monkeypatch.setattr("lite_indexer.rpc.throttle.throttle_before", _noop)
 
 
