@@ -52,18 +52,16 @@ def test_candidates_never_overlap_active_pool() -> None:
         assert len(urls) == len(set(urls)), f"candidate duplicates in {chain}"
 
 
-def test_freemium_depth_exists_for_major_chains() -> None:
-    """Source templates (pre-resolution) must carry keyed fallbacks so a
-    chain never depends on keyless publics alone. Checked against the
-    module source because resolution strips keyed entries when env unset."""
-    import re
-    from pathlib import Path
+def test_public_pool_is_keyless_by_design() -> None:
+    """The PUBLIC repo ships free/keyless endpoints only; curated/keyed
+    providers are supplied by the private runtime overlay (see
+    lite_indexer/chains/_overlay.py). A keyed template in the builtin pool
+    would be a provider leak."""
+    from lite_indexer.chains.endpoints import BUILTIN_ENDPOINTS
 
-    src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
-    for chain in ("ethereum", "bsc", "polygon", "arbitrum", "base"):
-        block = src.split(f'"{chain}": [', 1)[1].split("],", 1)[0]
-        keyed = re.findall(r'"[^"]*\$\{[A-Z_]+\}[^"]*"', block)
-        assert keyed, f"{chain} has no keyed freemium templates"
+    for chain, urls in BUILTIN_ENDPOINTS.items():
+        for url in urls:
+            assert "${" not in url, f"{chain}: keyed template in public pool: {url}"
 
 
 def test_expected_chain_ids_cover_all_pooled_chains() -> None:

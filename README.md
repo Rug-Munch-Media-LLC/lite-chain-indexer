@@ -155,6 +155,28 @@ new_endpoints = await auto_ingest("ethereum")
 asyncio.create_task(monitor_endpoints("ethereum", interval=3600))
 ```
 
+### Optional: Private Provider Overlay
+
+The public pool is **free and keyless by default**. To extend it with your
+own JSON-RPC providers (keyed free tiers, dedicated nodes, private
+gateways), point `LITE_INDEXER_ENDPOINT_OVERLAY` at a JSON file kept
+**outside this repository**:
+
+```json
+{
+  "ethereum": {
+    "endpoints": [
+      "https://mainnet.example-rpc.com/v1/${YOUR_PROVIDER_KEY}"
+    ]
+  }
+}
+```
+
+Builtin free endpoints keep their order; overlay entries are appended
+per chain and `${ENV_VAR}` placeholders resolve from your environment. A
+missing overlay falls back to the zero-key default. See
+[`docs/PROVIDER_OVERLAY.md`](docs/PROVIDER_OVERLAY.md).
+
 ---
 
 ## Chains Covered
@@ -195,6 +217,7 @@ asyncio.create_task(monitor_endpoints("ethereum", interval=3600))
 | `LAZY_INDEXING_ENABLED` | `1` | Lazy per-chain DEX/deployer indexing |
 | `REORG_PROTECTION_ENABLED` | `1` | Reorg staging / fork rollback (EVM) |
 | `MAX_CONCURRENT_CHAINS` | `14` | Max parallel chain workers |
+| `LITE_INDEXER_ENDPOINT_OVERLAY` | `/srv/secrets/lite-indexer-endpoints.json` | Private provider overlay (outside repo; optional) |
 
 ### CLI Reference
 

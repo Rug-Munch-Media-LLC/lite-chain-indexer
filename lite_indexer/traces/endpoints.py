@@ -38,15 +38,12 @@ import os
 # module-level placeholder resolution below, so every import path — daemon,
 # cron, manual — resolves the same keys as the daemon's systemd unit.
 # Idempotent and non-destructive (see lite_indexer.env.load_env_file).
-from lite_indexer.chains.endpoints import require_nodereal_key
 from lite_indexer.env import load_env_file
 
 load_env_file()
 
-# NODEREAL_KEY is REQUIRED (same rule as lite_indexer.chains.endpoints):
-# the BSC trace endpoint is built from it and must never silently fall out
-# of the pool — an unset key fails startup loudly instead.
-require_nodereal_key()
+# Trace endpoints with a ${VAR} placeholder are resolved below; an unset key
+# simply drops that endpoint from the trace pool (no startup failure).
 
 TRACE_ENDPOINTS: dict[str, list[str]] = {
     # ── Ethereum (3 endpoints, all verified) ─────────────────────────

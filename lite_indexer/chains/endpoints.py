@@ -1,144 +1,43 @@
 """
-EVM chain RPC endpoints.
+EVM chain RPC endpoints — PUBLIC free/keyless pool + private overlay hook.
 
-Each EVM chain has a list of eth_getLogs-compatible RPC endpoints in tiers:
-  T1 (indices 0-1) — fastest, most reliable (drpc.org, tenderly, official RPCs)
-  T2 (indices 2-4) — fallbacks (tatum, 48.club, blxrbdn, nodereal)
-  T3 (indices 5+)  — last resort (range-limited publics)
-  T4 (indices 5+)  — API-key free tiers (${ALCHEMY_KEY}, ${GETBLOCK_KEY}, etc.)
+This module ships only FREE, KEYLESS public RPC endpoints (official chain
+RPCs, publicnode, and similar public gateways). Curated providers that need
+an API key or a provisioned URL live in a PRIVATE runtime overlay supplied
+via ``LITE_INDEXER_ENDPOINT_OVERLAY`` — see
+:mod:`lite_indexer.chains._overlay` and ``docs/PROVIDER_OVERLAY.md``. The
+overlay is merged in AFTER the builtin pool (free-first order) and is never
+committed to this repository.
 
-All endpoints were live-verified 2026-08-05 with an eth_blockNumber probe
-plus a topic-only eth_getLogs probe (50-block range from tip) — the exact
-request shape the indexer uses. Providers that answer eth_blockNumber but
-reject topic-only eth_getLogs (publicnode → archive token required,
-merkle → -32601 "Method not found") are kept as blockNumber/timestamp
-fallbacks in lower tiers; the pool scorer's eth_getLogs verification
-deprioritizes them for log queries (see lite_indexer/rpc/health.py).
-meowrpc → getLogs unsupported, binance seeds → limit exceeded, ankr →
-unauthorized except celo, 1rpc.io/eth → usage limit, llamarpc → HTTP 521,
-tatum (except bsc/polygon), cloudflare-eth and polygon-rpc are confirmed
-dead and removed.
+Each EVM chain has an ordered list of eth_getLogs-compatible endpoints.
+Endpoints were live-verified with an eth_blockNumber probe plus a
+topic-only eth_getLogs probe (the exact request shape the indexer uses).
+Providers that answer eth_blockNumber but reject topic-only eth_getLogs
+(publicnode → archive token required, merkle → -32601 "Method not found")
+are kept as blockNumber/timestamp fallbacks in lower tiers; the pool
+scorer's eth_getLogs verification deprioritizes them for log queries (see
+lite_indexer/rpc/health.py).
 
-2026-08-05: onfinality (eth.api.onfinality.io/public) re-added as Ethereum
-T1 after 429-ban during 50-block catch-up; blastapi re-added as T5 —
-both verified against 10-block eth_getLogs chunks from tip. Keep
-Ethereum chunks small (ETH_BATCH_SIZE=10) so free-tier range caps
-(Alchemy/blastapi = 10 blocks) and the ~20K result cap are respected.
-
-2026-09-13: Uniblock (api.uniblock.dev) wired as an archive eth_getLogs
-provider via the query-param template
-``.../json-rpc?chainId=<id>&apiKey=${UNIBLOCK_KEY}``. Live-verified
-topic-only eth_getLogs for robinhood/blast/fraxtal/metis + the major EVMs
-and ``getHealth`` for solana. It is the only non-official archive source for
-robinhood. The dead PublicNode hosts ``fantom-rpc.publicnode.com`` and
-``zksync-era-rpc.publicnode.com`` (HTTP 404, re-probed 2026-09-13) were
-removed from the candidate pool.
-
-2026-09-13: Pocket Network (keyless) wired at T1 for 18 EVM chains via
-``https://<slug>.api.pocket.network`` (2000 req/IP/min; live-verified
-``eth_chainId`` for every slug, plus topic-only archive ``eth_getLogs`` for
-fraxtal/bsc/ethereum; blast returns ``[]`` which is valid). Metis is the one
-exception — Pocket has no archival-capable endpoint there ("no
-archival-capable endpoints"), so its Pocket entry is a NON-archive fallback
-and Uniblock remains metis's archive source. Infura keyed templates
-(``https://<net>.infura.io/v3/${INFURA_KEY}``) added for its 13 verified
-chains (T2/T3, archive-capable). Robinhood was NOT in Pocket's published
-list but ``robinhood.api.pocket.network`` answered ``eth_chainId 0x1237``
-here — added as a keyless fallback.
-
-ANKR FREE-KEY LIMITATION (live-probed 2026-09-13): the provisioned
-``${ANKR_KEY}`` works for ONLY eth, bsc, polygon, arbitrum, avalanche,
-base, celo, gnosis. It returns HTTP 403 "API key is not allowed to access
-blockchain" for optimism, fantom, linea, blast, fraxtal, metis — no Ankr
-templates are registered for those six so the pool stays honest (a dead
-keyed entry only produces verification-retry noise).
-
-BLOCKPI PER-CHAIN KEYS (live-probed 2026-09-13): BlockPI keys are
-per-chain, NOT a single ``BLOCKPI_KEY``. The keyless
-``https://<chain>.blockpi.network/v1/rpc/public`` URLs were HTTP-521-flaky
-(2026-08-07) and are replaced for the 9 provisioned chains
-(ethereum/bsc/arbitrum/optimism/avalanche/linea/scroll/zksync/fantom) by
-keyed archive templates ``https://<chain>.blockpi.network/v1/rpc/${BLOCKPI_<CHAIN>_KEY}``
-(ETH/BSC/ARBITRUM/OPTIMISM/AVALANCHE/LINEA/SCROLL/ZKSYNC/FANTOM). Each was
-live-verified here with ``eth_chainId`` HTTP 200 and an archive
-``eth_getLogs`` (ethereum blocks 1..2 → ``[]``). Keys are read at runtime
-from the environment; unset keys drop the endpoint from the active pool as
-usual. The unindexed BlockPI chains (taiko/cronos/bitcoin) are documented
-in the provider registry only — they are not added to the EVM pool.
-Polygon has no provisioned key, so its ``/public`` entry stays a candidate
-(flaky) rather than an active endpoint.
-
-BLOCKVISION KEYED ARCHIVE (live-probed 2026-09-13): BlockVision keys are
-per-chain, ``${BLOCKVISION_<CHAIN>_KEY}``, with per-chain hosts
-``https://<chain>-mainnet.blockvision.org/v1/${BLOCKVISION_<CHAIN>_KEY}``.
-Archive ``eth_getLogs`` was live-verified here: ethereum blocks 1..2
-returned ``[]`` and bsc returned real logs (``eth_chainId`` 0x1 / 0x38).
-Only ethereum and bsc are indexed; BlockVision also serves monad/sui
-(``monad-mainnet.blockvision.org``, ``sui-mainnet.blockvision.org``) but
-those are NOT in our 20-chain pool and are documented in the provider
-registry only. Keys are read at runtime from the environment; unset keys
-drop the endpoint from the active pool as usual. Signup: blockvision.org.
-
-Some endpoints require an API key from a free-tier provider (Alchemy,
-GetBlock, Chainstack, QuickNode, Infura). Set the corresponding ${ENV_VAR}
-in your environment — the indexer resolves placeholders at import time via
-os.path.expandvars (chains.endpoints._resolved_endpoints()). Endpoints
-whose key is NOT set are excluded from the active pool (they can never be
-dialed — a literal ``${...}`` in a URL only produces DNS/JSON verification
-retries). Restart the service after setting a key to activate the endpoint.
-
-``NODEREAL_KEY`` (NodeReal BSC T1) is the sole REQUIRED key — it does NOT
-follow the optional-key rule. The endpoint URL is built from it, and a
-missing key fails startup loudly (see :func:`require_nodereal_key`) so the
-BSC T1 tier can never silently shrink.
-
-Total source templates: 226 (206 EVM across 18 chains + 20 non-EVM across
-solana/tron); the per-chain breakdown and keyed/free split live in the
-summary block below the active pool.
+Some endpoints require an API key from a free-tier provider; set the
+corresponding ${ENV_VAR} in your environment — the indexer resolves
+placeholders at import time via os.path.expandvars
+(chains.endpoints._resolved_endpoints()). Endpoints whose key is NOT set are
+excluded from the active pool (a literal ``${...}`` in a URL can never be
+dialed). Restart the service after setting a key to activate the endpoint.
 """
 
 from __future__ import annotations
 
 import os
 
-# Load the shared env file (ALCHEMY_KEY / INFURA_KEY / HELIUS_KEY ...)
-# BEFORE the module-level placeholder resolution below, so every import
-# path — daemon, health module, cron, manual — sees the same env as the
-# daemon's systemd unit. Idempotent and non-destructive.
 from lite_indexer.env import load_env_file
 from lite_indexer.logging import get_logger
 
+from ._overlay import load_endpoint_overlay, merge_endpoints
+
+# Load the shared env file BEFORE module-level placeholder resolution below,
+# so every import path sees the same environment. Idempotent + non-destructive.
 load_env_file()
-
-# NODEREAL_KEY is a REQUIRED secret — the sole exception to the
-# optional-key rule below. The NodeReal BSC endpoint previously shipped a
-# public demo key baked into the URL (audit finding 2026-09-06); that key
-# was rotated externally and every deployment now needs its own. Unlike the
-# free-tier keys, an unset NODEREAL_KEY must NOT silently drop the endpoint
-# from the active pool — that would shrink the BSC T1 tier without warning.
-# Fail startup loudly instead (the systemd EnvironmentFile must provide it).
-
-
-def require_nodereal_key() -> None:
-    """Raise a startup error when the required ``NODEREAL_KEY`` is unset.
-
-    ``NODEREAL_KEY`` is the one required secret (NodeReal BSC T1). The
-    systemd EnvironmentFile must provide it; an unset key would silently
-    shrink the BSC T1 tier, so startup fails loudly instead of degrading.
-
-    Raises:
-        RuntimeError: When ``NODEREAL_KEY`` is unset or empty.
-    """
-    if not os.environ.get("NODEREAL_KEY"):
-        raise RuntimeError(
-            "NODEREAL_KEY is required but is not set — add NODEREAL_KEY to the "
-            "systemd EnvironmentFile for the indexer and restart. The NodeReal "
-            "BSC T1 endpoint is built from it and must never silently drop out "
-            "of the active pool."
-        )
-
-
-require_nodereal_key()
 
 logger = get_logger(__name__)
 
@@ -147,81 +46,50 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     # T1: onfinality public (verified 2026-08-05 — eth_getLogs OK at
     #     10-block chunks from tip; 429-banned on 50-block catch-up,
     #     keep chunks small via ETH_BATCH_SIZE=10)
-    # T2: nodereal public demo key (works, but 429-bans under parallel load),
     #     nodies (eth-pokt.nodies.app — verified 2026-08-05; 50-block
     #     getLogs cap matches CHUNK_SIZE_EVM exactly; 20k result cap)
-    # T3: drpc.org (degraded — ~75% 408 free-plan timeout, keep as fallback),
     #     flashbots (MEV-protected; ranged topic-only getLogs errors),
     #     mevblocker (verified 2026-08-05 — 10k-result getLogs cap, blocks
     #     MEV txs; fine for blockNumber + small getLogs ranges),
     #     publicnode (verified 2026-08-05 blockNumber; eth_getLogs needs an
     #     archive token — blockNumber/timestamp fallback only)
-    # T4: alchemy, getblock, chainstack, quicknode (free API-key tiers)
     # T5: blastapi (10-block range cap — OK with ETH_BATCH_SIZE=10),
     #     merkle (verified 2026-08-05 blockNumber; eth_getLogs returns
     #     -32601 Method not found — tip/blockNumber fallback only)
-    # NOTE: llamarpc (HTTP 521), ankr keyless (Unauthorized) and
     #       1rpc.io/eth (usage limit) were tested 2026-08-05 and failed
-    #       the eth_blockNumber probe — not added. Keyed Ankr/dRPC-lb
     #       added 2026-08-23 (freemium depth — activate via env).
     "ethereum": [
         "https://eth.api.onfinality.io/public",
         "https://eth.api.pocket.network",  # T1 — Pocket Network (keyless, 2000 req/IP/min, archive-capable; live-verified eth_chainId + eth_getLogs 2026-09-13)
         "https://eth-pokt.nodies.app",
-        "https://eth.drpc.org",
         "https://rpc.mevblocker.io",
         "https://rpc.flashbots.net",
         "https://virginia.rpc.blxrbdn.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://eth-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        "https://eth.nownodes.io/${NOWNODES_API_KEY}",  # NOWNodes (verified 2026-08-23, 100k req/mo plan)
-        "https://lb.drpc.org/ogrpc?network=ethereum&dkey=${DRPC_KEY}",  # dRPC load balancer
-        "https://rpc.ankr.com/eth/${ANKR_KEY}",  # Ankr keyed — free key works ONLY for eth/bsc/polygon/arbitrum/avalanche/base/celo/gnosis (HTTP 403 elsewhere: optimism/fantom/linea/blast/fraxtal/metis)
-        "https://mainnet.infura.io/v3/${INFURA_KEY}",  # Infura free tier
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=1&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://ethereum.blockpi.network/v1/rpc/${BLOCKPI_ETH_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs blocks 1..2 verified 2026-09-13)
-        "https://eth-mainnet.blockvision.org/v1/${BLOCKVISION_ETH_KEY}",  # T2 — BlockVision — live-verified archive eth_getLogs 2026-09-13 (eth_chainId 0x1, blocks 1..2 → [])
-        "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0x1)
-        "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
-    # T2: drpc.org, 1rpc.io (50-block cap — matches EVM chunk size, verified 2026-08-03)
-    # T4: alchemy
     # NOTE: publicnode (needs address filter) and blastapi (HTTP400) do not
     #       serve topic-only eth_getLogs on free tier and were removed.
     "base": [
         "https://base.gateway.tenderly.co",
         "https://base.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://mainnet.base.org",
-        "https://base.drpc.org",
         "https://base-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://base-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        "https://lb.drpc.org/ogrpc?network=base&dkey=${DRPC_KEY}",
-        "https://rpc.ankr.com/base/${ANKR_KEY}",
-        "https://base-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=8453&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0x2105)
-        "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
     ],
     # ── BSC (8 endpoints) ─────────────────────────────────────────────
-    # T1: nodereal public, 48.club (live-verified 2026-08-04 with the
     #     exact indexer request shape: topic-only eth_getLogs over a
     #     100-block range from tip — both returned full result sets)
     # T2: blockrazor (25-block range cap — small-range fallback,
     #     registered in limits.py so the indexer caps chunks for it),
     #     official Binance public seeds (blockNumber verified 2026-08-07;
     #     bsc-dataseed1.defibit.io / ninicoin.io are mirrors)
-    # T4: alchemy
     # NOTE: tatum (range-limit + 429), binance seeds (limit exceeded),
     #       bsc-rpc.publicnode.com (http_403 on ranged topic-only —
     #       4.7k rejections during 08/04 outage), merkle (HTTP400),
-    #       ankr (unauthorized), 1rpc.io (usage limit) removed 2026-08-04.
-    #       2026-08-07: blockpi.bsc (HTTP 521) and 1rpc.io/bnb (usage
     #       limit) probed and rejected — official seeds added instead.
     "bsc": [
-        "https://bsc-mainnet.nodereal.io/v1/${NODEREAL_KEY}",  # key rotated externally
         "https://bsc.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId + eth_getLogs 2026-09-13)
         "https://rpc-bsc.48.club",  # T1 — 48.club (verified)
         "https://bsc.blockrazor.xyz",  # T2 — blockrazor (25-block range cap)
@@ -231,282 +99,142 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc-dataseed1.ninicoin.io",  # T2 — official Binance seed mirror
         "https://bsc-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://bsc-rpc.publicnode.com",  # T3 — re-added 2026-09-02 during rate-limit crisis (was http_403 on 2026-08-04 — re-probe)
-        "https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (old host bsc-mainnet.g.alchemy.com was WRONG — NXDOMAIN, DoH re-verify 2026-09-13; this rename live-verified 200)
-        "https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
-        "https://lb.drpc.org/ogrpc?network=bsc&dkey=${DRPC_KEY}",
-        "https://rpc.ankr.com/bsc/${ANKR_KEY}",
-        "https://bsc-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=56&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://bsc.blockpi.network/v1/rpc/${BLOCKPI_BSC_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
-        "https://bsc-mainnet.blockvision.org/v1/${BLOCKVISION_BSC_KEY}",  # T2 — BlockVision — live-verified archive eth_getLogs 2026-09-13 (eth_chainId 0x38, blocks 1..2 → real logs)
     ],
     # ── Polygon (6 endpoints) ─────────────────────────────────────────
-    # T1: tenderly, drpc.org (verified)
     # T2: tatum (audit-verified on polygon), quiknode public
     #     (rpc-mainnet.matic.quiknode.pro — verified 2026-08-05:
     #     blockNumber + topic-only eth_getLogs from tip both OK)
     # T3: polygon-bor.publicnode.com (blockNumber verified 2026-08-07;
     #     topic-only getLogs needs an address filter — fallback only)
-    # T4: alchemy
     # NOTE: polygon-rpc.blxrbdn.com removed 2026-08-05 — DNS failure
     #       (000) during the 08/05 outage; polygon-rpc.com returns 401
     #       (tenant disabled) and polygon-bor-rpc.publicnode.com requires
     #       an address filter for getLogs, so neither was added.
-    #       2026-08-07: polygon.blockpi (HTTP 521), 1rpc.io/matic (usage
-    #       limit), rpc.ankr.com/polygon (unauthorized) probed and
     #       rejected — publicnode added as T3 fallback instead.
     "polygon": [
         "https://polygon.gateway.tenderly.co",
         "https://poly.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
-        "https://polygon.drpc.org",
         "https://polygon-mainnet.gateway.tatum.io",
         "https://polygon-bor-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         # rpc-mainnet.matic.network removed 2026-09-13 — DNS dead (Polygon
-        # retired the host). Replaced 1:1 by keyed Alchemy (live-verified here
         # with the real key: eth_chainId 0x89, 2026-09-13) so the
         # rate-limit-critical polygon pool keeps its depth.
-        "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (replaces dead matic.network)
-        "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
         "https://polygon-rpc.com",  # T3 — re-added 2026-09-02 during rate-limit crisis (was 401 on 2026-08-05 — re-probe)
         "https://rpc-mainnet.matic.quiknode.pro",
-        "https://lb.drpc.org/ogrpc?network=polygon&dkey=${DRPC_KEY}",
-        "https://rpc.ankr.com/polygon/${ANKR_KEY}",
-        "https://polygon-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=137&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Arbitrum (6 endpoints) ────────────────────────────────────────
-    # T1: tenderly, drpc.org (verified)
     # T2: official arb1.arbitrum.io (verified)
     # T3: arbitrum-one.publicnode.com (blockNumber verified 2026-08-07;
     #     getLogs needs archive token — fallback only), arbitrum.meowrpc
     #     (blockNumber verified 2026-08-07; meowrpc getLogs unsupported —
     #     blockNumber/timestamp fallback only)
-    # T4: alchemy
-    # NOTE: 2026-08-07: arbitrum.blockpi (HTTP 521), 1rpc.io/arb (usage
-    #       limit), rpc.ankr.com/arbitrum (unauthorized) probed and
     #       rejected — publicnode + meowrpc added as T3 fallbacks.
     "arbitrum": [
         "https://arbitrum.gateway.tenderly.co",
         "https://arb-one.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
-        "https://arbitrum.drpc.org",
         "https://arb1.arbitrum.io/rpc",
         "https://arbitrum-one-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://arbitrum.meowrpc.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        "https://lb.drpc.org/ogrpc?network=arbitrum&dkey=${DRPC_KEY}",
-        "https://rpc.ankr.com/arbitrum/${ANKR_KEY}",
-        "https://arbitrum-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=42161&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://arbitrum.blockpi.network/v1/rpc/${BLOCKPI_ARBITRUM_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
-        "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0xa4b1; promoted from candidate pool)
-        "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
     ],
     # ── Optimism (4 endpoints) ────────────────────────────────────────
     # T1: tenderly (verified)
     # T2: official mainnet.optimism.io (verified, occasionally slow),
-    #     drpc.org (verified 2026-08-03)
-    # T4: alchemy
     "optimism": [
         "https://optimism.gateway.tenderly.co",
         "https://op.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://mainnet.optimism.io",
-        "https://optimism.drpc.org",
         "https://optimism-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        "https://lb.drpc.org/ogrpc?network=optimism&dkey=${DRPC_KEY}",
-        "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
-        "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
-        "https://optimism-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=10&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://optimism.blockpi.network/v1/rpc/${BLOCKPI_OPTIMISM_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── Avalanche (4 endpoints) ───────────────────────────────────────
-    # T1: official api.avax.network, drpc.org (verified)
     # T2: tenderly gateway (verified 2026-08-03)
-    # T4: infura (free tier)
     "avalanche": [
         "https://api.avax.network/ext/bc/C/rpc",  # T1 — official (verified)
         "https://avax.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
-        "https://avalanche.drpc.org",  # T1 — drpc.org (verified)
         "https://avalanche.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://avalanche-c-chain-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        "https://avalanche-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
-        "https://lb.drpc.org/ogrpc?network=avalanche&dkey=${DRPC_KEY}",  # freemium
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=43114&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://avalanche.blockpi.network/v1/rpc/${BLOCKPI_AVALANCHE_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
-        "https://avax-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0xa86a)
-        "https://avax-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://avax-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
     ],
     # ── Fantom (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.fantom.network + rpcapi.fantom.network (verified)
-    # T2: drpc.org (verified)
-    # NOTE: fantom-mainnet.g.alchemy.com removed 2026-09-13 — the old host
-    #       name is NXDOMAIN and Alchemy has NO Fantom endpoint (no live
-    #       rename exists). Archive coverage stays via Pocket / Uniblock /
-    #       BlockPI keyed.
     "fantom": [
         "https://rpc.fantom.network",  # T1 — official (verified)
         "https://fantom.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://rpcapi.fantom.network",  # T1 — official-alt (verified)
-        "https://fantom.drpc.org",  # T2 — drpc.org (verified)
-        "https://lb.drpc.org/ogrpc?network=fantom&dkey=${DRPC_KEY}",  # freemium
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=250&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://fantom.blockpi.network/v1/rpc/${BLOCKPI_FANTOM_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── Linea (5 endpoints) ───────────────────────────────────────────
-    # T1: official rpc.linea.build, drpc.org (verified)
     # T2: tenderly gateway (verified 2026-08-03), 1rpc.io (50-block cap —
     #     matches EVM chunk size, verified 2026-08-03)
-    # T4: infura (free tier)
     "linea": [
         "https://rpc.linea.build",  # T1 — official (verified)
         "https://linea.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
-        "https://linea.drpc.org",  # T1 — drpc.org (verified)
         "https://linea.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://linea-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://1rpc.io/linea",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
-        "https://linea-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
-        "https://lb.drpc.org/ogrpc?network=linea&dkey=${DRPC_KEY}",  # freemium
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=59144&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://linea.blockpi.network/v1/rpc/${BLOCKPI_LINEA_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
-        "https://linea-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0xe708)
-        "https://linea-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://linea-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
     ],
     # ── Scroll (4 endpoints) ──────────────────────────────────────────
-    # T1: official rpc.scroll.io, drpc.org (verified)
     # T2: 1rpc.io (50-block cap — matches EVM chunk size, verified 2026-08-03)
-    # T4: infura (free tier)
     "scroll": [
         "https://rpc.scroll.io",  # T1 — official (verified)
         "https://scroll.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
-        "https://scroll.drpc.org",  # T1 — drpc.org (verified)
         "https://1rpc.io/scroll",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://scroll-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        "https://scroll-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
-        "https://lb.drpc.org/ogrpc?network=scroll&dkey=${DRPC_KEY}",  # freemium
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=534352&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://scroll.blockpi.network/v1/rpc/${BLOCKPI_SCROLL_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
-        "https://scroll-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0x82750)
-        "https://scroll-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://scroll-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
     ],
     # ── zkSync Era (4 endpoints) ──────────────────────────────────────
-    # T1: official mainnet.era.zksync.io, drpc.org (verified)
     # T2: tenderly gateway (verified 2026-08-03)
-    # T4: alchemy (zksync-mainnet; renamed from dead zksync-era host 2026-09-13)
     "zksync": [
         "https://mainnet.era.zksync.io",  # T1 — official (verified)
         "https://zksync-era.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
-        "https://zksync.drpc.org",  # T1 — drpc.org (verified)
         "https://zksync.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
-        "https://zksync-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free (old host zksync-era.g.alchemy.com was WRONG — NXDOMAIN, DoH re-verify 2026-09-13; this rename live-verified 200)
-        "https://zksync-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://zksync-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
-        "https://zksync-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
-        "https://lb.drpc.org/ogrpc?network=zksync&dkey=${DRPC_KEY}",  # freemium
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=324&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://zksync-era.blockpi.network/v1/rpc/${BLOCKPI_ZKSYNC_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── Mantle (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.mantle.xyz (verified)
-    # T2: drpc.org (verified; free-plan usage limit under burst),
     #     tenderly gateway (verified 2026-08-03), 1rpc.io (50-block cap,
     #     verified 2026-08-03)
     "mantle": [
         "https://rpc.mantle.xyz",  # T1 — official (verified)
         "https://mantle.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
-        "https://mantle.drpc.org",  # T2 — drpc.org (verified)
         "https://mantle.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://1rpc.io/mantle",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://mantle-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        "https://mantle-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
-        "https://lb.drpc.org/ogrpc?network=mantle&dkey=${DRPC_KEY}",  # freemium
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=5000&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://mantle-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0x1388)
-        "https://mantle-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://mantle-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
     ],
     # ── Gnosis (3 endpoints) ──────────────────────────────────────────
-    # T1: official rpc.gnosischain.com, drpc.org (verified)
     # T2: tenderly gateway (verified 2026-08-03)
     "gnosis": [
         "https://rpc.gnosischain.com",
         "https://gnosis.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
-        "https://gnosis.drpc.org",
         "https://gnosis.gateway.tenderly.co",
         "https://gnosis-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
-        "https://lb.drpc.org/ogrpc?network=gnosis&dkey=${DRPC_KEY}",  # freemium
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=100&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        # T4 — Alchemy archive (live-verified eth_chainId 0x64 + archive
         # eth_getLogs blocks 1..2 → real logs, 2026-09-13). 3 accounts.
-        "https://gnosis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free account 1 — live-verified 2026-09-13
-        "https://gnosis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://gnosis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
     ],
     # ── Celo (3 endpoints) ────────────────────────────────────────────
-    # T1: official forno.celo.org, ankr.com/celo (verified — only working ankr)
-    # T2: drpc.org (verified)
     "celo": [
         "https://forno.celo.org",  # T1 — official forno (verified)
         "https://celo.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
-        "https://rpc.ankr.com/celo",  # T1 — ankr (verified — celo only)
-        "https://celo-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
-        "https://celo.drpc.org",  # T2 — drpc.org (verified)
-        "https://lb.drpc.org/ogrpc?network=celo&dkey=${DRPC_KEY}",  # freemium
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=42220&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
-        "https://celo-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0xa4ec)
-        "https://celo-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://celo-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
     ],
     # ── Blast (verified 2026-09-01) ──────────────────────────────────
     # L2, chainId 81457 (0x13e31). publicnode: chainId ✓, getLogs ✓.
     "blast": [
         "https://blast-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
-        # T2: Uniblock — archive eth_getLogs (live-verified 2026-09-13);
         #     keyed fallback so the chain is no longer single-endpoint.
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=81457&apiKey=${UNIBLOCK_KEY}",  # T2 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://blast.api.pocket.network",  # T3 — Pocket Network (keyless; live-verified eth_chainId 2026-09-13; getLogs returns [] which is valid on this chain)
-        "https://blast-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
-        "https://blast-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free — live-verified 2026-09-13 (eth_chainId 0x13e31)
-        "https://blast-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T4 — Alchemy free account 2 — live-verified 2026-09-13
-        "https://blast-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T4 — Alchemy free account 3 — live-verified 2026-09-13
     ],
     # ── Fraxtal (verified 2026-09-01) ────────────────────────────────
     # L2, chainId 252. publicnode: chainId ✓, getLogs ✓.
     "fraxtal": [
         "https://fraxtal-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
-        # T2: Uniblock — archive eth_getLogs (live-verified 2026-09-13);
         #     keyed fallback so the chain is no longer single-endpoint.
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=252&apiKey=${UNIBLOCK_KEY}",  # T2 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://fraxtal.api.pocket.network",  # T3 — Pocket Network (keyless, archive-capable; live-verified eth_chainId + eth_getLogs 2026-09-13)
-        # Alchemy ARCHIVE (host is frax-mainnet; live-verified eth_chainId
         # 0xfc + archive eth_getLogs blocks 1..2 → real logs, 2026-09-13).
-        # NOTE: fraxtal-mainnet.g.alchemy.com is WRONG/NXDOMAIN — do not use.
-        "https://frax-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T2 — Alchemy archive account 1 — live-verified 2026-09-13
-        "https://frax-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T2 — Alchemy archive account 2 — live-verified 2026-09-13
-        "https://frax-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T2 — Alchemy archive account 3 — live-verified 2026-09-13
     ],
     # ── Metis (verified 2026-09-01) ──────────────────────────────────
     # L2, chainId 1088. publicnode: chainId ✓, getLogs ✓.
     "metis": [
         "https://metis-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
-        # T2: Uniblock — archive eth_getLogs (live-verified 2026-09-13);
         #     keyed fallback so the chain is no longer single-endpoint.
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=1088&apiKey=${UNIBLOCK_KEY}",  # T2 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         # T3: Pocket keyless fallback, NON-ARCHIVE for eth_getLogs ("no
-        #     archival-capable endpoints" here) — Uniblock stays the archive
         #     source; Pocket is the non-archive tip/blockNumber fallback.
         "https://metis.api.pocket.network",  # T3 — Pocket Network (keyless NON-archive fallback; live-verified eth_chainId 2026-09-13)
-        # Alchemy ARCHIVE (live-verified eth_chainId 0x440 + archive
         # eth_getLogs blocks 1..2 → real logs, 2026-09-13) — fixes metis's
         # archive gap (Pocket here is non-archive). 3 accounts.
-        "https://metis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T2 — Alchemy archive account 1 — live-verified 2026-09-13
-        "https://metis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T2 — Alchemy archive account 2 — live-verified 2026-09-13
-        "https://metis-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T2 — Alchemy archive account 3 — live-verified 2026-09-13
     ],
     # ── Robinhood Chain (2 endpoints, verified 2026-09-01) ────────────
     # Arbitrum Orbit L2, chainId 4663 (0x1237), native ETH. The old spec
@@ -515,12 +243,10 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #   - robinhood-rpc.publicnode.com: eth_chainId ✓, eth_blockNumber ✓
     #     (block 52M, ~0.5s blocks), eth_getBlockByNumber ✓ — but getLogs
     #     is ARCHIVE-GATED on the free tier (allnodes.com personal token).
-    #   - robinhood.drpc.org: eth_chainId ✓ but eth_getLogs and
     #     eth_getBlockByNumber are "method not available" — limited surface.
     # STATUS: registered but NOT indexed yet — the indexer needs eth_getLogs
     # for ERC-20 Transfer events, which neither free endpoint provides.
     # ACTION: add to the daemon's chain list when a getLogs-capable endpoint
-    # launches (dRPC paid tier, Alchemy, or publicnode archive token).
     # ── Robinhood Chain (5 endpoints, verified 2026-09-01) ────────────
     # Arbitrum Orbit L2, chainId 4663 (0x1237), native ETH, ~0.5s blocks.
     # LIVE-VERIFIED 2026-09-01:
@@ -531,99 +257,29 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #     getLogs archive-gated on free tier.
     #   - rpc.nodeflare.app/robinhood/public: chainId ✓ (getLogs untested).
     #   - robinhood.rpc.blxrbdn.com: chainId ✓ but getLogs 403 Forbidden.
-    #   - robinhood.drpc.org: chainId ✓ but getLogs/getBlockByNumber
     #     "method not available" — limited surface.
     "robinhood": [
         "https://rpc.mainnet.chain.robinhood.com",  # T1 — OFFICIAL, fully indexable
-        # T1-high — Alchemy archive (live-verified eth_chainId 0x1237 + archive
         # eth_getLogs blocks 1..2 → REAL logs, 2026-09-13). Sits beside the
-        # official RPC + Uniblock, above the keyless fallbacks. 3 accounts.
-        "https://robinhood-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T1-high — Alchemy archive account 1 — live-verified 2026-09-13
-        "https://robinhood-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # T1-high — Alchemy archive account 2 — live-verified 2026-09-13
-        "https://robinhood-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # T1-high — Alchemy archive account 3 — live-verified 2026-09-13
-        # Uniblock (2026-09-13): archive-capable topic-only eth_getLogs — the
         # only non-official archive source for this chain; kept high-priority.
-        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=4663&apiKey=${UNIBLOCK_KEY}",  # T1-high — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://robinhood.api.pocket.network",  # T3 — Pocket Network (keyless, probed live 2026-09-13: eth_chainId 0x1237 == 4663)
         "https://robinhood-rpc.publicnode.com",  # T2 — verified (getLogs archive-gated)
         "https://rpc.nodeflare.app/robinhood/public",  # T3 — verified chainId
         "https://robinhood.rpc.blxrbdn.com",  # T3 — chainId only (getLogs 403)
-        "https://robinhood.drpc.org",  # T4 — limited surface
     ],
 }
 
-# Summary of EVM endpoints per chain:
-#   ethereum: 18   base: 13     bsc: 19     polygon: 14
-#   arbitrum: 14   optimism: 12 avalanche: 12 fantom: 7
-#   linea: 13      scroll: 12   zksync: 11  mantle: 12
-#   gnosis: 10     celo: 10     blast: 7    fraxtal: 6
-#   metis: 6       robinhood: 10
+# Summary of PUBLIC (free/keyless) EVM endpoints per chain:
+#   ethereum: 7   base: 5   bsc: 9   polygon: 6
+#   arbitrum: 5   optimism: 4   avalanche: 4   fantom: 3
+#   linea: 5   scroll: 4   zksync: 3   mantle: 5
+#   gnosis: 4   celo: 2   blast: 2   fraxtal: 2
+#   metis: 2   robinhood: 5
 # -------------------------------------------------------
-#   Total source templates: 206 across 18 chains
-#   (92 free/keyless + 114 API-key free tiers — keyed ones activate via env)
-#
-#   Non-EVM: solana (15), tron (5)
-#   Grand total source templates: 226 across 18 EVM + 2 non-EVM chains
-#
-# 2026-09-13: THIRD Alchemy account (``ALCHEMY_KEY_3``) + newly discovered
-#   chain coverage. A 3-key × 17-host sweep returned ``eth_chainId`` 200 on
-#   EVERY host for EVERY key. Alchemy now covers 17 of our chains
-#   (eth/base/bsc/polygon/arb/opt/avax/linea/scroll/zksync/mantle/celo/blast
-#   + gnosis/metis/fraxtal/robinhood) and Solana. New this pass:
-#     - gnosis  https://gnosis-mainnet.../v2/${ALCHEMY_KEY[_2|_3]}   T4
-#     - metis   https://metis-mainnet.../v2/${ALCHEMY_KEY[_2|_3]}    T2 (archive; fixes metis's archive gap)
-#     - fraxtal https://frax-mainnet.../v2/${ALCHEMY_KEY[_2|_3]}     T2 (archive)
-#     - robinhood https://robinhood-mainnet.../v2/${ALCHEMY_KEY[_2|_3]} T1-high (beside official+Uniblock)
-#   ARCHIVE VERIFIED 2026-09-13: eth_getLogs blocks 1..2 → REAL logs and
-#   eth_getBalance at block 0x1 on robinhood/metis/frax/gnosis. ``_3`` was
-#   added to all 17 EVM chains + Solana. The three keys are independent
-#   ACCOUNTS (provider+key cap keying) with separate 30M CU/mo budgets.
-#   NOT wired (supported by Alchemy but not in our 20 chains): unichain,
-#   soneium, ink, berachain, sei, sonic, monad, abstract, worldchain, shape,
-#   apechain, ronin, zora, rootstock, boba, astar. Dead/wrong: fraxtal-mainnet,
-#   hyperevm-mainnet, degen-mainnet; no Fantom; Tron unsupported.
-#
-# 2026-09-13: SECOND Alchemy account (``ALCHEMY_KEY_2``) wired alongside
-#   account 1 for the same 13 EVM chains (eth/base/bsc/polygon/arb/opt/avax/
-#   linea/scroll/zksync/mantle/celo/blast) + Solana (solana-mainnet, both
-#   keys). Every template was live-probed in-run: 13/13 ``eth_chainId`` 200
-#   and both Solana keys ``getHealth``→ok / ``getSlot`` 200. Alchemy has no
-#   Fantom on either account. The two keys are separate ACCOUNTS: RPC caps and
-#   the quota ledger key on provider+key (:func:`account_key_for_endpoint`),
-#   so account 1 and account 2 have independent concurrency/RPS budgets.
-#
-# 2026-09-13: dead-host prune, then DoH re-verification (Google/Cloudflare
-#   DNS-over-HTTPS bypasses the filtered local resolver). Corrected picture:
-#   - 12 truly DNS-dead hosts pruned from active + candidate pools: llamarpc
-#     (arbitrum/binance/optimism/polygon), meowrpc (optimism/polygon),
-#     nodies avalanche, retired matic.network + mainnet.era.zksync.network,
-#     and the 3 wrong Alchemy alias names (bsc-mainnet / zksync-era /
-#     fantom-mainnet — all NXDOMAIN via DoH).
-#   - 2 wrong Alchemy names were renamed to the live hosts (bnb-mainnet for
-#     bsc, zksync-mainnet for zksync); the third (fantom) has no live Alchemy
-#     endpoint and was dropped (fantom keeps 7 incl. Pocket/Uniblock/BlockPI).
-#   - 2 blastapi hosts (celo/opt-mainnet) are DNS-ALIVE but serve no RPC
-#     (HTTP 000) — non-functional, removed; not DNS-dead.
-#   No chain fell below 3 endpoints.
-#
-# 2026-09-13: expanded Alchemy free-tier coverage — the live ``ALCHEMY_KEY``
-#   returns eth_chainId 200 on 13 hosts; keyed ``https://<host>.g.alchemy.com
-#   /v2/${ALCHEMY_KEY}`` T4 templates added for the indexed chains that lacked
-#   one (eth/base/arb/avax/linea/scroll/blast/mantle/celo), each
-#   live-verified 2026-09-13. Alchemy has no fantom endpoint — not added.
-#
-# 2026-09-13: +18 Uniblock archive templates (15 EVM chains — robinhood,
-#   blast, fraxtal, metis + 14 T3 fallbacks) and +1 Solana template. Uniblock
-#   is the only non-official archive eth_getLogs source for robinhood.
-# 2026-09-13: +18 Pocket Network keyless T1 templates (metis tagged
-#   non-archive — Uniblock stays its archive source), +9 Infura keyed archive
-#   templates (13 verified chains total incl. the 4 pre-existing), +1 Pocket
-#   solana and +1 Pocket tron fallback.
-# 2026-09-13: +9 BlockPI per-chain keyed archive templates (ethereum/bsc/
-#   arbitrum/optimism/avalanche/linea/scroll/zksync/fantom) replacing the
-#   HTTP-521-flaky keyless /public candidates; polygon /public kept in the
-#   candidate pool (no provisioned key).
-
+#   Total builtin public templates: 77 across 18 chains
+#   Curated/keyed providers are supplied by the PRIVATE runtime overlay
+#   (see lite_indexer/chains/_overlay.py + docs/PROVIDER_OVERLAY.md).
+#   With no overlay set, only these free/keyless endpoints are used.
 
 # ── Candidate Endpoints (awaiting live verification) ────────────────
 # Unverified additions from chainlist cross-pollination + operator tips.
@@ -638,8 +294,6 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
         "https://eth.llamarpc.com",  # re-probe: 521 on 2026-08-05, provider since stabilized?
         "https://1rpc.io/eth",  # re-probe: usage-limited 2026-08-05
         "https://eth.meowrpc.com",  # getLogs unsupported — blockNumber fallback only
-        # ethereum.blockpi.network/v1/rpc/public removed 2026-09-13 — flaky
-        # (HTTP 521) and superseded by the keyed ${BLOCKPI_ETH_KEY} T2 entry.
         "https://cloudflare-eth.com",  # reported dead 2026-08-05 — confirm before cull
     ],
     "base": [
@@ -650,22 +304,15 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc.meowrpc.com",
         "https://bsc-blockchain.rpc.thirdweb.com",
         # binance.llamarpc.com removed 2026-09-13 — DNS dead.
-        # bsc.blockpi.network/v1/rpc/public removed 2026-09-13 — flaky
-        # (HTTP 521 on 2026-08-07) and superseded by the keyed ${BLOCKPI_BSC_KEY} T2 entry.
     ],
     "polygon": [
         # polygon.llamarpc.com + polygon.meowrpc.com removed 2026-09-13 — DNS dead.
         "https://polygon-mainnet.public.blastapi.io",
-        # polygon has no provisioned BlockPI key — keep /public but treat it
         # as flaky (HTTP 521 on 2026-08-07); do not promote to the active pool.
-        "https://polygon.blockpi.network/v1/rpc/public",  # /public is flaky — archive-unverified
     ],
     "arbitrum": [
         # arbitrum.llamarpc.com removed 2026-09-13 — DNS dead.
-        # arb-mainnet.g.alchemy.com promoted to the active T4 pool 2026-09-13
         # (live-verified eth_chainId 0xa4b1 with the real key).
-        # arbitrum.blockpi.network/v1/rpc/public removed 2026-09-13 — flaky
-        # (HTTP 521 on 2026-08-07) and superseded by the keyed ${BLOCKPI_ARBITRUM_KEY} T2 entry.
     ],
     "optimism": [
         # optimism.llamarpc.com + optimism.meowrpc.com removed 2026-09-13 — DNS dead.
@@ -679,10 +326,7 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
     "fantom": [
         "https://fantom-mainnet.public.blastapi.io",
     ],
-    "linea": [
-        # linea.blockpi.network/v1/rpc/public removed 2026-09-13 — flaky
-        # (HTTP 521) and superseded by the keyed ${BLOCKPI_LINEA_KEY} T2 entry.
-    ],
+    "linea": [],
     "scroll": [
         "https://scroll-mainnet.public.blastapi.io",
     ],
@@ -702,7 +346,6 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
 
 
 # ── Endpoint URL template resolution ───────────────────────────────
-# API-key free tiers use ${ENV_VAR} placeholders (${ALCHEMY_KEY},
 # ${GETBLOCK_KEY}, ...). They are resolved at import time so the main
 # RPC path never dials dead placeholder URLs. Endpoints whose env var is
 # NOT set are excluded from the active pool entirely — a URL containing a
@@ -780,12 +423,19 @@ def _resolved_endpoints(urls: list[str]) -> list[str]:
     return resolved
 
 
+# Capture the builtin (public, free/keyless) templates for introspection,
+# then append the private runtime overlay (no-op when absent).
+BUILTIN_ENDPOINTS: dict[str, list[str]] = dict(GET_LOGS_ENDPOINTS)
+_ENDPOINT_OVERLAY = load_endpoint_overlay()
+# Only EVM chains belong in this dict — the overlay also carries solana/tron
+# entries for the non_evm module, which must not leak into GET_LOGS_ENDPOINTS.
+_OVERLAY_EXTRA = {chain: entry for chain, entry in _ENDPOINT_OVERLAY.items() if chain in BUILTIN_ENDPOINTS}
+GET_LOGS_ENDPOINTS = merge_endpoints(BUILTIN_ENDPOINTS, _OVERLAY_EXTRA)
 GET_LOGS_ENDPOINTS = {chain: _resolved_endpoints(urls) for chain, urls in GET_LOGS_ENDPOINTS.items()}
 
 # ── Last-Resort Endpoints ───────────────────────────────────────────────
 # Known-good endpoints tried when every endpoint in the active pool fails
 # for a chain. These are the most battle-tested public providers from the
-# live-verified sets above (official RPCs + drpc.org). They are a final
 # fallback only — the regular pool's health scoring / bans / circuit
 # breakers still apply; the last-resort list exists so a total pool wipe
 # (e.g. an outage taking out every tier at once) still has a shot at
@@ -794,14 +444,12 @@ LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
     "ethereum": [
         "https://eth.api.onfinality.io/public",
         "https://eth-pokt.nodies.app",
-        "https://eth.drpc.org",
         "https://rpc.mevblocker.io",
         "https://rpc.flashbots.net",
     ],
     "base": [
         "https://base.gateway.tenderly.co",
         "https://mainnet.base.org",
-        "https://base.drpc.org",
     ],
     "bsc": [
         "https://rpc-bsc.48.club",
@@ -810,29 +458,23 @@ LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
     ],
     "polygon": [
         "https://polygon.gateway.tenderly.co",
-        "https://polygon.drpc.org",
         "https://polygon-mainnet.gateway.tatum.io",
         "https://rpc-mainnet.matic.quiknode.pro",
     ],
     "arbitrum": [
         "https://arbitrum.gateway.tenderly.co",
-        "https://arbitrum.drpc.org",
         "https://arb1.arbitrum.io/rpc",
     ],
     "optimism": [
         "https://optimism.gateway.tenderly.co",
         "https://mainnet.optimism.io",
-        "https://optimism.drpc.org",
     ],
     "avalanche": ["https://api.avax.network/ext/bc/C/rpc"],
     "fantom": ["https://rpc.fantom.network"],
-    "linea": ["https://rpc.linea.build", "https://linea.drpc.org"],
-    "scroll": ["https://rpc.scroll.io", "https://scroll.drpc.org"],
     "zksync": ["https://mainnet.era.zksync.io"],
     "mantle": ["https://rpc.mantle.xyz"],
     "gnosis": [
         "https://rpc.gnosischain.com",
-        "https://gnosis.drpc.org",
         "https://gnosis.gateway.tenderly.co",
     ],
     "celo": ["https://forno.celo.org"],
@@ -853,4 +495,5 @@ def last_resort_endpoints(chain: str) -> list[str]:
     Returns:
         List of dialable fallback endpoint URLs (may be empty).
     """
-    return _resolved_endpoints(LAST_RESORT_ENDPOINTS.get(chain, []))
+    merged = merge_endpoints({chain: list(LAST_RESORT_ENDPOINTS.get(chain, []))}, _ENDPOINT_OVERLAY)
+    return _resolved_endpoints(merged.get(chain, []))

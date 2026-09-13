@@ -14,8 +14,6 @@ from __future__ import annotations
 
 PROVIDER_RATE_LIMITS: dict[str, dict[str, int]] = {
     # Tier 1 — High capacity
-    "drpc.org": {"req_per_sec": 10, "burst": 20},
-    "ankr.com": {"req_per_sec": 30, "burst": 50},
     "binance.org": {"req_per_sec": 100, "burst": 200},
     "cloudflare-eth.com": {"req_per_sec": 50, "burst": 100},
     # Tier 2 — Medium capacity
@@ -33,11 +31,7 @@ PROVIDER_RATE_LIMITS: dict[str, dict[str, int]] = {
     "mevblocker.io": {"req_per_sec": 5, "burst": 10},
     "blxrbdn.com": {"req_per_sec": 5, "burst": 10},
     # Tier 4 — API-key free tiers
-    "alchemy.com": {"req_per_sec": 10, "burst": 20},
     "getblock.io": {"req_per_sec": 10, "burst": 20},
-    "chainstack.com": {"req_per_sec": 10, "burst": 20},
-    "helius.xyz": {"req_per_sec": 10, "burst": 20},  # legacy host (rpc.helius.xyz)
-    "helius-rpc.com": {"req_per_sec": 10, "burst": 20},  # canonical host (mainnet.helius-rpc.com, wired 2026-09-13)
 }
 
 # Default rate limit when provider isn't listed
@@ -52,10 +46,8 @@ DEFAULT_RATE_LIMIT = {"req_per_sec": 5, "burst": 10}
 
 MAX_BLOCK_RANGE: dict[str, int | None] = {
     # High range (10000+ or unlimited)
-    "drpc.org": 10000,
     "binance.org": None,
     "cloudflare-eth.com": 5000,
-    "ankr.com": 2000,
     # Medium range (100-500)
     "publicnode.com": 1000,
     "onfinality.io": 2000,
@@ -83,11 +75,7 @@ MAX_BLOCK_RANGE: dict[str, int | None] = {
     "base.org": 10,  # Returns "backend response too large" beyond 10 blocks
     "zksync.io": None,
     # API-key free tiers
-    "alchemy.com": 10000,
     "getblock.io": 5000,
-    "chainstack.com": 10000,
-    "helius.xyz": None,
-    "helius-rpc.com": None,
 }
 
 DEFAULT_MAX_RANGE = 500

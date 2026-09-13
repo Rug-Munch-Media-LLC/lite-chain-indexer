@@ -81,20 +81,18 @@ account's history, query the OWNER wallet with `tokenAccounts: all`.**
 | Platform | Method | Closed-account? | Status |
 |----------|--------|-----------------|--------|
 | **Helius** | `getTransactionsForAddress` (tokenAccounts:all) | ✅ YES | **Verified working** |
-| **Alchemy** | `getTokenAccountsByOwnerAtSlot` / account archive | ✅ YES | Key `LhEQUVP9...` returns **403 (revoked/invalid)** — rotate key |
+| **Alchemy** | `getTokenAccountsByOwnerAtSlot` / account archive | ✅ YES | archived account state available on paid tiers |
 | **Shyft** | `GET /sol/v1/transaction/history` | ❌ empty for closed | Key works, returns `[]` for deleted |
 | **Dune** | `solana.transactions` (account_keys filter) | ✅ YES | `dune_api_key` valid; needs a saved query ID wired |
 | **Bitquery** | `solana.transfers` GraphQL | ✅ YES (archival) | 402 — paid credits required |
 | **getblock** | `getSignaturesForAddress` | ❌ | returns 0 for closed |
-| **chainstack** | `getSignaturesForAddress` | ❌ | key expired (403) |
+| **chainstack** | `getSignaturesForAddress` | ❌ | returns 0 for closed |
 
 ## RPC Pool Endpoints (free tier, in lite-chain-indexer)
 
-From `lite_indexer/chains/non_evm.py` `SOLANA_ENDPOINTS`:
-- `https://api.mainnet-beta.solana.com`
-- `https://solana-rpc.publicnode.com`
-- `https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}`
-- `https://rpc.helius.xyz/?api-key=${HELIUS_KEY}`  (25K req/mo free)
+The public pool ships keyless Solana endpoints only (official + public
+gateways). Keyed/curated providers are supplied by the private runtime
+overlay — see `docs/PROVIDER_OVERLAY.md`.
 
 ## Indexer Integration
 
@@ -104,14 +102,8 @@ existing `getSignaturesForAddress`. The token-account-aware filter is what
 makes closed-account backfill possible — the existing
 `getSignaturesForAddress`-only path silently drops every closed account.
 
-## Keys (gopass)
+## Keys (secret store)
 
-| Key | Path | Status |
-|-----|------|--------|
-| Helius #1 | `[INTERNAL_SECRET_PATH]` | ✅ works [REDACTED] |
-| Helius #2 | `[INTERNAL_SECRET_PATH]` | ✅ works [REDACTED] |
-| Helius #3 | `[INTERNAL_SECRET_PATH]` | ✅ works [REDACTED] |
-| Alchemy | `[INTERNAL_SECRET_PATH]` | ❌ 403 — ROTATE |
-| Shyft | (user-provided) | ✅ works (`[REDACTED]`) |
-| Dune | `[INTERNAL_SECRET_PATH]` | ✅ works [REDACTED] |
-| Bitquery | `[INTERNAL_SECRET_PATH]` | ❌ 402 — needs credits |
+All provider keys live in the deployment secret store and are injected as
+environment variables at runtime. No key value is stored in this repo or in
+the endpoint overlay; the overlay references `${ENV_VAR}` placeholders only.
