@@ -565,6 +565,34 @@ DEAD_HOSTS_2026_09_13 = (
     "zksync-era.g.alchemy.com",
 )
 
+# Alchemy host per indexed chain it supports (DoH-verified + live-probed with
+# the real key, 2026-09-13 — all returned eth_chainId 200). Note bsc uses
+# bnb-mainnet and zksync uses zksync-mainnet (the old alias names are NXDOMAIN).
+ALCHEMY_SUPPORTED_HOSTS: dict[str, str] = {
+    "ethereum": "eth-mainnet",
+    "base": "base-mainnet",
+    "bsc": "bnb-mainnet",
+    "polygon": "polygon-mainnet",
+    "arbitrum": "arb-mainnet",
+    "optimism": "opt-mainnet",
+    "avalanche": "avax-mainnet",
+    "linea": "linea-mainnet",
+    "scroll": "scroll-mainnet",
+    "zksync": "zksync-mainnet",
+    "mantle": "mantle-mainnet",
+    "celo": "celo-mainnet",
+    "blast": "blast-mainnet",
+}
+# Alchemy has no endpoint for these indexed chains — no template may exist.
+ALCHEMY_UNSUPPORTED_HOSTS = (
+    "fantom-mainnet",
+    "fantom",
+    "gnosis-mainnet",
+    "fraxtal-mainnet",
+    "metis-mainnet",
+    "robinhood-mainnet",
+)
+
 
 class TestDeadHostsPruned:
     def _source(self) -> str:
@@ -584,21 +612,29 @@ class TestDeadHostsPruned:
         for chain, urls in GET_LOGS_ENDPOINTS.items():
             assert len(urls) >= 1, f"{chain}: active pool is empty"
 
-    def test_live_alchemy_renames_present(self):
-        """The two dead Alchemy aliases had live per-chain renames; assert the
-        keyed replacements exist in source (they drop out of the active pool
-        when ALCHEMY_KEY is unset, so assert against the source template)."""
-        src = self._source()
-        assert "https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}" in src
-        assert "https://zksync-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}" in src
-        assert "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}" in src
+    def _url_lines(self) -> list[str]:
+        # Comments mention old host names by design; only endpoint URL lines
+        # count as "registered".
+        return [ln for ln in self._source().splitlines() if ln.strip().startswith('"https://')]
 
-    def test_fantom_alchemy_not_reintroduced_under_live_name(self):
-        # Alchemy has no live Fantom rename — the dead host must not be
-        # swapped for an invented one. Check URL lines only (the source
-        # comment documents the removal by name).
-        url_lines = [ln for ln in self._source().splitlines() if ln.strip().startswith('"https://')]
-        assert not any("fantom" in ln and "alchemy" in ln for ln in url_lines)
+    def test_alchemy_template_present_for_every_supported_chain(self):
+        """Keyed Alchemy templates are dropped from the active pool when
+        ALCHEMY_KEY is unset, so assert against the source URL lines."""
+        for chain, host in ALCHEMY_SUPPORTED_HOSTS.items():
+            expected = f'"https://{host}.g.alchemy.com/v2/${{ALCHEMY_KEY}}"'
+            assert any(expected in ln for ln in self._url_lines()), f"{chain}: missing {expected}"
+
+    def test_no_alchemy_template_for_unsupported_chains(self):
+        # Alchemy has no Fantom (and no gnosis/fraxtal/metis/robinhood)
+        # endpoint — the dead host must not be swapped for an invented one.
+        for host in ALCHEMY_UNSUPPORTED_HOSTS:
+            assert not any(f"{host}.g.alchemy.com" in ln for ln in self._url_lines()), host
+
+    def test_every_alchemy_url_uses_env_placeholder_only(self):
+        alchemy_lines = [ln for ln in self._url_lines() if ".g.alchemy.com" in ln]
+        assert alchemy_lines
+        for ln in alchemy_lines:
+            assert "/v2/${ALCHEMY_KEY}" in ln, ln
 
 
 # ── BlockVision (per-chain keyed, archive — live-verified 2026-09-13) ──
