@@ -9,10 +9,40 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
-from typing import cast
+from typing import Any, cast
 
 import structlog
+
+# ── Secret redaction ───────────────────────────────────────────────────
+# Our own events log endpoint URLs, which embed provider API keys/tokens
+# (query params, path segments, userinfo). Scrub them before they reach
+# journald/CI. 2026-09-13 incident: keys were visible in capability logs.
+_SECRET_QUERY = re.compile(r"(?i)(apikey|api_key|dkey|key|token|access_token|secret|password)=([^&\s\"']+)")
+_USERINFO = re.compile(r"://[^/@:\s]+:[^/@\s]+@")
+_PATH_SEG = re.compile(r"/[A-Za-z0-9_\-]{20,}")
+
+
+def _redact_secrets(events: str) -> str:
+    """Redact secret-looking tokens from a URL-ish string."""
+    events = _USERINFO.sub("://***@", events)
+    events = _SECRET_QUERY.sub(lambda m: f"{m.group(1)}=***", events)
+    events = _PATH_SEG.sub("/***", events)
+    return events
+
+
+def redact_secrets(_logger: Any, _method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+    """structlog processor: mask secrets in URL fields and query strings."""
+    for key, value in list(event_dict.items()):
+        if not isinstance(value, str):
+            continue
+        lowered = key.lower()
+        if "url" in lowered or "endpoint" in lowered or "uri" in lowered:
+            event_dict[key] = _redact_secrets(value)
+        else:
+            event_dict[key] = _SECRET_QUERY.sub(lambda m: f"{m.group(1)}=***", value)
+    return event_dict
 
 
 def setup_logging(level: str | None = None) -> None:
@@ -46,6 +76,8 @@ def setup_logging(level: str | None = None) -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
+            # Scrub provider secrets from logged URLs before rendering.
+            redact_secrets,
             # JSON rendering for production
             structlog.processors.JSONRenderer(),
         ],
