@@ -460,6 +460,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Preview the import plan without downloading or writing",
     )
+    bootstrap_parser.add_argument(
+        "--source",
+        type=str,
+        default=None,
+        help=(
+            "Provider-agnostic external flat-file dataset: a local directory, an "
+            "http(s) base URL, or a pyarrow.fs URL (s3://, gs://). When set, imports "
+            "from it instead of the B2 snapshot (default: LITE_INDEXER_FLATFILE_SOURCE env)"
+        ),
+    )
+    bootstrap_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="With --source: import even when the dataset overlaps the chain high-water",
+    )
 
     # ── query subcommand (on-demand historical RPC) ──────────────────
     # Answer a query about ANY block/tx/address historically WITHOUT

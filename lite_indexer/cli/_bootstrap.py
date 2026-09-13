@@ -24,7 +24,12 @@ async def run_bootstrap_cli(args: argparse.Namespace) -> int:
         2 = usage error).
     """
     from lite_indexer.bootstrap import SnapshotBootstrap
-    from lite_indexer.config import BOOTSTRAP_B2_BUCKET, BOOTSTRAP_PARQUET_PATH, PARQUET_RCLONE_BIN
+    from lite_indexer.config import (
+        BOOTSTRAP_B2_BUCKET,
+        BOOTSTRAP_PARQUET_PATH,
+        FLATFILE_SOURCE,
+        PARQUET_RCLONE_BIN,
+    )
     from lite_indexer.strategies import SUPPORTED_CHAINS
 
     if args.all and args.chain != "ethereum":
@@ -37,6 +42,42 @@ async def run_bootstrap_cli(args: argparse.Namespace) -> int:
     from lite_indexer.config import DATA_DIR
 
     data_path = Path(args.data_dir) if args.data_dir else DATA_DIR
+
+    # Provider-agnostic external flat-file source: point at ANY pre-indexed
+    # parquet dataset (local dir / http(s) / pyarrow.fs) — no RPC involved.
+    source = args.source or FLATFILE_SOURCE
+    if source:
+        from lite_indexer.ingest.flatfile import ExternalFlatfileSource, FlatfileSourceError
+
+        flat = ExternalFlatfileSource(
+            source=source,
+            target_db=args.target_db,
+            force=args.force,
+            stage_dir=data_path / "flatfile",
+            state_dir=data_path / "state",
+        )
+        if args.list:
+            try:
+                datasets = await flat.list()
+            except FlatfileSourceError as exc:
+                print(json.dumps({"status": "error", "errors": [str(exc)]}))  # noqa: T201
+                return 1
+            flat_out: dict[str, Any] = {
+                "status": "ok",
+                "source": source,
+                "count": len(datasets),
+                "datasets": datasets,
+            }
+            print(json.dumps(flat_out, default=str))  # noqa: T201
+            return 0
+        if args.all:
+            flat_result = await flat.import_all(dry_run=args.dry_run)
+        else:
+            flat_result = await flat.import_chain(args.chain, dry_run=args.dry_run)
+        print(json.dumps(flat_result, default=str))  # noqa: T201
+        flat_status = flat_result.get("status", "error")
+        return 0 if flat_status in ("ok", "dry_run", "skipped") else 1
+
     bootstrapper = SnapshotBootstrap(
         bucket=args.bucket or BOOTSTRAP_B2_BUCKET,
         snapshots_path=args.snapshots_path or BOOTSTRAP_PARQUET_PATH,

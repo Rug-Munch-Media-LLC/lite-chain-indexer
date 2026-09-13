@@ -198,6 +198,19 @@ BOOTSTRAP_LOCAL_DIR: Path = Path(os.environ.get("BOOTSTRAP_LOCAL_DIR", str(DATA_
 BOOTSTRAP_CH_FILE_ROOT: str = os.environ.get("BOOTSTRAP_CH_FILE_ROOT", "")
 # rclone timeout (seconds) for snapshot downloads/uploads.
 BOOTSTRAP_RCLONE_TIMEOUT: int = int(os.environ.get("BOOTSTRAP_RCLONE_TIMEOUT", "1200"))
+
+# ── External flat-file bootstrap (provider-agnostic) ───────────────────
+# ``lite-indexer bootstrap --source <loc>`` hydrates from ANY pre-indexed
+# parquet dataset (a local directory, an http(s) base URL, or a pyarrow.fs
+# URL such as s3:// or gs://) without touching an RPC. The layout is a
+# ``manifest.json`` plus parquet chunks under the base, or a hive-style
+# ``chain=<chain>/*.parquet`` glob when no manifest is present. This is
+# deliberately decoupled from the curated RPC overlay: the location carries
+# no provider identity.
+FLATFILE_SOURCE: str = os.environ.get("LITE_INDEXER_FLATFILE_SOURCE", "")
+# Local staging dir where remote chunks are materialized before the
+# ClickHouse ``file()`` import (one subdir per source).
+FLATFILE_STAGE_DIR: Path = Path(os.environ.get("LITE_INDEXER_FLATFILE_STAGE_DIR", str(DATA_DIR / "flatfile")))
 # ── Transparent Historical Access (THA) ────────────────────────────────
 # Unified hot (ClickHouse) + cold (B2 parquet) reads through one access
 # layer (lite_indexer.storage.historical.HistoricalAccess). When enabled,
