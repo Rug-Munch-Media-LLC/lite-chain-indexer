@@ -8,10 +8,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from lite_indexer.config import (
+    BACKFILL_ENABLED,
+    BACKFILL_MAX_CHUNKS_PER_CYCLE,
+    BACKFILL_MAX_CONCURRENCY,
+    BACKFILL_MAX_QUEUE_DEPTH,
+    MEMORY_RECYCLE_MB,
+)
 from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.indexer._writers import (
     build_nats_payloads,
     maybe_run_vector_ingestion,
+)
+from lite_indexer.indexer.backfill import (
+    BackfillQueue,
+    detect_gaps,
+    drain_backfill_queue,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.streaming.nats_publisher import NATSPublisher
@@ -194,6 +206,87 @@ class SidecarsMixin(IndexerMixinBase):
             self._vector_store = store
         if last is not None:
             self._last_vector_ingestion_block = last
+        return stats
+
+
+class BackfillMixin(IndexerMixinBase):
+    """Gap detection + freemium backfill sidecar, mixed into ``LiteIndexer``.
+
+    The queue is disk-persisted (idempotent, bounded) and the drain is
+    memory-gated so the sidecar never pushes the daemon toward its hard
+    recycle ceiling. No executor is configured by default, so gaps are
+    collected but not dispatched until a host wires one
+    (:func:`lite_indexer.indexer.backfill_executor.build_evm_backfill_executor`).
+    """
+
+    def _get_backfill_queue(self) -> BackfillQueue:
+        """Lazily build the persisted queue for this chain (idempotent)."""
+        queue = self._backfill_queue
+        if queue is None:
+            queue = BackfillQueue(self.chain)
+            self._backfill_queue = queue
+        return queue
+
+    def _record_reconcile_rewind(self, from_block: int, to_block: int) -> None:
+        """Record a reconciliation rewind for the next gap enqueue (bounded)."""
+        rewinds = self._reconcile_rewinds
+        rewinds.append((int(from_block), int(to_block)))
+        del rewinds[:-BACKFILL_MAX_QUEUE_DEPTH]
+
+    def _enqueue_backfill_gaps(self, tip: int | None) -> int:
+        """Detect un-indexed ranges and enqueue them (idempotent, bounded).
+
+        Includes the forward gap only when this chain stalled (state did not
+        advance since the previous cycle) so an actively-syncing chain is
+        left to the live loop. Reconciliation rewinds are always enqueued.
+        """
+        if not BACKFILL_ENABLED:
+            return 0
+        state = self.state.load()
+        try:
+            last_block = int(state.get("last_block", 0) or 0)
+        except (TypeError, ValueError):
+            last_block = 0
+        previous = self._backfill_seen_block
+        stalled = previous is not None and last_block <= previous
+        self._backfill_seen_block = last_block
+
+        rewinds = self._reconcile_rewinds
+        chunks = detect_gaps(
+            self.chain,
+            last_block,
+            tip,
+            list(rewinds),
+            self.chunk_size,
+            BACKFILL_MAX_QUEUE_DEPTH,
+            include_forward_gap=stalled,
+        )
+        rewinds.clear()
+        return self._get_backfill_queue().enqueue(chunks)
+
+    async def _run_backfill_sidecar(self) -> dict[str, int]:
+        """Drain a bounded number of queued chunks (memory-gated).
+
+        Disabled when no executor is configured: the queue still collects
+        gaps for a later release/operator wiring.
+        """
+        if not BACKFILL_ENABLED:
+            return {}
+        executor = self._backfill_executor
+        if executor is None:
+            return {}
+
+        mem_mb = self.guarded_memory_mb()
+        memory_ok = self.memory_gate_ok() and not (MEMORY_RECYCLE_MB > 0 and mem_mb >= MEMORY_RECYCLE_MB)
+        stats = await drain_backfill_queue(
+            self._get_backfill_queue(),
+            executor,
+            max_concurrency=BACKFILL_MAX_CONCURRENCY,
+            max_chunks=BACKFILL_MAX_CHUNKS_PER_CYCLE,
+            memory_ok=memory_ok,
+        )
+        if stats.get("dispatched") or stats.get("memory_paused"):
+            logger.info("backfill_sidecar", chain=self.chain, memory_mb=mem_mb, **stats)
         return stats
 
     # ── Block Range Determination ──────────────────────────────────

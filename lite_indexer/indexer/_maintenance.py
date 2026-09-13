@@ -158,6 +158,8 @@ class MaintenanceMixin(IndexerMixinBase):
             discrepancy_pct=round(discrepancy_pct, 2),
         )
         summary["reconcile_backfill_triggered"] = True
-        # Rewind state so the next cycle re-fetches the range. High-water
-        # mark is NOT rewound — it stays monotonic.
+        # Feed the freemium backfill queue with the known-missing range
+        # (idempotent), then rewind state so the next cycle re-fetches.
+        # High-water mark is NOT rewound — it stays monotonic.
+        self._record_reconcile_rewind(from_block, to_block)
         self.state.save(from_block - 1, 0, enabled_events=self._enabled_event_types())

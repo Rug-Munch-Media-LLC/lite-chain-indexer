@@ -62,6 +62,10 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "webhook_registrations",
     "webhook_deliveries",
     "webhook_delivery_failures",
+    "backfill_enqueued",
+    "backfill_completed",
+    "backfill_failed",
+    "backfill_memory_paused",
 )
 
 

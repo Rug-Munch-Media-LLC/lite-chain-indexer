@@ -17,6 +17,7 @@ from typing import Any
 
 from lite_indexer.chunks import sync_batch_for_chain
 from lite_indexer.config import (
+    BACKFILL_ENABLED,
     DEX_SKIP_TO_HEAD,
     DEX_SKIP_TO_HEAD_HOURS,
     HEAD_BUFFER,
@@ -593,6 +594,16 @@ class SyncLoopMixin(IndexerMixinBase):
         # from RPC; a >5% shortfall rewinds state so the next cycle
         # backfills the range. Best-effort — never blocks or aborts.
         self._maybe_reconcile_range(from_block, to_block, len(events), summary)
+
+        # 8b2. Freemium backfill sidecar: enqueue ranges we did not index
+        # ourselves (stalled-chain backlog, reconciliation rewinds), then
+        # drain a bounded number of chunks through keyed/freemium
+        # endpoints only. Memory-gated; never blocks the sync cycle.
+        if BACKFILL_ENABLED:
+            self._enqueue_backfill_gaps(self._last_tip)
+            backfill_stats = await self._run_backfill_sidecar()
+            if backfill_stats and backfill_stats.get("dispatched"):
+                summary["backfill"] = backfill_stats
 
         # 8a. Vector ingestion (optional, LanceDB). Reads the freshly synced
         # block range from ClickHouse, generates text representations for

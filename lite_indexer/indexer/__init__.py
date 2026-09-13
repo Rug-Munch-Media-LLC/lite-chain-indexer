@@ -63,8 +63,9 @@ from lite_indexer.indexer._resource_guards import (
     get_process_rss_mb as get_process_rss_mb,
 )
 from lite_indexer.indexer._rpc_fetch import RpcFetchMixin
-from lite_indexer.indexer._sidecars import SidecarsMixin
+from lite_indexer.indexer._sidecars import BackfillMixin, SidecarsMixin
 from lite_indexer.indexer._sync_loop import SyncLoopMixin
+from lite_indexer.indexer.backfill import BackfillExecutor, BackfillQueue
 from lite_indexer.logging import get_logger
 from lite_indexer.plugin import BasePlugin, PluginContext, PluginLoader
 from lite_indexer.rpc import RpcClient, RpcFetchFailedError
@@ -96,6 +97,7 @@ logger = get_logger(__name__)
 
 __all__ = [
     "AbstractChainStrategy",
+    "BackfillMixin",
     "BasePlugin",
     "ClickHouseHealth",
     "ClickHouseWriter",
@@ -168,6 +170,7 @@ class LiteIndexer(
     PluginsMixin,
     SidecarsMixin,
     SyncLoopMixin,
+    BackfillMixin,
 ):
     """Multi-chain blockchain indexer using the strategy pattern.
 
@@ -290,6 +293,14 @@ class LiteIndexer(
         self._memory_gate = MemoryGate()
         # Cached ClickHouse reachability probe — graceful CH pause.
         self._ch_health = ClickHouseHealth()
+
+        # Freemium backfill queue (lazy) + injected executor + gap signals.
+        # The queue is disk-persisted; the executor is left unset so no
+        # backfill dispatch happens until a host (daemon/operator) wires one.
+        self._backfill_queue: BackfillQueue | None = None
+        self._backfill_executor: BackfillExecutor | None = None
+        self._backfill_seen_block: int | None = None
+        self._reconcile_rewinds: list[tuple[int, int]] = []
 
         # Event types persisted as enabled in the state file (lazy indexing).
         # DEX/deployer stay enabled across restarts once demand is observed.

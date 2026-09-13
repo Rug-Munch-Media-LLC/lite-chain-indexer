@@ -160,6 +160,27 @@ STATE_REGRESSION_TOLERANCE_BLOCKS: int = int(os.environ.get("STATE_REGRESSION_TO
 DATA_RECONCILIATION_ENABLED: bool = os.environ.get("DATA_RECONCILIATION_ENABLED", "1") == "1"
 DATA_RECONCILIATION_EVERY_N_CYCLES: int = int(os.environ.get("DATA_RECONCILIATION_EVERY_N_CYCLES", "50"))
 DATA_RECONCILIATION_MAX_DISCREPANCY_PCT: float = float(os.environ.get("DATA_RECONCILIATION_MAX_DISCREPANCY_PCT", "5.0"))
+# ── Freemium-Only Backfill Queue ────────────────────────────────────────
+# Policy: the free/keyless RPC pool is reserved for the live tip. Ranges
+# the indexer did NOT index itself (a stalled/disabled chain's backlog, or
+# a range a data-reconciliation rewind flagged as incomplete) are filled by
+# a bounded, persisted queue that dispatches ONLY keyed/freemium endpoints
+# (Alchemy/Infura/...). Those have their own per-account caps, so backfill
+# never burns the free pool's rate budget. Set BACKFILL_ENABLED=0 to turn
+# the sidecar off entirely.
+BACKFILL_ENABLED: bool = os.environ.get("BACKFILL_ENABLED", "1") == "1"
+# Max chunks held pending/in-flight at once (bounded memory + disk).
+BACKFILL_MAX_QUEUE_DEPTH: int = int(os.environ.get("BACKFILL_MAX_QUEUE_DEPTH", "256"))
+# Max backfill workers running concurrently per chain (small: freemium
+# accounts are rate-capped and the daemon has a hard memory ceiling).
+BACKFILL_MAX_CONCURRENCY: int = int(os.environ.get("BACKFILL_MAX_CONCURRENCY", "1"))
+# Max chunks dispatched per sync cycle (keeps the sidecar short + bounded).
+BACKFILL_MAX_CHUNKS_PER_CYCLE: int = int(os.environ.get("BACKFILL_MAX_CHUNKS_PER_CYCLE", "2"))
+# Attempts before a failing chunk is parked (retained, not retried) —
+# failures never drop the chunk, they just stop it spinning.
+BACKFILL_MAX_ATTEMPTS: int = int(os.environ.get("BACKFILL_MAX_ATTEMPTS", "5"))
+# Completed chunk keys retained as the idempotency gate (LRU-pruned).
+BACKFILL_DONE_RETENTION: int = int(os.environ.get("BACKFILL_DONE_RETENTION", "4096"))
 # ── Plugin System ──────────────────────────────────────────────────────
 # Directory where user-installed plugins live (LITE_INDEXER_PLUGIN_DIR,
 # default DATA_DIR/plugins). A plugin is a folder containing a

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
     from lite_indexer.chain_registry import ChainConfig
     from lite_indexer.indexer._resource_guards import ClickHouseHealth, MemoryGate
+    from lite_indexer.indexer.backfill import BackfillExecutor, BackfillQueue
     from lite_indexer.plugin import BasePlugin
     from lite_indexer.rpc import RpcClient
     from lite_indexer.rpc.verify import EndpointVerifyResult
@@ -74,6 +75,11 @@ class IndexerMixinBase:
     _webhook_delivery: WebhookDelivery | None
     _vector_store: Any
     _last_vector_ingestion_block: int | None
+    # Freemium backfill queue (lazy) + injected executor + gap signals.
+    _backfill_queue: BackfillQueue | None
+    _backfill_executor: BackfillExecutor | None
+    _backfill_seen_block: int | None
+    _reconcile_rewinds: list[tuple[int, int]]
     # Set by ``_determine_block_range``; default keeps reads safe.
     _last_tip: int | None = None
 
@@ -148,5 +154,24 @@ class IndexerMixinBase:
     async def _run_vector_ingestion_guarded(self, from_block: int, to_block: int, summary: dict[str, Any]) -> None:
         raise NotImplementedError
 
+    def memory_gate_ok(self) -> bool:
+        raise NotImplementedError
+
+    def guarded_memory_mb(self) -> int:
+        raise NotImplementedError
+
     def _maybe_reconcile_range(self, from_block: int, to_block: int, expected: int, summary: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    # ── Freemium backfill queue (BackfillMixin) ───────────────────────────
+    def _get_backfill_queue(self) -> BackfillQueue:
+        raise NotImplementedError
+
+    def _record_reconcile_rewind(self, from_block: int, to_block: int) -> None:
+        raise NotImplementedError
+
+    def _enqueue_backfill_gaps(self, tip: int | None) -> int:
+        raise NotImplementedError
+
+    async def _run_backfill_sidecar(self) -> dict[str, int]:
         raise NotImplementedError
