@@ -635,8 +635,16 @@ async def async_main(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    """CLI entry point."""
+    """CLI entry point.
+
+    Installs the optional uvloop event-loop policy first (graceful fallback
+    to the default asyncio loop when uvloop is absent/unsupported), then
+    runs the async entrypoint.
+    """
+    from lite_indexer.runtime import install_event_loop_policy
+
     setup_logging()
+    install_event_loop_policy()
     args = parse_args()
     sys.exit(asyncio.run(async_main(args)))
 

@@ -32,6 +32,7 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.rpc.jsonparse import decode_response
 from lite_indexer.rpc.ledger import (
     LEDGER,
     defer_reason,
@@ -331,9 +332,9 @@ class RpcClient:
                 else:
                     resp.raise_for_status()
 
-                    # Malformed JSON protection
+                    # Malformed JSON protection (msgspec fast path when present)
                     try:
-                        data = resp.json()
+                        data = decode_response(resp)
                     except (json.JSONDecodeError, ValueError) as exc:
                         logger.debug(
                             "rpc_malformed_json",
@@ -656,7 +657,7 @@ class RpcClient:
                     continue
 
                 resp.raise_for_status()
-                data = resp.json()
+                data = decode_response(resp)
                 if isinstance(data, dict) and "result" in data:
                     result = data["result"]
                     if isinstance(result, list):
