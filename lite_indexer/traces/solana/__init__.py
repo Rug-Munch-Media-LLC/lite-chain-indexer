@@ -4,7 +4,7 @@ The base Solana strategy indexes SPL token balance changes from
 ``getSignaturesForAddress`` + ``getTransaction`` (jsonParsed). That view
 misses most of what actually moves through a transaction: native SOL
 transfers, CPI inner instructions, token account create/close events and
-stake delegations. Paid products (Helius enhanced transactions, DAS APIs)
+stake delegations. Paid products (SolanaProvider enhanced transactions, DAS APIs)
 charge for this visibility — this package replicates the core capability
 for free using the exact same RPC call the indexer already makes.
 
@@ -33,7 +33,7 @@ runtime by :func:`ensure_solana_transfers_table`):
 
 ``instruction_path`` is ``[outer_ix]`` for top-level instructions and
 ``[outer_ix, inner_ix]`` for CPI instructions — free RPCs expose at most
-two nesting levels; deeper paths (Helius-style ``[0, 2, 1]``) require a
+two nesting levels; deeper paths (SolanaProvider-style ``[0, 2, 1]``) require a
 paid DAS feed, so we emit the two-level path and document the limit.
 
 Verified free endpoints for ``getTransaction`` (2026-08-04):
@@ -41,8 +41,8 @@ Verified free endpoints for ``getTransaction`` (2026-08-04):
   * ``api.mainnet-beta.solana.com``      — OK (aggressive 429s, retry)
   * ``solana-rpc.publicnode.com``        — OK
   * ``solana-api.projectserum.com``      — DEAD (connection timeout)
-  * ``rpc.ankr.com/solana``              — 403 "API key is not allowed"
-  * ``solana.drpc.org``                  — 35 "chain is not available on
+  * ``rpc.providerd.com/solana``              — 403 "API key is not allowed"
+  * ``solana.gateway.org``                  — 35 "chain is not available on
                                            free plan, please upgrade"
 
 The collector reuses the verified pool from

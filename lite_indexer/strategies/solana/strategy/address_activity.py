@@ -9,7 +9,7 @@ Follow-up hook site (not wired here, scope-tight): the launchpad block
 watcher (``SyncMixin.poll_launchpad_blocks``) also walks every transaction
 of every new block; calling :meth:`_ingest_address_activity` there would
 extend address_activity from "transactions that touch tracked mints" to
-"every transaction on the chain" — the full free-Helius ambition. The
+"every transaction on the chain" — the full free-SolanaProvider ambition. The
 historical backfill task will consume the same pure parser.
 """
 

@@ -1,6 +1,6 @@
 """Hedged RPC dispatch — NodeCore-style tail-latency mitigation.
 
-Ported from drpcorg/nodecore's hedging resilience layer (MIT), adapted to
+Ported from gatewayorg/nodecore's hedging resilience layer (MIT), adapted to
 our in-process pool: when the primary endpoint hasn't answered within
 ``RPC_HEDGE_DELAY`` seconds, a second request fires at the next-best
 endpoint in parallel. First successful answer wins; the slow attempt is

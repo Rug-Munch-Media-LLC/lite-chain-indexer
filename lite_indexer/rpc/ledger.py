@@ -9,9 +9,9 @@ and returns a degrade level so the caller can back off *before* the 429.
 
 Key differences from the other two layers:
 
-1. **Grouping is PER ACCOUNT (``provider_id``), not per URL.** Alchemy is
-   account-wide — every ``*.g.alchemy.com`` URL for the same API key shares
-   one 30M CU/month budget — while Ankr is per-IP and gets a per-domain
+1. **Grouping is PER ACCOUNT (``provider_id``), not per URL.** KeyedProvider is
+   account-wide — every ``*.g.keyegateway.com`` URL for the same API key shares
+   one 30M CU/month budget — while ProviderD is per-IP and gets a per-domain
    bucket. ``provider_id_for_endpoint()`` derives the account from the URL
    hostname; known free-tier quotas are seeded in :data:`KNOWN_QUOTAS`.
 
@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -128,25 +129,44 @@ class QuotaSeed:
     period: str
 
 
-# Documented free quotas (seed values; operators can override after seeding).
-# Alchemy 30M CU/month (account-wide), Infura 3M credits/day, dRPC 210M CU/30d,
-# Helius 1M credits/month, TronGrid 100k requests/day.
-KNOWN_QUOTAS: dict[str, QuotaSeed] = {
-    "alchemy": QuotaSeed(budget_units=30_000_000, unit_type="CU", period="month"),
-    "infura": QuotaSeed(budget_units=3_000_000, unit_type="credits", period="day"),
-    "drpc": QuotaSeed(budget_units=210_000_000, unit_type="CU", period="30d"),
-    "helius": QuotaSeed(budget_units=1_000_000, unit_type="credits", period="month"),
-    "trongrid": QuotaSeed(budget_units=100_000, unit_type="request_units", period="day"),
-}
+# Free-tier quota seeds, supplied by the operator (private) as a JSON object
+# in ``LITE_INDEXER_QUOTA_SEEDS`` keyed by PROVIDER ID (the registrable
+# domain, e.g. ``"example-rpc.com"``)::
+#
+#   {"example-rpc.com": {"budget_units": 30000000, "unit_type": "CU", "period": "month"}}
+#
+# Empty by default: endpoints are tracked but never degraded (the degrade
+# ladder is opt-in via seeds). Per-key caps in ``rpc/provider_caps.py`` work
+# regardless.
+def _load_known_quotas() -> dict[str, QuotaSeed]:
+    import json
 
-# Hostname substrings → provider account id. Order matters (first match wins).
-_PROVIDER_HOST_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("alchemy", ("alchemy.com",)),
-    ("infura", ("infura.io",)),
-    ("drpc", ("drpc.org",)),
-    ("helius", ("helius.xyz", "helius-rpc.com")),
-    ("trongrid", ("trongrid.io",)),
-)
+    raw = os.environ.get("LITE_INDEXER_QUOTA_SEEDS", "")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("quota_seeds_parse_failed")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    seeds: dict[str, QuotaSeed] = {}
+    for provider_id, spec in data.items():
+        if not isinstance(spec, dict):
+            continue
+        try:
+            seeds[str(provider_id)] = QuotaSeed(
+                budget_units=int(spec["budget_units"]),
+                unit_type=str(spec["unit_type"]),
+                period=str(spec["period"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return seeds
+
+
+KNOWN_QUOTAS: dict[str, QuotaSeed] = _load_known_quotas()
 
 # Dataclass field names used to filter persisted JSON on load (survives
 # schema drift by ignoring unknown keys).
@@ -199,46 +219,62 @@ class QuotaBudget:
         return self.degrade_level >= 3 and now < self.reset_at
 
 
+def _registrable_domain(host: str) -> str:
+    """Collapse ``*.example-rpc.com`` subdomains to ``example-rpc.com``.
+
+    Generic account grouping without a baked-in provider list: all chain
+    subdomains of one provider collapse to one budget; per-key separation is
+    handled by :func:`key_id_for_endpoint`.
+    """
+    parts = [p for p in host.lower().split(".") if p]
+    return ".".join(parts[-2:]) if len(parts) >= 2 else (host or "unknown")
+
+
 def provider_id_for_endpoint(endpoint: str) -> str:
     """Derive the account-level provider id from an endpoint URL.
 
-    Grouping is per account, not per URL: every Alchemy subdomain maps to
-    ``"alchemy"`` so all chains share one CU budget. Unmatched hosts fall
-    back to their hostname (Ankr-style per-IP buckets) — those have no
-    seeded quota and never degrade.
+    The id is the registrable domain (``eth-mainnet.g.example.com`` →
+    ``example.com``), so all chain subdomains of one provider share a budget
+    while different providers stay separate. Key-less hosts group by their
+    own domain and never degrade unless the operator seeds a quota.
     """
     from urllib.parse import urlparse
 
-    host = (urlparse(endpoint).hostname or "").lower()
-    for provider_id, patterns in _PROVIDER_HOST_PATTERNS:
-        if any(pattern in host for pattern in patterns):
-            return provider_id
-    return host or "unknown"
+    return _registrable_domain(urlparse(endpoint).hostname or "")
+
+
+#: Query params that carry a provider API key (generic, provider-agnostic).
+_KEY_QUERY_PARAMS: tuple[str, ...] = ("dkey", "apikey", "api-key", "api_key", "key", "token")
+#: A path segment this long and token-shaped is treated as an embedded key.
+_KEY_PATH_RE = re.compile(r"^[A-Za-z0-9_\-]{16,}$")
 
 
 def key_id_for_endpoint(endpoint: str) -> str:
-    """Best-effort, NON-SECRET API-key id for keyed providers.
+    """Best-effort, NON-SECRET API-key id for a keyed endpoint.
 
-    Account-wide keys are the last path segment of the URL
-    (``https://eth-mainnet.g.alchemy.com/v2/<KEY>``); Helius carries its key
-    in the ``api-key`` query param. The raw key is HASHED (sha256, first 16
-    hex chars) so the id is stable per key-account but the secret is never
-    persisted in the quota ledger or exposed in limiter state.
+    Keys are detected generically: a recognised key query param
+    (``dkey``/``apiKey``/``api-key``/``api_key``/``key``/``token``) or a
+    long token-shaped trailing path segment (e.g. ``/v2/<KEY>``,
+    ``/rpc/<KEY>``). The raw value is HASHED (sha256, first 16 hex chars) so
+    the id is stable per key-account but the secret is never persisted in the
+    quota ledger or exposed in limiter state.
 
     Empty for key-less endpoints — they group by provider_id alone.
     """
     from urllib.parse import parse_qs, urlparse
 
     parsed = urlparse(endpoint)
-    host = (parsed.hostname or "").lower()
     raw = ""
-    if "alchemy.com" in host or "infura.io" in host:
+    qs = {k.lower(): v for k, v in parse_qs(parsed.query).items()}
+    for param in _KEY_QUERY_PARAMS:
+        values = qs.get(param)
+        if values:
+            raw = values[0]
+            break
+    if not raw:
         parts = [p for p in parsed.path.split("/") if p]
-        if parts:
+        if parts and _KEY_PATH_RE.match(parts[-1]):
             raw = parts[-1]
-    elif "helius-rpc.com" in host or "helius.xyz" in host:
-        qs = parse_qs(parsed.query)
-        raw = (qs.get("api-key") or qs.get("api_key") or [""])[0]
     if not raw:
         return ""
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
@@ -429,10 +465,10 @@ class ProviderLedger:
         recomputes the degrade ladder level.
 
         Args:
-            provider_id: Account-level provider id (``"alchemy"``, ...).
+            provider_id: Account-level provider id (``"keyegateway"``, ...).
             method: JSON-RPC method name (``"eth_getLogs"``, ``"eth_call"``).
             key_id: Optional API-key id for account grouping within a
-                provider (Alchemy/Infura account-wide keys).
+                provider (KeyedProvider/KeyedProvider2 account-wide keys).
             now: Epoch time override (tests).
 
         Returns:
@@ -453,7 +489,7 @@ class ProviderLedger:
         """Record a call from an endpoint URL (derives provider/key id).
 
         Convenience wrapper for the RPC layer: ``provider_id_for_endpoint``
-        groups Alchemy/Infura URLs by account while unknown hosts get a
+        groups KeyedProvider/KeyedProvider2 URLs by account while unknown hosts get a
         per-hostname bucket (never degraded).
         """
         return self.record_call(
@@ -548,7 +584,7 @@ def record_call(provider_id: str, method: str, key_id: str | None = None) -> int
     """Record a call in the shared ledger (convenience wrapper).
 
     Args:
-        provider_id: Account-level provider id (``"alchemy"``, ...).
+        provider_id: Account-level provider id (``"keyegateway"``, ...).
         method: JSON-RPC method name.
         key_id: Optional API-key id.
 
@@ -623,7 +659,7 @@ def defer_reason(
       * level 0 / unknown providers (no seeded quota) → never deferred
 
     Args:
-        provider_id: Account-level provider id (``"alchemy"``, ...).
+        provider_id: Account-level provider id (``"keyegateway"``, ...).
         method: JSON-RPC method name.
         key_id: Optional API-key id for account grouping.
         range_blocks: Optional block range for ``eth_getLogs`` so level 1

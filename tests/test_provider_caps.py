@@ -141,19 +141,22 @@ class TestProviderGrouping:
 class TestPerKeyAccounts:
     """Two API keys on the same host are INDEPENDENT accounts."""
 
-    URL_KEY1_ETH = "https://eth-mainnet.g.alchemy.com/v2/key1"
-    URL_KEY2_ETH = "https://eth-mainnet.g.alchemy.com/v2/key2"
-    URL_KEY1_POLYGON = "https://polygon-mainnet.g.alchemy.com/v2/key1"
+    _K1 = "a" * 24
+    _K2 = "b" * 24
+    URL_KEY1_ETH = f"https://eth-mainnet.g.alchemy.com/v2/{_K1}"
+    URL_KEY2_ETH = f"https://eth-mainnet.g.alchemy.com/v2/{_K2}"
+    URL_KEY1_POLYGON = f"https://polygon-mainnet.g.alchemy.com/v2/{_K1}"
 
     def test_account_key_is_provider_plus_key(self):
         k1 = account_key_for_endpoint(self.URL_KEY1_ETH)
         k2 = account_key_for_endpoint(self.URL_KEY2_ETH)
         assert k1 != k2
-        assert k1.startswith("alchemy:")
+        # Account id is the registrable domain (generic, no provider list).
+        assert k1.startswith("alchemy.com:")
         # Same key on another chain is the SAME account.
         assert account_key_for_endpoint(self.URL_KEY1_POLYGON) == k1
-        # Key-less providers keep the bare provider id (behaviour unchanged).
-        assert account_key_for_endpoint("https://rpc.fantom.network") == "rpc.fantom.network"
+        # Key-less providers group by their registrable domain.
+        assert account_key_for_endpoint("https://rpc.fantom.network") == "fantom.network"
 
     def test_two_keys_get_independent_backoff(self):
         record_provider_response(self.URL_KEY1_ETH, 429, {"Retry-After": "25"})
@@ -180,9 +183,10 @@ class TestPerKeyAccounts:
         limiter.release_slot(k1)
 
     def test_key_id_is_hashed_not_raw_secret(self):
-        kid = key_id_for_endpoint("https://eth-mainnet.g.alchemy.com/v2/supersecret")
+        secret = "supersecret" + "x" * 12  # long enough to be detected as a key
+        kid = key_id_for_endpoint(f"https://eth-mainnet.g.alchemy.com/v2/{secret}")
         assert kid
-        assert "supersecret" not in kid
+        assert secret not in kid
         assert len(kid) == 16
 
     @pytest.mark.asyncio

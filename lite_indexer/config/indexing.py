@@ -8,7 +8,7 @@ from pathlib import Path
 
 # Load the shared env file (same file the daemon's systemd unit sources
 # via EnvironmentFile) BEFORE any os.environ reads below, so every entry
-# point resolves the same ${ALCHEMY_KEY} / ${INFURA_KEY} / ${HELIUS_KEY} RPC
+# point resolves the same ${KEYED_RPC_KEY} / ${KEYED_RPC_KEY_2} / ${SOLANA_PROVIDER_KEY} RPC
 # placeholders. Idempotent and non-destructive (existing env wins).
 from lite_indexer.env import load_env_file
 
@@ -165,7 +165,7 @@ DATA_RECONCILIATION_MAX_DISCREPANCY_PCT: float = float(os.environ.get("DATA_RECO
 # the indexer did NOT index itself (a stalled/disabled chain's backlog, or
 # a range a data-reconciliation rewind flagged as incomplete) are filled by
 # a bounded, persisted queue that dispatches ONLY keyed/freemium endpoints
-# (Alchemy/Infura/...). Those have their own per-account caps, so backfill
+# (KeyedProvider/KeyedProvider2/...). Those have their own per-account caps, so backfill
 # never burns the free pool's rate budget. Set BACKFILL_ENABLED=0 to turn
 # the sidecar off entirely.
 BACKFILL_ENABLED: bool = os.environ.get("BACKFILL_ENABLED", "1") == "1"

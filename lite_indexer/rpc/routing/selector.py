@@ -76,40 +76,29 @@ def _archive_candidates(method: str, endpoints: list[str], chain: str | None) ->
 
 # ── Endpoint Tier Classification ────────────────────────────────────────
 
-# Domain substrings identifying dedicated (API-key / paid) providers.
-_DEDICATED_MARKERS = (
-    "alchemy.com",
-    "getblock.io",
-    "chainstack.com",
-    "quicknode",
-    "infura.io",
-    "helius.xyz",
-    "blastapi.io",
-)
-
 
 def endpoint_tier(endpoint: str) -> str:
-    """Classify an endpoint as ``public``, ``dedicated``, or ``unknown``.
+    """Classify an endpoint as ``dedicated`` or ``public``.
 
-    Dedicated = API-key/paid providers that are good for small
-    latency-sensitive calls; public = free tiers that handle heavy
-    log queries. The classification is domain-based and conservative.
+    Generic, no provider allow/deny list: an endpoint carrying an API key
+    (unresolved ``${VAR}`` placeholder or a derivable embedded key) is
+    ``dedicated`` — good for small latency-sensitive calls under its account
+    budget — while a keyless endpoint is ``public`` and handles heavy log
+    queries. Unknown/empty URLs are ``unknown``.
 
     Args:
         endpoint: RPC endpoint URL.
 
     Returns:
-        One of ``"public"``, ``"dedicated"``, ``"unknown"``.
+        One of ``"public"``, ``"dedicated"``, or ``"unknown"``.
     """
-    from urllib.parse import urlparse
+    from lite_indexer.rpc.ledger import key_id_for_endpoint
 
-    domain = urlparse(endpoint).hostname or endpoint
-    for marker in _DEDICATED_MARKERS:
-        if marker in domain:
-            return "dedicated"
-    if any(m in domain for m in ("drpc.org", "publicnode.com", "tenderly.co", "gateway.tatum.io")):
-        return "public"
-    return "unknown"
+    if not endpoint:
+        return "unknown"
+    if "${" in endpoint or key_id_for_endpoint(endpoint):
+        return "dedicated"
+    return "public"
 
 
 def preferred_tier_for_method(method: str) -> str:

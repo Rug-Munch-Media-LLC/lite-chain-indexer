@@ -4,7 +4,7 @@ Subscribes to Solana RPC ``logsSubscribe`` (program-scoped via a
 ``mentions`` filter) and/or ``accountSubscribe`` (watchlist-scoped), fetches
 each notified transaction, and indexes it into
 ``wallet_memory.address_activity`` — the same keystone table the batch
-indexer writes. This is the free real-time half of the Helius-parity story:
+indexer writes. This is the free real-time half of the SolanaProvider-parity story:
 no API key, no paid webhook, just the public ``wss://`` endpoint plus our own
 ClickHouse.
 

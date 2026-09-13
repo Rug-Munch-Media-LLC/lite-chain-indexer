@@ -16,7 +16,7 @@ once. We therefore cap:
 
 keyed by the ACCOUNT identity: ``provider_id`` + ``key_id``
 (:func:`account_key_for_endpoint`). Every URL of one API key shares a budget,
-but two DIFFERENT keys on the same host (e.g. two Alchemy accounts) get
+but two DIFFERENT keys on the same host (e.g. two KeyedProvider accounts) get
 independent concurrency/RPS budgets and backoff windows. Key-less providers
 group by ``provider_id`` alone. When the budget is exhausted the caller
 *queues* (awaits the semaphore / paces) instead of firing.
@@ -55,7 +55,7 @@ logger = get_logger(__name__)
 def account_key_for_endpoint(endpoint: str) -> str:
     """Account identity for cap keying: ``provider_id`` + optional ``key_id``.
 
-    ``*.alchemy.com`` URLs with the SAME key collapse to one account key, but
+    ``*.keyegateway.com`` URLs with the SAME key collapse to one account key, but
     two different keys on the same host get DIFFERENT keys (independent
     budgets). Key-less providers return the bare ``provider_id`` so their
     behaviour is unchanged. The ``key_id`` is a non-secret hash

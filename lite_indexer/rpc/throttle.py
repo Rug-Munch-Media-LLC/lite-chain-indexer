@@ -47,7 +47,7 @@ from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Header name variants seen in the wild (Alchemy, Blast, QuickNode,
+# Header name variants seen in the wild (KeyedProvider, Blast, Dedicated,
 # generic Cloudflare/proxy layers all differ slightly).
 _RATE_LIMIT_HEADERS = (
     "x-ratelimit-limit",

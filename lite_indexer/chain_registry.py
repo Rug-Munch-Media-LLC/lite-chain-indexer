@@ -39,7 +39,6 @@ class ChainConfig:
     explorer_api_url: str = ""
     explorer_api_key_env: str = ""
     #: Optional dedicated RPC URL template for a specific provider (e.g. the
-    #: Helius RPC for Solana). ``${ENV_VAR}`` placeholders are resolved at
     #: use time; an unset key leaves the endpoint inactive.
     provider_rpc_url: str = ""
     native_currency: str = "ETH"
@@ -57,7 +56,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         chain_id=1,
         rpc_endpoints=[
             "https://eth.llamarpc.com",
-            "https://rpc.ankr.com/eth",
             "https://ethereum.publicnode.com",
         ],
         dex_factory_addresses=[
@@ -75,7 +73,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         rpc_endpoints=[
             "https://mainnet.base.org",
             "https://base.llamarpc.com",
-            "https://rpc.ankr.com/base",
         ],
         dex_factory_addresses=[
             "0x8909Dc15e40173Ff643900413796596626800331",  # Uniswap V2
@@ -91,7 +88,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         rpc_endpoints=[
             "https://bsc-dataseed.binance.org",
             "https://bsc.publicnode.com",
-            "https://rpc.ankr.com/bsc",
         ],
         dex_factory_addresses=[
             "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",  # PancakeSwap V2
@@ -107,7 +103,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         rpc_endpoints=[
             "https://polygon-rpc.com",
             "https://polygon.llamarpc.com",
-            "https://rpc.ankr.com/polygon",
         ],
         native_currency="MATIC",
         block_time_seconds=2.0,
@@ -119,7 +114,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         rpc_endpoints=[
             "https://arb1.arbitrum.io/rpc",
             "https://arbitrum.llamarpc.com",
-            "https://rpc.ankr.com/arbitrum",
         ],
         native_currency="ETH",
         block_time_seconds=0.25,
@@ -131,7 +125,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         rpc_endpoints=[
             "https://mainnet.optimism.io",
             "https://optimism.llamarpc.com",
-            "https://rpc.ankr.com/optimism",
         ],
         native_currency="ETH",
         block_time_seconds=2.0,
@@ -164,7 +157,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         chain_id=59144,
         rpc_endpoints=[
             "https://rpc.linea.build",
-            "https://linea.drpc.org",
         ],
         native_currency="ETH",
         block_time_seconds=2.0,
@@ -175,7 +167,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         chain_id=534352,
         rpc_endpoints=[
             "https://rpc.scroll.io",
-            "https://scroll.drpc.org",
         ],
         native_currency="ETH",
         block_time_seconds=3.0,
@@ -186,7 +177,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         chain_id=324,
         rpc_endpoints=[
             "https://mainnet.era.zksync.io",
-            "https://zksync.drpc.org",
         ],
         native_currency="ETH",
         block_time_seconds=2.0,
@@ -197,7 +187,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         chain_id=5000,
         rpc_endpoints=[
             "https://rpc.mantle.xyz",
-            "https://mantle.drpc.org",
         ],
         native_currency="MNT",
         block_time_seconds=2.0,
@@ -219,7 +208,6 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         chain_id=42220,
         rpc_endpoints=[
             "https://forno.celo.org",
-            "https://celo.drpc.org",
         ],
         native_currency="CELO",
         block_time_seconds=5.0,
@@ -243,10 +231,7 @@ EVM_PRESETS: dict[str, ChainConfig] = {
             "https://api.mainnet-beta.solana.com",
             "https://solana.publicnode.com",
         ],
-        # Helius RPC (free tier, 25K req/mo) — activated when HELIUS_KEY is
         # set (gopass [INTERNAL_SECRET_PATH] → daemon env file). Used by the
-        # SolanaHeliusAdapter for SPL transfer indexing.
-        provider_rpc_url="https://rpc.helius.xyz/?api-key=${HELIUS_KEY}",
         poll_interval_seconds=5,
         native_currency="SOL",
         block_time_seconds=0.4,

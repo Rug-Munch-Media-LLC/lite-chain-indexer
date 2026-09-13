@@ -479,9 +479,9 @@ class LiteIndexer(
             if self._chain_type == "solana":
                 rows = client.execute(
                     f"SELECT max({column}) FROM {table}"
-                )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             else:
-                rows = client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+                rows = client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
                     f"SELECT max({column}) FROM {table} WHERE chain = %(chain)s",
                     {"chain": self.chain},
                 )

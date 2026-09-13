@@ -92,11 +92,12 @@ async def get_transactions_for_address(
     """Recover transaction history for an address — INCLUDING closed accounts.
 
     ``getSignaturesForAddress`` returns ``[]`` for closed/deleted accounts
-    because the live signature index drops them. Helius's
+    because the live signature index drops them. SolanaProvider's
     ``getTransactionsForAddress`` with ``filters.tokenAccounts`` indexes
     token-account activity, so it retains closed-account history.
 
-    See docs/closed-account-history.md for the verified capability matrix.
+    Enhanced-history providers expose a verified closed-account capability
+    matrix; configure one via the environment/overlay.
 
     Args:
         client: httpx AsyncClient.

@@ -300,7 +300,7 @@ async def _fetch_range(
 
     # Last-resort fallback: every endpoint in the active pool failed.
     # Before giving up (data-loss guard → retry next cycle), try the
-    # chain's known-good last-resort endpoints (official RPCs / drpc.org)
+    # chain's known-good last-resort endpoints (official RPCs / gateway.org)
     # so a total pool wipe still has a shot at serving the range.
     if best_result is None:
         last_resort = [ep for ep in last_resort_endpoints(chain) if ep not in rotated]

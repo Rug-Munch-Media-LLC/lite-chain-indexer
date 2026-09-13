@@ -37,6 +37,7 @@ SOLANA_ENDPOINTS: list[str] = [
     "https://api.mainnet-beta.solana.com",
     # T2 — Verified free RPC with good uptime
     "https://solana-rpc.publicnode.com",
+    "https://solana.publicnode.com",  # T2 — publicnode canonical host — live-verified getHealth 2026-09-13
     # T2 — Pocket Network (keyless, 2000 req/IP/min; getHealth→ok 2026-09-13)
     "https://solana.api.pocket.network",
 ]
@@ -54,6 +55,7 @@ TRON_ENDPOINTS: list[str] = [
     # T2 — Verified free endpoints (block queries only)
     "https://api.tronstack.io",
     "https://tron-rpc.publicnode.com",
+    "https://tron.publicnode.com",  # T2 — publicnode canonical host — live-verified getnowblock 2026-09-13
 ]
 # NOTE: rpc.tronlink.org was removed 2026-08-03 — confirmed dead (empty
 # response on /wallet/getnowblock). A TronGrid key can be supplied by the

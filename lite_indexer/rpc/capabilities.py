@@ -16,7 +16,7 @@ blind guesses:
     (one-call receipt fetches; unsupported endpoints must fall back to
     the per-tx loop in ``lite_indexer.strategies.evm.receipts``).
   - ``cu_tariff`` — seeded per-method compute-unit weights from
-    provider docs (Alchemy-style CU table) for cost-aware endpoint
+    provider docs (KeyedProvider-style CU table) for cost-aware endpoint
     ranking.
 
 Each probe is best-effort and never raises: it records what it can and
@@ -74,7 +74,7 @@ KNOWN_FUNDED_ADDRESS = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
 # Seeded per-method compute-unit weights (provider-docs CU table, e.g.
-# Alchemy-style pricing). eth_getBlockReceipts is not in most public CU
+# KeyedProvider-style pricing). eth_getBlockReceipts is not in most public CU
 # tables — the ~50 estimate assumes ~5 receipt-equivalent units per
 # returned receipt at typical block density; revisit when provider docs
 # publish an authoritative figure.
@@ -374,7 +374,7 @@ async def probe_block_receipts(
 async def probe_cu_tariff(client: RpcClient, endpoint: str) -> dict[str, float]:
     """Return seeded per-method compute-unit weights for ``endpoint``.
 
-    The weights come from provider documentation (Alchemy-style CU
+    The weights come from provider documentation (KeyedProvider-style CU
     table) rather than live measurement; they are intentionally static
     so cost-aware ranking is stable across verification cycles. The
     ``client``/``endpoint`` parameters keep the interface uniform with

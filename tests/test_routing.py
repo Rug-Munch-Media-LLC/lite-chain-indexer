@@ -38,35 +38,31 @@ from lite_indexer.rpc.routing import (
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+_LONG_KEY = "k" * 24
+
+
 class TestEndpointTier:
-    def test_dedicated_markers(self):
+    def test_keyed_endpoints_are_dedicated(self):
+        # Classification is generic: an embedded key (path or query) → dedicated.
         for url in (
-            "https://eth-mainnet.g.alchemy.com/v2/key",
-            "https://eth.getblock.io/mainnet/?api_key=k",
-            "https://ethereum-mainnet.core.chainstack.com/key",
-            "https://nd-123.quicknode.com",
-            "https://mainnet.infura.io/v3/key",
-            "https://rpc.helius.xyz/?api-key=k",
-            "https://bsc.public.blastapi.io",
+            f"https://eth.example.com/v2/{_LONG_KEY}",
+            f"https://eth.example.com/?api_key={_LONG_KEY}",
+            f"https://nd-123.example.com/{_LONG_KEY}",
+            "https://eth.example.com/v2/${YOUR_PROVIDER_KEY}",  # unresolved template
         ):
             assert endpoint_tier(url) == "dedicated", url
 
-    def test_public_markers(self):
+    def test_keyless_endpoints_are_public(self):
         for url in (
-            "https://eth.drpc.org",
+            "https://eth.example.org",
             "https://ethereum.publicnode.com",
             "https://base.gateway.tenderly.co",
-            "https://bsc-mainnet.gateway.tatum.io",
+            "https://rpc.flashbots.net",
         ):
             assert endpoint_tier(url) == "public", url
 
-    def test_unknown_domain(self):
-        assert endpoint_tier("https://rpc.example.com") == "unknown"
-        assert endpoint_tier("https://rpc.flashbots.net") == "unknown"
-
-    def test_tier_marker_matches_subdomain_not_just_host(self):
-        # The marker "quicknode" appears mid-hostname.
-        assert endpoint_tier("https://nd-abc.quicknode-extra.io") == "dedicated"
+    def test_empty_is_unknown(self):
+        assert endpoint_tier("") == "unknown"
 
 
 class TestPreferredTierForMethod:
@@ -87,11 +83,11 @@ class TestSelectEndpointForMethod:
     """select_endpoint_for_method re-ranks the pool per method tier."""
 
     DEDICATED = [
-        "https://eth-mainnet.g.alchemy.com/v2/key",
-        "https://mainnet.infura.io/v3/key",
+        f"https://eth.example.com/v2/{_LONG_KEY}",
+        f"https://mainnet.example.io/v3/{_LONG_KEY}",
     ]
     PUBLIC = [
-        "https://eth.drpc.org",
+        "https://eth.example.org",
         "https://rpc.flashbots.net",
     ]
 

@@ -695,7 +695,7 @@ async def write_launch(
         now = datetime.now(UTC)
         ts = _parse_block_timestamp(launch.block_timestamp, now)
         try:
-            client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+            client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
                 f"INSERT INTO {SOLANA_LAUNCHES_TABLE} ({', '.join(_SOLANA_LAUNCH_INSERT_COLUMNS)}) VALUES",
                 [_launch_row(launch, ts, now)],
             )

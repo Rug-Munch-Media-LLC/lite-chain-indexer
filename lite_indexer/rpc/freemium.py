@@ -1,23 +1,20 @@
 """Freemium (keyed) endpoint classification + backfill-only selection.
 
 Policy: the keyless free pool is reserved for the live tip. Historical
-backfill must dispatch ONLY to keyed/freemium accounts (Alchemy, Infura,
-QuickNode, ...), whose provider-level caps (see ``rpc/provider_caps.py``
-and ``rpc/ledger.py``) bound consumption per account. That keeps the free
-pool's shared rate budget available for head-follow.
+backfill must dispatch ONLY to keyed/freemium accounts, whose provider-level
+caps (see ``rpc/provider_caps.py`` and ``rpc/ledger.py``) bound consumption
+per account. That keeps the free pool's shared rate budget available for
+head-follow.
 
-Classification is intentionally conservative. An endpoint is freemium when
-ANY of these hold:
+Classification is generic (no baked-in provider list). An endpoint is
+freemium when ANY of these hold:
 
   * its URL still contains an unresolved ``${VAR}`` key placeholder
     (raw template passed straight through — never dialable, but recognisable);
-  * it carries an account key the ledger can derive (``key_id_for_endpoint``
-    covers Alchemy/Infura ``/v2/<key>`` / ``/v3/<key>`` paths);
-  * its query string carries a recognised key parameter (``dkey=``,
-    ``apiKey=``, ``api-key=``);
-  * its host belongs to a provider whose endpoints are keyed by default,
-    with explicit exceptions for a provider's keyless tiers (Ankr's
-    one-segment ``/celo`` path, BlockPI's ``/public`` path).
+  * it carries an embedded account key the ledger can derive — a long
+    token-shaped trailing path segment (``/v2/<KEY>``, ``/rpc/<KEY>``) or a
+    recognised key query param (``dkey=``, ``apiKey=``, ``api-key=``,
+    ``api_key=``, ``key=``, ``token=``).
 
 Everything else is treated as free/keyless and is NEVER selected for
 backfill.
@@ -26,7 +23,6 @@ backfill.
 from __future__ import annotations
 
 from collections.abc import Callable
-from urllib.parse import urlparse
 
 from lite_indexer.chains import GET_LOGS_ENDPOINTS
 from lite_indexer.logging import get_logger
@@ -38,29 +34,14 @@ logger = get_logger(__name__)
 # Method every backfill selection targets (transfer logs).
 BACKFILL_METHOD = "eth_getLogs"
 
-# Hosts whose endpoints are keyed/freemium by default. Order does not matter.
-_FREEMIUM_HOST_MARKERS: tuple[str, ...] = (
-    "alchemy.com",
-    "infura.io",
-    "helius.xyz",
-    "helius-rpc.com",
-    "quiknode.pro",
-    "getblock.io",
-    "chainstack.com",
-    "nownodes.io",
-    "blockpi.network",
-    "blockvision.org",
-    "uniblock.dev",
-    "nodereal.io",
-    "ankr.com",
-)
-
 # Query-string key parameters that mark a keyed endpoint even on a shared host.
 _FREEMIUM_QUERY_MARKERS: tuple[str, ...] = (
     "dkey=",
     "apikey=",
     "api-key=",
     "api_key=",
+    "key=",
+    "token=",
 )
 
 
@@ -83,24 +64,8 @@ def is_freemium_endpoint(endpoint: str) -> bool:
         return True
     if key_id_for_endpoint(endpoint):
         return True
-
-    parsed = urlparse(endpoint)
-    host = (parsed.hostname or "").lower()
-    query = (parsed.query or "").lower()
-    if any(marker in query for marker in _FREEMIUM_QUERY_MARKERS):
-        return True
-
-    segments = [seg for seg in parsed.path.split("/") if seg]
-    for marker in _FREEMIUM_HOST_MARKERS:
-        if marker not in host:
-            continue
-        # Keyless exceptions: Ankr serves one-segment public paths
-        # (rpc.ankr.com/celo) and BlockPI a literal /public path.
-        keyless = (marker == "ankr.com" and len(segments) < 2) or (
-            marker == "blockpi.network" and bool(segments) and segments[-1] == "public"
-        )
-        return not keyless
-    return False
+    query = endpoint.split("?", 1)[1].lower() if "?" in endpoint else ""
+    return any(marker in query for marker in _FREEMIUM_QUERY_MARKERS)
 
 
 def freemium_endpoints(endpoints: list[str]) -> list[str]:

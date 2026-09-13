@@ -2,8 +2,8 @@
 Shared environment-file loading for LiteChainIndexer.
 
 The daemon's systemd unit sources ``/var/data/chain-indexer/lite-indexer.env``
-(``EnvironmentFile``), so RPC API-key placeholders (``${ALCHEMY_KEY}``,
-``${INFURA_KEY}``, ``${HELIUS_KEY}``, ...) resolve at import time for the
+(``EnvironmentFile``), so RPC API-key placeholders (``${KEYED_RPC_KEY}``,
+``${KEYED_RPC_KEY_2}``, ``${SOLANA_PROVIDER_KEY}``, ...) resolve at import time for the
 daemon. Other entry points — the health module, integrity checks, cron
 jobs, manual invocations — do NOT inherit that systemd environment, so the
 same placeholders stay unresolved and those endpoints are silently skipped

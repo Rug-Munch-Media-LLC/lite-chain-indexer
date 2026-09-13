@@ -86,3 +86,15 @@ zero-key default with no code changes.
 - Unresolved `${VAR}` endpoints are dropped, never dialed as literals.
 - The overlay file is never read from inside the repository; keep it in a
   secrets directory with mode `600`.
+
+## Optional: provider quota seeds
+
+Per-account quota degrade is opt-in. Seed provider budgets with a JSON map in
+`LITE_INDEXER_QUOTA_SEEDS`, keyed by the endpoint's registrable domain:
+
+```bash
+export LITE_INDEXER_QUOTA_SEEDS='{"example-rpc.com":{"budget_units":30000000,"unit_type":"CU","period":"month"}}'
+```
+
+Unseeded providers are still tracked (and their per-key concurrency/rate caps
+still apply) but never enter the degrade ladder.

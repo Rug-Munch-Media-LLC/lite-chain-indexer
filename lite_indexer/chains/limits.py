@@ -31,7 +31,6 @@ PROVIDER_RATE_LIMITS: dict[str, dict[str, int]] = {
     "mevblocker.io": {"req_per_sec": 5, "burst": 10},
     "blxrbdn.com": {"req_per_sec": 5, "burst": 10},
     # Tier 4 — API-key free tiers
-    "getblock.io": {"req_per_sec": 10, "burst": 20},
 }
 
 # Default rate limit when provider isn't listed
@@ -75,7 +74,6 @@ MAX_BLOCK_RANGE: dict[str, int | None] = {
     "base.org": 10,  # Returns "backend response too large" beyond 10 blocks
     "zksync.io": None,
     # API-key free tiers
-    "getblock.io": 5000,
 }
 
 DEFAULT_MAX_RANGE = 500

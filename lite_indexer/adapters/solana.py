@@ -3,7 +3,7 @@ Solana transfer adapter — SPL token transfers via a data-first RPC pool.
 
 A focused, single-provider adapter that answers one question: "what SPL
 token transfers happened for these mints in this slot range?" It uses the
-Helius RPC (``getSignaturesForAddress`` + ``getTransaction``) and writes
+SolanaProvider RPC (``getSignaturesForAddress`` + ``getTransaction``) and writes
 the parsed rows to the ``wallet_memory.solana_transfers`` ClickHouse table.
 
 Why a dedicated adapter (vs. the existing ``SolanaStrategy``)?
@@ -13,14 +13,14 @@ Why a dedicated adapter (vs. the existing ``SolanaStrategy``)?
     Jito bundles) and writes SPL balance changes to
     ``solana_spl_balance_changes``.
   * This adapter is a thin, reusable accessor for callers that just want
-    SPL transfers from Helius written to ``solana_transfers`` — e.g. a
+    SPL transfers from SolanaProvider written to ``solana_transfers`` — e.g. a
     backfill job, an on-demand scanner, or a one-off enrichment pass. It
     has no state, no highwater, and no side effects beyond the table write.
 
 The endpoint pool is resolved from
 ``lite_indexer.config.data_sources.solana_rpc_endpoints()`` — our own /
-dedicated RPCs and verified public endpoints FIRST, Helius LAST (fallback
-only, resolved from ``HELIUS_KEY``). When no endpoints resolve the
+dedicated RPCs and verified public endpoints FIRST, SolanaProvider LAST (fallback
+only, resolved from ``SOLANA_PROVIDER_KEY``). When no endpoints resolve the
 adapter degrades gracefully and logs, never hard-failing on a missing
 key.
 
@@ -49,33 +49,35 @@ from lite_indexer.traces.solana import (
 
 logger = get_logger(__name__)
 
-#: Helius RPC URL template. The ``${HELIUS_KEY}`` placeholder is resolved
-#: from the environment (gopass ``[INTERNAL_SECRET_PATH]`` → ``HELIUS_KEY``).
-HELIUS_RPC_TEMPLATE: str = "https://rpc.helius.xyz/?api-key=${HELIUS_KEY}"
+#: Optional keyed provider RPC URL template (private overlay/env supplied).
+#: The ``${...}`` placeholder is resolved from the environment; empty by
+#: default, so the public build uses only the shared keyless pool.
+SOLANA_PROVIDER_RPC_TEMPLATE: str = os.environ.get("SOLANA_PROVIDER_RPC_TEMPLATE", "")
 
-#: Max signatures fetched per mint per call (Helius free tier is generous,
-#: but we keep the same bound as the strategy to bound RPC spend).
+#: Max signatures fetched per mint per call (bounds free-tier RPC spend).
 MAX_SIGNATURES_PER_MINT: int = 100
 
 #: Max concurrent ``getTransaction`` calls.
 TX_CONCURRENCY: int = 10
 
 
-def helius_rpc_url() -> str | None:
-    """Resolve the Helius RPC URL, or None when the key is unset.
+def solana_rpc_url() -> str | None:
+    """Resolve the optional keyed provider RPC URL, or None when unset.
 
     Returns:
-        The fully-resolved Helius RPC URL, or None when ``HELIUS_KEY`` is
-        not set in the environment (callers fall back to the shared pool).
+        The fully-resolved provider RPC URL, or None when no template/key is
+        configured (callers fall back to the shared keyless pool).
     """
-    url = os.path.expandvars(HELIUS_RPC_TEMPLATE)
-    if "${" in url:
+    if not SOLANA_PROVIDER_RPC_TEMPLATE:
+        return None
+    url = os.path.expandvars(SOLANA_PROVIDER_RPC_TEMPLATE)
+    if "${" in url or not url.startswith("http"):
         return None
     return url
 
 
-class SolanaHeliusAdapter:
-    """Fetch SPL token transfers from Helius and write them to ClickHouse.
+class SolanaTransfersAdapter:
+    """Fetch SPL token transfers from the Solana RPC pool and store them.
 
     Stateless and reusable: construct once, call :meth:`fetch_transfers`
     (or :meth:`fetch_and_store`) as needed. Each call opens its own
@@ -86,7 +88,7 @@ class SolanaHeliusAdapter:
         tracked_tokens: List of ``{"mint", "symbol", "decimals", "name"}``
             dicts to index. Defaults to the strategy's tracked set.
         endpoint: Optional explicit RPC URL. Defaults to the data-first
-            pool (own/dedicated + public RPCs first, Helius last).
+            pool (own/dedicated + public RPCs first, SolanaProvider last).
     """
 
     def __init__(
@@ -98,7 +100,7 @@ class SolanaHeliusAdapter:
 
         self.tracked_tokens = tracked_tokens or SOLANA_TRACKED_TOKENS
         self._mint_set: set[str] = {t["mint"] for t in self.tracked_tokens}
-        # DATA-FIRST: own/dedicated + public RPC pool first, Helius LAST.
+        # DATA-FIRST: own/dedicated + public RPC pool first, SolanaProvider LAST.
         # An explicit ``endpoint`` override still wins (e.g. tests, ops).
         if endpoint:
             self._endpoints: list[str] = [endpoint]

@@ -61,7 +61,7 @@ async def ensure_checkpoint_table(ch_client: Any) -> bool:
         True when the table exists (or was created), False otherwise.
     """
     try:
-        ch_client.execute(_SOLANA_CHECKPOINTS_DDL)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        ch_client.execute(_SOLANA_CHECKPOINTS_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("solana_checkpoints_table_ensured", table=SOLANA_CHECKPOINTS_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -115,7 +115,7 @@ async def checkpoint_slot(client: Any, slot: int, ch_client: Any) -> bool:
         logger.debug("solana_slot_checkpoint_hash_missing", slot=slot)
         return False
     try:
-        ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             f"INSERT INTO {SOLANA_CHECKPOINTS_TABLE} (slot, blockhash, checked_at) VALUES",
             [(slot, blockhash, datetime.now(UTC))],
         )
@@ -147,7 +147,7 @@ async def detect_reorg(client: Any, current_slot: int, ch_client: Any) -> int | 
         return None
 
     try:
-        rows = ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        rows = ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             f"SELECT blockhash FROM {SOLANA_CHECKPOINTS_TABLE} WHERE slot = %(slot)s LIMIT 1",
             {"slot": verify_slot},
         )
@@ -201,7 +201,7 @@ async def rollback_to_slot(ch_client: Any, fork_slot: int) -> int:
     ):
         where = "chain = 'solana' AND blockNumber > %(fork)s" if chain_filter else "slot > %(fork)s"
         try:
-            result = ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+            result = ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
                 f"DELETE FROM {table} WHERE {where}",
                 {"fork": fork_slot},
             )
@@ -216,7 +216,7 @@ async def rollback_to_slot(ch_client: Any, fork_slot: int) -> int:
             )
 
     try:
-        ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             f"DELETE FROM {SOLANA_CHECKPOINTS_TABLE} WHERE slot > %(fork)s",
             {"fork": fork_slot},
         )

@@ -266,15 +266,19 @@ FREE_ENDPOINTS = [
     "https://polygon.blockpi.network/v1/rpc/public",  # keyless BlockPI /public
 ]
 
+# Realistic long API keys — classification is key-SHAPE based (a trailing
+# token-shaped path segment or a recognised key query param), not a baked-in
+# provider list. Placeholders here are synthetic, never real secrets.
+_TEST_KEY = "k" * 24
 FREEMIUM_ENDPOINTS = [
-    "https://eth-mainnet.g.alchemy.com/v2/KEY",
-    "https://mainnet.infura.io/v3/KEY",
-    "https://lb.drpc.org/ogrpc?network=ethereum&dkey=KEY",
-    "https://api.uniblock.dev/uni/v1/json-rpc?chainId=1&apiKey=KEY",
-    "https://rpc.ankr.com/eth/KEY",
-    "https://bsc-mainnet.nodereal.io/v1/KEY",
-    "https://mainnet.helius-rpc.com/?api-key=KEY",
-    "https://eth.nownodes.io/KEY",
+    f"https://eth-mainnet.g.alchemy.com/v2/{_TEST_KEY}",
+    f"https://mainnet.infura.io/v3/{_TEST_KEY}",
+    f"https://lb.drpc.org/ogrpc?network=ethereum&dkey={_TEST_KEY}",
+    f"https://api.uniblock.dev/uni/v1/json-rpc?chainId=1&apiKey={_TEST_KEY}",
+    f"https://rpc.ankr.com/eth/{_TEST_KEY}",
+    f"https://bsc-mainnet.nodereal.io/v1/{_TEST_KEY}",
+    f"https://mainnet.helius-rpc.com/?api-key={_TEST_KEY}",
+    f"https://eth.nownodes.io/{_TEST_KEY}",
 ]
 
 
@@ -310,7 +314,7 @@ def test_select_excludes_archive_guarded_endpoint():
     with patch.object(
         freemium_mod,
         "archive_guard_reason",
-        side_effect=lambda ep, method: "blocked" if ep.endswith("KEY") and "infura" in ep else None,
+        side_effect=lambda ep, method: "blocked" if "infura" in ep else None,
     ):
         selected = select_freemium_endpoint(endpoints, base_select=lambda eps: eps[0])
     assert selected == endpoints[0]

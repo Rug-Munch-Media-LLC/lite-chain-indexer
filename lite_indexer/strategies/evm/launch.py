@@ -166,7 +166,7 @@ async def write_launch(
         now = datetime.now(UTC)
         ts = _parse_block_timestamp(event.get("blockTimestamp"), now)
         try:
-            client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+            client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
                 f"INSERT INTO {EVM_LAUNCHES_TABLE} ({', '.join(_EVM_LAUNCH_INSERT_COLUMNS)}) VALUES",
                 [_launch_row(chain, event, ts, now)],
             )

@@ -189,21 +189,21 @@ class TestMultiProviderFallback:
             {
                 # getSignaturesForAddress is empty on every provider
                 ("getSignaturesForAddress", "public"): {"result": []},
-                ("getTransactionsForAddress", "helius"): {
+                ("getTransactionsForAddress", "enhanced"): {
                     "result": {"data": [{"signature": SIG, "slot": SLOT}]},
                 },
-                ("getTransaction", "helius"): {"result": _sample_tx()},
+                ("getTransaction", "enhanced"): {"result": _sample_tx()},
             },
         )
         backfill = _backfill(
             transport,
-            providers=[("public", "http://public"), ("helius", "http://helius")],
+            providers=[("public", "http://public"), ("enhanced", "http://enhanced")],
         )
         backfill.ch_client.execute.return_value = [(0,)]
 
         result = await backfill.backfill_address(FEE_PAYER)
 
-        assert result.provider == "helius-enhanced"
+        assert result.provider == "enhanced-history"
         assert result.signatures == 1
         assert result.rows_written == 4
         assert "getTransactionsForAddress" in transport.methods()

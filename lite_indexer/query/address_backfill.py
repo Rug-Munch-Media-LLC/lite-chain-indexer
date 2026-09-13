@@ -2,7 +2,7 @@
 
 Recovers a wallet's transaction history once, from free RPC, and indexes it
 into ``wallet_memory.address_activity`` so every later read is a ClickHouse
-hit. This is the free replacement for Helius's paid webhook +
+hit. This is the free replacement for SolanaProvider's paid webhook +
 ``getSignaturesForAddress``: the same history, fetched on first touch and
 never re-fetched.
 
@@ -10,15 +10,15 @@ Provider order (all free tiers, keys from env, never hardcoded):
 
 1. ``SOLANA_PUBLIC_RPC``         — official public node (keyless)
 2. ``SOLANA_PUBLIC_RPC_FALLBACK``— publicnode (keyless)
-3. Alchemy                       — ``${ALCHEMY_KEY}`` when set
-4. Helius                        — ``${HELIUS_KEY}`` when set
+3. KeyedProvider                       — ``${KEYED_RPC_KEY}`` when set
+4. SolanaProvider                        — ``${SOLANA_PROVIDER_KEY}`` when set
 
 The first provider that returns a signature list answers; a provider that
 errors (HTTP error / JSON-RPC error / timeout) falls through to the next.
 When every ``getSignaturesForAddress`` provider returns an empty history and
-a Helius key is configured, the Helius-only ``getTransactionsForAddress``
+a SolanaProvider key is configured, the SolanaProvider-only ``getTransactionsForAddress``
 (``filters.tokenAccounts = "all"``) is tried — it is the one method that
-retains *closed* account history (see docs/closed-account-history.md).
+retains *closed* account history (via an optional enhanced-history provider).
 
 Never-re-fetch guard
 --------------------
@@ -53,8 +53,8 @@ from lite_indexer.config import (
     ADDRESS_BACKFILL_PAGE_SIZE,
     ADDRESS_BACKFILL_TIMEOUT,
     CH_ADDRESS_BACKFILL_STATE_TABLE,
-    SOLANA_ALCHEMY_RPC_TEMPLATE,
-    SOLANA_HELIUS_RPC_TEMPLATE,
+    SOLANA_ENHANCED_RPC_TEMPLATE,
+    SOLANA_PROVIDER_RPC_TEMPLATE,
     SOLANA_PUBLIC_RPC,
     SOLANA_PUBLIC_RPC_FALLBACK,
 )
@@ -150,8 +150,9 @@ def default_solana_providers() -> list[tuple[str, str]]:
     candidates = [
         ("public", SOLANA_PUBLIC_RPC),
         ("public-fallback", SOLANA_PUBLIC_RPC_FALLBACK),
-        ("alchemy", SOLANA_ALCHEMY_RPC_TEMPLATE),
-        ("helius", SOLANA_HELIUS_RPC_TEMPLATE),
+        # Optional keyed providers (env/overlay supplied; empty = disabled).
+        ("provider", SOLANA_PROVIDER_RPC_TEMPLATE),
+        ("enhanced", SOLANA_ENHANCED_RPC_TEMPLATE),
     ]
     providers: list[tuple[str, str]] = []
     for name, template in candidates:
@@ -334,10 +335,10 @@ class AddressBackfill:
             logger.debug("address_backfill_provider_failed", provider=name)
         return None, ""
 
-    async def _fetch_helius_enhanced(self, address: str, max_signatures: int) -> list[dict[str, Any]]:
-        """Helius-only closed-account recovery (``getTransactionsForAddress``)."""
-        helius_url = next((url for name, url in self.providers if name == "helius"), "")
-        if not helius_url:
+    async def _fetch_enhanced_history(self, address: str, max_signatures: int) -> list[dict[str, Any]]:
+        """Enhanced closed-account recovery (``getTransactionsForAddress``)."""
+        provider_url = next((url for name, url in self.providers if name == "enhanced"), "")
+        if not provider_url:
             return []
         options = {
             "transactionDetails": "signatures",
@@ -346,7 +347,7 @@ class AddressBackfill:
             "maxSupportedTransactionVersion": 0,
             "filters": {"tokenAccounts": "all"},
         }
-        resp = await self._transport.call(helius_url, "getTransactionsForAddress", [address, options])
+        resp = await self._transport.call(provider_url, "getTransactionsForAddress", [address, options])
         if resp is None or "result" not in resp:
             return []
         result = resp.get("result")
@@ -453,7 +454,7 @@ class AddressBackfill:
 
         enhanced = False
         if not sig_infos:
-            sig_infos = await self._fetch_helius_enhanced(addr, sig_cap)
+            sig_infos = await self._fetch_enhanced_history(addr, sig_cap)
             enhanced = bool(sig_infos)
 
         rows = await self._fetch_and_parse(sig_infos, tx_cap)
@@ -463,7 +464,7 @@ class AddressBackfill:
             await asyncio.to_thread(ensure_address_activity_table, client)
             written = await asyncio.to_thread(write_address_activity, client, rows)
 
-        final_provider = "helius-enhanced" if enhanced else provider
+        final_provider = "enhanced-history" if enhanced else provider
         await self._ensure_state_table()
         await self.mark_backfilled(
             chain,

@@ -184,6 +184,14 @@ class TestPublicModulesHaveNoFreemium:
         init_src = (CHAINS_DIR / "__init__.py").read_text(encoding="utf-8")
         assert "rpc_registry" not in init_src
 
+    def test_no_freemium_token_in_any_lite_indexer_module(self):
+        """Full-tree gate: no curated provider name may appear anywhere in the
+        public ``lite_indexer/`` source (tests may assert this absence)."""
+        for src in sorted((REPO_ROOT / "lite_indexer").rglob("*.py")):
+            text = src.read_text(encoding="utf-8").lower()
+            for token in FREEMIUM_DENYLIST:
+                assert token not in text, f"{src.relative_to(REPO_ROOT)}: leaked provider token {token!r}"
+
 
 class TestOverlayLoad:
     def test_missing_file_returns_empty(self, tmp_path: Path):

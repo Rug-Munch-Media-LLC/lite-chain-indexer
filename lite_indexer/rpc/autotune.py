@@ -1,6 +1,6 @@
 """Auto-tune soft rate limiting — NodeCore-style strain adaptation.
 
-Ported from drpcorg/nodecore's rate-limit auto-tune concept: instead of
+Ported from gatewayorg/nodecore's rate-limit auto-tune concept: instead of
 hard-banning an endpoint when it degrades, progressively widen the
 inter-call spacing while its recent error rate stays above threshold, and
 halve the spacing back once a full window comes in healthy. Keeps a

@@ -25,7 +25,7 @@ def chunk_size_for_chain(chain: str) -> int:
 
     A per-chain ``{CHAIN}_BATCH_SIZE`` env var (e.g. ``ETH_BATCH_SIZE=10``)
     overrides the default. Small batches keep ``eth_getLogs`` ranges under
-    free-RPC caps: Alchemy/blastapi free tiers limit ranges to 10 blocks,
+    free-RPC caps: KeyedProvider/blastapi free tiers limit ranges to 10 blocks,
     and 50-block Ethereum chunks routinely exceed the ~20K log result cap
     that gets public RPCs (onfinality) 429-banned during catch-up.
 

@@ -3,11 +3,8 @@
 Single place that defines, per chain, the priority-ordered list of data
 sources the indexer dials:
 
-  1. Our own / dedicated RPC nodes (env-provided: QUICKNODE_*, CHAINSTACK_*,
-     GETBLOCK_*, own node URLs) — cheapest, most reliable, no rate limits.
-  2. Verified free public RPCs (api.mainnet-beta.solana.com, publicnode, ...).
-  3. Keyed free-tier APIs (Alchemy, Ankr, NOWNodes) — activate via env.
-  4. Helius / other vendor APIs — LAST RESORT ONLY, never primary.
+  1. Keyless public RPCs (official chain endpoints, publicnode, ...).
+  2. Keyed providers (env/overlay supplied) — activate via environment.
 
 Sources are assembled from the existing tiered pools in
 ``lite_indexer.chains.endpoints`` (EVM) and
@@ -16,7 +13,7 @@ truth for endpoint URLs; this module only enforces the ORDER.
 
 The indexer must never depend on a single provider: every chain exposes
 2+ independent sources, and callers rotate through the list (see
-``SolanaHeliusAdapter._rpc_call`` and the EVM pool scorer).
+``SolanaTransfersAdapter._rpc_call`` and the EVM pool scorer).
 """
 
 from __future__ import annotations
@@ -26,23 +23,28 @@ from lite_indexer.chains.endpoints import (
     last_resort_endpoints,
 )
 from lite_indexer.chains.non_evm import SOLANA_ENDPOINTS, TRON_ENDPOINTS
+from lite_indexer.rpc.ledger import key_id_for_endpoint
 
 # ── Solana ────────────────────────────────────────────────────────────
-# SOLANA_ENDPOINTS is already tiered own/dedicated → public → keyed →
-# Helius. Reorder defensively: any Helius URL is moved to the end so a
-# future pool edit can never accidentally make Helius primary again.
+# SOLANA_ENDPOINTS is already tiered public → keyed. Reorder defensively:
+# any keyed endpoint is moved to the end so a future pool edit can never
+# accidentally make a keyed provider primary.
 
 
-def _demote_helius(urls: list[str]) -> list[str]:
-    """Move Helius URLs to the end of the priority list."""
-    primary = [u for u in urls if "helius" not in u.lower()]
-    fallback = [u for u in urls if "helius" in u.lower()]
+def _is_keyed(url: str) -> bool:
+    return "${" in url or bool(key_id_for_endpoint(url))
+
+
+def _demote_keyed(urls: list[str]) -> list[str]:
+    """Move keyed endpoints to the end of the priority list."""
+    primary = [u for u in urls if not _is_keyed(u)]
+    fallback = [u for u in urls if _is_keyed(u)]
     return primary + fallback
 
 
 def solana_rpc_endpoints() -> list[str]:
-    """Priority-ordered Solana RPC sources: own/dedicated first, Helius last."""
-    return _demote_helius(list(SOLANA_ENDPOINTS))
+    """Priority-ordered Solana RPC sources: keyless first, keyed last."""
+    return _demote_keyed(list(SOLANA_ENDPOINTS))
 
 
 def tron_rpc_endpoints() -> list[str]:

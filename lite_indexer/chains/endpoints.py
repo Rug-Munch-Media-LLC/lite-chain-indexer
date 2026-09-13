@@ -66,6 +66,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.flashbots.net",
         "https://virginia.rpc.blxrbdn.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://eth-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://ethereum.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -76,6 +77,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://base.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://mainnet.base.org",
         "https://base-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://base.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
         "https://base-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
     ],
     # ── BSC (8 endpoints) ─────────────────────────────────────────────
@@ -99,6 +101,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc-dataseed1.ninicoin.io",  # T2 — official Binance seed mirror
         "https://bsc-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://bsc-rpc.publicnode.com",  # T3 — re-added 2026-09-02 during rate-limit crisis (was http_403 on 2026-08-04 — re-probe)
+        "https://bsc.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
     ],
     # ── Polygon (6 endpoints) ─────────────────────────────────────────
     # T2: tatum (audit-verified on polygon), quiknode public
@@ -116,6 +119,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://poly.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://polygon-mainnet.gateway.tatum.io",
         "https://polygon-bor-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://polygon.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
         # rpc-mainnet.matic.network removed 2026-09-13 — DNS dead (Polygon
         # with the real key: eth_chainId 0x89, 2026-09-13) so the
         # rate-limit-critical polygon pool keeps its depth.
@@ -134,6 +138,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://arb-one.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://arb1.arbitrum.io/rpc",
         "https://arbitrum-one-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://arbitrum.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
         "https://arbitrum.meowrpc.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
     ],
     # ── Optimism (4 endpoints) ────────────────────────────────────────
@@ -144,6 +149,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://op.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://mainnet.optimism.io",
         "https://optimism-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://optimism.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
     ],
     # ── Avalanche (4 endpoints) ───────────────────────────────────────
     # T2: tenderly gateway (verified 2026-08-03)
@@ -152,6 +158,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://avax.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://avalanche.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://avalanche-c-chain-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://avalanche.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
     ],
     # ── Fantom (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.fantom.network + rpcapi.fantom.network (verified)
@@ -168,6 +175,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://linea.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://linea.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://linea-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://linea.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
         "https://1rpc.io/linea",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
     ],
     # ── Scroll (4 endpoints) ──────────────────────────────────────────
@@ -177,6 +185,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://scroll.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://1rpc.io/scroll",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://scroll-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://scroll.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
     ],
     # ── zkSync Era (4 endpoints) ──────────────────────────────────────
     # T2: tenderly gateway (verified 2026-08-03)
@@ -203,17 +212,20 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://gnosis.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://gnosis.gateway.tenderly.co",
         "https://gnosis-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://gnosis.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
         # eth_getLogs blocks 1..2 → real logs, 2026-09-13). 3 accounts.
     ],
     # ── Celo (3 endpoints) ────────────────────────────────────────────
     "celo": [
         "https://forno.celo.org",  # T1 — official forno (verified)
         "https://celo.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
+        "https://celo.publicnode.com",  # T2 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
     ],
     # ── Blast (verified 2026-09-01) ──────────────────────────────────
     # L2, chainId 81457 (0x13e31). publicnode: chainId ✓, getLogs ✓.
     "blast": [
         "https://blast-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
+        "https://blast.publicnode.com",  # T1 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
         #     keyed fallback so the chain is no longer single-endpoint.
         "https://blast.api.pocket.network",  # T3 — Pocket Network (keyless; live-verified eth_chainId 2026-09-13; getLogs returns [] which is valid on this chain)
     ],
@@ -270,16 +282,24 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 }
 
 # Summary of PUBLIC (free/keyless) EVM endpoints per chain:
-#   ethereum: 7   base: 5   bsc: 9   polygon: 6
-#   arbitrum: 5   optimism: 4   avalanche: 4   fantom: 3
-#   linea: 5   scroll: 4   zksync: 3   mantle: 5
-#   gnosis: 4   celo: 2   blast: 2   fraxtal: 2
+#   ethereum: 8   base: 6   bsc: 10   polygon: 7
+#   arbitrum: 6   optimism: 5   avalanche: 5   fantom: 3
+#   linea: 6   scroll: 5   zksync: 3   mantle: 5
+#   gnosis: 5   celo: 3   blast: 3   fraxtal: 2
 #   metis: 2   robinhood: 5
 # -------------------------------------------------------
-#   Total builtin public templates: 77 across 18 chains
+#   Total builtin public templates: 89 across 18 chains
 #   Curated/keyed providers are supplied by the PRIVATE runtime overlay
 #   (see lite_indexer/chains/_overlay.py + docs/PROVIDER_OVERLAY.md).
 #   With no overlay set, only these free/keyless endpoints are used.
+#
+# 2026-09-13: PublicNode canonical keyless hosts added for all indexed
+#   chains where they exist: https://<chain>.publicnode.com (ethereum, base,
+#   bsc, polygon, arbitrum, optimism, avalanche, linea, scroll, gnosis, celo,
+#   blast) — each live-verified eth_chainId here. fraxtal/metis/robinhood
+#   have no canonical <name> host (403 "unsupported platform") so they keep
+#   their working <name>-rpc.publicnode.com entries. Solana/Tron canonical
+#   hosts added in non_evm.py.
 
 # ── Candidate Endpoints (awaiting live verification) ────────────────
 # Unverified additions from chainlist cross-pollination + operator tips.

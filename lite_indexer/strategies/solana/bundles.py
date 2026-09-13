@@ -429,7 +429,7 @@ def ensure_bundles_table(ch_client: Any) -> bool:
         True when the table exists (or was created), False on failure.
     """
     try:
-        ch_client.execute(_BUNDLES_DDL)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        ch_client.execute(_BUNDLES_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("solana_bundles_table_ensured", table=_BUNDLES_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -456,7 +456,7 @@ def _insert_bundle(ch_client: Any, bundle: BundleEvent) -> int:
         now,
     )
     try:
-        ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             f"INSERT INTO {_BUNDLES_TABLE} ({', '.join(_BUNDLES_INSERT_COLUMNS)}) VALUES",
             [row],
         )

@@ -6,7 +6,7 @@ import os
 
 # Load the shared env file (same file the daemon's systemd unit sources
 # via EnvironmentFile) BEFORE any os.environ reads below, so every entry
-# point resolves the same ${ALCHEMY_KEY} / ${INFURA_KEY} / ${HELIUS_KEY} RPC
+# point resolves the same ${KEYED_RPC_KEY} / ${KEYED_RPC_KEY_2} / ${SOLANA_PROVIDER_KEY} RPC
 # placeholders. Idempotent and non-destructive (existing env wins).
 from lite_indexer.config.indexing import DATA_DIR
 from lite_indexer.env import load_env_file
@@ -158,7 +158,7 @@ RPC_THROTTLE_MAX_WAIT: float = float(os.environ.get("RPC_THROTTLE_MAX_WAIT", "30
 # ── Per-account (provider) rate caps (rpc/provider_caps.py) ───────────
 # ADDITIVE to the per-endpoint throttle: providers ban the ACCOUNT when
 # many of their endpoints are hit at once across chains, so concurrency and
-# requests/sec are capped per `provider_id_for_endpoint` (Alchemy account-
+# requests/sec are capped per `provider_id_for_endpoint` (KeyedProvider account-
 # wide, etc.). Callers queue when the budget is exhausted rather than fire.
 RPC_PROVIDER_MAX_CONCURRENCY: int = int(os.environ.get("RPC_PROVIDER_MAX_CONCURRENCY", "4"))
 RPC_PROVIDER_RPS: float = float(os.environ.get("RPC_PROVIDER_RPS", "10.0"))
@@ -207,7 +207,7 @@ ON_DEMAND_RPC_CACHE_MAX_ENTRIES: int = int(os.environ.get("ON_DEMAND_RPC_CACHE_M
 
 # ── Solana Address Backfill (free getSignaturesForAddress parity) ──────
 # On-demand history recovery for a single address. Public RPC first, then
-# Alchemy, then Helius (all free tiers, keys via env). The first successful
+# KeyedProvider, then SolanaProvider (all free tiers, keys via env). The first successful
 # provider answers; a provider error falls through to the next. Results are
 # indexed into wallet_memory.address_activity so the address is served from
 # ClickHouse forever after (see ADDRESS_BACKFILL_ENABLED + the guard table).
@@ -241,17 +241,18 @@ CH_ADDRESS_BACKFILL_STATE_TABLE: str = (
     os.environ.get("CH_ADDRESS_BACKFILL_STATE_TABLE") or "wallet_memory.address_backfill_state"
 )
 
-# Multi-provider fallback endpoints. Public first, then keyed free tiers.
-# Keyed templates keep ${ENV_VAR} placeholders — never a real key in code;
-# unresolved templates are dropped from the provider list at import.
+# Multi-provider fallback endpoints. Keyless public nodes are the zero-config
+# default; keyed providers are OPT-IN and supplied from the environment or the
+# private endpoint overlay — the public tree bakes in no provider URLs.
+# Templates keep ${ENV_VAR} placeholders — never a real key in code; unset
+# templates are dropped from the provider list at import.
 SOLANA_PUBLIC_RPC: str = os.environ.get("SOLANA_PUBLIC_RPC", "https://api.mainnet-beta.solana.com")
 SOLANA_PUBLIC_RPC_FALLBACK: str = os.environ.get("SOLANA_PUBLIC_RPC_FALLBACK", "https://solana-rpc.publicnode.com")
-SOLANA_ALCHEMY_RPC_TEMPLATE: str = os.environ.get(
-    "SOLANA_ALCHEMY_RPC_TEMPLATE", "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}"
-)
-SOLANA_HELIUS_RPC_TEMPLATE: str = os.environ.get(
-    "SOLANA_HELIUS_RPC_TEMPLATE", "https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}"
-)
+# Optional keyed provider RPC (any JSON-RPC provider). Empty = disabled.
+SOLANA_PROVIDER_RPC_TEMPLATE: str = os.environ.get("SOLANA_PROVIDER_RPC_TEMPLATE", "")
+# Optional provider-specific enhanced-history RPC (e.g. closed-account
+# history). Empty = disabled; only tried when the standard path is empty.
+SOLANA_ENHANCED_RPC_TEMPLATE: str = os.environ.get("SOLANA_ENHANCED_RPC_TEMPLATE", "")
 
 # ── Solana Real-Time Websocket Ingestion (logsSubscribe) ───────────────
 # A FREE real-time feed: subscribe to Solana RPC logsSubscribe for a

@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Load the shared env file (same file the daemon's systemd unit sources
 # via EnvironmentFile) BEFORE any os.environ reads below, so every entry
-# point resolves the same ${ALCHEMY_KEY} / ${INFURA_KEY} / ${HELIUS_KEY} RPC
+# point resolves the same ${KEYED_RPC_KEY} / ${KEYED_RPC_KEY_2} / ${SOLANA_PROVIDER_KEY} RPC
 # placeholders. Idempotent and non-destructive (existing env wins).
 from lite_indexer.config.indexing import DATA_DIR, STATE_DIR
 from lite_indexer.env import load_env_file
@@ -44,7 +44,7 @@ TRACE_CONCURRENCY: int = int(os.environ.get("TRACE_CONCURRENCY", "2"))
 CH_TRACE_TABLE: str = "wallet_memory.internal_transfers"
 
 # Address-activity keystone table — every transaction an address touched
-# (free-RPC Helius getSignaturesForAddress parity). One row per
+# (free-RPC SolanaProvider getSignaturesForAddress parity). One row per
 # (address, tx_signature); provisioned by migrations/014_address_activity.sql.
 CH_ADDRESS_ACTIVITY_TABLE: str = os.environ.get("CH_ADDRESS_ACTIVITY_TABLE") or "wallet_memory.address_activity"
 

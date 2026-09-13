@@ -2,7 +2,7 @@
 Address-activity storage — ``wallet_memory.address_activity``.
 
 The wallet-tracing keystone table: one row per (address, tx_signature)
-recording that a transaction touched an address. This is what Helius
+recording that a transaction touched an address. This is what SolanaProvider
 ``getSignaturesForAddress`` returns and what wallet tracing queries need;
 the indexer derives it from the getTransaction (jsonParsed) payloads it
 already fetches (SPL transfers, DEX swaps, traces), so it costs zero
@@ -277,7 +277,7 @@ def ensure_address_activity_table(ch_client: Any) -> bool:
     try:
         ch_client.execute(
             _ADDRESS_ACTIVITY_DDL
-        )  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("address_activity_table_ensured", table=CH_ADDRESS_ACTIVITY_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -336,7 +336,7 @@ def write_address_activity(ch_client: Any, rows: list[dict[str, Any]]) -> int:
         )
 
     try:
-        ch_client.execute(  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             f"INSERT INTO {CH_ADDRESS_ACTIVITY_TABLE} ({', '.join(_INSERT_COLUMNS)}) VALUES",
             prepared,
         )

@@ -167,7 +167,7 @@ def read_wallet_rows(
     """
     params = {"chain": chain, "from_block": from_block, "to_block": to_block, "limit": limit}
     try:
-        rows = client.execute(query, params)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        rows = client.execute(query, params)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
     except Exception as exc:
         raise VectorIngestionError(f"wallet read failed: {exc}") from exc
 
@@ -252,7 +252,7 @@ def read_contract_rows(
     """
     params = {"chain": chain, "from_block": from_block, "to_block": to_block, "limit": limit}
     try:
-        rows = client.execute(query, params)  # nosemgrep: formatted-sql-query, sqlalchemy-execute-raw-query — identifiers are module constants; values parameterized
+        rows = client.execute(query, params)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
     except Exception as exc:
         raise VectorIngestionError(f"contract read failed: {exc}") from exc
 

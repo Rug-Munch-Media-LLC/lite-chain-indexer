@@ -73,7 +73,7 @@ class SolanaStrategy(
         self._trace_rows: list[dict[str, Any]] = []
         # Address-activity keystone rows (wallet_memory.address_activity):
         # one row per involved account of every parsed transaction — the
-        # Helius getSignaturesForAddress parity table. Buffered here and
+        # SolanaProvider getSignaturesForAddress parity table. Buffered here and
         # drained in write_clickhouse (see AddressActivityMixin).
         self._address_activity_rows: list[dict[str, Any]] = []
         # Launch detection (Pump.fun/PumpSwap/Raydium/LaunchLab/LetsBonk) and

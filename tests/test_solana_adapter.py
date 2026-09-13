@@ -2,12 +2,12 @@
 Tests for the Solana Helius adapter (lite_indexer.adapters.solana).
 
 Covers:
-  1. helius_rpc_url — resolves the Helius RPC from HELIUS_KEY
-  2. SolanaHeliusAdapter.fetch_transfers — getSignaturesForAddress +
+  1. solana_rpc_url — resolves the Helius RPC from HELIUS_KEY
+  2. SolanaTransfersAdapter.fetch_transfers — getSignaturesForAddress +
      getTransaction → solana_transfers rows
-  3. SolanaHeliusAdapter.store_transfers — ensure + insert into
+  3. SolanaTransfersAdapter.store_transfers — ensure + insert into
      wallet_memory.solana_transfers
-  4. SolanaHeliusAdapter.fetch_and_store — end-to-end wrapper
+  4. SolanaTransfersAdapter.fetch_and_store — end-to-end wrapper
 
 Fixtures mirror real getTransaction (jsonParsed) responses (a simple SPL
 transferChecked plus a native SOL transfer), matching the conventions in
@@ -20,10 +20,12 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from lite_indexer.adapters.solana import (
-    HELIUS_RPC_TEMPLATE,
-    SolanaHeliusAdapter,
-    helius_rpc_url,
+    SOLANA_PROVIDER_RPC_TEMPLATE,
+    SolanaTransfersAdapter,
+    solana_rpc_url,
 )
 from lite_indexer.traces.solana import (
     NATIVE_SOL,
@@ -127,38 +129,57 @@ def _sol_tx(slot: int = 437_068_921) -> dict[str, Any]:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# helius_rpc_url
+# solana_rpc_url
 # ═══════════════════════════════════════════════════════════════════════
 
 
-class TestHeliusRpcUrl:
-    def test_resolves_when_key_set(self):
-        with patch.dict("os.environ", {"HELIUS_KEY": "abc123"}, clear=False):
-            url = helius_rpc_url()
-            assert url == "https://rpc.helius.xyz/?api-key=abc123"
+class TestSolanaRpcUrl:
+    """The optional keyed provider URL is env/overlay supplied and generic."""
 
-    def test_returns_none_when_key_unset(self):
-        with patch.dict("os.environ", {}, clear=True):
-            # Ensure HELIUS_KEY is absent.
-            assert "HELIUS_KEY" not in __import__("os").environ
-            assert helius_rpc_url() is None
+    def test_resolves_template_when_key_set(self, monkeypatch: pytest.MonkeyPatch):
+        import lite_indexer.adapters.solana as adapter_mod
 
-    def test_template_constant(self):
-        assert "${HELIUS_KEY}" in HELIUS_RPC_TEMPLATE
+        monkeypatch.setattr(
+            adapter_mod,
+            "SOLANA_PROVIDER_RPC_TEMPLATE",
+            "https://rpc.example.com/?api-key=${EXAMPLE_KEY}",
+        )
+        monkeypatch.setenv("EXAMPLE_KEY", "abc123")
+        assert solana_rpc_url() == "https://rpc.example.com/?api-key=abc123"
+
+    def test_returns_none_when_unset(self, monkeypatch: pytest.MonkeyPatch):
+        import lite_indexer.adapters.solana as adapter_mod
+
+        monkeypatch.setattr(adapter_mod, "SOLANA_PROVIDER_RPC_TEMPLATE", "")
+        assert solana_rpc_url() is None
+
+    def test_returns_none_when_placeholder_unresolved(self, monkeypatch: pytest.MonkeyPatch):
+        import lite_indexer.adapters.solana as adapter_mod
+
+        monkeypatch.setattr(
+            adapter_mod,
+            "SOLANA_PROVIDER_RPC_TEMPLATE",
+            "https://rpc.example.com/${MISSING_KEY}",
+        )
+        monkeypatch.delenv("MISSING_KEY", raising=False)
+        assert solana_rpc_url() is None
+
+    def test_template_constant_is_a_string(self):
+        assert isinstance(SOLANA_PROVIDER_RPC_TEMPLATE, str)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# SolanaHeliusAdapter.fetch_transfers
+# SolanaTransfersAdapter.fetch_transfers
 # ═══════════════════════════════════════════════════════════════════════
 
 
 class TestFetchTransfers:
     def test_empty_when_from_gt_to(self):
-        adapter = SolanaHeliusAdapter(tracked_tokens=TRACKED)
+        adapter = SolanaTransfersAdapter(tracked_tokens=TRACKED)
         assert asyncio_run(adapter.fetch_transfers(10, 5)) == []
 
     def test_fetches_and_parses_spl_transfer(self):
-        adapter = SolanaHeliusAdapter(tracked_tokens=TRACKED, endpoint="https://rpc.helius.xyz/?api-key=test")
+        adapter = SolanaTransfersAdapter(tracked_tokens=TRACKED, endpoint="https://rpc.helius.xyz/?api-key=test")
         tx = _spl_tx(slot=100)
 
         async def _fake_rpc_call(client, method, params=None):
@@ -180,7 +201,7 @@ class TestFetchTransfers:
         assert row["signature"] == SIG
 
     def test_filters_signatures_outside_slot_range(self):
-        adapter = SolanaHeliusAdapter(tracked_tokens=TRACKED, endpoint="https://rpc.helius.xyz/?api-key=test")
+        adapter = SolanaTransfersAdapter(tracked_tokens=TRACKED, endpoint="https://rpc.helius.xyz/?api-key=test")
 
         async def _fake_rpc_call(client, method, params=None):
             if method == "getSignaturesForAddress":
@@ -201,7 +222,7 @@ class TestFetchTransfers:
         assert len(rows) == 1
 
     def test_skips_failed_transactions(self):
-        adapter = SolanaHeliusAdapter(tracked_tokens=TRACKED, endpoint="https://rpc.helius.xyz/?api-key=test")
+        adapter = SolanaTransfersAdapter(tracked_tokens=TRACKED, endpoint="https://rpc.helius.xyz/?api-key=test")
 
         async def _fake_rpc_call(client, method, params=None):
             if method == "getSignaturesForAddress":
@@ -213,7 +234,7 @@ class TestFetchTransfers:
         assert rows == []
 
     def test_parses_native_sol_transfer(self):
-        adapter = SolanaHeliusAdapter(tracked_tokens=TRACKED, endpoint="https://rpc.helius.xyz/?api-key=test")
+        adapter = SolanaTransfersAdapter(tracked_tokens=TRACKED, endpoint="https://rpc.helius.xyz/?api-key=test")
 
         async def _fake_rpc_call(client, method, params=None):
             if method == "getSignaturesForAddress":
@@ -234,7 +255,7 @@ class TestFetchTransfers:
             {"mint": USDC_MINT, "symbol": "USDC", "decimals": 6, "name": "USD Coin"},
             {"mint": "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", "symbol": "USDT", "decimals": 6, "name": "Tether"},
         ]
-        adapter = SolanaHeliusAdapter(tracked_tokens=tokens, endpoint="https://rpc.helius.xyz/?api-key=test")
+        adapter = SolanaTransfersAdapter(tracked_tokens=tokens, endpoint="https://rpc.helius.xyz/?api-key=test")
 
         async def _fake_rpc_call(client, method, params=None):
             if method == "getSignaturesForAddress":
@@ -253,17 +274,17 @@ class TestFetchTransfers:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# SolanaHeliusAdapter.store_transfers
+# SolanaTransfersAdapter.store_transfers
 # ═══════════════════════════════════════════════════════════════════════
 
 
 class TestStoreTransfers:
     def test_returns_zero_for_empty(self):
-        adapter = SolanaHeliusAdapter(tracked_tokens=TRACKED)
+        adapter = SolanaTransfersAdapter(tracked_tokens=TRACKED)
         assert adapter.store_transfers(MagicMock(), []) == 0
 
     def test_ensures_table_and_writes(self):
-        adapter = SolanaHeliusAdapter(tracked_tokens=TRACKED)
+        adapter = SolanaTransfersAdapter(tracked_tokens=TRACKED)
         client = MagicMock()
         rows = [{"transfer_type": SPL_TRANSFER_CHECKED, "mint": USDC_MINT, "amount": 1_000_000}]
         with (
@@ -308,13 +329,13 @@ class TestStoreTransfers:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# SolanaHeliusAdapter.fetch_and_store
+# SolanaTransfersAdapter.fetch_and_store
 # ═══════════════════════════════════════════════════════════════════════
 
 
 class TestFetchAndStore:
     def test_fetch_and_store_writes_rows(self):
-        adapter = SolanaHeliusAdapter(tracked_tokens=TRACKED, endpoint="https://rpc.helius.xyz/?api-key=test")
+        adapter = SolanaTransfersAdapter(tracked_tokens=TRACKED, endpoint="https://rpc.helius.xyz/?api-key=test")
         client = MagicMock()
 
         async def _fake_rpc_call(client, method, params=None):
