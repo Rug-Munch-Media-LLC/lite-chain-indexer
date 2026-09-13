@@ -366,7 +366,7 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
 
 
 # ── Endpoint URL template resolution ───────────────────────────────
-# ${GETBLOCK_KEY}, ...). They are resolved at import time so the main
+# `${ENV_VAR}` placeholders, ...). They are resolved at import time so the main
 # RPC path never dials dead placeholder URLs. Endpoints whose env var is
 # NOT set are excluded from the active pool entirely — a URL containing a
 # literal ``${...}`` can never be dialed (DNS/JSON errors) and only

@@ -1,7 +1,7 @@
 -- Migration 014: address_activity — the wallet-tracing keystone table.
 --
 -- One row per (address, tx_signature): every transaction an address
--- touched, in the spirit of Helius getSignaturesForAddress parity on
+-- touched, in the spirit of getSignaturesForAddress parity on
 -- free public RPCs. Rows are derived from the same getTransaction
 -- (jsonParsed) payloads the indexer already fetches for SPL transfers,
 -- DEX swaps, launches and traces — zero extra RPC cost.

@@ -5,13 +5,13 @@
 -- transaction trace visibility the same getTransaction (jsonParsed) call
 -- already returns for free: native SOL transfers, CPI inner instructions,
 -- token account create/close events and stake delegations — the core of
--- what paid products (Helius enhanced transactions, DAS APIs) charge for.
+-- what paid products (enhanced-transaction and DAS APIs) charge for.
 --
 -- One row per value movement. instruction_path encodes where in the
 -- instruction tree the movement happened:
 --   [outer_ix]          top-level instruction
 --   [outer_ix, inner_ix]  CPI instruction (free RPCs expose at most two
---                        nesting levels; deeper Helius-style paths like
+--                        nesting levels; deeper enhanced-style paths like
 --                        [0,2,1] need a paid DAS feed)
 --
 -- transfer_type values:

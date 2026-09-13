@@ -36,10 +36,10 @@ check_chain() {
     # Get endpoint from config
     local endpoint
     case "$chain" in
-        ethereum) endpoint="https://eth.drpc.org" ;;
-        base)     endpoint="https://base.drpc.org" ;;
-        bsc)      endpoint="https://bsc.drpc.org" ;;
-        polygon)  endpoint="https://polygon.drpc.org" ;;
+        ethereum) endpoint="https://ethereum.publicnode.com" ;;
+        base)     endpoint="https://base.publicnode.com" ;;
+        bsc)      endpoint="https://bsc.publicnode.com" ;;
+        polygon)  endpoint="https://polygon.publicnode.com" ;;
         arbitrum) endpoint="https://arb1.arbitrum.io/rpc" ;;
         optimism) endpoint="https://mainnet.optimism.io" ;;
         *)        echo -e "${YELLOW}⚠ ${chain}: unknown chain${NC}"; return ;;

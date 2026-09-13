@@ -50,3 +50,6 @@ data/
 # Turbo
 .turbo/
 .coverage
+
+# AI/session build artifacts — never commit
+.superpowers/

@@ -23,7 +23,7 @@ import structlog
 _SECRET_QUERY = re.compile(r"(?i)(apikey|api_key|dkey|key|token|access_token|secret|password)=([^&\s\"']+)")
 _USERINFO = re.compile(r"://[^/@:\s]+:[^/@\s]+@")
 # 16+ char URL path segments are key-like (provider keys run 16–64 chars, e.g.
-# an 18-char Alchemy key leaked with a 20-char threshold on 2026-09-13).
+# an 18-char provider key leaked with a 20-char threshold on 2026-09-13).
 _PATH_SEG = re.compile(r"/[A-Za-z0-9_\-]{16,}")
 
 

@@ -46,6 +46,20 @@ jobs:
       - name: Check import
         run: python -c "from lite_indexer import LiteIndexer; print('Package import OK')"
 
+  # ── Public-leak gate (BLOCKING) ──────────────────────────────────
+  # The public tree must never name our curated freemium RPC stack
+  # (provider hosts, keys, tiers). That config lives in the private
+  # runtime overlay (LITE_INDEXER_ENDPOINT_OVERLAY); this gate scans
+  # every tracked file for curated provider tokens. Checkout + python3
+  # only — no dependencies required.
+  public-leak-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Scan public tree for curated provider names
+        run: python3 scripts/check-public-no-freemium.py
+
   # ── Coverage gates (blocking) ─────────────────────────────────
   # Single Python version (no matrix) — coverage is version-independent.
   # Smoke-marked tests need live ClickHouse/RPC endpoints and are excluded.

@@ -29,10 +29,11 @@ if [ ! -f "$ENV_FILE" ]; then
     umask 177
     {
         echo "# lite-chain-indexer runtime environment (EnvironmentFile, 0600)."
-        echo "# API-key free-tier RPC endpoints (\${ENV_VAR} placeholders in"
-        echo "# lite_indexer/chains/endpoints.py + non_evm.py are resolved from here)."
-        echo "# Fill in the keys you use (NODEREAL_KEY is REQUIRED) and restart the service."
-        for k in NODEREAL_KEY ALCHEMY_KEY GETBLOCK_KEY CHAINSTACK_KEY QUICKNODE_ENDPOINT INFURA_KEY HELIUS_KEY; do
+        echo "# Optional authenticated RPC provider keys (\${ENV_VAR} placeholders in"
+        echo "# lite_indexer/chains/endpoints.py + non_evm.py resolve from here)."
+        echo "# The public build runs free/keyless without any of these."
+        echo "# Fill in the generic placeholders your private overlay uses, then restart the service."
+        for k in KEYED_RPC_KEY KEYED_RPC_KEY_2 SOLANA_PROVIDER_KEY TRONGRID_KEY; do
             v="${!k:-}"
             if [ -n "$v" ]; then
                 printf '%s=%s\n' "$k" "$v"

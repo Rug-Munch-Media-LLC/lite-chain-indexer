@@ -265,7 +265,7 @@ All notable changes to LiteChainIndexer will be documented in this file.
 - **New `docs/FAQ.md`** — answers the common questions (cost/RPCs, supported
   chains, comparisons, historical queries, adding chains, hardware, contributing).
 - **New `docs/COMPARISON.md`** — detailed feature/pricing comparison vs Ponder,
-  Subsquid, Helius, and The Graph.
+  Subsquid, managed RPC providers, and The Graph.
 - **Fixed dead links** — clone URLs and related-project links now point at
   Forgejo (git.rugmunch.io) instead of non-existent GitHub repositories.
   Removed the copy-paste link to getlago/lago.
@@ -292,8 +292,8 @@ All notable changes to LiteChainIndexer will be documented in this file.
   silently ingesting bad data.
 - **Per-chain block range limits** (`CHAIN_BLOCK_RANGE_LIMITS`) and
   provider-aware `eth_getLogs` range handling.
-- **Free-tier API-key endpoints** — Alchemy, GetBlock, Chainstack, QuickNode,
-  Helius (`${ENV_VAR}` placeholders) as Tier-4 fallbacks.
+- **Free-tier API-key endpoints** — keyed RPC providers via `${ENV_VAR}`
+  placeholders as Tier-4 fallbacks.
 - **Per-chain block times** for accurate timestamp estimation on fast chains
   (Base 2s, Arbitrum 0.25s, etc.).
 - **Consolidated metrics module** (`metrics.py`).

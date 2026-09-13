@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Chainstack node auto-discovery — turns deployed nodes into RPC endpoints.
+"""Node auto-discovery — turns deployed nodes into RPC endpoints.
 
-Queries the Chainstack platform API for every running node in the org and
-emits ready-to-use endpoint URLs ({network}.core.chainstack.com/{auth_key}
-or {node-id}.p2pify.com/{auth_key}), grouped by chain, with paste-ready
+Queries a node-platform API for every running node in the account and emits
+ready-to-use endpoint URLs (``{network}.<platform-host>/{auth_key}`` or
+``{node-id}.<platform-host>/{auth_key}``), grouped by chain, with paste-ready
 snippets for:
 
   * lite-chain-indexer  lite_indexer/chains/endpoints.py
   * rugmunchbot         rpc_router (via rmi-backend canonical)
 
+The platform is provider-neutral: point ``NODE_PLATFORM_API`` at your node
+platform's ``/nodes/`` collection URL and supply its key via
+``NODE_PLATFORM_API_KEY``. Provider hosts, keys and tiers stay out of the
+public tree.
+
 Usage:
-    CHAINSTACK_API_KEY=... python3 scripts/discover-chainstack.py
-    # or after storing in gopass:
-    secrets-manager show chainstack_api_key | \
-        python3 scripts/discover-chainstack.py --stdin
+    NODE_PLATFORM_API=https://api.example-rpc-platform.com/v1/nodes/ \\
+    NODE_PLATFORM_API_KEY=... python3 scripts/discover-nodes.py
+    # or after storing in the secrets manager:
+    secrets-manager show node_platform_api_key | \\
+        python3 scripts/discover-nodes.py --stdin
 """
 
 from __future__ import annotations
@@ -24,9 +30,10 @@ import os
 import sys
 import urllib.request
 
-API = "https://api.chainstack.com/v1/nodes/"
+# Default placeholder; override with NODE_PLATFORM_API for your provider.
+DEFAULT_API = "https://api.example-rpc-platform.com/v1/nodes/"
 
-# Chainstack network slug -> our registry chain name.
+# Platform network slug -> our registry chain name.
 NETWORK_MAP = {
     "ethereum-mainnet": "ethereum",
     "base-mainnet": "base",
@@ -46,8 +53,12 @@ NETWORK_MAP = {
 }
 
 
-def fetch_nodes(key: str) -> list[dict]:
-    req = urllib.request.Request(API, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
+def _api_url() -> str:
+    return os.environ.get("NODE_PLATFORM_API", DEFAULT_API)
+
+
+def fetch_nodes(api: str, key: str) -> list[dict]:
+    req = urllib.request.Request(api, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = json.load(resp)
     return list(data.get("results", []))
@@ -67,13 +78,13 @@ def main() -> int:
     ap.add_argument("--stdin", action="store_true", help="read API key from stdin")
     args = ap.parse_args()
 
-    key = sys.stdin.readline().strip() if args.stdin else os.getenv("CHAINSTACK_API_KEY", "")
+    key = sys.stdin.readline().strip() if args.stdin else os.getenv("NODE_PLATFORM_API_KEY", "")
     if not key:
-        print("no API key (set CHAINSTACK_API_KEY or use --stdin)", file=sys.stderr)
+        print("no API key (set NODE_PLATFORM_API_KEY or use --stdin)", file=sys.stderr)
         return 1
 
     try:
-        nodes = fetch_nodes(key)
+        nodes = fetch_nodes(_api_url(), key)
     except Exception as exc:  # noqa: BLE001
         print(f"platform API failed: {exc}", file=sys.stderr)
         return 1
@@ -97,13 +108,7 @@ def main() -> int:
         by_chain.setdefault(chain, []).append(ep)
 
     if not by_chain:
-        print(
-            "No running nodes yet.\n"
-            "Deploy shared nodes in console.chainstack.com:\n"
-            "  Projects -> + Create project -> Deploy node ->\n"
-            "  pick Solana Mainnet / Ethereum / Base / ... (Shared, Developer plan)\n"
-            "Then re-run this script."
-        )
+        print("No running nodes yet.\nDeploy shared nodes in your node-platform console, then re-run this script.")
         return 0
 
     print("# ── Paste-ready endpoints ──")
