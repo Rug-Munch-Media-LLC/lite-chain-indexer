@@ -545,6 +545,62 @@ class TestAnkrFreeKeyChains:
         assert "not allowed to access" in src
 
 
+# ── Dead-host prune (DNS + probe sweep, 2026-09-13) ────────────────────
+# All 14 hosts below failed `getent hosts` (no DNS) AND an 8s POST
+# eth_chainId probe from this host. They must never re-enter the pool.
+DEAD_HOSTS_2026_09_13 = (
+    "arbitrum.llamarpc.com",
+    "avalanche.mainnet.nodies.app",
+    "binance.llamarpc.com",
+    "bsc-mainnet.g.alchemy.com",
+    "celo-mainnet.public.blastapi.io",
+    "fantom-mainnet.g.alchemy.com",
+    "mainnet.era.zksync.network",
+    "opt-mainnet.public.blastapi.io",
+    "optimism.llamarpc.com",
+    "optimism.meowrpc.com",
+    "polygon.llamarpc.com",
+    "polygon.meowrpc.com",
+    "rpc-mainnet.matic.network",
+    "zksync-era.g.alchemy.com",
+)
+
+
+class TestDeadHostsPruned:
+    def _source(self) -> str:
+        return Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
+
+    def test_dead_hosts_absent_from_active_pool(self):
+        for host in DEAD_HOSTS_2026_09_13:
+            for chain, urls in GET_LOGS_ENDPOINTS.items():
+                assert not any(host in u for u in urls), f"{chain}: dead host {host} in active pool"
+
+    def test_dead_hosts_absent_from_candidate_pool(self):
+        for host in DEAD_HOSTS_2026_09_13:
+            for chain, urls in CANDIDATE_ENDPOINTS.items():
+                assert not any(host in u for u in urls), f"{chain}: dead host {host} still a candidate"
+
+    def test_no_chain_left_with_zero_endpoints(self):
+        for chain, urls in GET_LOGS_ENDPOINTS.items():
+            assert len(urls) >= 1, f"{chain}: active pool is empty"
+
+    def test_live_alchemy_renames_present(self):
+        """The two dead Alchemy aliases had live per-chain renames; assert the
+        keyed replacements exist in source (they drop out of the active pool
+        when ALCHEMY_KEY is unset, so assert against the source template)."""
+        src = self._source()
+        assert "https://bnb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}" in src
+        assert "https://zksync-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}" in src
+        assert "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}" in src
+
+    def test_fantom_alchemy_not_reintroduced_under_live_name(self):
+        # Alchemy has no live Fantom rename — the dead host must not be
+        # swapped for an invented one. Check URL lines only (the source
+        # comment documents the removal by name).
+        url_lines = [ln for ln in self._source().splitlines() if ln.strip().startswith('"https://')]
+        assert not any("fantom" in ln and "alchemy" in ln for ln in url_lines)
+
+
 # ── BlockVision (per-chain keyed, archive — live-verified 2026-09-13) ──
 # BlockVision keys are PER-CHAIN: ${BLOCKVISION_<CHAIN>_KEY}, host
 # <chain>-mainnet.blockvision.org (ethereum/bsc indexed; monad/sui served but
