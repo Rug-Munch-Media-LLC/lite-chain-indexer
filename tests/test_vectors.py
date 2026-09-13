@@ -13,6 +13,7 @@ from typing import Any
 import pyarrow as pa
 import pytest
 
+from lite_indexer.vectors.collections import embedding_schema, vector_dim_from_type
 from lite_indexer.vectors.embedder import EmbeddingError
 from lite_indexer.vectors.lance_store import CollectionNotFoundError, LanceVectorStore, _rrf_merge
 
@@ -199,3 +200,71 @@ async def test_embedding_error_propagates(store: LanceVectorStore) -> None:
 async def test_aclose_noop_with_injected_embedder(store: LanceVectorStore) -> None:
     # Injected embedder is not owned -> aclose must not close it.
     await store.aclose()
+
+
+# ── Dimension auto-migration ───────────────────────────────────────────
+
+
+def _table_dim(store: LanceVectorStore, name: str) -> int:
+    """Read a collection's vector dimension back from disk."""
+    table = store.db.open_table(name)
+    dim = vector_dim_from_type(table.schema.field("vector").type)
+    assert dim is not None, f"{name} vector column is not a fixed-size list"
+    return dim
+
+
+async def test_ensure_backs_up_stale_dim_and_rebuilds(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A collection created at the old dim is backed up, not dropped."""
+    monkeypatch.setattr("lite_indexer.vectors.config.EMBEDDING_DIM", 8)
+    store = LanceVectorStore(path=str(tmp_path / "lance"), embedder=FakeEmbedder(dim=8))
+
+    stale = embedding_schema({"chain": pa.string()}, dim=4)
+    assert await store.create_collection("wallet_embeddings", stale) is True
+    store.db.open_table("wallet_embeddings").add(
+        [{"id": "0xold", "text": "old row", "vector": [0.0, 0.0, 0.0, 0.0], "chain": "bsc"}]
+    )
+
+    created = await store.ensure_default_collections()
+
+    assert "wallet_embeddings" in created
+    assert "wallet_embeddings__dim4__bak" in store.list_collections()
+    assert _table_dim(store, "wallet_embeddings") == 8
+    # Stale data is preserved in the backup, never silently dropped.
+    assert store.collection_stats("wallet_embeddings__dim4__bak")["rows"] == 1
+    assert store.collection_stats("wallet_embeddings")["rows"] == 0
+
+
+async def test_ensure_is_noop_when_dim_matches(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-running ensure at the same dimension changes nothing."""
+    monkeypatch.setattr("lite_indexer.vectors.config.EMBEDDING_DIM", 4)
+    store = LanceVectorStore(path=str(tmp_path / "lance"), embedder=FakeEmbedder(dim=4))
+
+    first = await store.ensure_default_collections()
+    assert len(first) == 4
+    assert await store.ensure_default_collections() == []
+    assert not any("__bak" in name for name in store.list_collections())
+    assert _table_dim(store, "wallet_embeddings") == 4
+
+
+async def test_dimension_safe_index_and_search_round_trip(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure at dim N, index a dim-N vector, then search it back."""
+    monkeypatch.setattr("lite_indexer.vectors.config.EMBEDDING_DIM", 4)
+    store = LanceVectorStore(path=str(tmp_path / "lance"), embedder=FakeEmbedder(dim=4))
+    await store.ensure_default_collections()
+
+    rows = [
+        {
+            "id": "0xrug",
+            "text": "rug pull honeypot token with high volume",
+            "chain": "bsc",
+            "labels": "rug",
+            "tx_count": 1,
+            "first_seen": "2026-09-01",
+            "last_seen": "2026-09-01",
+        }
+    ]
+    assert await store.index_embeddings("wallet_embeddings", rows) == 1
+
+    (query_vec,) = await store.embedder.embed(["rug pull honeypot token with high volume"])
+    results = await store.search("wallet_embeddings", query_vec, k=1)
+    assert results[0]["id"] == "0xrug"

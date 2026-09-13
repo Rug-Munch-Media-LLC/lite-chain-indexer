@@ -33,10 +33,10 @@ whose key is NOT set are excluded from the active pool (they can never be
 dialed — a literal ``${...}`` in a URL only produces DNS/JSON verification
 retries). Restart the service after setting a key to activate the endpoint.
 
-``NODEREAL_KEY`` (NodeReal BSC T1) follows the same optional-key rule:
-when unset the endpoint is excluded from the pool and a warning is logged —
-a missing free-tier key must never take the whole indexer down (free-tier
-first; add the key to restore the T1 endpoint).
+``NODEREAL_KEY`` (NodeReal BSC T1) is the sole REQUIRED key — it does NOT
+follow the optional-key rule. The endpoint URL is built from it, and a
+missing key fails startup loudly (see :func:`require_nodereal_key`) so the
+BSC T1 tier can never silently shrink.
 
 Total: 74 endpoints across 15 chains (61 public + 13 API-key free tiers).
 """
@@ -64,21 +64,21 @@ load_env_file()
 
 
 def require_nodereal_key() -> None:
-    """Warn when ``NODEREAL_KEY`` is not set (endpoint is then skipped).
+    """Raise a startup error when the required ``NODEREAL_KEY`` is unset.
 
-    Free-tier-first policy: a missing optional provider key must never take
-    the indexer down. The placeholder resolver already drops endpoints whose
-    key is unset; this only surfaces a clear log line so the BSC T1 tier
-    shrinkage is visible in the journal.
+    ``NODEREAL_KEY`` is the one required secret (NodeReal BSC T1). The
+    systemd EnvironmentFile must provide it; an unset key would silently
+    shrink the BSC T1 tier, so startup fails loudly instead of degrading.
+
+    Raises:
+        RuntimeError: When ``NODEREAL_KEY`` is unset or empty.
     """
     if not os.environ.get("NODEREAL_KEY"):
-        import logging as _logging
-
-        _logging.getLogger(__name__).warning(
-            "nodereal_key_unset: NodeReal BSC T1 endpoint excluded from the "
-            "pool (add NODEREAL_KEY to the indexer EnvironmentFile to restore "
-            "it; %d other BSC endpoints remain active)",
-            11,
+        raise RuntimeError(
+            "NODEREAL_KEY is required but is not set — add NODEREAL_KEY to the "
+            "systemd EnvironmentFile for the indexer and restart. The NodeReal "
+            "BSC T1 endpoint is built from it and must never silently drop out "
+            "of the active pool."
         )
 
 

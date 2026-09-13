@@ -25,11 +25,12 @@ Embedding generation is delegated to :mod:`lite_indexer.vectors.embedder`
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
 
-from lite_indexer.vectors.collections import DEFAULT_COLLECTIONS
+from lite_indexer.vectors.collections import default_collections, vector_dim_from_type
 from lite_indexer.vectors.config import LANCE_DIR
 from lite_indexer.vectors.embedder import DualLaneEmbedder, Embedder, EmbeddingError, create_embedder
 
@@ -111,30 +112,106 @@ class LanceVectorStore:
         """Return the names of all collections in the database."""
         return sorted(self._table_names())
 
+    def _table_vector_dim(self, table: Any) -> int | None:
+        """Return the fixed-size length of a table's ``vector`` column."""
+        try:
+            field = table.schema.field("vector")
+        except (KeyError, ValueError):
+            return None
+        return vector_dim_from_type(field.type)
+
+    def _backup_table_name(self, name: str, old_dim: int | None) -> str:
+        """Return a free ``<name>__dim<old>__bak`` table name."""
+        tag = f"__dim{old_dim}__bak" if old_dim is not None else "__dimunknown__bak"
+        candidate = f"{name}{tag}"
+        existing = self._table_names()
+        suffix = 1
+        while candidate in existing:
+            suffix += 1
+            candidate = f"{name}{tag}.{suffix}"
+        return candidate
+
+    def _move_table_to_backup(self, name: str, backup: str) -> None:
+        """Preserve table ``name`` under ``backup`` without dropping data.
+
+        LanceDB OSS does not implement ``rename_table``; when that raises we
+        rename the on-disk ``<name>.lance`` directory (O(1), no copy). If the
+        directory is not where we expect it, fall back to a full copy.
+        """
+        try:
+            self.db.rename_table(name, backup)
+            return
+        except NotImplementedError:
+            logger.debug("rename_table unsupported; using directory move for %s", name)
+        db_dir = Path(self.path)
+        src = db_dir / f"{name}.lance"
+        dst = db_dir / f"{backup}.lance"
+        if src.is_dir():
+            src.rename(dst)
+            return
+        table = self.db.open_table(name)
+        self.db.create_table(backup, data=table.to_arrow())
+        self.db.drop_table(name)
+
+    def _reconcile_dimension(self, name: str, schema: pa.Schema) -> bool:
+        """Back up and recreate ``name`` when its vector dim differs from ``schema``.
+
+        Returns True when the collection was recreated at the schema's
+        dimension, False when it already matched (or carries no vector field).
+        Existing data is preserved under ``<name>__dim<old>__bak``.
+        """
+        expected = vector_dim_from_type(schema.field("vector").type) if "vector" in schema.names else None
+        if expected is None:
+            return False
+        table = self.db.open_table(name)
+        current = self._table_vector_dim(table)
+        if current == expected:
+            return False
+        backup = self._backup_table_name(name, current)
+        self._move_table_to_backup(name, backup)
+        self.db.create_table(name, schema=schema)
+        logger.warning(
+            "vector_collection_dim_mismatch: %s had vector dim=%s, rebuilt at dim=%s (previous data preserved as %s)",
+            name,
+            current,
+            expected,
+            backup,
+        )
+        return True
+
     async def create_collection(self, name: str, schema: pa.Schema) -> bool:
         """Create a new collection with ``schema``.
+
+        When ``name`` already exists but its ``vector`` column dimension
+        differs from ``schema``, the stale table is renamed to
+        ``<name>__dim<old>__bak`` (no data dropped) and recreated at the
+        schema's dimension.
 
         Args:
             name: Collection name.
             schema: PyArrow schema (see :mod:`lite_indexer.vectors.collections`).
 
         Returns:
-            True when the collection was created, False when it already exists.
+            True when the collection was created (or rebuilt), False when it
+            already exists at the correct dimension.
         """
         if name in self._table_names():
-            return False
+            return self._reconcile_dimension(name, schema)
         self.db.create_table(name, schema=schema)
         logger.info("created vector collection %s at %s", name, self.path)
         return True
 
     async def ensure_default_collections(self) -> list[str]:
-        """Create the four pre-built collections (idempotent).
+        """Create the four pre-built collections (idempotent, dim-safe).
+
+        Uses the *current* ``EMBEDDING_DIM``; an existing collection whose
+        vector column has a stale dimension is backed up and rebuilt.
 
         Returns:
-            The names of collections that were created.
+            The names of collections that were created (or rebuilt).
         """
         created: list[str] = []
-        for name, schema in DEFAULT_COLLECTIONS.items():
+        for name, schema in default_collections().items():
             if await self.create_collection(name, schema):
                 created.append(name)
         return created
