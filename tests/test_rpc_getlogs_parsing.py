@@ -67,18 +67,28 @@ def _no_throttle(monkeypatch):
 
 
 async def _run(client, payload: Any) -> Any:
+    from unittest.mock import patch
+
+    import lite_indexer.rpc.client as rc
+
     http = _FakeHttpClient(_FakeResp(payload))
 
     async def _fc():
         return http
 
+    async def _fc_timeout(timeout: float):
+        return http
+
     client._get_client = _fc  # noqa: SLF001 — test seam
-    result = await client.get_logs(
-        endpoint="https://endpoint",
-        from_block=100,
-        to_block=200,
-        topic="0x" + "ab" * 32,
-    )
+    # Batch (and its transparent individual fallback) also route through the
+    # module-level pooled accessor — keep it offline too.
+    with patch.object(rc, "_get_call_client", _fc_timeout):
+        result = await client.get_logs(
+            endpoint="https://endpoint",
+            from_block=100,
+            to_block=200,
+            topic="0x" + "ab" * 32,
+        )
     return result, http
 
 

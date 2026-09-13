@@ -41,6 +41,8 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "rpc_provider_backoffs",
     "rpc_spillover",
     "getlogs_range_splits",
+    "rpc_batch_calls",
+    "rpc_batch_fallback",
     "endpoints_verified",
     "endpoints_failed_verify",
     "clickhouse_inserts",

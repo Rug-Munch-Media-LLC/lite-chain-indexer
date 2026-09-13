@@ -22,6 +22,8 @@ from lite_indexer.config import (
     DEFAULT_BLOCK_TIME,
     GET_LOGS_SEMAPHORE_LIMIT,
     RATE_LIMIT_WAIT_CAP,
+    RPC_BATCH_ENABLED,
+    RPC_BATCH_MAX,
     RPC_CALL_CLIENTS_MAX,
     RPC_CALL_TIMEOUT,
     RPC_RETRY_ATTEMPTS,
@@ -319,12 +321,13 @@ class RpcClient:
                 finally:
                     _safe_record(decr_in_flight, endpoint)
                 _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
-                bytes_received = len(resp.content or b"")
+                bytes_received = len(getattr(resp, "content", b"") or b"")
                 record_rpc_response(endpoint, method, resp.status_code, resp.headers)
                 _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
 
                 # Empty response check — often a transient gateway glitch.
-                if not resp.text or len(resp.text) < 5:
+                body_text = getattr(resp, "text", "")
+                if not body_text or len(body_text) < 5:
                     logger.debug("rpc_empty_response", endpoint=endpoint[:50], method=method)
                     record_rpc_usage(endpoint, method, ok=False, error="empty_response")
                     _safe_record(record_rpc_outcome, endpoint, ok=False)
@@ -423,6 +426,139 @@ class RpcClient:
                     )
                     await asyncio.sleep(delay)
         return None
+
+    async def call_batch(
+        self,
+        endpoint: str,
+        calls: list[tuple[str, list[Any] | None]],
+        *,
+        timeout: float = RPC_CALL_TIMEOUT,
+    ) -> list[dict[str, Any] | None]:
+        """Send N same-shape calls as ONE JSON-RPC array POST.
+
+        Free RPCs rate-limit per REQUEST, so collapsing independent calls
+        into a batch multiplies throughput without extra requests. A batch
+        counts as ONE HTTP request against the per-endpoint / per-account
+        request caps (paced once); ledger cost is still recorded per element
+        (weight-aware). Elements are returned in input order.
+
+        Fallback: any batch-level failure (transport, 429, non-array
+        response, unusable body) transparently re-issues the unresolved
+        elements as individual :meth:`call` invocations — never lose data.
+        Per-element JSON-RPC errors are returned verbatim in their slot.
+
+        Args:
+            endpoint: RPC endpoint URL.
+            calls: ``(method, params)`` pairs, max ``RPC_BATCH_MAX`` per POST.
+            timeout: Per-request timeout in seconds.
+
+        Returns:
+            One raw JSON-RPC response dict (``result`` or ``error``) per
+            input call, or None for an element that could not be resolved.
+        """
+        if not calls:
+            return []
+        if not RPC_BATCH_ENABLED:
+            return await self._call_batch_fallback(endpoint, calls, timeout)
+
+        from lite_indexer.rpc.capabilities import archive_guard_reason
+        from lite_indexer.rpc.circuit import circuit_open
+
+        results: list[dict[str, Any] | None] = [None] * len(calls)
+        if await circuit_open(endpoint):
+            logger.debug("rpc_batch_circuit_skip", endpoint=endpoint[:50])
+            return results
+
+        batch_max = max(1, RPC_BATCH_MAX)
+        for start in range(0, len(calls), batch_max):
+            chunk = calls[start : start + batch_max]
+            # Guards are per element: deferred / non-archive elements stay None.
+            sendable: list[tuple[int, str, list[Any] | None]] = []
+            for offset, (method, params) in enumerate(chunk):
+                idx = start + offset
+                if _defer_reason_for(endpoint, method):
+                    continue
+                if archive_guard_reason(endpoint, method):
+                    metrics_incr("rpc_archive_fail_closed")
+                    continue
+                sendable.append((idx, method, params))
+            if not sendable:
+                continue
+
+            pace_method = sendable[0][1]
+            payload = [
+                {"jsonrpc": "2.0", "id": i + 1, "method": m, "params": p or []}
+                for i, (_idx, m, p) in enumerate(sendable)
+            ]
+            try:
+                data = await self._post_batch(endpoint, payload, pace_method, timeout)
+            except Exception as exc:  # noqa: BLE001 — batch must degrade, not fail
+                logger.warning("rpc_batch_failed", endpoint=endpoint[:50], error=str(exc)[:80])
+                metrics_incr("rpc_batch_fallback")
+                results = await self._call_batch_fallback(endpoint, calls, timeout, results)
+                continue
+
+            if not isinstance(data, list):
+                metrics_incr("rpc_batch_fallback")
+                results = await self._call_batch_fallback(endpoint, calls, timeout, results)
+                continue
+
+            by_id = {item.get("id"): item for item in data if isinstance(item, dict)}
+            matched = 0
+            for i, (idx, method, _p) in enumerate(sendable):
+                item = by_id.get(i + 1)
+                if isinstance(item, dict):
+                    results[idx] = item
+                    matched += 1
+                _safe_record(record_endpoint_call, endpoint, method)
+                _safe_record(record_rpc_outcome, endpoint, ok=bool(item and item.get("error") is None))
+            metrics_incr("rpc_batch_calls")
+            if matched == 0:
+                metrics_incr("rpc_batch_fallback")
+                results = await self._call_batch_fallback(endpoint, calls, timeout, results)
+        return results
+
+    async def _post_batch(
+        self,
+        endpoint: str,
+        payload: list[dict[str, Any]],
+        method: str,
+        timeout: float,
+    ) -> Any:
+        """POST one JSON-RPC batch array with throttle/cap accounting."""
+        from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
+
+        account_key = account_key_for_endpoint(endpoint)
+        await throttle_before(endpoint, method)
+        await provider_throttle_before(endpoint)
+        async with provider_concurrency_slot(account_key):
+            client = await _get_call_client(timeout)
+            resp = await client.post(endpoint, json=payload)
+        record_rpc_response(endpoint, method, resp.status_code, resp.headers)
+        _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
+        if resp.status_code == 429:
+            record_rate_limit(endpoint)
+            raise httpx.HTTPStatusError("batch rate limited", request=httpx.Request("POST", endpoint), response=resp)
+        resp.raise_for_status()
+        return decode_response(resp)
+
+    async def _call_batch_fallback(
+        self,
+        endpoint: str,
+        calls: list[tuple[str, list[Any] | None]],
+        timeout: float,
+        existing: list[dict[str, Any] | None] | None = None,
+    ) -> list[dict[str, Any] | None]:
+        """Re-issue unresolved batch elements as individual calls.
+
+        Elements already resolved in ``existing`` are left untouched, so a
+        partial batch still only pays for the missing elements.
+        """
+        out: list[dict[str, Any] | None] = list(existing) if existing is not None else [None] * len(calls)
+        for i, (method, params) in enumerate(calls):
+            if out[i] is None:
+                out[i] = await self.call(endpoint, method, params, timeout=timeout)
+        return out
 
     async def eth_block_number(self, endpoint: str) -> int | None:
         """Get latest block number.
@@ -567,7 +703,58 @@ class RpcClient:
         async def _once(child_from: int, child_to: int) -> tuple[str, list[dict[str, Any]] | None]:
             return await self._fetch_logs_range(endpoint, child_from, child_to, topic, address, max_retries)
 
-        return await fetch_logs_split(_once, from_block, to_block)
+        async def _many(
+            child_ranges: list[tuple[int, int]],
+        ) -> list[tuple[str, list[dict[str, Any]] | None]]:
+            # Sibling sub-ranges produced by the splitter go in ONE batched
+            # POST (1 request for the request caps), halving the request cost
+            # of an in-call split.
+            return await self._fetch_logs_many(endpoint, child_ranges, topic, address)
+
+        return await fetch_logs_split(_once, from_block, to_block, fetch_many=_many)
+
+    @staticmethod
+    def _logs_filter(from_block: int, to_block: int, topic: str, address: str | None) -> dict[str, Any]:
+        """Build one ``eth_getLogs`` filter object for a block range."""
+        filter_params: dict[str, Any] = {
+            "fromBlock": hex(from_block),
+            "toBlock": hex(to_block),
+            "topics": [topic],
+        }
+        if address:
+            filter_params["address"] = address
+        return filter_params
+
+    async def _fetch_logs_many(
+        self,
+        endpoint: str,
+        ranges: list[tuple[int, int]],
+        topic: str,
+        address: str | None,
+    ) -> list[tuple[str, list[dict[str, Any]] | None]]:
+        """Fetch several getLogs ranges in one batch; classify each element."""
+        from lite_indexer.rpc.range_split import classify_logs_error
+
+        calls: list[tuple[str, list[Any] | None]] = [
+            ("eth_getLogs", [self._logs_filter(f, t, topic, address)]) for f, t in ranges
+        ]
+        responses = await self.call_batch(endpoint, calls)
+        out: list[tuple[str, list[dict[str, Any]] | None]] = []
+        for resp in responses:
+            if not isinstance(resp, dict):
+                out.append(("error", None))
+                continue
+            if "result" in resp:
+                result = resp["result"]
+                if isinstance(result, list):
+                    out.append(("ok", result))
+                elif result is None:
+                    out.append(("ok", []))
+                else:
+                    out.append(("error", None))
+            else:
+                out.append((classify_logs_error(resp), None))
+        return out
 
     async def _fetch_logs_range(
         self,
@@ -587,19 +774,11 @@ class RpcClient:
             every other failure (timeout/429/auth/malformed) so those keep
             the normal retry/throttle path.
         """
-        filter_params: dict[str, Any] = {
-            "fromBlock": hex(from_block),
-            "toBlock": hex(to_block),
-            "topics": [topic],
-        }
-        if address:
-            filter_params["address"] = address
-
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "eth_getLogs",
-            "params": [filter_params],
+            "params": [self._logs_filter(from_block, to_block, topic, address)],
         }
 
         from lite_indexer.rpc.range_split import classify_logs_error, is_range_error_message
@@ -771,32 +950,61 @@ async def fetch_block_timestamps(
         fetch_list = batch
 
     timestamps: dict[int, str] = {}
-    semaphore = asyncio.Semaphore(GET_LOGS_SEMAPHORE_LIMIT)
     endpoint = get_best_endpoint(endpoints)
 
-    async def _get_ts(block_num: int) -> tuple[int, str | None]:
-        async with semaphore:
-            try:
-                block = await client.eth_get_block_by_number(endpoint, block_num)
-                if block and "timestamp" in block:
-                    ts_int = int(block["timestamp"], 16)
-                    from datetime import UTC, datetime
+    async def _record_block(block_num: int, block: Any) -> str | None:
+        """Parse a header's timestamp and warm the bloom cache (best-effort)."""
+        if not (block and "timestamp" in block):
+            return None
+        try:
+            ts_int = int(block["timestamp"], 16)
+        except (ValueError, TypeError):
+            return None
+        from datetime import UTC, datetime
 
-                    # Warm the bloom cache from the header we already have.
-                    if bloom_cache is not None and block.get("logsBloom"):
-                        with contextlib.suppress(Exception):
-                            await bloom_cache.set(chain, block_num, str(block["logsBloom"]))
-                    return block_num, datetime.fromtimestamp(ts_int, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
-                logger.warning("block_ts_fetch_failed", block=block_num, error=str(exc)[:80])
-            return block_num, None
+        if bloom_cache is not None and block.get("logsBloom"):
+            with contextlib.suppress(Exception):
+                await bloom_cache.set(chain, block_num, str(block["logsBloom"]))
+        return datetime.fromtimestamp(ts_int, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    tasks = [_get_ts(bn) for bn in fetch_list]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    batch_fn = getattr(client, "call_batch", None)
+    if callable(batch_fn):
+        # ONE JSON-RPC array POST per RPC_BATCH_MAX headers instead of one
+        # HTTP request per block (the dominant catch-up RPC cost). call_batch
+        # itself falls back to individual requests on any batch failure.
+        responses = await batch_fn(
+            endpoint,
+            [("eth_getBlockByNumber", [hex(bn), False]) for bn in fetch_list],
+        )
+        for block_num, resp in zip(fetch_list, responses, strict=False):
+            block = resp.get("result") if isinstance(resp, dict) and "result" in resp else resp
+            ts = await _record_block(block_num, block)
+            if ts is not None:
+                timestamps[block_num] = ts
+    else:  # pragma: no cover — lightweight test doubles without call_batch
+        semaphore = asyncio.Semaphore(GET_LOGS_SEMAPHORE_LIMIT)
 
-    for res in results:
-        if isinstance(res, tuple) and res[1] is not None:
-            timestamps[res[0]] = res[1]
+        async def _get_ts(block_num: int) -> tuple[int, str | None]:
+            async with semaphore:
+                try:
+                    block = await client.eth_get_block_by_number(endpoint, block_num)
+                except (
+                    httpx.HTTPError,
+                    ConnectionError,
+                    OSError,
+                    TimeoutError,
+                    ValueError,
+                    KeyError,
+                    TypeError,
+                ) as exc:
+                    logger.warning("block_ts_fetch_failed", block=block_num, error=str(exc)[:80])
+                    return block_num, None
+                return block_num, await _record_block(block_num, block)
+
+        results = await asyncio.gather(*(_get_ts(bn) for bn in fetch_list), return_exceptions=True)
+        for res in results:
+            if isinstance(res, tuple) and res[1] is not None:
+                timestamps[res[0]] = res[1]
 
     # Interpolate missing timestamps between fetched anchors (linear in
     # block number — real anchor timestamps, so accuracy tracks actual

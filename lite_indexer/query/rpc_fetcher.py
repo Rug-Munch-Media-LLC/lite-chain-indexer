@@ -65,6 +65,7 @@ from lite_indexer.rpc import (
     select_endpoint_for_method,
 )
 from lite_indexer.rpc.client import fetch_block_timestamps
+from lite_indexer.rpc.range_split import classify_range_error, fetch_range_split
 from lite_indexer.storage.parquet import ParquetExporter
 from lite_indexer.util.bounded import BoundedDict
 
@@ -646,12 +647,31 @@ class RPCFetcher:
         if to_block <= 0:
             return None
         from_block = max(0, to_block - _DEPLOYER_TRACE_SCAN_BLOCKS)
-        result = await self._client.call(
-            endpoint,
-            "trace_filter",
-            [{"fromBlock": hex(from_block), "toBlock": hex(to_block), "toAddress": [], "fromAddress": []}],
+
+        async def _trace_once(f: int, t: int) -> tuple[str, list[Any] | None]:
+            """Fetch one trace_filter range and classify the outcome."""
+            result = await self._client.call(
+                endpoint,
+                "trace_filter",
+                [{"fromBlock": hex(f), "toBlock": hex(t), "toAddress": [], "fromAddress": []}],
+            )
+            if isinstance(result, dict) and "result" in result:
+                res = result["result"]
+                if isinstance(res, list):
+                    return ("ok", res)
+                if res is None:
+                    return ("ok", [])
+            return (classify_range_error(result), None)
+
+        # trace_filter is range-parameterized and free tiers cap the span —
+        # reuse the provider-error-driven in-call splitter (method-agnostic).
+        traces = await fetch_range_split(
+            _trace_once,
+            from_block,
+            to_block,
+            method="trace_filter",
+            merge="records",
         )
-        traces = result.get("result") if isinstance(result, dict) else None
         if not isinstance(traces, list):
             return None
         for trace in traces:

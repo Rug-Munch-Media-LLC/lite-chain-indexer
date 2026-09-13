@@ -152,19 +152,39 @@ class _FakeResp:
 
 
 class _FakeHttp:
-    """Rejects wide ranges; returns one log per accepted 4-block window."""
+    """Rejects wide ranges; returns one log per accepted 4-block window.
+
+    Handles both single JSON-RPC objects and BATCH arrays (sibling halves).
+    """
 
     def __init__(self) -> None:
         self.params: list[tuple[int, int]] = []
+        self.batch_posts = 0
+        self.single_posts = 0
 
-    async def post(self, url: str, **kw: Any):
-        p = kw["json"]["params"][0]
+    @staticmethod
+    def _one(req: dict[str, Any]) -> dict[str, Any]:
+        p = req["params"][0]
         f = int(p["fromBlock"], 16)
         t = int(p["toBlock"], 16)
-        self.params.append((f, t))
         if (t - f + 1) > 4:
-            return _FakeResp({"error": {"code": -32000, "message": "block range too large"}})
-        return _FakeResp({"result": [_log(f, 0)]})
+            return {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32000, "message": "block range too large"}}
+        return {"jsonrpc": "2.0", "id": req["id"], "result": [_log(f, 0)]}
+
+    async def post(self, url: str, **kw: Any):
+        req = kw["json"]
+        if isinstance(req, list):
+            self.batch_posts += 1
+            out = []
+            for item in req:
+                p = item["params"][0]
+                self.params.append((int(p["fromBlock"], 16), int(p["toBlock"], 16)))
+                out.append(self._one(item))
+            return _FakeResp(out)
+        self.single_posts += 1
+        p = req["params"][0]
+        self.params.append((int(p["fromBlock"], 16), int(p["toBlock"], 16)))
+        return _FakeResp(self._one(req))
 
 
 @pytest.mark.asyncio
@@ -181,15 +201,72 @@ async def test_rpcclient_get_logs_splits_in_call(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(rc, "record_provider_response", lambda *a, **k: None)
     monkeypatch.setattr(rc, "_safe_record", lambda *a, **k: None)
     monkeypatch.setattr("lite_indexer.rpc.throttle.throttle_before", _noop)
+    monkeypatch.setattr("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None)
+    monkeypatch.setattr(rc, "_defer_reason_for", lambda *a, **k: None)
 
     async def _get_client() -> _FakeHttp:
         return http
 
+    async def _get_call_client(timeout: float) -> _FakeHttp:
+        return http
+
     client = rc.RpcClient()
     client._get_client = _get_client  # noqa: SLF001 — test seam
+    monkeypatch.setattr(rc, "_get_call_client", _get_call_client)
     result = await client.get_logs("https://archive.example", 0, 15, "0x" + "ab" * 32)
     assert result is not None
     blocks = [int(x["blockNumber"], 16) for x in result]
     assert blocks == [0, 4, 8, 12]
-    # Root range was rejected, then halved in-line.
+    # Root range was rejected, then halved in-line; sibling halves batched.
     assert (0, 15) in http.params and (0, 7) in http.params and (8, 15) in http.params
+    assert http.batch_posts >= 1
+
+
+class TestGenericRangeMethod:
+    @pytest.mark.asyncio
+    async def test_second_method_splits_and_concatenates(self):
+        calls: list[tuple[int, int]] = []
+
+        async def fetch(f: int, t: int) -> rs.FetchResult:
+            calls.append((f, t))
+            if (f, t) == (0, 100):
+                return ("range", None)
+            return ("ok", [{"block": f}, {"block": t}])
+
+        result = await rs.fetch_range_split(fetch, 0, 100, method="trace_filter", merge="records")
+        assert calls == [(0, 100), (0, 50), (51, 100)]
+        assert result == [{"block": 0}, {"block": 50}, {"block": 51}, {"block": 100}]
+
+    @pytest.mark.asyncio
+    async def test_records_merge_keeps_duplicates(self):
+        async def fetch(f: int, t: int) -> rs.FetchResult:
+            if (f, t) == (0, 10):
+                return ("range", None)
+            return ("ok", [{"dup": 1}])
+
+        result = await rs.fetch_range_split(fetch, 0, 10, method="trace_filter", merge="records")
+        assert result == [{"dup": 1}, {"dup": 1}]
+
+
+class TestBatchSiblings:
+    @pytest.mark.asyncio
+    async def test_siblings_fetched_in_one_batch(self):
+        single_calls: list[tuple[int, int]] = []
+        many_calls: list[list[tuple[int, int]]] = []
+
+        async def fetch_once(f: int, t: int) -> rs.FetchResult:
+            single_calls.append((f, t))
+            if (f, t) == (0, 20):
+                return ("range", None)
+            return ("ok", [f])
+
+        async def fetch_many(ranges: list[tuple[int, int]]) -> list[rs.FetchResult]:
+            many_calls.append(list(ranges))
+            return [("ok", [f]) for f, _t in ranges]
+
+        result = await rs.fetch_range_split(
+            fetch_once, 0, 20, method="eth_getLogs", fetch_many=fetch_many, merge="records"
+        )
+        assert single_calls == [(0, 20)]  # children came from the batch, not singles
+        assert many_calls == [[(0, 10), (11, 20)]]
+        assert result == [0, 11]

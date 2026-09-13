@@ -1,10 +1,16 @@
 """
-In-call ``eth_getLogs`` range splitting on provider range/size errors.
+Provider-error-driven in-call range splitting (method-agnostic).
 
 Static caps plus cross-cycle halving convert an oversized request into a
-*failed cycle*: the logs for that window are skipped and retried later.
+*failed cycle*: the records for that window are skipped and retried later.
 Ponder's edge is parsing the provider's error and splitting the range
 IN-LINE, recursively, so the window still succeeds this cycle.
+
+Originally ``eth_getLogs``-only; the machinery is generic and now serves any
+range-parameterized method (``eth_getLogs``, ``trace_filter``, …). Methods
+that take a SINGLE block (``eth_getBlockByNumber``, ``eth_getCode``,
+``eth_getBlockReceipts``) are NOT range-parameterized and are deliberately
+not routed through here.
 
 This module holds the pure machinery:
 
@@ -13,16 +19,16 @@ This module holds the pure machinery:
     timeouts must still travel the normal retry/throttle path).
   * :func:`split_bounds` / :func:`can_split` — midpoint split under the
     ``GETLOGS_SPLIT_MAX_DEPTH`` / ``GETLOGS_SPLIT_MIN_BLOCKS`` bounds.
-  * :func:`merge_logs` — order-preserving merge with ``(block, logIndex)``
-    dedupe in case a provider returns overlapping boundary logs.
-  * :func:`fetch_logs_split` — async recursive driver over an injected
-    single-range fetch callback (mockable in tests).
+  * :func:`merge_logs` (log dedupe) / :func:`merge_records` (generic concat).
+  * :func:`fetch_range_split` — async recursive driver over an injected
+    single-range fetch callback, with an optional BATCH callback so sibling
+    sub-ranges are fetched in ONE HTTP request.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 from lite_indexer.config import GETLOGS_SPLIT_MAX_DEPTH, GETLOGS_SPLIT_MIN_BLOCKS
 from lite_indexer.logging import get_logger
@@ -31,11 +37,13 @@ from lite_indexer.metrics import incr as metrics_incr
 logger = get_logger(__name__)
 
 # Result of one single-range fetch:
-#   ("ok", logs)     — logs is a list (possibly empty)
+#   ("ok", records)  — records is a list (possibly empty)
 #   ("range", None)  — provider rejected the range/size/result limit
 #   ("error", None)  — any other failure (auth, 429, timeout, malformed)
-FetchResult = tuple[str, list[dict[str, Any]] | None]
+FetchResult = tuple[str, list[Any] | None]
 FetchOnce = Callable[[int, int], Awaitable[FetchResult]]
+FetchMany = Callable[[list[tuple[int, int]]], Awaitable[list[FetchResult]]]
+MergeKind = Literal["logs", "records"]
 
 # Case-insensitive substrings that mark a range / size / result-limit
 # rejection. Deliberately broad (providers phrase these inconsistently)
@@ -87,6 +95,10 @@ def classify_logs_error(data: Any) -> str:
     return "range" if is_range_error_message(message) else "error"
 
 
+# Generic alias (the classifier is not logs-specific).
+classify_range_error = classify_logs_error
+
+
 def split_bounds(from_block: int, to_block: int) -> tuple[tuple[int, int], tuple[int, int]] | None:
     """Midpoint-split ``[from, to]`` into two adjacent half-open ranges.
 
@@ -118,63 +130,120 @@ def _log_sort_key(log: dict[str, Any]) -> tuple[int, int]:
     return block, index
 
 
-def merge_logs(chunks: list[list[dict[str, Any]] | None]) -> list[dict[str, Any]]:
-    """Merge split-range results in order, deduping ``(block, logIndex)``.
+def merge_logs(chunks: list[list[Any] | None]) -> list[Any]:
+    """Merge split-range LOG results in order, deduping ``(block, logIndex)``.
 
     ``None`` chunks (a failed half) are skipped here; the caller fails
     closed before merging when any half failed.
     """
-    merged: list[dict[str, Any]] = []
+    merged: list[Any] = []
     seen: set[tuple[int, int]] = set()
     for chunk in chunks:
         if not chunk:
             continue
         for log in chunk:
+            if not isinstance(log, dict):
+                merged.append(log)
+                continue
             key = _log_sort_key(log)
             if key in seen:
                 continue
             seen.add(key)
             merged.append(log)
-    merged.sort(key=_log_sort_key)
+    merged.sort(key=lambda item: _log_sort_key(item) if isinstance(item, dict) else (0, 0))
     return merged
 
 
-async def fetch_logs_split(
+def merge_records(chunks: list[list[Any] | None]) -> list[Any]:
+    """Merge split-range generic records in order (concatenate, no dedupe)."""
+    merged: list[Any] = []
+    for chunk in chunks:
+        if chunk:
+            merged.extend(chunk)
+    return merged
+
+
+def _merge(kind: MergeKind, chunks: list[list[Any] | None]) -> list[Any]:
+    return merge_logs(chunks) if kind == "logs" else merge_records(chunks)
+
+
+async def fetch_range_split(
     fetch_once: FetchOnce,
     from_block: int,
     to_block: int,
     *,
+    method: str = "eth_getLogs",
+    fetch_many: FetchMany | None = None,
     depth: int = 0,
-) -> list[dict[str, Any]] | None:
+    merge: MergeKind = "records",
+) -> list[Any] | None:
     """Fetch ``[from, to]``, splitting recursively on a range error.
 
     On a range/size/result-limit rejection the range is split at the
-    midpoint and BOTH halves are fetched recursively within the same call;
-    results are merged (order-preserving, deduped). Non-range failures
-    (auth, 429, timeout, malformed) return ``None`` immediately so the
-    normal retry/throttle path handles them. If either half ultimately
+    midpoint and BOTH halves are fetched (in one batched request when
+    ``fetch_many`` is supplied, else sequentially) within the same call.
+    Non-range failures (auth, 429, timeout, malformed) return ``None`` so
+    the normal retry/throttle path handles them. If either half ultimately
     fails, the whole call fails closed (``None``) — never partial data.
 
     Args:
-        fetch_once: Async callback ``(from_block, to_block) -> (status, logs)``.
+        fetch_once: Async callback ``(from, to) -> (status, records)``.
         from_block: Inclusive start block.
         to_block: Inclusive end block.
+        method: Method name (telemetry only).
+        fetch_many: Optional async batch callback that fetches several
+            ranges in ONE request; returns one ``(status, records)`` per
+            range in order.
         depth: Current recursion depth (tests/telemetry).
+        merge: ``"logs"`` (dedupe by block/logIndex, sort) or ``"records"``
+            (order-preserving concatenate).
 
     Returns:
-        Merged log list (possibly ``[]``), or ``None`` on failure.
+        Merged record list (possibly ``[]``), or ``None`` on failure.
     """
-    status, logs = await fetch_once(from_block, to_block)
+    status, records = await fetch_once(from_block, to_block)
     if status == "ok":
-        return logs if logs is not None else []
+        return records if records is not None else []
     if status != "range":
         return None
+    return await _split_range(fetch_once, fetch_many, from_block, to_block, method, depth, merge)
 
+
+async def _resolve_child(
+    child: FetchResult,
+    fetch_once: FetchOnce,
+    fetch_many: FetchMany | None,
+    from_block: int,
+    to_block: int,
+    method: str,
+    depth: int,
+    merge: MergeKind,
+) -> list[Any] | None:
+    """Resolve an already-fetched child (ok / range → split / error → None)."""
+    status, records = child
+    if status == "ok":
+        return records if records is not None else []
+    if status != "range":
+        return None
+    return await _split_range(fetch_once, fetch_many, from_block, to_block, method, depth, merge)
+
+
+async def _split_range(
+    fetch_once: FetchOnce,
+    fetch_many: FetchMany | None,
+    from_block: int,
+    to_block: int,
+    method: str,
+    depth: int,
+    merge: MergeKind,
+) -> list[Any] | None:
+    """Split a known-bad range and resolve both halves."""
     bounds = split_bounds(from_block, to_block)
     if bounds is None or not can_split(from_block, to_block, depth):
         # Range error we cannot split further — fail closed (no partials).
         logger.debug(
-            "getlogs_range_unsplittable",
+            "range_unsplittable",
+            method=method,
             from_block=from_block,
             to_block=to_block,
             depth=depth,
@@ -184,27 +253,68 @@ async def fetch_logs_split(
     (left_from, left_to), (right_from, right_to) = bounds
     metrics_incr("getlogs_range_splits")
     logger.warning(
-        "getlogs_range_split",
+        "range_split",
+        method=method,
         from_block=from_block,
         to_block=to_block,
         depth=depth,
         left=(left_from, left_to),
         right=(right_from, right_to),
     )
-    left = await fetch_logs_split(fetch_once, left_from, left_to, depth=depth + 1)
-    right = await fetch_logs_split(fetch_once, right_from, right_to, depth=depth + 1)
+
+    if fetch_many is not None:
+        children = await fetch_many([(left_from, left_to), (right_from, right_to)])
+    else:
+        children = [
+            await fetch_once(left_from, left_to),
+            await fetch_once(right_from, right_to),
+        ]
+    left_child = children[0] if len(children) > 0 else ("error", None)
+    right_child = children[1] if len(children) > 1 else ("error", None)
+
+    left = await _resolve_child(left_child, fetch_once, fetch_many, left_from, left_to, method, depth + 1, merge)
+    right = await _resolve_child(right_child, fetch_once, fetch_many, right_from, right_to, method, depth + 1, merge)
     if left is None or right is None:
         return None
-    return merge_logs([left, right])
+    return _merge(merge, [left, right])
+
+
+async def fetch_logs_split(
+    fetch_once: FetchOnce,
+    from_block: int,
+    to_block: int,
+    *,
+    fetch_many: FetchMany | None = None,
+    depth: int = 0,
+) -> list[dict[str, Any]] | None:
+    """Back-compat wrapper: :func:`fetch_range_split` for eth_getLogs."""
+    result = await fetch_range_split(
+        fetch_once,
+        from_block,
+        to_block,
+        method="eth_getLogs",
+        fetch_many=fetch_many,
+        depth=depth,
+        merge="logs",
+    )
+    if result is None:
+        return None
+    return [record for record in result if isinstance(record, dict)]
 
 
 __all__ = [
     "INVALID_PARAMS_CODE",
     "RANGE_ERROR_MARKERS",
+    "FetchMany",
+    "FetchOnce",
+    "FetchResult",
     "can_split",
     "classify_logs_error",
+    "classify_range_error",
     "fetch_logs_split",
+    "fetch_range_split",
     "is_range_error_message",
     "merge_logs",
+    "merge_records",
     "split_bounds",
 ]

@@ -67,6 +67,16 @@ RPC_BACKOFF_JITTER_SEED: str = os.environ.get("RPC_BACKOFF_JITTER_SEED", "")
 GETLOGS_SPLIT_MAX_DEPTH: int = int(os.environ.get("GETLOGS_SPLIT_MAX_DEPTH", "8"))
 GETLOGS_SPLIT_MIN_BLOCKS: int = int(os.environ.get("GETLOGS_SPLIT_MIN_BLOCKS", "1"))
 
+# ── Cross-provider JSON-RPC batching (rpc/client.py call_batch) ──────
+# Free RPCs rate-limit per REQUEST, so collapsing N independent same-shape
+# calls into one JSON-RPC array POST multiplies throughput without extra
+# requests. A batch counts as ONE HTTP request against the per-endpoint /
+# per-account request caps (elements are still cost-weighted in the ledger).
+# RPC_BATCH_MAX bounds the array size; RPC_BATCH_ENABLED=0 disables batching
+# (every call transparently degrades to individual requests).
+RPC_BATCH_ENABLED: bool = os.environ.get("RPC_BATCH_ENABLED", "1") != "0"
+RPC_BATCH_MAX: int = int(os.environ.get("RPC_BATCH_MAX", "20"))
+
 # Semaphore limit for parallel RPC calls
 GET_LOGS_SEMAPHORE_LIMIT = 10
 # ── Endpoint Health Tracking ──────────────────────────────────────────
