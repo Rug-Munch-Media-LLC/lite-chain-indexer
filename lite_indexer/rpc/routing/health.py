@@ -21,8 +21,10 @@ from lite_indexer.config import (
     CIRCUIT_DESPERATION_PROBE_INTERVAL,
     CIRCUIT_FAILURE_THRESHOLD,
     CIRCUIT_WINDOW_SECONDS,
+    RPC_STALE_TIP_BLOCKS,
 )
 from lite_indexer.logging import get_logger
+from lite_indexer.metrics import incr as metrics_incr
 
 logger = get_logger(__name__)
 
@@ -249,8 +251,10 @@ EWMA_INITIAL_MS = 1000.0
 # Window (seconds) for the rolling error-rate computation.
 ERROR_WINDOW_SECONDS = 300.0
 # Staleness gate: an endpoint lagging more than this many blocks behind
-# the pool median block height is excluded until it catches up.
-STALENESS_MAX_BLOCKS = 3
+# the pool median block height is excluded until it catches up. Env-tunable
+# via RPC_STALE_TIP_BLOCKS (default 5) so a chain whose providers advance at
+# different cadences can widen/narrow the eviction window without a deploy.
+STALENESS_MAX_BLOCKS = RPC_STALE_TIP_BLOCKS
 # Penalty applied in the pool scoring for a stale endpoint. Must clear
 # the ``healthy`` cutoff (``MAX_FAILURES * 1000`` = 3000) so stale
 # endpoints drop out of rotation entirely; 15000 mirrors the
@@ -315,6 +319,44 @@ class EndpointLatency:
 
 # Module-level latency state shared across the codebase.
 _LATENCY: dict[str, EndpointLatency] = {}
+# Endpoints currently demoted by the stale-tip gate. Tracked only so the
+# demote/recover transition is logged once per episode instead of on every
+# pool selection.
+_demoted_tips: set[str] = set()
+
+
+def _endpoint_label(endpoint: str) -> str:
+    """Non-secret endpoint identity for logs (domain + hashed key id)."""
+    try:
+        from lite_indexer.rpc.provider_caps import account_key_for_endpoint
+
+        return account_key_for_endpoint(endpoint)
+    except Exception:  # noqa: BLE001 — label must never break selection
+        return "unknown"
+
+
+def _note_tip_demotions(stale: list[str], median: int | None) -> None:
+    """Log each endpoint's stale-tip demote / catch-up transition once."""
+    stale_set = set(stale)
+    for ep in sorted(stale_set - _demoted_tips):
+        stats = _stats(ep)
+        lag = None
+        if median is not None and stats.last_block_height is not None:
+            lag = median - stats.last_block_height
+        logger.warning(
+            "rpc_stale_tip_demoted",
+            endpoint=_endpoint_label(ep),
+            height=stats.last_block_height,
+            pool_median=median,
+            lag_blocks=lag,
+            threshold=STALENESS_MAX_BLOCKS,
+        )
+        metrics_incr("rpc_stale_tip_demoted")
+    for ep in sorted(_demoted_tips - stale_set):
+        logger.info("rpc_stale_tip_recovered", endpoint=_endpoint_label(ep))
+        metrics_incr("rpc_stale_tip_recovered")
+    _demoted_tips.clear()
+    _demoted_tips.update(stale_set)
 
 
 def _stats(endpoint: str) -> EndpointLatency:
@@ -502,6 +544,7 @@ def stale_endpoints(endpoints: list[str]) -> list[str]:
         height = _stats(ep).last_block_height
         if height is not None and median - height > STALENESS_MAX_BLOCKS:
             stale.append(ep)
+    _note_tip_demotions(stale, median)
     return stale
 
 
@@ -522,3 +565,4 @@ def latency_snapshot() -> dict[str, dict[str, Any]]:
 def reset_latency_state() -> None:
     """Clear all latency/height tracking (tests, operator reset)."""
     _LATENCY.clear()
+    _demoted_tips.clear()

@@ -66,6 +66,16 @@ MAX_CONCURRENT_CHAINS: int = int(os.environ.get("MAX_CONCURRENT_CHAINS", "6"))
 # not the loop's dominant cost and more threads only add GIL contention.
 JSON_DECODE_THREADS: int = max(1, int(os.environ.get("JSON_DECODE_THREADS", "4")))
 
+# Bounded worker count for offloading synchronous ClickHouse inserts /
+# row-building off the event loop. py-spy sampling of the live daemon
+# (2026-09-13) showed synchronous ClickHouse serialization (~53% of GIL
+# samples) plus address-activity row-building (~43%) running inline on the
+# event-loop thread — one chain's insert stalled every other chain. Writes
+# now run in a dedicated, bounded pool (one ClickHouse connection per
+# worker thread via thread-local storage). Kept small: ClickHouse is the
+# shared bottleneck, so more concurrency only grows the connection count.
+CH_WRITE_THREADS: int = max(1, int(os.environ.get("CH_WRITE_THREADS", "4")))
+
 # ── Chain-Level Health / Auto-Disable (daemon) ────────────────────────
 # If a chain's state has not advanced for CHAIN_STALL_DISABLE_SECONDS
 # (default 2h) the daemon marks it disabled and stops spending RPC budget

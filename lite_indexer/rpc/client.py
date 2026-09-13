@@ -790,6 +790,7 @@ class RpcClient:
                 chain,
                 "eth_getLogs",
                 [self._logs_filter(from_block, to_block, topic, address)],
+                expect_non_empty=bool(logs),
             )
         except Exception as exc:  # noqa: BLE001 — verification must never break the read
             logger.warning("rpc_consensus_error", chain=chain, error=str(exc)[:120])

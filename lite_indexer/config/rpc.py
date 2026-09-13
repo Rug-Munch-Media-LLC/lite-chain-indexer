@@ -171,6 +171,13 @@ RPC_CACHE_MAX_MB: int = int(os.environ.get("RPC_CACHE_MAX_MB", "512"))
 # are never cached; historical reads below it are immutable.
 RPC_CACHE_CONFIRMATIONS: int = int(os.environ.get("RPC_CACHE_CONFIRMATIONS", "64"))
 
+# ── Stale-tip eviction (rpc/routing/health.py) ─────────────────────────
+# An endpoint whose last reported height (eth_blockNumber / head response)
+# lags the pool's max/median by more than this many blocks is demoted out
+# of tip selection until it catches up. Catches endpoints that accept
+# connections and answer calls but are stuck on an old fork/height.
+RPC_STALE_TIP_BLOCKS: int = int(os.environ.get("RPC_STALE_TIP_BLOCKS", "5"))
+
 # Pre-emptive throttle threshold: when an endpoint advertises a budget via
 # X-RateLimit-Limit/Remaining and we have consumed more than this percent,
 # the next request is delayed to stay under the limit instead of waiting
@@ -351,3 +358,10 @@ RPC_WS_HEAD_MAX_ENDPOINTS: int = int(os.environ.get("RPC_WS_HEAD_MAX_ENDPOINTS",
 RPC_WS_HEAD_RECONNECT_BASE_SECONDS: float = float(os.environ.get("RPC_WS_HEAD_RECONNECT_BASE_SECONDS", "1.0"))
 RPC_WS_HEAD_RECONNECT_MAX_SECONDS: float = float(os.environ.get("RPC_WS_HEAD_RECONNECT_MAX_SECONDS", "30.0"))
 RPC_CONSENSUS_MAX_ENDPOINTS: int = int(os.environ.get("RPC_CONSENSUS_MAX_ENDPOINTS", "3"))
+# Intrinsic data-integrity validators (eRPC-inspired): before counting
+# agreement, validate each provider's payload against the REQUEST (getLogs
+# block range, monotonic (block, logIndex), non-empty when expected). Default
+# OFF / observe-only — violations are logged + counted but DO NOT change which
+# result is accepted. Set RPC_CONSENSUS_VALIDATORS=1 to reject violating
+# answers from the quorum (fail-closed on malformed data).
+RPC_CONSENSUS_VALIDATORS: bool = os.environ.get("RPC_CONSENSUS_VALIDATORS", "0") == "1"

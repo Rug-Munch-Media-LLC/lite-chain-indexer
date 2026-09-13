@@ -223,3 +223,108 @@ class TestFailureSafe:
         client._get_client = _get_client  # noqa: SLF001 — test seam
         logs = await client.get_logs("https://archive.example", 1, 10, "0x" + "ab" * 32, chain="ethereum", tip=1000)
         assert logs == [{"blockNumber": "0x5"}]
+
+
+class TestStaleTipL2Guard:
+    """A volatile/near-tip read must never poison the durable L2 cache.
+
+    L1 is invalidated wholesale on a reorg; L2 survives restarts, so a
+    response that was only "confirmed" against a single stale/ahead endpoint
+    tip must not be persisted. The guard checks the pool's independently
+    observed head (``known_head``) before writing L2.
+    """
+
+    def test_stale_high_tip_skips_l2_persistence(self):
+        # Pool has honestly observed 1000; one endpoint claims 1100. A range
+        # ending at 990 is *not* 64 blocks below 1000, so it must stay out of L2.
+        respcache.note_head("ethereum", 1000)
+        params = [_log_filter(900, 990)]
+        response = {"jsonrpc": "2.0", "id": 1, "result": [{"blockNumber": hex(950)}]}
+
+        assert (
+            respcache.put(
+                "eth_getLogs",
+                params,
+                response,
+                chain="ethereum",
+                from_block=900,
+                to_block=990,
+                tip=1100,
+            )
+            is True
+        )
+
+        # L1 keeps it this process; clearing L1 must NOT reveal an L2 row.
+        respcache.clear()
+        assert (
+            respcache.get(
+                "eth_getLogs",
+                params,
+                chain="ethereum",
+                from_block=900,
+                to_block=990,
+                tip=1100,
+            )
+            is None
+        )
+        assert metrics.get("cache_write_skipped_stale_tip") == 1.0
+
+    def test_confirmed_range_persists_to_l2(self):
+        respcache.note_head("ethereum", 1000)
+        params = [_log_filter(700, 800)]
+        response = {"jsonrpc": "2.0", "id": 1, "result": [{"blockNumber": hex(750)}]}
+
+        assert (
+            respcache.put(
+                "eth_getLogs",
+                params,
+                response,
+                chain="ethereum",
+                from_block=700,
+                to_block=800,
+                tip=1000,
+            )
+            is True
+        )
+        respcache.clear()
+        assert (
+            respcache.get(
+                "eth_getLogs",
+                params,
+                chain="ethereum",
+                from_block=700,
+                to_block=800,
+                tip=1000,
+            )
+            == response
+        )
+
+    def test_hash_scoped_reads_always_persist(self):
+        # Hash-scoped reads are immutable by content, so they bypass the
+        # confirm-depth guard even at the tip.
+        respcache.note_head("ethereum", 1000)
+        response = {"jsonrpc": "2.0", "id": 1, "result": {"number": "0x3e8", "hash": "0xabc"}}
+        assert (
+            respcache.put(
+                "eth_getBlockByHash",
+                ["0xabc", False],
+                response,
+                chain="ethereum",
+                block_hash="0xabc",
+                block_number=1000,
+                tip=1001,
+            )
+            is True
+        )
+        respcache.clear()
+        assert (
+            respcache.get(
+                "eth_getBlockByHash",
+                ["0xabc", False],
+                chain="ethereum",
+                block_hash="0xabc",
+                block_number=1000,
+                tip=1001,
+            )
+            == response
+        )

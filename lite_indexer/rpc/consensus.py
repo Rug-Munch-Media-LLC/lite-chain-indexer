@@ -40,6 +40,8 @@ Env:
     RPC_CONSENSUS_MIN_AGREEMENT  agreeing providers required (default 2)
     RPC_CONSENSUS_SAMPLE_RATE    fraction of reads verified (default 0.05)
     RPC_CONSENSUS_MAX_ENDPOINTS  max distinct providers queried (default 3)
+    RPC_CONSENSUS_VALIDATORS     1 to reject intrinsically-invalid answers
+                                 (default 0 = observe-only)
 
 Logs never contain raw endpoint URLs (which may embed API keys): endpoints
 are identified by their non-secret account key (``provider_id:key_hash``).
@@ -60,6 +62,7 @@ from lite_indexer.config import (
     RPC_CONSENSUS_MAX_ENDPOINTS,
     RPC_CONSENSUS_MIN_AGREEMENT,
     RPC_CONSENSUS_SAMPLE_RATE,
+    RPC_CONSENSUS_VALIDATORS,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
@@ -155,6 +158,7 @@ async def verify_across_providers(
     *,
     endpoints: list[str] | None = None,
     max_endpoints: int | None = None,
+    expect_non_empty: bool = False,
 ) -> ConsensusResult:
     """Query N distinct provider accounts and return the majority answer.
 
@@ -170,6 +174,9 @@ async def verify_across_providers(
             hold a filtered pool). Defaults to the chain's pool.
         max_endpoints: Cap on distinct providers queried (defaults to
             ``RPC_CONSENSUS_MAX_ENDPOINTS``).
+        expect_non_empty: With intrinsic validators enabled, treat an empty
+            ``eth_getLogs`` result as a violation (the caller saw logs for
+            this range). Ignored when validators are disabled.
 
     Returns:
         :class:`ConsensusResult`; callers must treat ``mismatch`` as failure.
@@ -204,6 +211,34 @@ async def verify_across_providers(
         result = _extract_result(response)
         if result is _MISSING:
             continue
+        violations = _intrinsic_violations(
+            method,
+            params,
+            result,
+            expect_non_empty=expect_non_empty,
+        )
+        if violations:
+            if RPC_CONSENSUS_VALIDATORS:
+                metrics_incr("rpc_consensus_intrinsic_reject")
+                logger.warning(
+                    "rpc_consensus_intrinsic_violation",
+                    chain=chain,
+                    method=method,
+                    endpoint=_endpoint_label(endpoint),
+                    violations=violations,
+                    rejected=True,
+                )
+                continue
+            # Observe-only (default): record the signal without changing
+            # which result the quorum accepts.
+            logger.debug(
+                "rpc_consensus_intrinsic_violation",
+                chain=chain,
+                method=method,
+                endpoint=_endpoint_label(endpoint),
+                violations=violations,
+                rejected=False,
+            )
         content_hash = canonical_hash(result)
         groups.setdefault(content_hash, []).append(endpoint)
         payloads.setdefault(content_hash, result)
@@ -256,6 +291,76 @@ async def verify_across_providers(
 
 
 # ── Internals ──────────────────────────────────────────────────────────
+
+#: Intrinsic validator codes (eRPC-inspired). Kept as stable strings so the
+#: metric/log signal is greppable: ``shape`` (result not a log list / log not
+#: an object / missing blockNumber), ``range`` (log block outside the
+#: requested [fromBlock, toBlock]), ``monotonic`` ((block, logIndex) went
+#: backwards) and ``empty`` (no logs when the caller expected some).
+_INTRINSIC_CODES = ("shape", "range", "monotonic", "empty")
+
+
+def _parse_hex_int(value: object) -> int | None:
+    """Parse a JSON-RPC quantity (hex string) or int; None when unparseable."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value, 16) if value.startswith("0x") else int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _intrinsic_violations(
+    method: str,
+    params: list[Any] | None,
+    result: object,
+    *,
+    expect_non_empty: bool = False,
+) -> list[str]:
+    """Intrinsic integrity checks on one provider's result (request-scoped).
+
+    Only ``eth_getLogs`` has intrinsic structure today; other methods return
+    an empty list (no behavior change). The checks validate the payload
+    against the REQUEST (not against other providers), so they catch a
+    provider that is internally inconsistent even when a quorum of other
+    providers would otherwise mask it.
+    """
+    if method != "eth_getLogs":
+        return []
+    if not isinstance(result, list):
+        return ["shape"]
+
+    violations: set[str] = set()
+    if expect_non_empty and not result:
+        violations.add("empty")
+
+    from_block = to_block = None
+    if params and isinstance(params[0], dict):
+        from_block = _parse_hex_int(params[0].get("fromBlock"))
+        to_block = _parse_hex_int(params[0].get("toBlock"))
+
+    prev: tuple[int, int] | None = None
+    for log in result:
+        if not isinstance(log, dict):
+            violations.add("shape")
+            break
+        block = _parse_hex_int(log.get("blockNumber"))
+        if block is None:
+            violations.add("shape")
+            break
+        if (from_block is not None and block < from_block) or (to_block is not None and block > to_block):
+            violations.add("range")
+        index = _parse_hex_int(log.get("logIndex"))
+        key = (block, index if index is not None else -1)
+        if prev is not None and key < prev:
+            violations.add("monotonic")
+        prev = key
+
+    return [code for code in _INTRINSIC_CODES if code in violations]
 
 
 def _chain_endpoints(chain: str) -> list[str]:

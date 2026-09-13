@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from datetime import UTC, datetime
 from typing import Any
 
@@ -166,7 +167,14 @@ class ClickHouseWriter(SchemaMixin):
     """
 
     def __init__(self) -> None:
+        # Legacy/shared client slot: set by tests (fake injection) and by
+        # the main thread on first connect. Production worker threads use
+        # ``_local`` below so no two threads share one connection.
         self._client: Any = None
+        # Thread-local ClickHouse client — clickhouse_driver connections are
+        # NOT safe for concurrent use, so each write-pool worker keeps its
+        # own (bounded by CH_WRITE_THREADS).
+        self._local = threading.local()
         # Wallet-access DDL is applied once per process, only after the
         # corresponding ensure_*() call reports success (so a table that
         # appears later is picked up on the next cycle).
@@ -180,9 +188,18 @@ class ClickHouseWriter(SchemaMixin):
         self._dex_numeric_amounts: bool | None = None
 
     def _connect(self) -> Any | None:
-        """Lazy-init ClickHouse native protocol client."""
+        """Lazy-init a ClickHouse native protocol client for this thread.
+
+        A shared ``self._client`` (test-injected fake, or the main thread's
+        connection) wins when present; otherwise each write-pool worker
+        thread gets its own client via thread-local storage. Returns None
+        when ClickHouse is unreachable.
+        """
         if self._client is not None:
             return self._client
+        local_client = getattr(self._local, "client", None)
+        if local_client is not None:
+            return local_client
 
         ch_host = os.getenv("CH_HOST") or os.getenv("CLICKHOUSE_HOST", "127.0.0.1")
         ch_port_raw = os.getenv("CH_PORT") or os.getenv("CLICKHOUSE_PORT") or "9000"
@@ -194,7 +211,7 @@ class ClickHouseWriter(SchemaMixin):
         try:
             from clickhouse_driver import Client as CHClient
 
-            self._client = CHClient(
+            client = CHClient(
                 host=ch_host,
                 port=ch_port,
                 user=ch_user,
@@ -203,9 +220,10 @@ class ClickHouseWriter(SchemaMixin):
                 connect_timeout=5,
                 send_receive_timeout=30,
             )
-            self._client.execute("SELECT 1")
+            client.execute("SELECT 1")
+            self._local.client = client
             logger.info("clickhouse_connected", host=ch_host, database=ch_db)
-            return self._client
+            return client
         except Exception as exc:
             logger.warning("clickhouse_unavailable", error=str(exc)[:100])
             return None

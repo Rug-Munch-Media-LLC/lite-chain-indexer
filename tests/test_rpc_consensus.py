@@ -259,3 +259,57 @@ async def test_getlogs_without_chain_is_unverified(monkeypatch: pytest.MonkeyPat
 
     assert logs == [{"blockNumber": "0x1"}]
     assert calls["verify"] == 0
+
+
+# ── Intrinsic integrity validators (RPC_CONSENSUS_VALIDATORS) ──────────────
+
+
+def test_intrinsic_range_and_monotonic_violations() -> None:
+    params = [{"fromBlock": "0x64", "toBlock": "0xc8"}]  # [100, 200]
+    logs = [
+        {"blockNumber": "0xc8", "logIndex": "0x1"},  # 200 ok
+        {"blockNumber": "0x12c", "logIndex": "0x0"},  # 300 out of range
+        {"blockNumber": "0x64", "logIndex": "0x0"},  # 100 out of range + reversal
+    ]
+    codes = consensus._intrinsic_violations("eth_getLogs", params, logs)  # noqa: SLF001
+    assert "range" in codes
+    assert "monotonic" in codes
+
+
+def test_intrinsic_shape_and_empty_violations() -> None:
+    assert consensus._intrinsic_violations("eth_getLogs", [{}], None) == ["shape"]  # noqa: SLF001
+    assert consensus._intrinsic_violations("eth_getLogs", [{}], []) == []  # noqa: SLF001
+    assert consensus._intrinsic_violations("eth_getLogs", [{}], [], expect_non_empty=True) == ["empty"]  # noqa: SLF001
+    # Non-getLogs methods have no intrinsic structure → no change.
+    assert consensus._intrinsic_violations("eth_call", None, "0x1") == []  # noqa: SLF001
+
+
+async def test_intrinsic_validators_off_is_observe_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(consensus, "RPC_CONSENSUS_VALIDATORS", False)
+    params = [{"fromBlock": "0x64", "toBlock": "0xc8"}]
+    out_of_range = [{"blockNumber": "0x12c", "logIndex": "0x0"}]
+    good = [{"blockNumber": "0x96", "logIndex": "0x0"}]
+    client = StubClient({ALPHA: out_of_range, BETA: out_of_range, GAMMA: good})
+
+    out = await verify_across_providers(
+        client, "ethereum", "eth_getLogs", params, endpoints=[ALPHA, BETA, GAMMA]
+    )
+    # Observe-only: the invalid pair still counts, so quorum is reached.
+    assert out.verified is True
+    assert out.agreement == 2
+
+
+async def test_intrinsic_validators_on_rejects_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(consensus, "RPC_CONSENSUS_VALIDATORS", True)
+    params = [{"fromBlock": "0x64", "toBlock": "0xc8"}]
+    out_of_range = [{"blockNumber": "0x12c", "logIndex": "0x0"}]
+    good = [{"blockNumber": "0x96", "logIndex": "0x0"}]
+    client = StubClient({ALPHA: out_of_range, BETA: out_of_range, GAMMA: good})
+
+    out = await verify_across_providers(
+        client, "ethereum", "eth_getLogs", params, endpoints=[ALPHA, BETA, GAMMA]
+    )
+    # Validators on: the two invalid answers are rejected, leaving one
+    # provider — not enough evidence, so the read is not failed either.
+    assert out.verified is False
+    assert out.reason == "insufficient_evidence"

@@ -35,6 +35,7 @@ from lite_indexer.indexer._writers import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcFetchFailedError
+from lite_indexer.storage.ch_write_pool import run_ch_write
 from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrategy
 
 logger = get_logger(__name__)
@@ -505,7 +506,11 @@ class SyncLoopMixin(IndexerMixinBase):
         # itself, which degrades gracefully).
         ch_available = not events
         if events:
-            ch_inserted = self.strategy.write_clickhouse(events, self.ch_writer)
+            # Offload the blocking ClickHouse insert + row serialization +
+            # address-activity row-building to the bounded write pool: a
+            # chain's insert must not stall the other chains' event loop
+            # (2026-09-13 profile: ~53% of GIL samples here).
+            ch_inserted = await run_ch_write(self.strategy.write_clickhouse, events, self.ch_writer)
             summary["events_written_ch"] = ch_inserted
             ch_available = ch_inserted > 0
 
@@ -551,7 +556,8 @@ class SyncLoopMixin(IndexerMixinBase):
             summary["dex_events_fetched"] = summary.get("dex_events_fetched", 0) + len(solana_swaps)
 
         if dex_events:
-            dex_ch_inserted = self.ch_writer.write_dex_events(self.chain, dex_events)
+            # Blocking dex insert + whale/price row-building → bounded pool.
+            dex_ch_inserted = await run_ch_write(self.ch_writer.write_dex_events, self.chain, dex_events)
             summary["dex_events_written_ch"] = dex_ch_inserted
 
             # Data-loss guard (mirrors the transfer guard at step 7): dex

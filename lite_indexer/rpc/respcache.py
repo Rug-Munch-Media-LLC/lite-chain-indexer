@@ -128,6 +128,33 @@ def _confirmed(block: int | None, tip: int | None) -> bool:
     return block <= (tip - RPC_CACHE_CONFIRMATIONS)
 
 
+def _l2_writable(scope: _Scope, chain: str | None, tip: int | None) -> bool:
+    """Whether a cache decision may be persisted to the durable L2 store.
+
+    L2 survives restarts, so it must only hold reads that are immutable by
+    content (identity / hash-scoped) or provably below the confirm depth of
+    the TRUSTED chain head. The per-call ``tip`` can come from a single
+    endpoint that is stale or ahead; the guard therefore checks against
+    ``known_head`` — the pool's monotonic observed head — and falls back to
+    the caller's tip only when no trusted head has been recorded yet. This
+    closes the sawtooth case where a volatile near-tip answer was written to
+    L2 because one endpoint reported a higher head than the rest of the pool.
+    """
+    if scope.block_hash is not None:
+        return True  # hash-scoped reads are immutable by content
+    if scope.from_block is None and scope.block_number is None:
+        return True  # identity read
+    target = scope.to_block if scope.to_block is not None else scope.block_number
+    if target is None:
+        return False
+    trusted = known_head(chain)
+    if trusted is None:
+        trusted = tip
+    if trusted is None:
+        return False
+    return _confirmed(target, trusted)
+
+
 def _decide(
     method: str,
     params: list[Any] | None,
@@ -309,13 +336,29 @@ def put(
     result = response.get("result") if isinstance(response, dict) else None
     if method not in EMPTY_CACHEABLE_METHODS and _empty_result(result):
         return False
+
+    # L2 (durable) guard must be evaluated against the head known BEFORE this
+    # call's tip is recorded, otherwise a stale/ahead tip would vouch for
+    # itself. L1 still caches; only the durable write is withheld.
+    l2_ok = _l2_writable(scope, chain, tip)
+
     if tip is not None:
         note_head(chain, tip)
 
     key = (method, _canonical(params))
     _evict_l1_if_full()
     _cache[key] = (time.time() + scope.ttl, response)
-    _l2_put(scope, chain, method, params, response)
+    if l2_ok:
+        _l2_put(scope, chain, method, params, response)
+    else:
+        metrics_incr("cache_write_skipped_stale_tip")
+        logger.debug(
+            "rpc_cache_l2_skip_stale_tip",
+            method=method,
+            chain=chain,
+            block_number=scope.block_number,
+            to_block=scope.to_block,
+        )
     return True
 
 
