@@ -31,12 +31,24 @@ from __future__ import annotations
 import enum
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from lite_indexer.logging import get_logger
-from lite_indexer.rpc.client import RpcClient
+from lite_indexer.rpc.archive_routing import (
+    ARCHIVE_METHOD_PREFIXES,
+    ARCHIVE_METHODS,
+    ArchiveRoutingError,
+    NoArchiveEndpointError,
+    archive_capable_endpoints,
+    archive_guard_reason,
+    is_archive_capable,
+    method_requires_archive,
+)
+
+if TYPE_CHECKING:  # pragma: no cover — annotation-only, avoids import cycle
+    from lite_indexer.rpc.client import RpcClient
 
 logger = get_logger(__name__)
 
@@ -414,13 +426,21 @@ async def probe_endpoint_capabilities(
 
 
 __all__ = [
+    "ARCHIVE_METHODS",
+    "ARCHIVE_METHOD_PREFIXES",
     "CAPABILITY_PROBE_TIMEOUT",
+    "ArchiveRoutingError",
     "CapabilityRecord",
     "GETLOGS_RANGE_LADDER",
+    "NoArchiveEndpointError",
     "SEEDED_CU_TARIFF",
     "TRANSFER_TOPIC",
+    "archive_capable_endpoints",
+    "archive_guard_reason",
     "capability_records",
     "get_capability",
+    "is_archive_capable",
+    "method_requires_archive",
     "probe_archive",
     "probe_block_receipts",
     "probe_cu_tariff",

@@ -45,6 +45,11 @@ from lite_indexer.rpc.pool import (
     record_endpoint_success,
     record_rate_limit,
 )
+from lite_indexer.rpc.provider_caps import (
+    provider_concurrency_slot,
+    provider_throttle_before,
+    record_provider_response,
+)
 from lite_indexer.rpc.ratelimit import apply_provider_rate_limit
 from lite_indexer.rpc.routing import (
     decr_in_flight,
@@ -228,6 +233,7 @@ class RpcClient:
         """
         from lite_indexer.rpc.autotune import autotune_wait
         from lite_indexer.rpc.autotune import record_call as autotune_record
+        from lite_indexer.rpc.capabilities import archive_guard_reason
         from lite_indexer.rpc.circuit import circuit_open, record_circuit_failure, record_circuit_success
         from lite_indexer.rpc.routing import record_rpc_usage
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
@@ -243,6 +249,20 @@ class RpcClient:
             _warn_deferred(endpoint, method, reason)
             return None
 
+        # Archive-class fail-closed gate: a known non-archive endpoint must
+        # never serve eth_getLogs/eth_getProof/debug_*/trace_* — it silently
+        # returns wrong/empty data. Returns None (the existing failure shape).
+        archive_reason = archive_guard_reason(endpoint, method)
+        if archive_reason:
+            metrics_incr("rpc_archive_fail_closed")
+            logger.warning(
+                "rpc_archive_fail_closed",
+                endpoint=endpoint[:60],
+                method=method,
+                reason=archive_reason,
+            )
+            return None
+
         # Circuit breaker gate: an endpoint that tripped (5 consecutive
         # transient failures) is skipped for the open-TTL window; after
         # expiry one probe passes (half-open) and success resets it.
@@ -256,9 +276,18 @@ class RpcClient:
             "method": method,
             "params": params or [],
         }
+        # Per-account (provider) cap: queue when the provider's concurrency /
+        # requests-per-second budget is exhausted, and honor the account-level
+        # Retry-After window — providers ban the ACCOUNT, not one URL.
+        provider_id = provider_id_for_endpoint(endpoint)
         # Intelligent throttle: honor Retry-After / advertised budget /
         # per-method rate BEFORE spending another request on this endpoint.
         await throttle_before(endpoint, method)
+        # Provider (account) gate: honor the account-level Retry-After /
+        # requests-per-second budget ONCE before the retry loop. Concurrency
+        # is enforced per dispatch below; pacing once avoids re-pacing the
+        # provider budget on every transient retry.
+        await provider_throttle_before(endpoint)
         # Auto-tune soft spacing: a straining endpoint gets progressively
         # wider gaps instead of a hard ban (NodeCore-style adaptation).
         await autotune_wait(endpoint)
@@ -282,13 +311,15 @@ class RpcClient:
                 _safe_record(record_endpoint_call, endpoint, method)
                 _safe_record(incr_in_flight, endpoint)
                 try:
-                    client = await _get_call_client(timeout)
-                    resp = await client.post(endpoint, json=payload)
+                    async with provider_concurrency_slot(provider_id):
+                        client = await _get_call_client(timeout)
+                        resp = await client.post(endpoint, json=payload)
                 finally:
                     _safe_record(decr_in_flight, endpoint)
                 _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
                 bytes_received = len(resp.content or b"")
                 record_rpc_response(endpoint, method, resp.status_code, resp.headers)
+                _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
 
                 # Empty response check — often a transient gateway glitch.
                 if not resp.text or len(resp.text) < 5:
@@ -504,6 +535,22 @@ class RpcClient:
             _warn_deferred(endpoint, "eth_getLogs", reason)
             return []
 
+        # Archive-class fail-closed gate: eth_getLogs is ARCHIVE-class — a
+        # known non-archive endpoint silently returns wrong/empty logs, so
+        # fail closed (None = failure shape) rather than query it.
+        from lite_indexer.rpc.capabilities import archive_guard_reason
+
+        archive_reason = archive_guard_reason(endpoint, "eth_getLogs")
+        if archive_reason:
+            metrics_incr("rpc_archive_fail_closed")
+            logger.warning(
+                "rpc_archive_fail_closed",
+                endpoint=endpoint[:60],
+                method="eth_getLogs",
+                reason=archive_reason,
+            )
+            return None
+
         filter_params: dict[str, Any] = {
             "fromBlock": hex(from_block),
             "toBlock": hex(to_block),
@@ -521,11 +568,14 @@ class RpcClient:
 
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
 
+        provider_id = provider_id_for_endpoint(endpoint)
         for attempt in range(max_retries):
             # Apply provider rate limiting before request
             await apply_provider_rate_limit(endpoint)
             # Intelligent throttle: Retry-After / budget / per-method pacing.
             await throttle_before(endpoint, "eth_getLogs")
+            # Provider (account) gate: account-level Retry-After / rps budget.
+            await provider_throttle_before(endpoint)
 
             try:
                 # Ledger + in-flight telemetry around the request (best-effort).
@@ -533,12 +583,14 @@ class RpcClient:
                 started = time.perf_counter()
                 _safe_record(incr_in_flight, endpoint)
                 try:
-                    client = await self._get_client()
-                    resp = await client.post(endpoint, json=payload, timeout=RPC_TIMEOUT)
+                    async with provider_concurrency_slot(provider_id):
+                        client = await self._get_client()
+                        resp = await client.post(endpoint, json=payload, timeout=RPC_TIMEOUT)
                 finally:
                     _safe_record(decr_in_flight, endpoint)
                 _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
                 record_rpc_response(endpoint, "eth_getLogs", resp.status_code, resp.headers)
+                _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
 
                 if resp.status_code == 429:
                     # Respect Retry-After exactly when the endpoint tells

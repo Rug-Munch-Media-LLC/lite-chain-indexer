@@ -58,7 +58,12 @@ from lite_indexer.dex.transfers import parse_transfer_logs
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.query.cache import QueryCache
-from lite_indexer.rpc import RpcClient, get_best_endpoint, select_endpoint_for_method
+from lite_indexer.rpc import (
+    NoArchiveEndpointError,
+    RpcClient,
+    get_best_endpoint,
+    select_endpoint_for_method,
+)
 from lite_indexer.rpc.client import fetch_block_timestamps
 from lite_indexer.storage.parquet import ParquetExporter
 from lite_indexer.util.bounded import BoundedDict
@@ -196,6 +201,10 @@ class RPCFetcher:
             return None
         try:
             return select_endpoint_for_method(method, endpoints, chain=chain)
+        except NoArchiveEndpointError:
+            # Fail-closed: never fall back to a non-archive endpoint for an
+            # ARCHIVE-class call (it would silently return wrong/empty data).
+            raise
         except Exception:  # noqa: BLE001 — selection is best-effort
             return get_best_endpoint(endpoints)
 

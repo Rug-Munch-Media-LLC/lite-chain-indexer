@@ -22,6 +22,13 @@ Split into sub-modules:
 
 from __future__ import annotations
 
+from lite_indexer.rpc.capabilities import (
+    ArchiveRoutingError,
+    NoArchiveEndpointError,
+    archive_capable_endpoints,
+    is_archive_capable,
+    method_requires_archive,
+)
 from lite_indexer.rpc.client import RpcClient, fetch_block_timestamps
 from lite_indexer.rpc.health import (
     is_endpoint_healthy,
@@ -44,6 +51,12 @@ from lite_indexer.rpc.pool import (
     record_endpoint_success,
     unban_endpoint,
 )
+from lite_indexer.rpc.provider_caps import (
+    PROVIDER_LIMITER,
+    ProviderRateLimiter,
+    provider_slot,
+    record_provider_response,
+)
 from lite_indexer.rpc.routing import (
     CIRCUIT_BREAKER,
     USAGE_TRACKER,
@@ -54,6 +67,7 @@ from lite_indexer.rpc.routing import (
     log_rpc_usage,
     preferred_tier_for_method,
     record_rpc_usage,
+    select_archive_endpoint,
     select_endpoint_for_method,
 )
 from lite_indexer.rpc.throttle import (
@@ -112,4 +126,16 @@ __all__ = [
     "RPCRateTracker",
     "record_rpc_response",
     "throttle_before",
+    # provider caps
+    "PROVIDER_LIMITER",
+    "ProviderRateLimiter",
+    "provider_slot",
+    "record_provider_response",
+    # archive-class routing
+    "ArchiveRoutingError",
+    "NoArchiveEndpointError",
+    "archive_capable_endpoints",
+    "is_archive_capable",
+    "method_requires_archive",
+    "select_archive_endpoint",
 ]

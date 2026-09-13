@@ -155,6 +155,14 @@ RPC_METHOD_DEFAULT_RATE: float = float(os.environ.get("RPC_METHOD_DEFAULT_RATE",
 # honored exactly; this only bounds the speculative pre-emptive sleep.
 RPC_THROTTLE_MAX_WAIT: float = float(os.environ.get("RPC_THROTTLE_MAX_WAIT", "30.0"))
 
+# ── Per-account (provider) rate caps (rpc/provider_caps.py) ───────────
+# ADDITIVE to the per-endpoint throttle: providers ban the ACCOUNT when
+# many of their endpoints are hit at once across chains, so concurrency and
+# requests/sec are capped per `provider_id_for_endpoint` (Alchemy account-
+# wide, etc.). Callers queue when the budget is exhausted rather than fire.
+RPC_PROVIDER_MAX_CONCURRENCY: int = int(os.environ.get("RPC_PROVIDER_MAX_CONCURRENCY", "4"))
+RPC_PROVIDER_RPS: float = float(os.environ.get("RPC_PROVIDER_RPS", "10.0"))
+
 # RPC auto-discovery: how often (seconds) to scan chainlist.org for new
 # free endpoints. 0 disables. Default: daily.
 RPC_DISCOVERY_INTERVAL: int = int(os.environ.get("RPC_DISCOVERY_INTERVAL", "86400"))

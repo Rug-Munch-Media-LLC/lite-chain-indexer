@@ -82,8 +82,10 @@ from lite_indexer.rpc.routing.helpers import (
     record_rpc_usage,
 )
 from lite_indexer.rpc.routing.selector import (
+    MIN_ARCHIVE_ENDPOINTS,
     endpoint_tier,
     preferred_tier_for_method,
+    select_archive_endpoint,
     select_endpoint_for_method,
 )
 
@@ -109,8 +111,10 @@ __all__ = [
     "STALENESS_MAX_BLOCKS",
     "STALE_ENDPOINT_PENALTY",
     "ERROR_RATE_DAMPING",
+    "MIN_ARCHIVE_ENDPOINTS",
     "endpoint_tier",
     "preferred_tier_for_method",
+    "select_archive_endpoint",
     "select_endpoint_for_method",
     "record_rpc_usage",
     "log_rpc_usage",
