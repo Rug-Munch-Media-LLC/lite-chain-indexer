@@ -14,13 +14,14 @@ Embedding architecture (Qwen3-Embedding-4B, 2560-dim):
 
 ``EMBEDDING_MODE`` selects the lane strategy:
 
-* ``"auto"`` (default) — try DeepInfra first, fall back to local.
+* ``"local"`` (default) — local llama.cpp only (zero-cost). Set "auto" or
+  "deepinfra" to use the paid DeepInfra lane (opt-in).
 * ``"deepinfra"`` — DeepInfra only.
 * ``"local"`` — local llama.cpp only.
 
 Environment variables:
   LANCE_DIR               — LanceDB database directory (default /var/data/lance)
-  EMBEDDING_MODE          — "auto" (default), "deepinfra", or "local"
+  EMBEDDING_MODE          — "local" (default), "auto", or "deepinfra"
   DEEPINFRA_EMBED_URL     — DeepInfra OpenAI-compatible base URL
                             (default https://api.deepinfra.com/v1/openai)
   LOCAL_EMBED_URL         — local llama.cpp base URL (default http://127.0.0.1:8004/v1)
@@ -41,7 +42,7 @@ LANCE_DIR: Path = Path(os.environ.get("LANCE_DIR", "/var/data/lance"))
 LANCE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Embedding: dual-lane Qwen3-Embedding-4B ─────────────────────────────
-EMBEDDING_MODE: str = os.environ.get("EMBEDDING_MODE", "auto").lower()
+EMBEDDING_MODE: str = os.environ.get("EMBEDDING_MODE", "local").lower()
 
 DEEPINFRA_EMBED_URL: str = os.environ.get("DEEPINFRA_EMBED_URL", "https://api.deepinfra.com/v1/openai")
 LOCAL_EMBED_URL: str = os.environ.get("LOCAL_EMBED_URL", "http://127.0.0.1:8004/v1")

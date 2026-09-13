@@ -123,3 +123,14 @@ class TestHyperliquidStrategyRegistry:
         strategy = create_strategy("hyperliquid")
         assert isinstance(strategy, EVMChainStrategy)
         assert strategy.chain == "hyperliquid"
+
+
+def test_vector_ingestion_is_opt_in_by_default():
+    """Lightest-weight/zero-cost: vectors (may use a paid lane) are OFF by default."""
+    import lite_indexer.config.indexing as idx
+    from lite_indexer.config.indexing import VECTOR_INGESTION_ENABLED
+    # default (no env override in this process) must be False
+    assert isinstance(VECTOR_INGESTION_ENABLED, bool)
+    import inspect
+    src = inspect.getsource(idx)
+    assert 'os.environ.get("VECTOR_INGESTION_ENABLED", "0")' in src

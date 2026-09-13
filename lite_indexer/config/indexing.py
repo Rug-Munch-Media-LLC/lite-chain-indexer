@@ -324,9 +324,10 @@ PRICING_TOKEN_WINDOW_DAYS: int = int(os.environ.get("PRICING_TOKEN_WINDOW_DAYS",
 # into semantic embeddings (see lite_indexer/vectors/ingestion.py): it reads
 # the last synced block range from ClickHouse, generates text representations
 # for wallets and contracts, embeds them via Qwen3-Embedding-4B, and
-# stores them in LanceDB collections. ON by default — the pipeline is stable
-# and best-effort: a failure is logged and never blocks the core sync loop.
-VECTOR_INGESTION_ENABLED: bool = os.environ.get("VECTOR_INGESTION_ENABLED", "1") == "1"
+# stores them in LanceDB collections. OFF by default (OPT-IN) to keep the
+# indexer "lite"/zero-cost: the durable store is ClickHouse, not LanceDB, and
+# embeddings may use a paid lane. Enable with VECTOR_INGESTION_ENABLED=1.
+VECTOR_INGESTION_ENABLED: bool = os.environ.get("VECTOR_INGESTION_ENABLED", "0") == "1"
 
 # Ingestion cadence: run the vector pipeline once every N blocks per chain
 # (checked at the end of each sync cycle; the first cycle always ingests).
