@@ -449,3 +449,47 @@ class TestBlockscoutEndpoints:
             assert not any(
                 "blockscout" in u or "scrollscan" in u or "gnosisscan" in u for u in BUILTIN_ENDPOINTS[chain]
             ), chain
+
+
+# ── Tenderly keyless public gateway (2026-09-13) ───────────────────────
+# https://gateway.tenderly.co/public/<net> — keyless, archive getLogs
+# verified live. 13 chains pass; bsc/scroll/metis/fantom/robinhood 404.
+TENDERLY_NETS: dict[str, str] = {
+    "ethereum": "mainnet",
+    "base": "base",
+    "polygon": "polygon",
+    "arbitrum": "arbitrum",
+    "optimism": "optimism",
+    "avalanche": "avalanche",
+    "gnosis": "gnosis",
+    "linea": "linea",
+    "zksync": "zksync",
+    "mantle": "mantle",
+    "celo": "celo",
+    "blast": "blast",
+    "fraxtal": "fraxtal",
+}
+TENDERLY_UNSUPPORTED = ("bsc", "scroll", "metis", "fantom", "robinhood")
+
+
+class TestTenderlyGateway:
+    def test_present_and_keyless_for_verified_chains(self):
+        for chain, net in TENDERLY_NETS.items():
+            url = f"https://gateway.tenderly.co/public/{net}"
+            assert url in BUILTIN_ENDPOINTS[chain], f"{chain}: missing {url}"
+            assert "${" not in url
+            assert url in GET_LOGS_ENDPOINTS[chain], f"{chain}: dropped from active pool"
+
+    def test_absent_for_unsupported_chains(self):
+        for chain in TENDERLY_UNSUPPORTED:
+            assert not any("gateway.tenderly.co/public/" in u for u in BUILTIN_ENDPOINTS[chain]), chain
+
+    def test_expands_via_normal_resolution_path(self):
+        for net in TENDERLY_NETS.values():
+            url = f"https://gateway.tenderly.co/public/{net}"
+            assert _resolved_endpoints([url]) == [url]
+
+    def test_no_keyed_tenderly_form_wired(self):
+        src = (REPO_ROOT / "lite_indexer" / "chains" / "endpoints.py").read_text(encoding="utf-8")
+        assert "TENDERLY_ACCESS_KEY" not in src
+        assert "tenderly.co/public/${" not in src
