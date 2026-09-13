@@ -21,6 +21,7 @@ point, so at most one sync cycle (~30s) is lost and re-fetched from RPC.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -335,6 +336,12 @@ class LiteIndexer(
         # Plugins — lazily loaded (chain-scoped) on first sync cycle.
         # None means "not yet loaded"; an empty list means no plugins.
         self._plugins: list[BasePlugin] | None = None
+
+        # EVM WebSocket head pool (rpc/head_pool.py). The pool is started by
+        # the daemon via ``start_head_pool()``; the wakeup event lets the
+        # poll loop start a sync pass as soon as a new head is pushed.
+        self._head_pool_task: asyncio.Task[None] | None = None
+        self._head_wakeup: asyncio.Event | None = None
 
     # ── Strategy ─────────────────────────────────────────────────────
 

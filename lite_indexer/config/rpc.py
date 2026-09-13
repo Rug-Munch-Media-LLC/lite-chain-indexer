@@ -335,4 +335,19 @@ SOLANA_WS_MAX_RECONNECTS: int = int(os.environ.get("SOLANA_WS_MAX_RECONNECTS", "
 RPC_CONSENSUS_ENABLED: bool = os.environ.get("RPC_CONSENSUS_ENABLED", "1") != "0"
 RPC_CONSENSUS_MIN_AGREEMENT: int = int(os.environ.get("RPC_CONSENSUS_MIN_AGREEMENT", "2"))
 RPC_CONSENSUS_SAMPLE_RATE: float = float(os.environ.get("RPC_CONSENSUS_SAMPLE_RATE", "0.05"))
+
+# ── EVM WebSocket head pool (rpc/head_pool.py) ─────────────────────────
+# Push the chain tip instead of polling eth_blockNumber every cycle:
+# subscribe to ``eth_subscribe(["newHeads"])`` over a single websocket to a
+# healthy endpoint and wake the per-chain sync loop on each new head. The
+# websocket URLs come ONLY from the private endpoint overlay (``ws`` list or
+# ``ws://`` / ``wss://`` entries) — the public tree names no provider. With
+# no WS endpoint configured the pool is a no-op and HTTP polling remains the
+# sole tip source. A WS failure never stalls the indexer: the pool logs
+# ``ws_head_fallback`` and polling continues as the heartbeat.
+RPC_WS_HEAD_ENABLED: bool = os.environ.get("RPC_WS_HEAD_ENABLED", "1") != "0"
+RPC_WS_HEAD_MAX_ENDPOINTS: int = int(os.environ.get("RPC_WS_HEAD_MAX_ENDPOINTS", "2"))
+# Base/max for the jittered reconnect backoff (seconds).
+RPC_WS_HEAD_RECONNECT_BASE_SECONDS: float = float(os.environ.get("RPC_WS_HEAD_RECONNECT_BASE_SECONDS", "1.0"))
+RPC_WS_HEAD_RECONNECT_MAX_SECONDS: float = float(os.environ.get("RPC_WS_HEAD_RECONNECT_MAX_SECONDS", "30.0"))
 RPC_CONSENSUS_MAX_ENDPOINTS: int = int(os.environ.get("RPC_CONSENSUS_MAX_ENDPOINTS", "3"))

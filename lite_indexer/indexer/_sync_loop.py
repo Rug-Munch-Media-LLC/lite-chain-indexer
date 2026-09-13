@@ -22,6 +22,7 @@ from lite_indexer.config import (
     DEX_SKIP_TO_HEAD_HOURS,
     HEAD_BUFFER,
     REORG_PROTECTION_ENABLED,
+    RPC_WS_HEAD_ENABLED,
     STATE_BACKWARD_PROTECTION,
     STATE_REGRESSION_TOLERANCE_BLOCKS,
 )
@@ -64,6 +65,77 @@ class SyncLoopMixin(IndexerMixinBase):
             True if a reorg was detected.
         """
         return bool(events and len(events) == 1 and isinstance(events[0], str) and events[0] == self._REORG_SENTINEL)
+
+    # ── EVM WebSocket head pool ────────────────────────────────────────
+    # Push the tip so the daemon can start a sync pass as soon as a new head
+    # lands, instead of waiting out the whole HTTP poll interval. HTTP
+    # polling remains the fallback/heartbeat: with no overlay WS endpoint
+    # (or after the pool exhausts every endpoint) this is a plain sleep.
+    # Every pass still goes through the daemon's memory gate + concurrency
+    # cap and the normal RPC throttles — the pool only shortens the wait.
+
+    def _head_ws_endpoints(self) -> list[str]:
+        """Overlay websocket head endpoints for this chain ([] = disabled)."""
+        from lite_indexer.chains.endpoints import WS_HEAD_ENDPOINTS
+
+        return list(WS_HEAD_ENDPOINTS.get(self.chain, []))
+
+    def _on_head(self, block_number: int, block_hash: str) -> None:
+        """Record a pushed head and wake the daemon's poll wait early."""
+        if self._head_wakeup is not None:
+            self._head_wakeup.set()
+        logger.info(
+            "ws_head_received",
+            chain=self.chain,
+            block_number=block_number,
+            block_hash=block_hash[:12],
+        )
+
+    async def start_head_pool(self) -> None:
+        """Start the EVM webSocket head subscriber (no-op when unconfigured).
+
+        Resolves WS endpoints from the private overlay only. No endpoints, a
+        non-EVM chain, a disabled ``RPC_WS_HEAD_ENABLED`` or an already
+        running pool all make this a no-op — HTTP polling continues
+        unaffected.
+        """
+        if self._head_pool_task is not None or not self._is_evm() or not RPC_WS_HEAD_ENABLED:
+            return
+        endpoints = self._head_ws_endpoints()
+        if not endpoints:
+            return
+        from lite_indexer.rpc.head_pool import subscribe_heads
+
+        self._head_wakeup = asyncio.Event()
+        self._head_pool_task = asyncio.create_task(
+            subscribe_heads(self.chain, endpoints, self._on_head),
+            name=f"ws-head-{self.chain}",
+        )
+
+    async def stop_head_pool(self) -> None:
+        """Cancel the WS head subscriber (idempotent)."""
+        task, self._head_pool_task = self._head_pool_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def wait_for_head(self, timeout: float) -> None:
+        """Sleep up to ``timeout`` seconds, waking early on a pushed head.
+
+        The HTTP poll interval stays the heartbeat: when no WS pool is
+        running this is exactly ``asyncio.sleep(timeout)``. A pushed head
+        returns immediately so the daemon runs a sync pass through the
+        normal memory gate + concurrency cap.
+        """
+        wakeup = self._head_wakeup
+        if wakeup is None or timeout <= 0:
+            await asyncio.sleep(max(0.0, timeout))
+            return
+        try:
+            await asyncio.wait_for(wakeup.wait(), timeout=timeout)
+        except TimeoutError:
+            return
+        wakeup.clear()
 
     # ── State regression guard ─────────────────────────────────────────
 

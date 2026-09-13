@@ -158,6 +158,12 @@ async def main_daemon(
         indexer.deployers_enabled = deployers_enabled
         indexer.traces_enabled = traces_enabled
 
+        # EVM WebSocket head pool: push the tip so the next sync pass starts
+        # as soon as a new head lands instead of waiting out the poll
+        # interval. Overlay-only; a no-op without WS endpoints, so HTTP
+        # polling remains the heartbeat/fallback.
+        await indexer.start_head_pool()
+
         base_interval = CHAIN_POLL_INTERVALS.get(chain, 15.0)
         poll_interval = effective_poll_interval(chain, base_interval)
         log_chain_resources(chain, poll_interval=base_interval)
@@ -229,8 +235,10 @@ async def main_daemon(
             remaining = poll_interval - elapsed
             if remaining > 0:
                 try:
-                    # Use sleep for the remaining interval; cancelled by shutdown_event
-                    await asyncio.sleep(remaining)
+                    # Wait out the remaining interval, but wake early when a
+                    # WS head is pushed (HTTP polling is the fallback when no
+                    # pool is running). Cancelled by shutdown.
+                    await indexer.wait_for_head(remaining)
                 except asyncio.CancelledError:
                     break
 

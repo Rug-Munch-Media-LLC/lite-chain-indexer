@@ -47,11 +47,56 @@ to the free/keyless defaults. It never crashes.
 - `endpoints` is an **ordered** list — highest tier first. The indexer
   appends them after the builtin endpoints, so a curated archive provider
   you trust can be placed wherever your scoring expects it.
+- `ws` is an optional list (or single string) of websocket URLs for the
+  EVM real-time head pool — see below.
 - `notes` is optional free-form metadata (tier annotations). It is not used
   for routing today; it documents the list.
 - A bare list (`"solana": [ ... ]`) is shorthand for `{"endpoints": [...]}`.
 - Put **placeholder names only** in the file (`${YOUR_PROVIDER_KEY}`). The
   actual key value belongs in your environment / secret store.
+
+## Websocket head endpoints (`ws`)
+
+EVM chains can push the chain tip instead of polling `eth_blockNumber`.
+Supply one or more websocket URLs per chain and the indexer opens a single
+`eth_subscribe(["newHeads"])` subscription; each pushed head wakes that
+chain's sync loop immediately. This is entirely optional — with no `ws`
+configured (or `RPC_WS_HEAD_ENABLED=0`) HTTP polling remains the sole tip
+source, and a websocket failure always falls back to polling.
+
+```json
+{
+  "ethereum": {
+    "endpoints": [
+      "https://mainnet.example-rpc.com/v1/${YOUR_PROVIDER_KEY}"
+    ],
+    "ws": [
+      "wss://mainnet.example-rpc.com/ws/${YOUR_PROVIDER_KEY}"
+    ]
+  },
+  "base": {
+    "endpoints": [
+      "https://base.example-rpc.com/v1/${YOUR_PROVIDER_KEY}",
+      "wss://base.example-rpc.com/ws/${YOUR_PROVIDER_KEY}"
+    ]
+  }
+}
+```
+
+- Websocket URLs are also recognised when listed under `endpoints` with a
+  `ws://` / `wss://` scheme. They are **never** dialed by the HTTP client.
+- Order is preserved (highest tier first); duplicates are dropped.
+- Unresolved `${VAR}` websocket URLs are dropped, exactly like HTTP
+  endpoints.
+- `RPC_WS_HEAD_MAX_ENDPOINTS` (default `2`) caps how many are rotated.
+- `RPC_WS_HEAD_ENABLED` (default `1`) is the master switch.
+- On repeated failure the pool reconnects with jittered backoff and rotates
+  to the next endpoint; when all fail it logs `ws_head_fallback` and the
+  HTTP poll takes over.
+
+Websocket endpoints — like keyed HTTP endpoints — never appear in the public
+tree; only the overlay provides them.
+
 
 ## Example: add any EIP-155 provider
 

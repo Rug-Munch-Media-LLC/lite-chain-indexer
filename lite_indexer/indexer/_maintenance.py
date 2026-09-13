@@ -74,6 +74,7 @@ class MaintenanceMixin(IndexerMixinBase):
         Called by the daemon on shutdown (and before a memory self-recycle
         exit) so sockets are not leaked to the restarted process.
         """
+        await self.stop_head_pool()
         strategy, self._strategy = self._strategy, None
         if strategy is not None:
             await strategy.aclose()

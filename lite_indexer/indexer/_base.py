@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    import asyncio
     from pathlib import Path
 
     from lite_indexer.chain_registry import ChainConfig
@@ -82,6 +83,9 @@ class IndexerMixinBase:
     _reconcile_rewinds: list[tuple[int, int]]
     # Set by ``_determine_block_range``; default keeps reads safe.
     _last_tip: int | None = None
+    # EVM WebSocket head pool (rpc/head_pool.py) — none = not started/disabled.
+    _head_pool_task: asyncio.Task[None] | None
+    _head_wakeup: asyncio.Event | None
 
     # ── Properties owned by the concrete class / a mixin ──────────────────
     @property
@@ -161,6 +165,10 @@ class IndexerMixinBase:
         raise NotImplementedError
 
     def _maybe_reconcile_range(self, from_block: int, to_block: int, expected: int, summary: dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    # ── EVM WebSocket head pool (SyncLoopMixin) ───────────────────────────
+    async def stop_head_pool(self) -> None:
         raise NotImplementedError
 
     # ── Freemium backfill queue (BackfillMixin) ───────────────────────────

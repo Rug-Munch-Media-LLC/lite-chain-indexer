@@ -33,7 +33,7 @@ import os
 from lite_indexer.env import load_env_file
 from lite_indexer.logging import get_logger
 
-from ._overlay import load_endpoint_overlay, merge_endpoints
+from ._overlay import load_endpoint_overlay, merge_endpoints, ws_head_endpoints
 
 # Load the shared env file BEFORE module-level placeholder resolution below,
 # so every import path sees the same environment. Idempotent + non-destructive.
@@ -469,6 +469,15 @@ _ENDPOINT_OVERLAY = load_endpoint_overlay()
 _OVERLAY_EXTRA = {chain: entry for chain, entry in _ENDPOINT_OVERLAY.items() if chain in BUILTIN_ENDPOINTS}
 GET_LOGS_ENDPOINTS = merge_endpoints(BUILTIN_ENDPOINTS, _OVERLAY_EXTRA)
 GET_LOGS_ENDPOINTS = {chain: _resolved_endpoints(urls) for chain, urls in GET_LOGS_ENDPOINTS.items()}
+
+# ── EVM WebSocket Head Endpoints ────────────────────────────────────────
+# The real-time head pool (rpc/head_pool.py) pushes ``newHeads`` notifications
+# instead of polling eth_blockNumber. Websocket URLs are OVERLAY-ONLY: the
+# public tree ships no provider websockets. Empty per chain → no-op, HTTP
+# polling remains the sole tip source. See docs/PROVIDER_OVERLAY.md.
+WS_HEAD_ENDPOINTS: dict[str, list[str]] = {
+    chain: ws_head_endpoints(chain, _ENDPOINT_OVERLAY) for chain in BUILTIN_ENDPOINTS
+}
 
 # ── Last-Resort Endpoints ───────────────────────────────────────────────
 # Known-good endpoints tried when every endpoint in the active pool fails
