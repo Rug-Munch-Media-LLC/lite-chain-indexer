@@ -393,3 +393,59 @@ class TestPocketEndpoints:
             assert urls, chain
         assert SOLANA_ENDPOINTS
         assert TRON_ENDPOINTS
+
+
+# ── Blockscout (keyless archive getLogs, 2026-09-13) ───────────────────
+# Public keyless endpoints verified live with eth_chainId + an old-block
+# eth_getLogs (USDC transfer filter). 8 chains passed; base is 429 and the
+# rest have no blockscout eth-rpc host. Explicit hosts where the canonical
+# <chain>.blockscout.com 301-redirects.
+BLOCKSCOUT_HOSTS: dict[str, str] = {
+    "ethereum": "eth.blockscout.com",
+    "polygon": "polygon.blockscout.com",
+    "arbitrum": "arbitrum.blockscout.com",
+    "zksync": "zksync.blockscout.com",
+    "celo": "celo.blockscout.com",
+    "optimism": "explorer.optimism.io",
+    "scroll": "scrollscan.com",
+    "gnosis": "gnosisscan.io",
+}
+# Chains with NO usable Blockscout eth-rpc host (base is rate-limited).
+BLOCKSCOUT_UNAVAILABLE = (
+    "base",
+    "bsc",
+    "avalanche",
+    "fantom",
+    "linea",
+    "mantle",
+    "robinhood",
+    "blast",
+    "fraxtal",
+    "metis",
+)
+
+
+class TestBlockscoutEndpoints:
+    def test_present_and_keyless_for_every_verified_chain(self):
+        for chain, host in BLOCKSCOUT_HOSTS.items():
+            url = f"https://{host}/api/eth-rpc"
+            assert url in BUILTIN_ENDPOINTS[chain], f"{chain}: missing {url}"
+            assert "${" not in url
+            # Public free/keyless tier — not a keyed template.
+            assert url in GET_LOGS_ENDPOINTS[chain], f"{chain}: dropped from active pool"
+
+    def test_logs_only_comment_present(self):
+        src = (REPO_ROOT / "lite_indexer" / "chains" / "endpoints.py").read_text(encoding="utf-8")
+        assert "Blockscout" in src
+        assert "logs-only (no archive state)" in src
+
+    def test_expands_via_normal_resolution_path(self):
+        for host in BLOCKSCOUT_HOSTS.values():
+            url = f"https://{host}/api/eth-rpc"
+            assert _resolved_endpoints([url]) == [url]
+
+    def test_unavailable_chains_have_no_blockscout_entry(self):
+        for chain in BLOCKSCOUT_UNAVAILABLE:
+            assert not any(
+                "blockscout" in u or "scrollscan" in u or "gnosisscan" in u for u in BUILTIN_ENDPOINTS[chain]
+            ), chain

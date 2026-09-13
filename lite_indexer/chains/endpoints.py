@@ -67,6 +67,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://virginia.rpc.blxrbdn.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://eth-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://ethereum.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
+        "https://eth.blockscout.com/api/eth-rpc",  # T2 — Blockscout public RPC — keyless, archive getLogs verified 2026-09-13; logs-only (no archive state)
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -125,6 +126,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         # rate-limit-critical polygon pool keeps its depth.
         "https://polygon-rpc.com",  # T3 — re-added 2026-09-02 during rate-limit crisis (was 401 on 2026-08-05 — re-probe)
         "https://rpc-mainnet.matic.quiknode.pro",
+        "https://polygon.blockscout.com/api/eth-rpc",  # T2 — Blockscout public RPC — keyless, archive getLogs verified 2026-09-13; logs-only (no archive state)
     ],
     # ── Arbitrum (6 endpoints) ────────────────────────────────────────
     # T2: official arb1.arbitrum.io (verified)
@@ -140,6 +142,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://arbitrum-one-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://arbitrum.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
         "https://arbitrum.meowrpc.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
+        "https://arbitrum.blockscout.com/api/eth-rpc",  # T2 — Blockscout public RPC — keyless, archive getLogs verified 2026-09-13; logs-only (no archive state)
     ],
     # ── Optimism (4 endpoints) ────────────────────────────────────────
     # T1: tenderly (verified)
@@ -150,6 +153,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://mainnet.optimism.io",
         "https://optimism-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://optimism.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
+        "https://explorer.optimism.io/api/eth-rpc",  # T2 — Blockscout-backed explorer (explicit host; optimism.blockscout.com 301s here) — keyless, archive getLogs verified 2026-09-13; logs-only (no archive state)
     ],
     # ── Avalanche (4 endpoints) ───────────────────────────────────────
     # T2: tenderly gateway (verified 2026-08-03)
@@ -186,6 +190,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://1rpc.io/scroll",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://scroll-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://scroll.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
+        "https://scrollscan.com/api/eth-rpc",  # T2 — Blockscout-backed explorer (explicit host; scroll.blockscout.com 301s here) — keyless, archive getLogs verified 2026-09-13; logs-only (no archive state)
     ],
     # ── zkSync Era (4 endpoints) ──────────────────────────────────────
     # T2: tenderly gateway (verified 2026-08-03)
@@ -193,6 +198,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://mainnet.era.zksync.io",  # T1 — official (verified)
         "https://zksync-era.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://zksync.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
+        "https://zksync.blockscout.com/api/eth-rpc",  # T2 — Blockscout public RPC — keyless, archive getLogs verified 2026-09-13; logs-only (no archive state)
     ],
     # ── Mantle (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.mantle.xyz (verified)
@@ -213,6 +219,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://gnosis.gateway.tenderly.co",
         "https://gnosis-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://gnosis.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
+        "https://gnosisscan.io/api/eth-rpc",  # T2 — Blockscout-backed explorer (explicit host; gnosis.blockscout.com 301s here) — keyless, archive getLogs verified 2026-09-13; logs-only (no archive state)
         # eth_getLogs blocks 1..2 → real logs, 2026-09-13). 3 accounts.
     ],
     # ── Celo (3 endpoints) ────────────────────────────────────────────
@@ -220,6 +227,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://forno.celo.org",  # T1 — official forno (verified)
         "https://celo.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://celo.publicnode.com",  # T2 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
+        "https://celo.blockscout.com/api/eth-rpc",  # T2 — Blockscout public RPC — keyless, archive getLogs verified 2026-09-13; logs-only (no archive state)
     ],
     # ── Blast (verified 2026-09-01) ──────────────────────────────────
     # L2, chainId 81457 (0x13e31). publicnode: chainId ✓, getLogs ✓.
@@ -282,13 +290,22 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 }
 
 # Summary of PUBLIC (free/keyless) EVM endpoints per chain:
-#   ethereum: 8   base: 6   bsc: 10   polygon: 7
-#   arbitrum: 6   optimism: 5   avalanche: 5   fantom: 3
-#   linea: 6   scroll: 5   zksync: 3   mantle: 5
-#   gnosis: 5   celo: 3   blast: 3   fraxtal: 2
+#   ethereum: 9   base: 6   bsc: 10   polygon: 8
+#   arbitrum: 7   optimism: 6   avalanche: 5   fantom: 3
+#   linea: 6   scroll: 6   zksync: 4   mantle: 5
+#   gnosis: 6   celo: 4   blast: 3   fraxtal: 2
 #   metis: 2   robinhood: 5
 # -------------------------------------------------------
-#   Total builtin public templates: 89 across 18 chains
+#   Total builtin public templates: 97 across 18 chains
+#
+# 2026-09-13: Blockscout keyless public RPC added for the 8 chains that
+#   passed a live old-block eth_getLogs probe (ethereum/polygon/arbitrum/
+#   zksync/celo + explicit-host optimism=explorer.optimism.io,
+#   scroll=scrollscan.com, gnosis=gnosisscan.io). Keyless + archive getLogs
+#   capable, but LOGS-ONLY (historical eth_getBalance rejected → not archive
+#   state). base.blockscout.com returned HTTP 429 (rate-limited) and was NOT
+#   added; bsc/avalanche/fantom/linea/mantle/robinhood/blast/fraxtal/metis
+#   have no Blockscout eth-rpc host.
 #   Curated/keyed providers are supplied by the PRIVATE runtime overlay
 #   (see lite_indexer/chains/_overlay.py + docs/PROVIDER_OVERLAY.md).
 #   With no overlay set, only these free/keyless endpoints are used.
