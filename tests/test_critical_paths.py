@@ -361,8 +361,9 @@ class _FakeCH:
 
 
 def test_reorg_detection_evm():
-    """EVM reorg staging: hash mismatch → reorg; match/no-checkpoint → clean."""
+    """EVM reorg staging: mismatch → REORG; match → NO_REORG; else UNKNOWN."""
     from lite_indexer.strategies.evm.reorg import detect_reorg, reorg_depth
+    from lite_indexer.strategies.reorg_status import ReorgStatus
 
     assert reorg_depth("polygon") == 32  # fast chain gets deeper margin
     assert reorg_depth("unknown-chain") == 12
@@ -372,22 +373,23 @@ def test_reorg_detection_evm():
 
     # Mismatch → reorg detected
     ch = _FakeCH([(lambda sql: "SELECT block_hash" in sql, [[stored]])])
-    assert asyncio.run(detect_reorg("ethereum", 1000, current, ch)) is True
+    assert asyncio.run(detect_reorg("ethereum", 1000, current, ch)) is ReorgStatus.REORG
 
     # Same hash → no reorg
     ch = _FakeCH([(lambda sql: "SELECT block_hash" in sql, [[stored]])])
-    assert asyncio.run(detect_reorg("ethereum", 1000, stored, ch)) is False
+    assert asyncio.run(detect_reorg("ethereum", 1000, stored, ch)) is ReorgStatus.NO_REORG
 
-    # No checkpoint yet → cannot tell (False, not a false positive)
+    # No checkpoint yet → cannot tell (UNKNOWN, NOT a false "no reorg")
     ch = _FakeCH([])
-    assert asyncio.run(detect_reorg("ethereum", 1000, current, ch)) is False
+    assert asyncio.run(detect_reorg("ethereum", 1000, current, ch)) is ReorgStatus.UNKNOWN
 
-    # Missing hash → skip
-    assert asyncio.run(detect_reorg("ethereum", 1000, "", _FakeCH([]))) is False
+    # Missing hash → UNKNOWN (fail closed)
+    assert asyncio.run(detect_reorg("ethereum", 1000, "", _FakeCH([]))) is ReorgStatus.UNKNOWN
 
 
 def test_reorg_detection_solana(monkeypatch):
-    """Solana reorg staging: blockhash mismatch at depth-32 slot → fork slot."""
+    """Solana reorg staging: blockhash mismatch at depth-32 slot → REORG."""
+    from lite_indexer.strategies.reorg_status import ReorgStatus
     from lite_indexer.strategies.solana import reorg as sol_reorg
 
     stored = "0x" + "a" * 64
@@ -396,17 +398,18 @@ def test_reorg_detection_solana(monkeypatch):
     ch = _FakeCH([(lambda sql: "SELECT blockhash" in sql, [[stored]])])
     monkeypatch.setattr(sol_reorg, "_get_blockhash", AsyncMock(return_value=current))
     # current_slot=100 verifies slot 100-32=68
-    fork = asyncio.run(sol_reorg.detect_reorg(Mock(), 100, ch))
-    assert fork == 68
+    check = asyncio.run(sol_reorg.check_reorg(Mock(), 100, ch))
+    assert check.status is ReorgStatus.REORG
+    assert check.fork_block == 68
 
     # Matching blockhash → no reorg
     monkeypatch.setattr(sol_reorg, "_get_blockhash", AsyncMock(return_value=stored))
-    assert asyncio.run(sol_reorg.detect_reorg(Mock(), 100, ch)) is None
+    assert asyncio.run(sol_reorg.detect_reorg(Mock(), 100, ch)) is ReorgStatus.NO_REORG
 
-    # No checkpoint for the verify slot → None
+    # No checkpoint for the verify slot → UNKNOWN (cannot tell yet)
     ch_empty = _FakeCH([])
     monkeypatch.setattr(sol_reorg, "_get_blockhash", AsyncMock(return_value=current))
-    assert asyncio.run(sol_reorg.detect_reorg(Mock(), 100, ch_empty)) is None
+    assert asyncio.run(sol_reorg.detect_reorg(Mock(), 100, ch_empty)) is ReorgStatus.UNKNOWN
 
 
 def test_gap_detection(monkeypatch):
@@ -649,3 +652,52 @@ async def test_concurrent_chain_sync(tmp_path, monkeypatch):
     # cross-contamination between concurrent cycles.
     assert eth.state.load()["last_block"] == 200
     assert poly.state.load()["last_block"] == 300
+
+
+@pytest.mark.asyncio
+async def test_reorg_unknown_halts_state_advance(tmp_path, monkeypatch):
+    """UNKNOWN reorg status must NOT advance state — fail CLOSED, do not
+    persist a range whose reorg check could not be completed."""
+    from lite_indexer.indexer import LiteIndexer
+    from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
+
+    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr("lite_indexer.indexer._sync_loop.REORG_PROTECTION_ENABLED", True)
+
+    indexer = LiteIndexer(
+        chain="ethereum",
+        from_block=100,
+        to_block=200,
+        data_dir=tmp_path,
+        ndjson_enabled=True,
+    )
+    indexer.traces_enabled = False
+    indexer.nats_enabled = False
+    indexer.state.save(150, 0)  # seed: last indexed block = 150
+
+    strategy = indexer.strategy
+    strategy.fetch_block_number = AsyncMock(return_value=500)
+    strategy.fetch_transfers = AsyncMock(return_value=[{"blockNumber": 160, "value": "1"}])
+    strategy.fetch_swap_events = AsyncMock(return_value=[])
+    strategy._fetch_pair_created_events = AsyncMock(return_value=None)
+    strategy.write_clickhouse = Mock(return_value=1)
+    strategy.reorg_stage = AsyncMock(return_value=ReorgCheck(ReorgStatus.UNKNOWN, error="checkpoint lookup failed"))
+
+    async def fake_enrich(events: list[Any]) -> list[Any]:
+        return [dict(e, blockTimestamp="2026-01-01T00:00:00Z") for e in events]
+
+    indexer._enrich_timestamps = AsyncMock(side_effect=fake_enrich)
+    ch = Mock()
+    ch.write_dex_events.return_value = 0
+    ch.write_wallet_features = AsyncMock(return_value={})
+    ch.client.return_value = object()  # non-None → reorg staging runs
+    indexer._ch_writer = ch
+    indexer._ch_health = type("_ChHealthStub", (), {"ok": lambda self: True})()
+    indexer._ndjson_writer.write_events = Mock(return_value=1)
+    indexer._ndjson_writer.write_dex_events = Mock(return_value=0)
+
+    summary = await indexer._sync_loop_inner({"status": "ok", "errors": []}, time.monotonic())
+
+    assert summary["status"] == "reorg_status_unknown"
+    # State did NOT advance to to_block (200) — it stays at the seed.
+    assert indexer.state.load()["last_block"] == 150

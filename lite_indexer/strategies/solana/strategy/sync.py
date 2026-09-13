@@ -15,6 +15,7 @@ import httpx
 
 from lite_indexer.config import REORG_PROTECTION_ENABLED
 from lite_indexer.logging import get_logger
+from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
 from lite_indexer.strategies.solana.launch import SOLANA_LAUNCHES_TABLE, detect_launch
 from lite_indexer.strategies.solana.models import (
     MAX_SIGNATURES_PER_TOKEN,
@@ -26,8 +27,8 @@ from lite_indexer.strategies.solana.models import (
 )
 from lite_indexer.strategies.solana.reorg import (
     SOLANA_REORG_DEPTH,
+    check_reorg,
     checkpoint_slot,
-    detect_reorg,
     ensure_checkpoint_table,
     rollback_to_slot,
 )
@@ -469,7 +470,7 @@ class SyncMixin(SolanaMixinBase):
         from_slot: int,
         to_slot: int,
         ch_client: Any | None = None,
-    ) -> int | None:
+    ) -> ReorgCheck:
         """Checkpoint slot blockhashes and roll back deep reorgs for a batch.
 
         Solana mirror of ``EVMChainStrategy.reorg_stage``, gated by
@@ -484,6 +485,12 @@ class SyncMixin(SolanaMixinBase):
            above the fork slot, and return the fork slot so the caller can
            re-fetch from it.
 
+        Fail-CLOSED: a checkpoint lookup / blockhash RPC / rollback
+        failure returns :attr:`ReorgStatus.UNKNOWN` (with ``error`` set)
+        so the caller does not advance past an unverified range. The
+        benign "no checkpoint yet" case is normalised to NO_REORG so
+        catch-up does not stall.
+
         Args:
             from_slot: Start slot of the processed batch (unused, kept for
                 signature parity with the EVM path).
@@ -491,36 +498,53 @@ class SyncMixin(SolanaMixinBase):
             ch_client: ClickHouse client (raw, from ClickHouseWriter).
 
         Returns:
-            The fork slot when a reorg was detected and rolled back,
-            otherwise None.
+            :class:`ReorgCheck` — REORG with ``fork_block`` when a reorg
+            was detected and rolled back; UNKNOWN (``error`` set) when
+            verification/rollback could not be performed; NO_REORG
+            otherwise.
         """
         if not REORG_PROTECTION_ENABLED or ch_client is None:
-            return None
+            return ReorgCheck(ReorgStatus.NO_REORG)
 
         if not await ensure_checkpoint_table(ch_client):
-            return None
+            return ReorgCheck(ReorgStatus.UNKNOWN, error="checkpoint table unavailable")
 
         client = await self._get_client()
 
         # 1. Checkpoint the batch tip blockhash.
         if not await checkpoint_slot(client, to_slot, ch_client):
             logger.debug("reorg_tip_blockhash_missing", chain=self.chain, slot=to_slot)
-            return None
 
         # 2. Verify the slot that should now be deep-confirmed.
-        fork_slot = await detect_reorg(client, to_slot, ch_client)
-        if fork_slot is None:
-            return None
+        check = await check_reorg(client, to_slot, ch_client)
+        if check.status is ReorgStatus.UNKNOWN:
+            if check.error is None:
+                # Benign: no checkpoint for this slot yet — nothing to
+                # compare, safe to continue (do NOT stall catch-up).
+                return ReorgCheck(ReorgStatus.NO_REORG)
+            logger.error(
+                "reorg_status_unknown",
+                chain=self.chain,
+                block=to_slot,
+                error=check.error,
+            )
+            return check
+        if check.status is ReorgStatus.NO_REORG:
+            return check
 
         # 3. Reorg detected — log, roll back to the fork slot, re-fetch.
         logger.warning(
             "chain_reorg_deep",
             chain=self.chain,
-            fork_slot=fork_slot,
+            fork_slot=check.fork_block,
             depth=SOLANA_REORG_DEPTH,
         )
-        await rollback_to_slot(ch_client, fork_slot)
-        return fork_slot
+        assert check.fork_block is not None  # REORG always carries the fork
+        deleted = await rollback_to_slot(ch_client, check.fork_block)
+        if deleted is None:
+            logger.error("reorg_rollback_failed", chain=self.chain, fork_slot=check.fork_block)
+            return ReorgCheck(ReorgStatus.UNKNOWN, fork_block=check.fork_block, error="rollback failed")
+        return check
 
     # ── ClickHouse Write ─────────────────────────────────────────────
 

@@ -46,15 +46,14 @@ from lite_indexer.strategies.evm.bloom import BloomCache
 from lite_indexer.strategies.evm.deployer_handler import fetch_pair_created as _fetch_pair_created
 from lite_indexer.strategies.evm.dex_handler import fetch_swap_events as _fetch_swap_events
 from lite_indexer.strategies.evm.reorg import (
+    check_reorg,
     checkpoint_block,
     ensure_checkpoint_table,
     reorg_depth,
     rollback_to_block,
 )
-from lite_indexer.strategies.evm.reorg import (
-    detect_reorg as reorg_detect_reorg,
-)
 from lite_indexer.strategies.evm.transfer_handler import fetch_transfers as _fetch_transfers
+from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
 from lite_indexer.util.http import http_limits
 
 logger = get_logger(__name__)
@@ -398,7 +397,7 @@ class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
         from_block: int,
         to_block: int,
         ch_client: Any | None = None,
-    ) -> int | None:
+    ) -> ReorgCheck:
         """Checkpoint block hashes and roll back deep reorgs for a batch.
 
         Envio/TrueBlocks-style reorg-safe staging, gated by
@@ -413,10 +412,13 @@ class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
            ``dex_events`` above the fork point, and return the fork block
            so the caller can re-fetch from it.
 
-        The verify step returns False (no reorg) for blocks that have no
-        checkpoint yet — it only fires once a block has been checkpointed
-        as an earlier batch tip and has since advanced past the
-        confirmation depth.
+        Fail-CLOSED: when a checkpoint lookup fails, a required RPC hash
+        is missing, or the rollback fails, the result is
+        :attr:`ReorgStatus.UNKNOWN` (with ``error`` set) so the caller
+        does NOT advance state past a range it could not verify. The
+        benign "no checkpoint yet" case is normalised to NO_REORG so
+        catch-up does not stall (the block predates our checkpoint
+        coverage).
 
         Args:
             from_block: Start block of the processed batch.
@@ -424,26 +426,29 @@ class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
             ch_client: ClickHouse client (raw, from ClickHouseWriter).
 
         Returns:
-            The fork block number when a reorg was detected and rolled
-            back, otherwise None.
+            :class:`ReorgCheck` — REORG with ``fork_block`` when a reorg
+            was detected and rolled back; UNKNOWN (``error`` set) when
+            verification/rollback could not be performed; NO_REORG
+            otherwise.
         """
         if not REORG_PROTECTION_ENABLED or ch_client is None:
-            return None
+            return ReorgCheck(ReorgStatus.NO_REORG)
 
         if not await ensure_checkpoint_table(ch_client):
-            return None
+            return ReorgCheck(ReorgStatus.UNKNOWN, error="checkpoint table unavailable")
 
         endpoints = GET_LOGS_ENDPOINTS.get(self.chain, [])
         if not endpoints:
             logger.debug("reorg_no_endpoints", chain=self.chain)
-            return None
+            return ReorgCheck(ReorgStatus.UNKNOWN, error="no endpoints")
+
         endpoint = get_best_endpoint(endpoints)
 
         # 1. Checkpoint the batch tip hash.
         tip_block = await self.rpc.eth_get_block_by_number(endpoint, to_block)
         if not tip_block or not isinstance(tip_block, dict) or not tip_block.get("hash"):
             logger.debug("reorg_tip_hash_missing", chain=self.chain, block=to_block)
-            return None
+            return ReorgCheck(ReorgStatus.UNKNOWN, error="tip block hash unavailable")
         tip_hash = str(tip_block["hash"])
         await checkpoint_block(self.chain, to_block, tip_hash, ch_client)
 
@@ -451,16 +456,29 @@ class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
         depth = reorg_depth(self.chain)
         verify_block = to_block - depth
         if verify_block < 0:
-            return None
+            return ReorgCheck(ReorgStatus.NO_REORG)
 
         current = await self.rpc.eth_get_block_by_number(endpoint, verify_block)
         if not current or not isinstance(current, dict) or not current.get("hash"):
             logger.debug("reorg_verify_hash_missing", chain=self.chain, block=verify_block)
-            return None
+            return ReorgCheck(ReorgStatus.UNKNOWN, error="verify block hash unavailable")
         current_hash = str(current["hash"])
 
-        if not await reorg_detect_reorg(self.chain, verify_block, current_hash, ch_client):
-            return None
+        check = await check_reorg(self.chain, verify_block, current_hash, ch_client)
+        if check.status is ReorgStatus.UNKNOWN:
+            if check.error is None:
+                # Benign: no checkpoint for this block yet — nothing to
+                # compare, safe to continue (do NOT stall catch-up).
+                return ReorgCheck(ReorgStatus.NO_REORG)
+            logger.error(
+                "reorg_status_unknown",
+                chain=self.chain,
+                block=verify_block,
+                error=check.error,
+            )
+            return check
+        if check.status is ReorgStatus.NO_REORG:
+            return check
 
         # 3. Reorg detected — log, roll back to the fork point, re-fetch.
         logger.warning(
@@ -469,8 +487,11 @@ class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
             fork_block=verify_block,
             depth=depth,
         )
-        await rollback_to_block(self.chain, verify_block, ch_client)
-        return verify_block
+        deleted = await rollback_to_block(self.chain, verify_block, ch_client)
+        if deleted is None:
+            logger.error("reorg_rollback_failed", chain=self.chain, fork_block=verify_block)
+            return ReorgCheck(ReorgStatus.UNKNOWN, fork_block=verify_block, error="rollback failed")
+        return check
 
 
 __all__ = [

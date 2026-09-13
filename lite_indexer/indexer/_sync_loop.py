@@ -39,6 +39,7 @@ from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcFetchFailedError
 from lite_indexer.storage.ch_write_pool import run_ch_write
 from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrategy
+from lite_indexer.strategies.reorg_status import ReorgStatus
 
 logger = get_logger(__name__)
 
@@ -615,17 +616,35 @@ class SyncLoopMixin(IndexerMixinBase):
                 logger.debug("reorg_ch_client_failed", chain=self.chain, error=str(exc)[:80])
 
             if ch_client is not None:
-                fork_block = await self.strategy.reorg_stage(from_block, to_block, ch_client)
-                if fork_block is not None:
+                outcome = await self.strategy.reorg_stage(from_block, to_block, ch_client)
+                if outcome.status is ReorgStatus.UNKNOWN:
+                    # Fail CLOSED: we could not verify the range (checkpoint
+                    # lookup / RPC / rollback failure). Do NOT advance state
+                    # past it — the next cycle re-fetches the same range and
+                    # re-checks instead of persisting orphaned-chain data as
+                    # canonical.
+                    logger.error(
+                        "reorg_status_unknown",
+                        chain=self.chain,
+                        block=outcome.fork_block if outcome.fork_block is not None else to_block,
+                        error=outcome.error,
+                    )
+                    metrics.incr_labeled("lite_indexer_reorg_unknown", chain=self.chain)
+                    summary["status"] = "reorg_status_unknown"
+                    summary["errors"].append(f"reorg status unknown for range {from_block}-{to_block}: {outcome.error}")
+                    summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
+                    self._save_current_state()
+                    return summary
+                if outcome.status is ReorgStatus.REORG and outcome.fork_block is not None:
                     logger.warning(
                         "reorg_rollback_scheduled",
                         chain=self.chain,
-                        fork_block=fork_block,
+                        fork_block=outcome.fork_block,
                     )
                     summary["status"] = "reorg_rollback"
-                    summary["reorg_fork_block"] = fork_block
+                    summary["reorg_fork_block"] = outcome.fork_block
                     # Re-fetch from fork: next cycle starts at fork_block.
-                    self.state.save(fork_block - 1, 0, enabled_events=self._enabled_event_types())
+                    self.state.save(outcome.fork_block - 1, 0, enabled_events=self._enabled_event_types())
                     summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
                     return summary
 

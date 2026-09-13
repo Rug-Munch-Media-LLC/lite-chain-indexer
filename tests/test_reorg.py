@@ -21,12 +21,14 @@ import pytest
 
 from lite_indexer.strategies.evm.reorg import (
     MAX_REORG_DEPTH,
+    check_reorg,
     checkpoint_block,
     detect_reorg,
     ensure_checkpoint_table,
     reorg_depth,
     rollback_to_block,
 )
+from lite_indexer.strategies.reorg_status import ReorgStatus
 
 HASH_A = "0x" + "a" * 64
 HASH_B = "0x" + "b" * 64
@@ -145,41 +147,46 @@ async def test_detect_reorg_mismatch_true() -> None:
     client = FakeCH()
     client.checkpoints[("ethereum", 1_000_000)] = HASH_A
     # Current chain hash differs → reorg.
-    assert await detect_reorg("ethereum", 1_000_000, HASH_B, client) is True
+    assert await detect_reorg("ethereum", 1_000_000, HASH_B, client) is ReorgStatus.REORG
 
 
 @pytest.mark.asyncio
 async def test_detect_reorg_match_false() -> None:
     client = FakeCH()
     client.checkpoints[("ethereum", 1_000_000)] = HASH_A
-    assert await detect_reorg("ethereum", 1_000_000, HASH_A, client) is False
+    assert await detect_reorg("ethereum", 1_000_000, HASH_A, client) is ReorgStatus.NO_REORG
 
 
 @pytest.mark.asyncio
-async def test_detect_reorg_no_checkpoint_false() -> None:
-    """No checkpoint yet → cannot detect a reorg → False."""
+async def test_detect_reorg_no_checkpoint_is_unknown() -> None:
+    """No checkpoint yet → cannot tell → UNKNOWN (NOT 'no reorg')."""
     client = FakeCH()
-    assert await detect_reorg("ethereum", 1_000_000, HASH_B, client) is False
+    check = await check_reorg("ethereum", 1_000_000, HASH_B, client)
+    assert check.status is ReorgStatus.UNKNOWN
+    assert check.error is None  # benign: not a lookup failure
 
 
 @pytest.mark.asyncio
-async def test_detect_reorg_empty_hash_false() -> None:
-    """An empty current hash cannot be compared → False (no reorg)."""
+async def test_detect_reorg_empty_hash_is_unknown() -> None:
+    """An empty current hash cannot be compared → UNKNOWN (fail closed)."""
     client = FakeCH()
     client.checkpoints[("ethereum", 1_000_000)] = HASH_A
-    assert await detect_reorg("ethereum", 1_000_000, "", client) is False
+    assert await detect_reorg("ethereum", 1_000_000, "", client) is ReorgStatus.UNKNOWN
     assert client.queries == []  # no CH lookup attempted
 
 
 @pytest.mark.asyncio
-async def test_detect_reorg_lookup_failure_false() -> None:
-    """A ClickHouse lookup failure degrades to 'no reorg' (never raises)."""
+async def test_detect_reorg_lookup_failure_is_unknown() -> None:
+    """A ClickHouse lookup failure is UNKNOWN — never fail open as 'no reorg'."""
 
     class BrokenClient:
         def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
             raise RuntimeError("connection refused")
 
-    assert await detect_reorg("ethereum", 1_000_000, HASH_B, BrokenClient()) is False
+    check = await check_reorg("ethereum", 1_000_000, HASH_B, BrokenClient())
+    assert check.status is ReorgStatus.UNKNOWN
+    assert check.error  # lookup failure is distinguishable from 'no checkpoint'
+    assert await detect_reorg("ethereum", 1_000_000, HASH_B, BrokenClient()) is ReorgStatus.UNKNOWN
 
 
 @pytest.mark.asyncio
@@ -187,7 +194,7 @@ async def test_detect_reorg_hash_comparison_is_case_insensitive() -> None:
     """Stored vs current hashes are compared lowercased."""
     client = FakeCH()
     client.checkpoints[("ethereum", 1_000_000)] = HASH_A.upper()
-    assert await detect_reorg("ethereum", 1_000_000, HASH_A, client) is False
+    assert await detect_reorg("ethereum", 1_000_000, HASH_A, client) is ReorgStatus.NO_REORG
 
 
 @pytest.mark.asyncio
@@ -215,8 +222,8 @@ async def test_rollback_to_block_deletes_above_fork() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rollback_partial_table_failure_counts_survivors() -> None:
-    """A failing table is logged; the surviving tables still count."""
+async def test_rollback_failure_surfaces_instead_of_partial_success() -> None:
+    """A failing table DELETE must surface failure (None), not partial success."""
 
     class PartialClient(FakeCH):
         def execute(
@@ -231,10 +238,10 @@ async def test_rollback_partial_table_failure_counts_survivors() -> None:
 
     client = PartialClient()
     deleted = await rollback_to_block("ethereum", 120, client)
-    # dex_events (3) + checkpoint prune path; evm_transfers failed.
-    assert deleted == 3
-    assert ("dex_events", 120) in client.deletes
-    assert ("evm_transfers", 120) not in client.deletes
+    # evm_transfers DELETE failed → the rollback did NOT fully happen, so
+    # it reports failure (None) instead of a partial-success row count.
+    assert deleted is None
+    assert client.deletes == []  # aborted on the first failing table
 
 
 def test_max_reorg_depth_per_chain() -> None:
@@ -252,7 +259,7 @@ def test_max_reorg_depth_per_chain() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_no_reorg_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reorg_stage_no_reorg_returns_no_reorg(monkeypatch: pytest.MonkeyPatch) -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
     monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
@@ -263,9 +270,10 @@ async def test_reorg_stage_no_reorg_returns_none(monkeypatch: pytest.MonkeyPatch
     client.checkpoints[("ethereum", 188)] = HASH_A  # checkpointed earlier
 
     strategy = EVMChainStrategy("ethereum", rpc=rpc)
-    fork = await strategy.reorg_stage(100, 200, client)
+    outcome = await strategy.reorg_stage(100, 200, client)
 
-    assert fork is None
+    assert outcome.status is ReorgStatus.NO_REORG
+    assert outcome.fork_block is None
     # Tip was checkpointed.
     assert client.checkpoints[("ethereum", 200)] == HASH_A
     # No rollback issued.
@@ -284,15 +292,83 @@ async def test_reorg_stage_detects_and_rolls_back(monkeypatch: pytest.MonkeyPatc
     client.checkpoints[("ethereum", 188)] = HASH_A  # what we indexed earlier
 
     strategy = EVMChainStrategy("ethereum", rpc=rpc)
-    fork = await strategy.reorg_stage(100, 200, client)
+    outcome = await strategy.reorg_stage(100, 200, client)
 
-    assert fork == 188  # re-fetch from fork point
+    assert outcome.status is ReorgStatus.REORG
+    assert outcome.fork_block == 188  # re-fetch from fork point
     assert ("evm_transfers", 188) in client.deletes
     assert ("dex_events", 188) in client.deletes
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_disabled_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reorg_stage_lookup_failure_is_unknown_and_does_not_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A checkpoint lookup failure must fail CLOSED: UNKNOWN, no rollback."""
+    from lite_indexer.strategies.evm import EVMChainStrategy
+
+    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
+
+    class LookupFailCH(FakeCH):
+        def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
+            if "SELECT block_hash FROM wallet_memory.block_checkpoints" in query:
+                raise RuntimeError("connection refused")
+            return super().execute(query, params, with_column_types=with_column_types)
+
+    rpc = FakeRPC({200: HASH_A, 188: HASH_B})
+    client = LookupFailCH()
+    strategy = EVMChainStrategy("ethereum", rpc=rpc)
+    outcome = await strategy.reorg_stage(100, 200, client)
+
+    assert outcome.status is ReorgStatus.UNKNOWN
+    assert outcome.error  # a failure, not the benign no-checkpoint case
+    assert client.deletes == []  # did NOT proceed to rollback
+
+
+@pytest.mark.asyncio
+async def test_reorg_stage_no_checkpoint_is_benign_and_proceeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No checkpoint yet is benign ('cannot verify yet'), not a halt."""
+    from lite_indexer.strategies.evm import EVMChainStrategy
+
+    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
+
+    rpc = FakeRPC({200: HASH_A, 188: HASH_B})
+    client = FakeCH()  # no checkpoints seeded
+    strategy = EVMChainStrategy("ethereum", rpc=rpc)
+    outcome = await strategy.reorg_stage(100, 200, client)
+
+    assert outcome.status is ReorgStatus.NO_REORG
+    assert client.deletes == []
+
+
+@pytest.mark.asyncio
+async def test_reorg_stage_rollback_failure_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed rollback surfaces as UNKNOWN — not a successful reorg."""
+    from lite_indexer.strategies.evm import EVMChainStrategy
+
+    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
+
+    class RollbackFailCH(FakeCH):
+        def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
+            if query.startswith("DELETE FROM"):
+                raise RuntimeError("privileges")
+            return super().execute(query, params, with_column_types=with_column_types)
+
+    rpc = FakeRPC({200: HASH_A, 188: HASH_B})
+    client = RollbackFailCH()
+    client.checkpoints[("ethereum", 188)] = HASH_A
+    strategy = EVMChainStrategy("ethereum", rpc=rpc)
+    outcome = await strategy.reorg_stage(100, 200, client)
+
+    assert outcome.status is ReorgStatus.UNKNOWN
+    assert outcome.fork_block == 188
+    assert outcome.error == "rollback failed"
+
+
+@pytest.mark.asyncio
+async def test_reorg_stage_disabled_returns_no_reorg(monkeypatch: pytest.MonkeyPatch) -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
     monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", False)
@@ -300,27 +376,28 @@ async def test_reorg_stage_disabled_returns_none(monkeypatch: pytest.MonkeyPatch
     rpc = FakeRPC({200: HASH_A, 188: HASH_B})
     client = FakeCH()
     strategy = EVMChainStrategy("ethereum", rpc=rpc)
-    fork = await strategy.reorg_stage(100, 200, client)
+    outcome = await strategy.reorg_stage(100, 200, client)
 
-    assert fork is None
+    assert outcome.status is ReorgStatus.NO_REORG
     assert client.queries == []  # no CH access when disabled
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_no_ch_client_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reorg_stage_no_ch_client_returns_no_reorg(monkeypatch: pytest.MonkeyPatch) -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
     monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
     strategy = EVMChainStrategy("ethereum", rpc=FakeRPC({200: HASH_A, 188: HASH_B}))
-    fork = await strategy.reorg_stage(100, 200, None)
-    assert fork is None
+    outcome = await strategy.reorg_stage(100, 200, None)
+    assert outcome.status is ReorgStatus.NO_REORG
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_no_endpoints_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reorg_stage_no_endpoints_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
     monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
     strategy = EVMChainStrategy("not-a-real-chain", rpc=FakeRPC({200: HASH_A}))
-    fork = await strategy.reorg_stage(100, 200, FakeCH())
-    assert fork is None
+    outcome = await strategy.reorg_stage(100, 200, FakeCH())
+    assert outcome.status is ReorgStatus.UNKNOWN
+    assert outcome.error == "no endpoints"

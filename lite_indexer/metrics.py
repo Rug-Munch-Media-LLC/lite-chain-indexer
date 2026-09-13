@@ -191,6 +191,7 @@ _LABELED_GAUGES: dict[str, Any] = {name: _make_gauge(name, labels) for name, lab
 _ALERT_COUNTER_SPECS: dict[str, tuple[str, ...]] = {
     "lite_indexer_rpc_failures": ("chain",),
     "lite_indexer_state_regression_detected": ("chain",),
+    "lite_indexer_reorg_unknown": ("chain",),
     "lite_indexer_parquet_export_failed": ("chain", "date"),
     "lite_indexer_webhook_delivery_failed": (),
 }

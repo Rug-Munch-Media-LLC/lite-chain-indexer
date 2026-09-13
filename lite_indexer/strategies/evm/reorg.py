@@ -26,6 +26,7 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
 
 logger = get_logger(__name__)
 
@@ -77,7 +78,9 @@ async def ensure_checkpoint_table(ch_client: Any) -> bool:
         True when the table exists (or was created), False otherwise.
     """
     try:
-        ch_client.execute(_BLOCK_CHECKPOINTS_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+        ch_client.execute(
+            _BLOCK_CHECKPOINTS_DDL
+        )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("block_checkpoints_table_ensured", table=CH_BLOCK_CHECKPOINTS_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -126,18 +129,19 @@ async def checkpoint_block(
         return False
 
 
-async def detect_reorg(
+async def check_reorg(
     chain: str,
     block_number: int,
     block_hash: str,
     ch_client: Any,
-) -> bool:
+) -> ReorgCheck:
     """Compare a current block hash against the stored checkpoint.
 
-    Returns True when a reorg was detected (the current hash differs from
-    the checkpointed hash). Returns False when there is no checkpoint yet
-    (first time we've seen this block — nothing to compare), the chain
-    matches, or the lookup fails.
+    Fail-CLOSED: a ClickHouse lookup error (or a missing hash to compare)
+    is reported as :attr:`ReorgStatus.UNKNOWN` — never as "no reorg".
+    :class:`ReorgCheck` keeps the benign "no checkpoint yet" (error is
+    ``None``) distinct from a lookup failure (error is set) so the caller
+    can fail closed on the latter without stalling on the former.
 
     Args:
         chain: Chain name.
@@ -146,33 +150,39 @@ async def detect_reorg(
         ch_client: ClickHouse client.
 
     Returns:
-        True = reorg detected, False = no reorg (or cannot tell yet).
+        :class:`ReorgCheck` with ``status`` NO_REORG / REORG / UNKNOWN.
     """
     if not block_hash:
-        return False
+        logger.error(
+            "block_hash_missing_for_reorg_check",
+            chain=chain,
+            block=block_number,
+        )
+        return ReorgCheck(ReorgStatus.UNKNOWN, error="empty block hash")
     try:
         rows = ch_client.execute(
             f"SELECT block_hash FROM {CH_BLOCK_CHECKPOINTS_TABLE} "
             "WHERE chain = %(chain)s AND block_number = %(block)s LIMIT 1",
             {"chain": chain, "block": block_number},
         )
-    except Exception as exc:  # noqa: BLE001 — lookup is best-effort
-        logger.debug(
+    except Exception as exc:  # noqa: BLE001 — surface as UNKNOWN, never fail open
+        logger.error(
             "block_checkpoint_lookup_failed",
             chain=chain,
             block=block_number,
-            error=str(exc)[:80],
+            error=str(exc)[:120],
         )
-        return False
+        metrics_incr("reorg_lookup_errors")
+        return ReorgCheck(ReorgStatus.UNKNOWN, error=str(exc)[:120])
 
     if not rows:
-        # No checkpoint yet — cannot detect a reorg for this block.
-        return False
+        # No checkpoint yet — benign: nothing to compare for this block.
+        logger.debug("block_checkpoint_absent", chain=chain, block=block_number)
+        return ReorgCheck(ReorgStatus.UNKNOWN)
 
     stored_hash = str(rows[0][0]).lower()
     current_hash = str(block_hash).lower()
-    mismatched = stored_hash != current_hash
-    if mismatched:
+    if stored_hash != current_hash:
         logger.warning(
             "reorg_detected_at_checkpoint",
             chain=chain,
@@ -181,22 +191,50 @@ async def detect_reorg(
             current=current_hash[:20],
         )
         metrics_incr("reorg_detected")
-    return mismatched
+        return ReorgCheck(ReorgStatus.REORG, fork_block=block_number)
+    return ReorgCheck(ReorgStatus.NO_REORG)
+
+
+async def detect_reorg(
+    chain: str,
+    block_number: int,
+    block_hash: str,
+    ch_client: Any,
+) -> ReorgStatus:
+    """Return the tri-state reorg status for a checkpoint comparison.
+
+    Thin wrapper over :func:`check_reorg` for callers that only need the
+    status (callers that must fail closed should use :func:`check_reorg`
+    so they can inspect ``error``).
+
+    Args:
+        chain: Chain name.
+        block_number: Block number to verify.
+        block_hash: Current block hash from RPC.
+        ch_client: ClickHouse client.
+
+    Returns:
+        :class:`ReorgStatus` — NO_REORG / REORG / UNKNOWN.
+    """
+    return (await check_reorg(chain, block_number, block_hash, ch_client)).status
 
 
 async def rollback_to_block(
     chain: str,
     fork_block: int,
     ch_client: Any,
-) -> int:
+) -> int | None:
     """Delete rows above ``fork_block`` from indexed tables.
 
     Removes ``evm_transfers`` and ``dex_events`` rows with
     ``block_number > fork_block`` (the fork point stays). Also prunes
     stale block checkpoints above the fork so the re-fetched chain is
-    checkpointed fresh. Returns the total number of rows deleted (best
-    effort — ClickHouse lightweight DELETE returns affected count when
-    available).
+    checkpointed fresh.
+
+    Fail-CLOSED signalling: any DELETE failure logs at ERROR and makes the
+    whole rollback report failure (``None``) — the caller must not assume
+    orphaned rows were removed. This is not a destructive behavior change;
+    it only stops reporting partial success as success.
 
     Args:
         chain: Chain name.
@@ -204,7 +242,7 @@ async def rollback_to_block(
         ch_client: ClickHouse client.
 
     Returns:
-        Total deleted rows (0 on failure).
+        Total deleted rows, or ``None`` when any DELETE failed.
     """
     deleted = 0
     for table in (CH_TABLE, CH_DEX_TABLE):
@@ -215,27 +253,31 @@ async def rollback_to_block(
             )
             if isinstance(result, int):
                 deleted += result
-        except Exception as exc:  # noqa: BLE001 — rollback is best-effort
-            logger.warning(
+        except Exception as exc:  # noqa: BLE001 — report failure, do not pretend success
+            logger.error(
                 "reorg_rollback_table_failed",
                 chain=chain,
                 table=table,
                 fork_block=fork_block,
-                error=str(exc)[:100],
+                error=str(exc)[:120],
             )
+            metrics_incr("reorg_rollback_errors")
+            return None
 
     try:
         ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             f"DELETE FROM {CH_BLOCK_CHECKPOINTS_TABLE} WHERE chain = %(chain)s AND block_number > %(fork)s",
             {"chain": chain, "fork": fork_block},
         )
-    except Exception as exc:  # noqa: BLE001 — checkpoint pruning is best-effort
-        logger.debug(
+    except Exception as exc:  # noqa: BLE001 — checkpoint pruning failed
+        logger.error(
             "reorg_checkpoint_prune_failed",
             chain=chain,
             fork_block=fork_block,
-            error=str(exc)[:80],
+            error=str(exc)[:120],
         )
+        metrics_incr("reorg_rollback_errors")
+        return None
 
     logger.warning("reorg_rollback_complete", chain=chain, fork_block=fork_block, deleted=deleted)
     return deleted
@@ -246,6 +288,7 @@ __all__ = [
     "reorg_depth",
     "ensure_checkpoint_table",
     "checkpoint_block",
+    "check_reorg",
     "detect_reorg",
     "rollback_to_block",
 ]

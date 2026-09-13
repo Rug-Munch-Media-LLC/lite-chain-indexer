@@ -27,6 +27,7 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
 
 logger = get_logger(__name__)
 
@@ -61,7 +62,9 @@ async def ensure_checkpoint_table(ch_client: Any) -> bool:
         True when the table exists (or was created), False otherwise.
     """
     try:
-        ch_client.execute(_SOLANA_CHECKPOINTS_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+        ch_client.execute(
+            _SOLANA_CHECKPOINTS_DDL
+        )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("solana_checkpoints_table_ensured", table=SOLANA_CHECKPOINTS_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -125,13 +128,17 @@ async def checkpoint_slot(client: Any, slot: int, ch_client: Any) -> bool:
         return False
 
 
-async def detect_reorg(client: Any, current_slot: int, ch_client: Any) -> int | None:
+async def check_reorg(client: Any, current_slot: int, ch_client: Any) -> ReorgCheck:
     """Compare a confirmed slot's blockhash against the stored checkpoint.
 
     Verifies the slot at ``current_slot - SOLANA_REORG_DEPTH``: fetches
     its current blockhash from RPC and compares it against the blockhash
-    checkpointed when that slot was the batch tip. On mismatch the chain
-    reorganized underneath us.
+    checkpointed when that slot was the batch tip.
+
+    Fail-CLOSED: a ClickHouse lookup error or an RPC failure fetching the
+    live blockhash is reported as :attr:`ReorgStatus.UNKNOWN` — never as
+    "no reorg". :class:`ReorgCheck` keeps the benign "no checkpoint yet"
+    (``error is None``) distinct from those failures (``error`` set).
 
     Args:
         client: httpx AsyncClient for Solana RPC.
@@ -139,34 +146,37 @@ async def detect_reorg(client: Any, current_slot: int, ch_client: Any) -> int | 
         ch_client: ClickHouse client.
 
     Returns:
-        The fork slot when a reorg was detected, otherwise None (no
-        checkpoint yet, chain matches, or lookup failed).
+        :class:`ReorgCheck` — REORG with the fork slot on mismatch;
+        UNKNOWN (``error`` set on failure) when it cannot tell; NO_REORG
+        when the stored and current blockhashes match.
     """
     verify_slot = current_slot - SOLANA_REORG_DEPTH
     if verify_slot < 0:
-        return None
+        return ReorgCheck(ReorgStatus.NO_REORG)
 
     try:
         rows = ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             f"SELECT blockhash FROM {SOLANA_CHECKPOINTS_TABLE} WHERE slot = %(slot)s LIMIT 1",
             {"slot": verify_slot},
         )
-    except Exception as exc:  # noqa: BLE001 — lookup is best-effort
-        logger.debug("solana_checkpoint_lookup_failed", slot=verify_slot, error=str(exc)[:80])
-        return None
+    except Exception as exc:  # noqa: BLE001 — surface as UNKNOWN, never fail open
+        logger.error("solana_checkpoint_lookup_failed", slot=verify_slot, error=str(exc)[:120])
+        metrics_incr("reorg_lookup_errors")
+        return ReorgCheck(ReorgStatus.UNKNOWN, error=str(exc)[:120])
 
     if not rows:
-        # No checkpoint yet — cannot detect a reorg for this slot.
-        return None
+        # No checkpoint yet — benign: nothing to compare for this slot.
+        logger.debug("solana_checkpoint_absent", slot=verify_slot)
+        return ReorgCheck(ReorgStatus.UNKNOWN)
 
     current_blockhash = await _get_blockhash(client, verify_slot)
     if not current_blockhash:
-        logger.debug("solana_verify_blockhash_missing", slot=verify_slot)
-        return None
+        logger.error("solana_verify_blockhash_missing", slot=verify_slot)
+        return ReorgCheck(ReorgStatus.UNKNOWN, error="verify blockhash unavailable")
 
     stored_blockhash = str(rows[0][0])
     if stored_blockhash == current_blockhash:
-        return None
+        return ReorgCheck(ReorgStatus.NO_REORG)
 
     logger.warning(
         "solana_reorg_detected_at_checkpoint",
@@ -175,24 +185,46 @@ async def detect_reorg(client: Any, current_slot: int, ch_client: Any) -> int | 
         current=current_blockhash[:20],
     )
     metrics_incr("reorg_detected")
-    return verify_slot
+    return ReorgCheck(ReorgStatus.REORG, fork_block=verify_slot)
 
 
-async def rollback_to_slot(ch_client: Any, fork_slot: int) -> int:
+async def detect_reorg(client: Any, current_slot: int, ch_client: Any) -> ReorgStatus:
+    """Return the tri-state reorg status for a Solana slot checkpoint.
+
+    Thin wrapper over :func:`check_reorg` for callers that only need the
+    status (callers that must fail closed should use :func:`check_reorg`
+    so they can inspect ``error``).
+
+    Args:
+        client: httpx AsyncClient for Solana RPC.
+        current_slot: Tip slot of the processed batch.
+        ch_client: ClickHouse client.
+
+    Returns:
+        :class:`ReorgStatus` — NO_REORG / REORG / UNKNOWN.
+    """
+    return (await check_reorg(client, current_slot, ch_client)).status
+
+
+async def rollback_to_slot(ch_client: Any, fork_slot: int) -> int | None:
     """Delete rows above ``fork_slot`` from the Solana indexed tables.
 
     Removes ``solana_spl_balance_changes`` rows with ``slot > fork_slot``
     and ``dex_events`` rows with ``chain = 'solana'`` and
     ``blockNumber > fork_slot`` (the fork slot stays). Also prunes stale
     checkpoints above the fork so the re-fetched chain is checkpointed
-    fresh. Returns the total number of rows deleted (best effort).
+    fresh.
+
+    Fail-CLOSED signalling: any DELETE failure logs at ERROR and makes the
+    whole rollback report failure (``None``) — the caller must not assume
+    orphaned rows were removed.
 
     Args:
         ch_client: ClickHouse client (raw, from ClickHouseWriter).
         fork_slot: Common-ancestor slot; rows above it are orphaned.
 
     Returns:
-        Total deleted rows (0 on failure).
+        Total deleted rows, or ``None`` when any DELETE failed.
     """
     deleted = 0
     for table, _column, chain_filter in (
@@ -207,21 +239,25 @@ async def rollback_to_slot(ch_client: Any, fork_slot: int) -> int:
             )
             if isinstance(result, int):
                 deleted += result
-        except Exception as exc:  # noqa: BLE001 — rollback is best-effort
-            logger.warning(
+        except Exception as exc:  # noqa: BLE001 — report failure, do not pretend success
+            logger.error(
                 "solana_reorg_rollback_table_failed",
                 table=table,
                 fork_slot=fork_slot,
-                error=str(exc)[:100],
+                error=str(exc)[:120],
             )
+            metrics_incr("reorg_rollback_errors")
+            return None
 
     try:
         ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             f"DELETE FROM {SOLANA_CHECKPOINTS_TABLE} WHERE slot > %(fork)s",
             {"fork": fork_slot},
         )
-    except Exception as exc:  # noqa: BLE001 — checkpoint pruning is best-effort
-        logger.debug("solana_checkpoint_prune_failed", fork_slot=fork_slot, error=str(exc)[:80])
+    except Exception as exc:  # noqa: BLE001 — checkpoint pruning failed
+        logger.error("solana_checkpoint_prune_failed", fork_slot=fork_slot, error=str(exc)[:120])
+        metrics_incr("reorg_rollback_errors")
+        return None
 
     logger.warning("solana_reorg_rollback_complete", fork_slot=fork_slot, deleted=deleted)
     return deleted
@@ -232,6 +268,7 @@ __all__ = [
     "SOLANA_REORG_DEPTH",
     "ensure_checkpoint_table",
     "checkpoint_slot",
+    "check_reorg",
     "detect_reorg",
     "rollback_to_slot",
 ]

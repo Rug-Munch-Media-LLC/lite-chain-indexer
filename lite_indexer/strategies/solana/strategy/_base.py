@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from lite_indexer.strategies.reorg_status import ReorgCheck
 from lite_indexer.util.bounded import BoundedSet
 
 if TYPE_CHECKING:
@@ -74,7 +75,7 @@ class SolanaMixinBase:
         from_slot: int,
         to_slot: int,
         ch_client: Any | None = None,
-    ) -> int | None:
+    ) -> ReorgCheck:
         raise NotImplementedError
 
     # ── Methods owned by ``SyncMixin`` ────────────────────────────────────
