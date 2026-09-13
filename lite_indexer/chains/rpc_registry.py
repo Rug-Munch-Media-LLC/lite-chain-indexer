@@ -145,9 +145,18 @@ FREEMIUM_PROVIDERS: dict[str, FreemiumProvider] = {
         ),
         FreemiumProvider(
             name="BlockPI",
-            env_key="BLOCKPI_KEY",
-            url_example="https://rpc.blockpi.io/v1/rpc/${BLOCKPI_KEY}",
-            chains_note="40+ chains",
+            # BlockPI issues a PER-CHAIN key, not one account-wide key: the
+            # registry documents the env var as ${BLOCKPI_<CHAIN>_KEY}
+            # (e.g. BLOCKPI_ETH_KEY, BLOCKPI_BSC_KEY). Endpoint host is
+            # per-chain as well (incl. zksync-era).
+            env_key="BLOCKPI_<CHAIN>_KEY",
+            url_example="https://<chain>.blockpi.network/v1/rpc/${BLOCKPI_<CHAIN>_KEY}",
+            chains_note=(
+                "40+ chains; per-chain keys. Indexed keyed+archive (verified "
+                "2026-09-13): ethereum/bsc/arbitrum/optimism/avalanche/linea/"
+                "scroll/zksync/fantom. Also keyed but NOT indexed: taiko/"
+                "cronos/bitcoin."
+            ),
             free_tier="50M RU/mo — deepest multi-chain free tier after Ankr/dRPC",
             referral_terms="no public affiliate program — recommend on merit",
             has_referral_program=False,
@@ -175,6 +184,12 @@ SKIPPED_PROVIDERS: dict[str, str] = {
     # routemesh.org did not resolve (NXDOMAIN) from the fleet, 2026-09-13 —
     # there is no endpoint to probe. Re-check only if the domain resolves.
     "RouteMesh": "skipped 2026-09-13 — routemesh.org has no DNS (unresolved)",
+    # 1RPC keyed-upgrade format UNRESOLVED (tested 2026-09-13): the provided
+    # key was rejected as ?apiKey=, x-api-key header, and Authorization:
+    # Bearer (all still -32001 usage-limit), and the <chain>.1rpc.io/<key>
+    # path variant does not resolve. Keyless https://1rpc.io/<chain> stays
+    # wired where already registered — no keyed 1RPC template added.
+    "1RPC keyed upgrade": "unresolved 2026-09-13 — key format not accepted; keyless 1rpc.io remains in use",
 }
 
 

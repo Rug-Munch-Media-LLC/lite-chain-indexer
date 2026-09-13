@@ -152,6 +152,39 @@ class TestInfuraProvider:
         assert "Infura" not in {p.name for p in providers_with_referrals()}
 
 
+class TestBlockPIProvider:
+    """BlockPI authenticates with a PER-CHAIN key, not one account-wide key."""
+
+    def test_blockpi_registered_per_chain(self):
+        p = FREEMIUM_PROVIDERS["BlockPI"]
+        assert p.env_key == "BLOCKPI_<CHAIN>_KEY"
+        assert "${BLOCKPI_<CHAIN>_KEY}" in p.url_example
+        assert p.url_example.startswith("https://<chain>.blockpi.network/v1/rpc/")
+        assert p.has_referral_program is False
+
+    def test_blockpi_documents_indexed_chains(self):
+        p = FREEMIUM_PROVIDERS["BlockPI"]
+        for chain in ("ethereum", "bsc", "arbitrum", "optimism", "avalanche", "linea", "scroll", "zksync", "fantom"):
+            assert chain in p.chains_note
+
+    def test_blockpi_documents_unindexed_chains(self):
+        p = FREEMIUM_PROVIDERS["BlockPI"]
+        for chain in ("taiko", "cronos", "bitcoin"):
+            assert chain in p.chains_note
+
+    def test_blockpi_not_a_referral_provider(self):
+        assert "BlockPI" not in {p.name for p in providers_with_referrals()}
+
+
+class TestOneRpcKeyedUnresolved:
+    """The provided 1RPC key was not accepted in any documented format."""
+
+    def test_one_rpc_keyed_format_recorded_unresolved(self):
+        reason = SKIPPED_PROVIDERS["1RPC keyed upgrade"]
+        assert "2026-09-13" in reason
+        assert "unresolved" in reason.lower()
+
+
 class TestAnkrFreeKeyLimitation:
     """The provisioned Ankr free key only serves 8 chains (403 elsewhere)."""
 

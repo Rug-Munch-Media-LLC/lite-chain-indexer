@@ -53,6 +53,21 @@ blockchain" for optimism, fantom, linea, blast, fraxtal, metis — no Ankr
 templates are registered for those six so the pool stays honest (a dead
 keyed entry only produces verification-retry noise).
 
+BLOCKPI PER-CHAIN KEYS (live-probed 2026-09-13): BlockPI keys are
+per-chain, NOT a single ``BLOCKPI_KEY``. The keyless
+``https://<chain>.blockpi.network/v1/rpc/public`` URLs were HTTP-521-flaky
+(2026-08-07) and are replaced for the 9 provisioned chains
+(ethereum/bsc/arbitrum/optimism/avalanche/linea/scroll/zksync/fantom) by
+keyed archive templates ``https://<chain>.blockpi.network/v1/rpc/${BLOCKPI_<CHAIN>_KEY}``
+(ETH/BSC/ARBITRUM/OPTIMISM/AVALANCHE/LINEA/SCROLL/ZKSYNC/FANTOM). Each was
+live-verified here with ``eth_chainId`` HTTP 200 and an archive
+``eth_getLogs`` (ethereum blocks 1..2 → ``[]``). Keys are read at runtime
+from the environment; unset keys drop the endpoint from the active pool as
+usual. The unindexed BlockPI chains (taiko/cronos/bitcoin) are documented
+in the provider registry only — they are not added to the EVM pool.
+Polygon has no provisioned key, so its ``/public`` entry stays a candidate
+(flaky) rather than an active endpoint.
+
 Some endpoints require an API key from a free-tier provider (Alchemy,
 GetBlock, Chainstack, QuickNode, Infura). Set the corresponding ${ENV_VAR}
 in your environment — the indexer resolves placeholders at import time via
@@ -150,6 +165,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.ankr.com/eth/${ANKR_KEY}",  # Ankr keyed — free key works ONLY for eth/bsc/polygon/arbitrum/avalanche/base/celo/gnosis (HTTP 403 elsewhere: optimism/fantom/linea/blast/fraxtal/metis)
         "https://mainnet.infura.io/v3/${INFURA_KEY}",  # Infura free tier
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=1&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://ethereum.blockpi.network/v1/rpc/${BLOCKPI_ETH_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs blocks 1..2 verified 2026-09-13)
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -200,6 +216,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.ankr.com/bsc/${ANKR_KEY}",
         "https://bsc-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=56&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://bsc.blockpi.network/v1/rpc/${BLOCKPI_BSC_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── Polygon (6 endpoints) ─────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)
@@ -252,6 +269,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.ankr.com/arbitrum/${ANKR_KEY}",
         "https://arbitrum-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=42161&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://arbitrum.blockpi.network/v1/rpc/${BLOCKPI_ARBITRUM_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── Optimism (4 endpoints) ────────────────────────────────────────
     # T1: tenderly (verified)
@@ -268,6 +286,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
         "https://optimism-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=10&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://optimism.blockpi.network/v1/rpc/${BLOCKPI_OPTIMISM_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── Avalanche (4 endpoints) ───────────────────────────────────────
     # T1: official api.avax.network, drpc.org (verified)
@@ -282,6 +301,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://avalanche-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
         "https://lb.drpc.org/ogrpc?network=avalanche&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=43114&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://avalanche.blockpi.network/v1/rpc/${BLOCKPI_AVALANCHE_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── Fantom (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.fantom.network + rpcapi.fantom.network (verified)
@@ -295,6 +315,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://fantom-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
         "https://lb.drpc.org/ogrpc?network=fantom&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=250&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://fantom.blockpi.network/v1/rpc/${BLOCKPI_FANTOM_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── Linea (5 endpoints) ───────────────────────────────────────────
     # T1: official rpc.linea.build, drpc.org (verified)
@@ -311,6 +332,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://linea-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
         "https://lb.drpc.org/ogrpc?network=linea&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=59144&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://linea.blockpi.network/v1/rpc/${BLOCKPI_LINEA_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── Scroll (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.scroll.io, drpc.org (verified)
@@ -325,6 +347,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://scroll-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
         "https://lb.drpc.org/ogrpc?network=scroll&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=534352&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://scroll.blockpi.network/v1/rpc/${BLOCKPI_SCROLL_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── zkSync Era (4 endpoints) ──────────────────────────────────────
     # T1: official mainnet.era.zksync.io, drpc.org (verified)
@@ -339,6 +362,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://zksync-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://lb.drpc.org/ogrpc?network=zksync&dkey=${DRPC_KEY}",  # freemium
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=324&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
+        "https://zksync-era.blockpi.network/v1/rpc/${BLOCKPI_ZKSYNC_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
     ],
     # ── Mantle (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.mantle.xyz (verified)
@@ -456,8 +480,8 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 #   gnosis: 7      celo: 7      blast: 4    fraxtal: 3
 #   metis: 3       robinhood: 7
 # -------------------------------------------------------
-#   Total source templates: 149 across 18 chains
-#   (118 free/keyless + 31 API-key free tiers — keyed ones activate via env)
+#   Total source templates: 158 across 18 chains
+#   (93 free/keyless + 65 API-key free tiers — keyed ones activate via env)
 #
 #   Non-EVM: solana (9), tron (4)
 #   Grand total source templates: 162 across 18 EVM + 2 non-EVM chains
@@ -469,6 +493,10 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 #   non-archive — Uniblock stays its archive source), +9 Infura keyed archive
 #   templates (13 verified chains total incl. the 4 pre-existing), +1 Pocket
 #   solana and +1 Pocket tron fallback.
+# 2026-09-13: +9 BlockPI per-chain keyed archive templates (ethereum/bsc/
+#   arbitrum/optimism/avalanche/linea/scroll/zksync/fantom) replacing the
+#   HTTP-521-flaky keyless /public candidates; polygon /public kept in the
+#   candidate pool (no provisioned key).
 
 
 # ── Candidate Endpoints (awaiting live verification) ────────────────
@@ -484,7 +512,8 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
         "https://eth.llamarpc.com",  # re-probe: 521 on 2026-08-05, provider since stabilized?
         "https://1rpc.io/eth",  # re-probe: usage-limited 2026-08-05
         "https://eth.meowrpc.com",  # getLogs unsupported — blockNumber fallback only
-        "https://ethereum.blockpi.network/v1/rpc/public",
+        # ethereum.blockpi.network/v1/rpc/public removed 2026-09-13 — flaky
+        # (HTTP 521) and superseded by the keyed ${BLOCKPI_ETH_KEY} T2 entry.
         "https://cloudflare-eth.com",  # reported dead 2026-08-05 — confirm before cull
     ],
     "base": [
@@ -495,18 +524,22 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
         "https://binance.llamarpc.com",
         "https://bsc.meowrpc.com",
         "https://bsc-blockchain.rpc.thirdweb.com",
-        "https://bsc.blockpi.network/v1/rpc/public",  # 521 on 2026-08-07 — re-probe
+        # bsc.blockpi.network/v1/rpc/public removed 2026-09-13 — flaky
+        # (HTTP 521 on 2026-08-07) and superseded by the keyed ${BLOCKPI_BSC_KEY} T2 entry.
     ],
     "polygon": [
         "https://polygon.llamarpc.com",
         "https://polygon.meowrpc.com",
         "https://polygon-mainnet.public.blastapi.io",
-        "https://polygon.blockpi.network/v1/rpc/public",
+        # polygon has no provisioned BlockPI key — keep /public but treat it
+        # as flaky (HTTP 521 on 2026-08-07); do not promote to the active pool.
+        "https://polygon.blockpi.network/v1/rpc/public",  # /public is flaky — archive-unverified
     ],
     "arbitrum": [
         "https://arbitrum.llamarpc.com",
         "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
-        "https://arbitrum.blockpi.network/v1/rpc/public",
+        # arbitrum.blockpi.network/v1/rpc/public removed 2026-09-13 — flaky
+        # (HTTP 521 on 2026-08-07) and superseded by the keyed ${BLOCKPI_ARBITRUM_KEY} T2 entry.
     ],
     "optimism": [
         "https://optimism.llamarpc.com",
@@ -520,7 +553,8 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
         "https://fantom-mainnet.public.blastapi.io",
     ],
     "linea": [
-        "https://linea.blockpi.network/v1/rpc/public",
+        # linea.blockpi.network/v1/rpc/public removed 2026-09-13 — flaky
+        # (HTTP 521) and superseded by the keyed ${BLOCKPI_LINEA_KEY} T2 entry.
     ],
     "scroll": [
         "https://scroll-mainnet.public.blastapi.io",

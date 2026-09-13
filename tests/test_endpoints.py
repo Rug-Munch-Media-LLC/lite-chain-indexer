@@ -452,6 +452,70 @@ ANKR_WORKING_CHAINS = {
 ANKR_FORBIDDEN_CHAINS = ("optimism", "fantom", "linea", "blast", "fraxtal", "metis")
 
 
+# ── BlockPI (per-chain keyed, archive — live-verified 2026-09-13) ──────
+# BlockPI keys are PER-CHAIN: ${BLOCKPI_<CHAIN>_KEY}, host <chain>.blockpi.network
+# (zksync → zksync-era). The keyless /public candidates were HTTP-521-flaky
+# (2026-08-07); the keyed templates replace them for the 9 provisioned chains.
+BLOCKPI_CHAINS: dict[str, tuple[str, str]] = {
+    "ethereum": ("ethereum", "BLOCKPI_ETH_KEY"),
+    "bsc": ("bsc", "BLOCKPI_BSC_KEY"),
+    "arbitrum": ("arbitrum", "BLOCKPI_ARBITRUM_KEY"),
+    "optimism": ("optimism", "BLOCKPI_OPTIMISM_KEY"),
+    "avalanche": ("avalanche", "BLOCKPI_AVALANCHE_KEY"),
+    "linea": ("linea", "BLOCKPI_LINEA_KEY"),
+    "scroll": ("scroll", "BLOCKPI_SCROLL_KEY"),
+    "zksync": ("zksync-era", "BLOCKPI_ZKSYNC_KEY"),
+    "fantom": ("fantom", "BLOCKPI_FANTOM_KEY"),
+}
+BLOCKPI_TEST_KEY = "blockpi-key-test"
+
+
+class TestBlockPIPerChainEndpoints:
+    def _source(self) -> str:
+        return Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
+
+    def test_all_nine_verified_chains_have_keyed_template(self):
+        src = self._source()
+        for chain, (host, env) in BLOCKPI_CHAINS.items():
+            expected = f'"https://{host}.blockpi.network/v1/rpc/${{{env}}}"'
+            assert expected in src, f"{chain}: missing keyed BlockPI template {expected}"
+
+    def test_template_expands_via_expandvars(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("BLOCKPI_ETH_KEY", BLOCKPI_TEST_KEY)
+        template = "https://ethereum.blockpi.network/v1/rpc/${BLOCKPI_ETH_KEY}"
+        expected = f"https://ethereum.blockpi.network/v1/rpc/{BLOCKPI_TEST_KEY}"
+        assert _resolve_endpoint_url(template) == expected
+        assert _resolved_endpoints([template]) == [expected]
+
+    def test_unresolved_keyed_template_dropped(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("BLOCKPI_ETH_KEY", raising=False)
+        assert _resolved_endpoints(["https://ethereum.blockpi.network/v1/rpc/${BLOCKPI_ETH_KEY}"]) == []
+
+    def test_old_public_candidates_removed_for_keyed_chains(self):
+        """ethereum/bsc/arbitrum/linea had keyless /public candidates; each
+        now has a keyed active entry, so the /public candidate is gone."""
+        for chain in ("ethereum", "bsc", "arbitrum", "linea"):
+            candidates = CANDIDATE_ENDPOINTS.get(chain, [])
+            assert not any("blockpi.network/v1/rpc/public" in u for u in candidates), chain
+
+    def test_polygon_public_stays_candidate_with_flaky_note(self):
+        assert "https://polygon.blockpi.network/v1/rpc/public" in CANDIDATE_ENDPOINTS["polygon"]
+        src = self._source()
+        candidates_src = src.split("CANDIDATE_ENDPOINTS", 1)[1]
+        block = candidates_src.split('"polygon": [', 1)[1].split("],", 1)[0]
+        assert "flaky" in block.lower()
+        # polygon has no provisioned key — no keyed BlockPI template for it.
+        assert "BLOCKPI_POLYGON_KEY" not in src
+
+    def test_unindexed_blockpi_chains_not_in_active_pool(self):
+        for chain in ("taiko", "cronos", "bitcoin"):
+            assert chain not in GET_LOGS_ENDPOINTS, chain
+        # ...but they are documented as available-but-unindexed in the source.
+        src = self._source().lower()
+        for chain in ("taiko", "cronos", "bitcoin"):
+            assert chain in src
+
+
 class TestAnkrFreeKeyChains:
     def _source_block(self, chain: str) -> str:
         src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
