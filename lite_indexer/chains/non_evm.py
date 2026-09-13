@@ -18,9 +18,9 @@ from lite_indexer.env import load_env_file
 
 from .endpoints import _resolved_endpoints
 
-# Ensure ${ALCHEMY_KEY} / ${ALCHEMY_KEY_2} / ${HELIUS_KEY} / ${HELIUS_KEY_2}
-# / ${HELIUS_KEY_3} / ${TRONGRID_API_KEY} resolve before SOLANA/TRON endpoint
-# resolution below (idempotent; also loaded by endpoints.py).
+# Ensure ${ALCHEMY_KEY} / ${ALCHEMY_KEY_2} / ${ALCHEMY_KEY_3} / ${HELIUS_KEY}
+# / ${HELIUS_KEY_2} / ${HELIUS_KEY_3} / ${TRONGRID_API_KEY} resolve before
+# SOLANA/TRON endpoint resolution below (idempotent; also loaded by endpoints.py).
 load_env_file()
 
 # ── Solana RPC Endpoints ─────────────────────────────────────────────
@@ -33,11 +33,12 @@ SOLANA_ENDPOINTS: list[str] = [
     # T2 — Pocket Network (keyless, 2000 req/IP/min; getHealth→ok 2026-09-13)
     "https://solana.api.pocket.network",
     # T4 — API-key free tiers (set env vars to activate)
-    # Alchemy Solana ×2 INDEPENDENT free accounts (live-verified 2026-09-13:
-    # getHealth "ok" + getSlot 200 on both keys). Kept after the keyless
+    # Alchemy Solana ×3 INDEPENDENT free accounts (live-verified 2026-09-13:
+    # getHealth "ok" + getSlot 200 on all three keys). Kept after the keyless
     # Pocket/PublicNode/official endpoints (free-first ordering).
     "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # Alchemy Solana — account 1 (live-verified 2026-09-13)
     "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_2}",  # Alchemy Solana — account 2 (live-verified 2026-09-13)
+    "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY_3}",  # Alchemy Solana — account 3 (live-verified 2026-09-13)
     # Helius ×3 INDEPENDENT free accounts (capacity + failover). Live-verified
     # 2026-09-13: all three keys answered getHealth "ok" + getSlot 200 on the
     # canonical host mainnet.helius-rpc.com. The legacy host rpc.helius.xyz

@@ -289,11 +289,14 @@ class TestUniblockEndpoints:
         for chain, chain_id in UNIBLOCK_EVM_CHAIN_IDS.items():
             expected = f"{UNIBLOCK_PREFIX}{chain_id}&apiKey={UNIBLOCK_TEST_KEY}"
             assert expected in pool["evm"][chain], f"{chain}: missing {expected}"
-        # robinhood Uniblock is high-priority (right after the official RPC);
+        # robinhood has three high-priority archive sources up front: official
+        # RPC (0), Alchemy (1-3), then Uniblock — so Uniblock lands at index 4
+        # only when all 3 Alchemy keys resolve; in this hermetic run only the
+        # test-key Alchemy placeholder is unset, so assert it stays high (<5).
         # blast/fraxtal/metis sit at T2, immediately after their publicnode T1.
         robinhood = pool["evm"]["robinhood"]
         robinhood_expected = f"{UNIBLOCK_PREFIX}4663&apiKey={UNIBLOCK_TEST_KEY}"
-        assert robinhood.index(robinhood_expected) <= 1
+        assert robinhood.index(robinhood_expected) < 5
         for chain in UNIBLOCK_T2_CHAINS:
             urls = pool["evm"][chain]
             expected = f"{UNIBLOCK_PREFIX}{UNIBLOCK_EVM_CHAIN_IDS[chain]}&apiKey={UNIBLOCK_TEST_KEY}"
@@ -582,15 +585,20 @@ ALCHEMY_SUPPORTED_HOSTS: dict[str, str] = {
     "mantle": "mantle-mainnet",
     "celo": "celo-mainnet",
     "blast": "blast-mainnet",
+    # Newly discovered 2026-09-13 (17 hosts total for our indexed chains).
+    "gnosis": "gnosis-mainnet",
+    "metis": "metis-mainnet",
+    "fraxtal": "frax-mainnet",  # NOTE: "fraxtal-mainnet" is the WRONG host
+    "robinhood": "robinhood-mainnet",
 }
-# Alchemy has no endpoint for these indexed chains — no template may exist.
+ALCHEMY_ACCOUNT_ENV_VARS = ("ALCHEMY_KEY", "ALCHEMY_KEY_2", "ALCHEMY_KEY_3")
+# Alchemy has no endpoint for these (or the hostname is wrong) — no template.
 ALCHEMY_UNSUPPORTED_HOSTS = (
     "fantom-mainnet",
     "fantom",
-    "gnosis-mainnet",
-    "fraxtal-mainnet",
-    "metis-mainnet",
-    "robinhood-mainnet",
+    "fraxtal-mainnet",  # wrong host; correct is frax-mainnet
+    "hyperevm-mainnet",
+    "degen-mainnet",
 )
 
 
@@ -624,15 +632,16 @@ class TestDeadHostsPruned:
             expected = f'"https://{host}.g.alchemy.com/v2/${{ALCHEMY_KEY}}"'
             assert any(expected in ln for ln in self._url_lines()), f"{chain}: missing {expected}"
 
-    def test_alchemy_account2_template_present_for_every_supported_chain(self):
-        """Second independent Alchemy account (ALCHEMY_KEY_2), same 13 hosts."""
+    def test_all_three_accounts_present_for_every_supported_chain(self):
+        """Each of the 17 indexed Alchemy chains carries all 3 independent keys."""
         for chain, host in ALCHEMY_SUPPORTED_HOSTS.items():
-            expected = f'"https://{host}.g.alchemy.com/v2/${{ALCHEMY_KEY_2}}"'
-            assert any(expected in ln for ln in self._url_lines()), f"{chain}: missing {expected}"
+            for var in ALCHEMY_ACCOUNT_ENV_VARS:
+                expected = f'"https://{host}.g.alchemy.com/v2/${{{var}}}"'
+                assert any(expected in ln for ln in self._url_lines()), f"{chain}: missing {expected}"
 
     def test_no_alchemy_template_for_unsupported_chains(self):
-        # Alchemy has no Fantom (and no gnosis/fraxtal/metis/robinhood)
-        # endpoint — the dead host must not be swapped for an invented one.
+        # No Fantom; fraxtal-mainnet/hyperevm-mainnet/degen-mainnet are
+        # wrong or unsupported hostnames — no template may exist.
         for host in ALCHEMY_UNSUPPORTED_HOSTS:
             assert not any(f"{host}.g.alchemy.com" in ln for ln in self._url_lines()), host
 
@@ -640,7 +649,7 @@ class TestDeadHostsPruned:
         alchemy_lines = [ln for ln in self._url_lines() if ".g.alchemy.com" in ln]
         assert alchemy_lines
         for ln in alchemy_lines:
-            assert "/v2/${ALCHEMY_KEY}" in ln or "/v2/${ALCHEMY_KEY_2}" in ln, ln
+            assert any(f"/v2/${{{var}}}" in ln for var in ALCHEMY_ACCOUNT_ENV_VARS), ln
 
 
 # ── BlockVision (per-chain keyed, archive — live-verified 2026-09-13) ──
@@ -809,21 +818,21 @@ class TestAlchemySolanaAccounts:
         src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "non_evm.py").read_text()
         return [ln for ln in src.splitlines() if ln.strip().startswith('"https://')]
 
-    def test_both_accounts_present(self):
-        for var in ("ALCHEMY_KEY", "ALCHEMY_KEY_2"):
+    def test_three_accounts_present(self):
+        for var in ("ALCHEMY_KEY", "ALCHEMY_KEY_2", "ALCHEMY_KEY_3"):
             expected = f'"{SOLANA_ALCHEMY_TEMPLATE}${{{var}}}"'
             assert any(expected in ln for ln in self._url_lines()), f"missing {expected}"
 
-    def test_account2_expands(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("ALCHEMY_KEY_2", "solana-alchemy-key-2")
-        template = f"{SOLANA_ALCHEMY_TEMPLATE}${{ALCHEMY_KEY_2}}"
-        expected = f"{SOLANA_ALCHEMY_TEMPLATE}solana-alchemy-key-2"
+    def test_account3_expands(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("ALCHEMY_KEY_3", "solana-alchemy-key-3")
+        template = f"{SOLANA_ALCHEMY_TEMPLATE}${{ALCHEMY_KEY_3}}"
+        expected = f"{SOLANA_ALCHEMY_TEMPLATE}solana-alchemy-key-3"
         assert _resolve_endpoint_url(template) == expected
         assert _resolved_endpoints([template]) == [expected]
 
-    def test_unresolved_account2_dropped(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.delenv("ALCHEMY_KEY_2", raising=False)
-        assert _resolved_endpoints([f"{SOLANA_ALCHEMY_TEMPLATE}${{ALCHEMY_KEY_2}}"]) == []
+    def test_unresolved_account3_dropped(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("ALCHEMY_KEY_3", raising=False)
+        assert _resolved_endpoints([f"{SOLANA_ALCHEMY_TEMPLATE}${{ALCHEMY_KEY_3}}"]) == []
 
 
 class TestTronGridKeyedTemplateNotWired:

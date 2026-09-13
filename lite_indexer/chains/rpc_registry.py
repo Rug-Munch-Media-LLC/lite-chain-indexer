@@ -105,14 +105,19 @@ FREEMIUM_PROVIDERS: dict[str, FreemiumProvider] = {
             env_key="ALCHEMY_KEY",
             url_example="https://eth-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
             chains_note=(
-                "90+ networks, archive + debug traces. 2 INDEPENDENT free "
-                "accounts wired (${ALCHEMY_KEY} + ${ALCHEMY_KEY_2}) across the "
-                "same 13 EVM chains (eth/base/bsc/polygon/arb/opt/avax/linea/"
-                "scroll/zksync/mantle/celo/blast) + Solana (12 solana-mainnet "
-                "endpoints incl. both keys). Separate account budgets — "
-                "live-verified 2026-09-13. Neither account has Fantom."
+                "90+ networks, archive + debug traces. 3 INDEPENDENT free "
+                "accounts wired (${ALCHEMY_KEY} + ${ALCHEMY_KEY_2} + "
+                "${ALCHEMY_KEY_3}) across 17 of our EVM chains (eth/base/bsc/"
+                "polygon/arb/opt/avax/linea/scroll/zksync/mantle/celo/blast + "
+                "gnosis/metis/fraxtal/robinhood) + Solana. Archive-capable for "
+                "our gap chains (eth_getLogs blocks 1..2 → real logs on "
+                "robinhood/metis/frax/gnosis). All 3 keys × 17 hosts "
+                "live-verified eth_chainId 200, 2026-09-13. Available but NOT "
+                "indexed: unichain/soneium/ink/berachain/sei/sonic/monad/"
+                "abstract/worldchain/shape/apechain/ronin/zora/rootstock/boba/"
+                "astar. No Fantom; Tron unsupported."
             ),
-            free_tier="30M CU/mo PER ACCOUNT (60M total across the 2 accounts)",
+            free_tier="30M CU/mo PER ACCOUNT (90M total across the 3 accounts)",
             referral_terms="developer referral program (credits)",
         ),
         FreemiumProvider(
