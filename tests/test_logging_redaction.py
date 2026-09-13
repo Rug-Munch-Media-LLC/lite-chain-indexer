@@ -61,3 +61,25 @@ def test_infura_and_blockpi_style_redacted():
 def test_public_keyless_urls_untouched():
     url = "https://ethereum.publicnode.com"
     assert redact_secrets(None, "info", {"endpoint": url})["endpoint"] == url
+
+
+def test_list_valued_endpoints_redacted():
+    """endpoint_health_* events log lists of URLs — must be redacted too."""
+    d = redact_secrets(
+        None,
+        "warning",
+        {
+            "down_endpoints": ["https://lb.drpc.org/ogrpc?network=celo&dkey=ArsRd2axgUl6gmbTmqO"],
+            "endpoints": ["https://api.uniblock.dev/uni/v1/json-rpc?chainId=1&apiKey=RPqKwkwyxDgPm"],
+        },
+    )
+    assert "dkey=ArsRd2axgUl6gmbTmqO" not in d["down_endpoints"][0]
+    assert "dkey=***" in d["down_endpoints"][0]
+    assert "RPqKwkwyxDgPm" not in d["endpoints"][0]
+    assert "apiKey=***" in d["endpoints"][0]
+
+
+def test_filesystem_path_not_mangled():
+    """Only URL path segments are masked; ordinary paths stay readable."""
+    p = "/srv/secrets/lite-indexer-endpoints.json"
+    assert redact_secrets(None, "debug", {"path": p})["path"] == p

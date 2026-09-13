@@ -25,24 +25,41 @@ _USERINFO = re.compile(r"://[^/@:\s]+:[^/@\s]+@")
 _PATH_SEG = re.compile(r"/[A-Za-z0-9_\-]{20,}")
 
 
-def _redact_secrets(events: str) -> str:
-    """Redact secret-looking tokens from a URL-ish string."""
-    events = _USERINFO.sub("://***@", events)
-    events = _SECRET_QUERY.sub(lambda m: f"{m.group(1)}=***", events)
-    events = _PATH_SEG.sub("/***", events)
-    return events
+def _redact_secrets(value: str) -> str:
+    """Redact secret-looking tokens from a string.
+
+    Query-param secrets and URL userinfo are always masked; key-like URL
+    path segments are masked only when the string is a URL, so ordinary
+    filesystem paths stay readable.
+    """
+    value = _USERINFO.sub("://***@", value)
+    value = _SECRET_QUERY.sub(lambda m: f"{m.group(1)}=***", value)
+    if "://" in value:
+        value = _PATH_SEG.sub("/***", value)
+    return value
+
+
+def _redact_value(value: Any) -> Any:
+    """Recursively redact strings inside scalars, lists, tuples, and dicts."""
+    if isinstance(value, str):
+        return _redact_secrets(value)
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_value(item) for item in value)
+    if isinstance(value, dict):
+        return {k: _redact_value(v) for k, v in value.items()}
+    return value
 
 
 def redact_secrets(_logger: Any, _method: str, event_dict: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
-    """structlog processor: mask secrets in URL fields and query strings."""
+    """structlog processor: mask secrets anywhere in the event payload.
+
+    Handles top-level fields, nested lists (e.g. ``down_endpoints``) and
+    dicts, so provider keys never reach journald/CI logs.
+    """
     for key, value in list(event_dict.items()):
-        if not isinstance(value, str):
-            continue
-        lowered = key.lower()
-        if "url" in lowered or "endpoint" in lowered or "uri" in lowered:
-            event_dict[key] = _redact_secrets(value)
-        else:
-            event_dict[key] = _SECRET_QUERY.sub(lambda m: f"{m.group(1)}=***", value)
+        event_dict[key] = _redact_value(value)
     return event_dict
 
 
