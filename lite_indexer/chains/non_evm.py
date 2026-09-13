@@ -62,6 +62,11 @@ TRON_ENDPOINTS: list[str] = [
     # T2 — Verified free endpoints (block queries only)
     "https://api.tronstack.io",
     "https://tron-rpc.publicnode.com",
+    # T4 — Chainstack TRON Mainnet node — full-URL basic-auth endpoint
+    # (live-verified 2026-09-13: eth_blockNumber + wallet/getblockbynum +
+    # eth_getLogs). HTTPX handles userinfo-in-URL. Dropped from the pool
+    # when CHAINSTACK_TRON_URL is unset.
+    "${CHAINSTACK_TRON_URL}",
 ]
 # NOTE: rpc.tronlink.org was removed 2026-08-03 — confirmed dead (empty
 # response on /wallet/getnowblock). The remaining three endpoints are

@@ -599,3 +599,65 @@ class TestBlockVisionEndpoints:
         src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "rpc_registry.py").read_text()
         for chain in BLOCKVISION_UNINDEXED_CHAINS:
             assert chain in src.lower(), chain
+
+
+# ── Chainstack Tron (per-node full URL, HTTP Basic auth — 2026-09-13) ──
+# The Chainstack Tron Mainnet node is a full-URL basic-auth endpoint
+# (userinfo embedded in the URL) supplied via CHAINSTACK_TRON_URL. HTTPX
+# handles userinfo-in-URL. Live-verified 2026-09-13: eth_blockNumber +
+# wallet/getblockbynum + eth_getLogs.
+CHAINSTACK_TRON_TEST_URL = "https://user:pass@tron-mainnet.core.chainstack.com/jsonrpc"
+CHAINSTACK_TRON_TEMPLATE = "${CHAINSTACK_TRON_URL}"
+
+
+class TestChainstackTronEndpoints:
+    def _non_evm_source(self) -> str:
+        return Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "non_evm.py").read_text()
+
+    def test_template_registered_in_tron_pool_source(self):
+        src = self._non_evm_source()
+        assert f'"{CHAINSTACK_TRON_TEMPLATE}"' in src
+        tron_block = src.split("TRON_ENDPOINTS", 1)[1]
+        assert CHAINSTACK_TRON_TEMPLATE in tron_block
+        assert "Chainstack TRON Mainnet node" in tron_block
+        assert "live-verified 2026-09-13" in tron_block
+
+    def test_template_expands_via_expandvars(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("CHAINSTACK_TRON_URL", CHAINSTACK_TRON_TEST_URL)
+        assert _resolve_endpoint_url(CHAINSTACK_TRON_TEMPLATE) == CHAINSTACK_TRON_TEST_URL
+        assert _resolved_endpoints([CHAINSTACK_TRON_TEMPLATE]) == [CHAINSTACK_TRON_TEST_URL]
+
+    def test_unresolved_template_is_dropped(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("CHAINSTACK_TRON_URL", raising=False)
+        assert _resolved_endpoints([CHAINSTACK_TRON_TEMPLATE]) == []
+
+    def test_active_tron_pool_contains_expanded_chainstack(self, tmp_path: Path):
+        """Hermetic subprocess import with CHAINSTACK_TRON_URL set (no
+        in-process reload that would poison module state)."""
+        out = tmp_path / "tron_pool.json"
+        script = (
+            "import json, os\n"
+            "from lite_indexer.chains.non_evm import TRON_ENDPOINTS\n"
+            "with open(os.environ['TRON_TEST_OUT'], 'w') as fh:\n"
+            "    json.dump(TRON_ENDPOINTS, fh)\n"
+        )
+        env = dict(os.environ)
+        env["NODEREAL_KEY"] = "test-key-123"
+        env["CHAINSTACK_TRON_URL"] = CHAINSTACK_TRON_TEST_URL
+        env["NATS_ENABLED"] = "0"
+        env["TRON_TEST_OUT"] = str(out)
+        repo_root = Path(__file__).resolve().parents[1]
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            env=env,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        pool = json.loads(out.read_text())
+        assert CHAINSTACK_TRON_TEST_URL in pool
+        # Keyed entries must stay behind the keyless public endpoints.
+        assert pool.index(CHAINSTACK_TRON_TEST_URL) > pool.index("https://api.trongrid.io")

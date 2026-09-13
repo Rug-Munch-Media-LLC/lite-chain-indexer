@@ -204,6 +204,30 @@ class TestBlockVisionProvider:
         assert "BlockVision" not in {p.name for p in providers_with_referrals()}
 
 
+class TestChainstackProvider:
+    """Chainstack nodes are PER-NODE full URLs, not one account-wide key."""
+
+    def test_chainstack_registered_as_per_node_url(self):
+        p = FREEMIUM_PROVIDERS["Chainstack"]
+        assert p.env_key == "CHAINSTACK_<CHAIN>_URL"
+        assert p.env_key != "CHAINSTACK_KEY"
+        assert "core.chainstack.com" in p.url_example
+        assert "chainstacklabs.com" not in p.url_example
+
+    def test_chainstack_documents_per_node_env_vars(self):
+        p = FREEMIUM_PROVIDERS["Chainstack"]
+        assert "CHAINSTACK_SOLANA_URL" in p.chains_note
+        assert "CHAINSTACK_TRON_URL" in p.chains_note
+        assert "separate" in p.chains_note.lower()
+
+    def test_chainstack_documents_basic_auth(self):
+        p = FREEMIUM_PROVIDERS["Chainstack"]
+        assert "Basic auth" in p.chains_note
+
+    def test_chainstack_referral_retained(self):
+        assert "Chainstack" in {p.name for p in providers_with_referrals()}
+
+
 class TestOneRpcKeyedUnresolved:
     """The provided 1RPC key was not accepted in any documented format."""
 

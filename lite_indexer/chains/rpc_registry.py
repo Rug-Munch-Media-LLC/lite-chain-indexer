@@ -51,9 +51,19 @@ FREEMIUM_PROVIDERS: dict[str, FreemiumProvider] = {
         ),
         FreemiumProvider(
             name="Chainstack",
-            env_key="CHAINSTACK_KEY",
-            url_example="https://nd-{id}.{region}.chainstacklabs.com/${CHAINSTACK_KEY}",
-            chains_note="Major EVMs + Solana; flat request pricing",
+            # Chainstack provisions PER-NODE full-URL endpoints, not a single
+            # account-wide key. Separate accounts per chain: the env vars are
+            # CHAINSTACK_SOLANA_URL and CHAINSTACK_TRON_URL (live-verified
+            # 2026-09-13). Node endpoints may require HTTP Basic auth, which
+            # Chainstack embeds as userinfo in the URL
+            # (https://<user>:<pass>@<node>.core.chainstack.com/<path>).
+            env_key="CHAINSTACK_<CHAIN>_URL",
+            url_example="https://<node>.core.chainstack.com/<path>",
+            chains_note=(
+                "Major EVMs + Solana + Tron; per-node full URLs via "
+                "CHAINSTACK_SOLANA_URL / CHAINSTACK_TRON_URL (separate "
+                "accounts). May require HTTP Basic auth (userinfo in URL)."
+            ),
             free_tier="3M requests/mo (Developer)",
             referral_terms="10% of referred purchases for 1 year (credits)",
         ),
