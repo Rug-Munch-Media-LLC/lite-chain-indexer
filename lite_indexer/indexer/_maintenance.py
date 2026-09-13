@@ -9,6 +9,7 @@ from __future__ import annotations
 import gc  # noqa: F401 — used by maintenance mixin body
 from typing import Any  # noqa: F401
 
+from lite_indexer import metrics
 from lite_indexer.config import (
     DATA_RECONCILIATION_ENABLED,
     DATA_RECONCILIATION_EVERY_N_CYCLES,
@@ -136,6 +137,11 @@ class MaintenanceMixin(IndexerMixinBase):
         summary["reconcile_expected"] = expected
         summary["reconcile_actual"] = actual
         summary["reconcile_discrepancy_pct"] = round(discrepancy_pct, 2)
+        metrics.set_labeled_gauge(
+            "lite_indexer_reconciliation_discrepancy_pct",
+            round(discrepancy_pct, 2),
+            chain=self.chain,
+        )
 
         if discrepancy_pct <= DATA_RECONCILIATION_MAX_DISCREPANCY_PCT:
             logger.info(

@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from lite_indexer import metrics
 from lite_indexer.config import (
     BOOTSTRAP_B2_BUCKET,
     BOOTSTRAP_PARQUET_PATH,
@@ -106,6 +107,8 @@ class ParquetExporter:
             error_message: Error detail (failed status only).
         """
         now = datetime.now(UTC)
+        if status == _STATUS_FAILED:
+            metrics.incr_labeled("lite_indexer_parquet_export_failed", chain=chain, date=day.isoformat())
         uploaded_at = now if status == _STATUS_UPLOADED else None
         deleted_at = now if status == _STATUS_DELETED else None
         try:

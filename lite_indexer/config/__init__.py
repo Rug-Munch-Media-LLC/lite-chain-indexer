@@ -8,5 +8,6 @@ keeps working unchanged.
 
 from lite_indexer.config.chains import *  # noqa: F401,F403
 from lite_indexer.config.indexing import *  # noqa: F401,F403
+from lite_indexer.config.metrics import *  # noqa: F401,F403
 from lite_indexer.config.rpc import *  # noqa: F401,F403
 from lite_indexer.config.storage import *  # noqa: F401,F403

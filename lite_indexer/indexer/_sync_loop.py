@@ -15,6 +15,7 @@ import asyncio
 import time
 from typing import Any
 
+from lite_indexer import metrics
 from lite_indexer.chunks import sync_batch_for_chain
 from lite_indexer.config import (
     ATTESTATION_ENABLED,
@@ -182,6 +183,7 @@ class SyncLoopMixin(IndexerMixinBase):
                 )
                 summary["state_regression"] = True
                 summary["state_regression_recovered_to"] = resume
+                metrics.incr_labeled("lite_indexer_state_regression_detected", chain=self.chain)
                 self._highwater.update(resume - 1)
                 return resume
             return None
@@ -203,6 +205,7 @@ class SyncLoopMixin(IndexerMixinBase):
             )
             summary["state_regression"] = True
             summary["state_regression_recovered_to"] = resume
+            metrics.incr_labeled("lite_indexer_state_regression_detected", chain=self.chain)
             self._highwater.update(resume - 1)
             return resume
 
@@ -336,6 +339,7 @@ class SyncLoopMixin(IndexerMixinBase):
             )
             summary["status"] = "fetch_failed"
             summary["errors"].append(f"all endpoints failed for range {from_block}-{to_block}")
+            metrics.incr_labeled("lite_indexer_rpc_failures", chain=self.chain)
             summary["duration_seconds"] = time.monotonic() - start_time
             self._save_current_state()
             return summary

@@ -13,6 +13,7 @@ from typing import Any
 
 import httpx
 
+from lite_indexer import metrics
 from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
 from lite_indexer.chains.parallelism import chain_priority
 from lite_indexer.config import (
@@ -24,11 +25,13 @@ from lite_indexer.config import (
     MAX_CONCURRENT_CHAINS,
     MEMORY_PAUSE_SLEEP,
     MEMORY_RECYCLE_MB,
+    METRICS_GAUGE_INTERVAL_SECONDS,
     PRICING_ENABLED,
 )
 from lite_indexer.health import ChainStallTracker
 from lite_indexer.indexer import LiteIndexer
 from lite_indexer.logging import get_logger
+from lite_indexer.metrics_server import start_metrics_server, stop_metrics_server
 from lite_indexer.storage.clickhouse import ClickHouseWriter
 
 logger = get_logger(__name__)
@@ -61,6 +64,61 @@ async def recycle_if_over_budget(
     await asyncio.gather(*(ix.aclose() for ix in indexers), return_exceptions=True)
     logger.info("memory_recycle_exit", rss_mb=mem_mb, recycle_mb=MEMORY_RECYCLE_MB)
     os._exit(0)
+
+
+def export_global_metrics() -> None:
+    """Publish the process / quota / RPC-pool gauges the alert rules scrape.
+
+    Best-effort and synchronous: reads local RSS/cgroup files, the in-process
+    quota ledger, and the endpoint pool. Called periodically from
+    ``_metrics_gauge_loop`` — never raises into the daemon.
+    """
+    from lite_indexer.chains import GET_LOGS_ENDPOINTS
+    from lite_indexer.indexer._resource_guards import get_cgroup_memory_mb, get_process_rss_mb
+    from lite_indexer.rpc.health import is_endpoint_healthy
+    from lite_indexer.rpc.ledger import LEDGER
+    from lite_indexer.rpc.pool import is_endpoint_banned
+
+    metrics.set_gauge("lite_indexer_rss_bytes", get_process_rss_mb() * 1024 * 1024)
+    metrics.set_gauge("lite_indexer_cgroup_memory_bytes", get_cgroup_memory_mb() * 1024 * 1024)
+
+    for provider, state in LEDGER.snapshot().items():
+        consumed = state.get("consumed_pct")
+        if consumed is not None:
+            metrics.set_labeled_gauge("lite_indexer_quota_consumed_pct", float(consumed), provider=provider)
+
+    for chain, endpoints in GET_LOGS_ENDPOINTS.items():
+        healthy = sum(1 for endpoint in endpoints if not is_endpoint_banned(endpoint) and is_endpoint_healthy(endpoint))
+        metrics.set_labeled_gauge("lite_indexer_rpc_pool_healthy_endpoints", healthy, chain=chain)
+
+
+def export_chain_metrics(indexer: LiteIndexer) -> None:
+    """Publish the per-chain state gauges for one running indexer."""
+    last_block = indexer.state.load().get("last_block")
+    if last_block is not None:
+        metrics.set_labeled_gauge("lite_indexer_state_last_block", int(last_block), chain=indexer.chain)
+        metrics.set_labeled_gauge("lite_indexer_last_block", int(last_block), chain=indexer.chain)
+    publisher = getattr(indexer, "_nats_publisher", None)
+    if publisher is not None:
+        circuit_open = 1.0 if getattr(publisher, "circuit_state", "closed") == "open" else 0.0
+        metrics.set_labeled_gauge("lite_indexer_nats_circuit_open", circuit_open, chain=indexer.chain)
+
+
+async def _metrics_gauge_loop(indexers: list[LiteIndexer], interval: float) -> None:
+    """Refresh every alert-referenced gauge on a fixed interval.
+
+    Runs as its own task so the exporter's data stays current without
+    touching the sync cycles. Any failure is logged and swallowed — metrics
+    are observability, never a reason to stop indexing.
+    """
+    while True:
+        try:
+            export_global_metrics()
+            for indexer in list(indexers):
+                export_chain_metrics(indexer)
+        except Exception as exc:  # noqa: BLE001 — metrics must never kill the daemon
+            logger.warning("metrics_gauge_update_failed", error=str(exc)[:120])
+        await asyncio.sleep(max(1.0, interval))
 
 
 async def main_daemon(
@@ -104,6 +162,10 @@ async def main_daemon(
     )
 
     data_path = Path(data_dir) if data_dir else DATA_DIR
+
+    # Prometheus exporter: start once on a background thread. A busy port or
+    # missing library is a logged no-op — the daemon never blocks on metrics.
+    start_metrics_server()
 
     shutdown_event = asyncio.Event()
     error_count = 0
@@ -263,6 +325,14 @@ async def main_daemon(
         name="rpc-discovery-monitor",
     )
 
+    # Periodic alert-gauge refresh (RSS/cgroup, per-chain last block, quota
+    # consumed pct, RPC pool health, NATS circuit). Keeps the /metrics
+    # endpoint current for the loaded alert rules.
+    metrics_task = asyncio.create_task(
+        _metrics_gauge_loop(indexers, METRICS_GAUGE_INTERVAL_SECONDS),
+        name="metrics-gauges",
+    )
+
     # Periodic USD price refresh (CoinGecko/DefiLlama free tiers): keeps the
     # token_prices feed + in-memory cache current so the whale flag and USD
     # columns on DEX rows are computed with prices. Best-effort — a failed
@@ -281,17 +351,19 @@ async def main_daemon(
     # chain tasks
     health_task.cancel()
     discovery_task.cancel()
+    metrics_task.cancel()
     if price_task is not None:
         price_task.cancel()
     for task in chain_tasks:
         task.cancel()
-    await asyncio.gather(health_task, discovery_task, *chain_tasks, return_exceptions=True)
+    await asyncio.gather(health_task, discovery_task, metrics_task, *chain_tasks, return_exceptions=True)
     if price_task is not None:
         await asyncio.gather(price_task, return_exceptions=True)
 
     # Close every per-chain HTTP client so a clean shutdown (or restart)
     # does not leak sockets to the next process.
     await asyncio.gather(*(ix.aclose() for ix in indexers), return_exceptions=True)
+    stop_metrics_server()
 
     logger.info("daemon_shutdown")
     return 0 if error_count == 0 else 1
