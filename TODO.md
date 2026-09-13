@@ -53,7 +53,16 @@ These are seams we can layer on later; none blocks current operation.
       ones). Also probe `debug_traceBlockByNumber` for chains where `trace_block` is unavailable
       (arbitrum, polygon, avalanche, linea, scroll, zksync, mantle, celo, blast, metis).
       Trace methods are CU-heavy (~3.0 CU) — the quota ledger already meters them.
-- [ ] **Firehose / Portal flat-file ingest** as an alternate ingest source (builds on `ingest/flatfile.py`).
+- [ ] **Free external backfill ingest** (research: `/root/.knowledge/FREE-BACKFILL-DATASETS-2026-09-14.md`).
+      No single free source covers all 21 chains; **Envio HyperSync ∪ Subsquid SQD = all 21**.
+      Plan: prototype **HyperSync `collect_parquet`** (MPL-2.0; ~20/21 + Solana via a separate client;
+      free-token quota UNVERIFIED — verify first) → reshape → B2 → `bootstrap`. **SQD Portal** for
+      metis/Tron/Hyperliquid (AGPL-3.0 code; public portal is *eval-only*, not production).
+      **Solana = Old Faithful** free CAR archives (AGPL-3.0, raw ledger → needs decode). Tron = free
+      node-DB snapshots. Firehose is OSS (Apache-2.0) but hosted = paid; The Graph Market free tier is
+      a trial. **Licensing: never republish these as our own OSS.** Reuse `ingest/flatfile.py`
+      (`s3://` B2 + manifest/glob) but each source needs reshape to our schema.
+      Trap: Flipside appears defunct — don't build on it.
 - [ ] **Browser UI / query console**.
 - [ ] More non-EVM drivers (Aptos, Sui, Cosmos) — registry presets exist; drivers missing.
 - [ ] Promote **stale provider keys** (QuickNode/Moralis/CoinGecko Pro/Birdeye/Solscan) or drop them.
