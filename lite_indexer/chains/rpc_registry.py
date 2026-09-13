@@ -45,7 +45,13 @@ FREEMIUM_PROVIDERS: dict[str, FreemiumProvider] = {
             name="QuickNode",
             env_key="QUICKNODE_KEY",
             url_example="https://{endpoint-host}.quiknode.pro/${QUICKNODE_KEY}/",
-            chains_note="83+ chains incl. Solana + Bitcoin",
+            chains_note=(
+                "83+ chains incl. Solana + Bitcoin. The bare QUICKNODE_KEY is "
+                "NOT URL-embeddable (verified 2026-09-13: no endpoint host to "
+                "pair it with) — QuickNode provisions per-endpoint URLs of the "
+                "form https://<id>.quiknode.pro/<key>/, so a full endpoint URL "
+                "env var is required. No QUICKNODE_*_URL is provisioned yet."
+            ),
             free_tier="10M credits/mo",
             referral_terms="50% of first month (credits); 15% recurring on dev subs; 90d cookie",
         ),
@@ -62,7 +68,10 @@ FREEMIUM_PROVIDERS: dict[str, FreemiumProvider] = {
             chains_note=(
                 "Major EVMs + Solana + Tron; per-node full URLs via "
                 "CHAINSTACK_SOLANA_URL / CHAINSTACK_TRON_URL (separate "
-                "accounts). May require HTTP Basic auth (userinfo in URL)."
+                "accounts). May require HTTP Basic auth (userinfo in URL). "
+                "CHAINSTACK_API_KEY (Management API Bearer) verified "
+                "2026-09-13: GET api.chainstack.com/v1/nodes/ → 200 (1 shared "
+                "node); the provisioned per-node URLs answer live."
             ),
             free_tier="3M requests/mo (Developer)",
             referral_terms="10% of referred purchases for 1 year (credits)",
@@ -149,9 +158,34 @@ FREEMIUM_PROVIDERS: dict[str, FreemiumProvider] = {
             name="Helius",
             env_key="HELIUS_KEY",
             url_example="https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}",
-            chains_note="Solana specialist (LaserStream gRPC, DAS API)",
-            free_tier="1M credits/mo (10 RPS)",
+            chains_note=(
+                "Solana specialist (LaserStream gRPC, DAS API); 3 INDEPENDENT "
+                "free accounts wired for capacity + failover: ${HELIUS_KEY}, "
+                "${HELIUS_KEY_2}, ${HELIUS_KEY_3} — all getHealth/getSlot "
+                "live-verified on mainnet.helius-rpc.com 2026-09-13 "
+                "(legacy rpc.helius.xyz now 403s)."
+            ),
+            free_tier="1M credits/mo (10 RPS) per account",
             referral_terms="creator/partner program (contact Helius)",
+        ),
+        FreemiumProvider(
+            name="TronGrid",
+            # TronGrid's key is accepted as the TRON-PRO-API-KEY header OR a
+            # path-scoped ?api_key= query param. It is NOT embeddable as a
+            # base URL (https://api.trongrid.io?api_key=… → 405) and the Tron
+            # transport does f"{base_url}{path}", so no pool template is
+            # registered — needs strategy-level query-param support.
+            env_key="TRONGRID_API_KEY",
+            url_example="https://api.trongrid.io/wallet/getnowblock?api_key=${TRONGRID_API_KEY}",
+            chains_note=(
+                "Tron official (contract events API). Key accepted as header "
+                "TRON-PRO-API-KEY or path-scoped ?api_key= (both 200, "
+                "2026-09-13); the keyless host already serves 200. Base-URL "
+                "template is non-functional (405) — document, not wired."
+            ),
+            free_tier="free tier with API key (higher rate limits than keyless)",
+            referral_terms="no public affiliate program — recommend on merit",
+            has_referral_program=False,
         ),
         FreemiumProvider(
             name="BlockPI",
@@ -221,6 +255,11 @@ SKIPPED_PROVIDERS: dict[str, str] = {
     # path variant does not resolve. Keyless https://1rpc.io/<chain> stays
     # wired where already registered — no keyed 1RPC template added.
     "1RPC keyed upgrade": "unresolved 2026-09-13 — key format not accepted; keyless 1rpc.io remains in use",
+    # Moralis: provisioned keys are 324-char REST API keys, not JSON-RPC keys.
+    # A Moralis node URL is per-app (siteN.moralis-nodes.com/<chain>/<key>) and
+    # none is provisioned; the free plan is currently paused (REST returns 401
+    # "Your Moralis Free usage is paused"). Not URL-embeddable — no template.
+    "Moralis RPC": "unusable 2026-09-13 — REST keys only (free plan paused, 401); no per-app node URL provisioned",
 }
 
 

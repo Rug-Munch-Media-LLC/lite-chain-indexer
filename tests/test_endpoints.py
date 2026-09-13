@@ -753,3 +753,59 @@ class TestChainstackTronEndpoints:
         assert CHAINSTACK_TRON_TEST_URL in pool
         # Keyed entries must stay behind the keyless public endpoints.
         assert pool.index(CHAINSTACK_TRON_TEST_URL) > pool.index("https://api.trongrid.io")
+
+
+# ── Helius ×3 accounts + TronGrid key form (2026-09-13) ────────────────
+# Helius: 3 independent free accounts on the canonical host
+# mainnet.helius-rpc.com (all getHealth/getSlot live-verified). TronGrid:
+# key accepted as TRON-PRO-API-KEY header or path-scoped ?api_key=, but NOT
+# as a base URL (405) — so no pool template is wired.
+HELIUS_ACCOUNT_ENV_VARS = ("HELIUS_KEY", "HELIUS_KEY_2", "HELIUS_KEY_3")
+HELIUS_RPC_PREFIX = "https://mainnet.helius-rpc.com/?api-key="
+
+
+class TestHeliusAccounts:
+    def _non_evm_source(self) -> str:
+        return Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "non_evm.py").read_text()
+
+    def _url_lines(self) -> list[str]:
+        return [ln for ln in self._non_evm_source().splitlines() if ln.strip().startswith('"https://')]
+
+    def test_three_helius_templates_present(self):
+        url_lines = self._url_lines()
+        for var in HELIUS_ACCOUNT_ENV_VARS:
+            expected = f'"{HELIUS_RPC_PREFIX}${{{var}}}"'
+            assert any(expected in ln for ln in url_lines), f"missing {expected}"
+
+    def test_legacy_helius_host_not_used(self):
+        # rpc.helius.xyz currently 403s — only the canonical host is wired.
+        assert not any("rpc.helius.xyz" in ln for ln in self._url_lines())
+
+    def test_helius_templates_expand(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("HELIUS_KEY_2", "helius-key-2-test")
+        template = f"{HELIUS_RPC_PREFIX}${{HELIUS_KEY_2}}"
+        expected = f"{HELIUS_RPC_PREFIX}helius-key-2-test"
+        assert _resolve_endpoint_url(template) == expected
+        assert _resolved_endpoints([template]) == [expected]
+
+    def test_unresolved_helius_template_dropped(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("HELIUS_KEY_3", raising=False)
+        assert _resolved_endpoints([f"{HELIUS_RPC_PREFIX}${{HELIUS_KEY_3}}"]) == []
+
+
+class TestTronGridKeyedTemplateNotWired:
+    """TronGrid's query key is path-scoped only and cannot be a base URL."""
+
+    def _non_evm_source(self) -> str:
+        return Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "non_evm.py").read_text()
+
+    def test_no_broken_base_url_template(self):
+        src = self._non_evm_source()
+        url_lines = [ln for ln in src.splitlines() if ln.strip().startswith('"https://')]
+        assert not any("TRONGRID_API_KEY" in ln for ln in url_lines)
+        assert "https://api.trongrid.io?api_key=${TRONGRID_API_KEY}" not in src
+
+    def test_source_documents_header_and_405(self):
+        src = self._non_evm_source()
+        assert "TRON-PRO-API-KEY" in src
+        assert "405" in src

@@ -18,8 +18,9 @@ from lite_indexer.env import load_env_file
 
 from .endpoints import _resolved_endpoints
 
-# Ensure ${ALCHEMY_KEY} / ${HELIUS_KEY} resolve before SOLANA/TRON
-# endpoint resolution below (idempotent; also loaded by endpoints.py).
+# Ensure ${ALCHEMY_KEY} / ${HELIUS_KEY} / ${HELIUS_KEY_2} / ${HELIUS_KEY_3}
+# / ${TRONGRID_API_KEY} resolve before SOLANA/TRON endpoint resolution below
+# (idempotent; also loaded by endpoints.py).
 load_env_file()
 
 # ── Solana RPC Endpoints ─────────────────────────────────────────────
@@ -33,7 +34,14 @@ SOLANA_ENDPOINTS: list[str] = [
     "https://solana.api.pocket.network",
     # T4 — API-key free tiers (set env vars to activate)
     "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # Alchemy free
-    "https://rpc.helius.xyz/?api-key=${HELIUS_KEY}",  # Helius free (25K req/mo)
+    # Helius ×3 INDEPENDENT free accounts (capacity + failover). Live-verified
+    # 2026-09-13: all three keys answered getHealth "ok" + getSlot 200 on the
+    # canonical host mainnet.helius-rpc.com. The legacy host rpc.helius.xyz
+    # now returns 403 — do not use it. Keyed entries stay after the keyless
+    # Pocket/PublicNode/official endpoints (free-first ordering).
+    "https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY}",  # Helius free — account 1 (live-verified 2026-09-13)
+    "https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY_2}",  # Helius free — account 2 (live-verified 2026-09-13)
+    "https://mainnet.helius-rpc.com/?api-key=${HELIUS_KEY_3}",  # Helius free — account 3 (live-verified 2026-09-13)
     # ── Freemium depth (added 2026-08-23 — activate via env) ──
     # NOTE: dRPC-lb solana is PAID-ONLY ("chain is not available on free plan"
     #       re-confirmed 2026-08-23 with a live free key) — no template added.
@@ -71,6 +79,16 @@ TRON_ENDPOINTS: list[str] = [
 # NOTE: rpc.tronlink.org was removed 2026-08-03 — confirmed dead (empty
 # response on /wallet/getnowblock). The remaining three endpoints are
 # verified alive.
+#
+# TRONGRID_API_KEY (2026-09-13): the provisioned key is accepted BOTH as the
+# header ``TRON-PRO-API-KEY`` and as a PATH-SCOPED query param
+# (``POST /wallet/getnowblock?api_key=…`` → 200). It is NOT embeddable as a
+# base URL: ``POST https://api.trongrid.io?api_key=…`` → 405 (openresty), and
+# the Tron transport builds requests as ``f"{base_url}{path}"``
+# (strategies/tron/rpc.py), so a query-carrying base would corrupt every call.
+# The keyless host already serves 200 (TronGrid does not gate this endpoint on
+# the key). No keyed base template is added — it needs strategy-level
+# query-param support; a broken template would only add retry noise.
 
 # ── Endpoint URL template resolution ───────────────────────────────
 # Resolve ${ENV_VAR} placeholders (${ALCHEMY_KEY}, ${HELIUS_KEY}) so the

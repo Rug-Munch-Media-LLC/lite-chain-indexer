@@ -36,6 +36,7 @@ class TestRegistryIntegrity:
             "dRPC",
             "Ankr",
             "Helius",
+            "TronGrid",
             "BlockPI",
             "Uniblock",
             "BlockVision",
@@ -226,6 +227,50 @@ class TestChainstackProvider:
 
     def test_chainstack_referral_retained(self):
         assert "Chainstack" in {p.name for p in providers_with_referrals()}
+
+
+class TestHeliusMultiAccount:
+    """Helius now has 3 independent free accounts wired for Solana."""
+
+    def test_helius_registered_with_canonical_host(self):
+        p = FREEMIUM_PROVIDERS["Helius"]
+        assert p.env_key == "HELIUS_KEY"
+        assert "${HELIUS_KEY}" in p.url_example
+        assert p.url_example.startswith("https://mainnet.helius-rpc.com/?api-key=")
+
+    def test_helius_documents_three_accounts(self):
+        p = FREEMIUM_PROVIDERS["Helius"]
+        for var in ("${HELIUS_KEY}", "${HELIUS_KEY_2}", "${HELIUS_KEY_3}"):
+            assert var in p.chains_note
+        assert "rpc.helius.xyz" in p.chains_note  # legacy host documented as dead
+
+
+class TestTronGridProvider:
+    """TronGrid key is header/path-scoped only — documented, not wired."""
+
+    def test_trongrid_registered_with_placeholder(self):
+        p = FREEMIUM_PROVIDERS["TronGrid"]
+        assert p.env_key == "TRONGRID_API_KEY"
+        assert "${TRONGRID_API_KEY}" in p.url_example
+        assert p.has_referral_program is False
+
+    def test_trongrid_documents_header_and_base_url_limits(self):
+        p = FREEMIUM_PROVIDERS["TronGrid"]
+        assert "TRON-PRO-API-KEY" in p.chains_note
+        assert "405" in p.chains_note
+        assert "api_key" in p.chains_note
+
+
+class TestQuickNodeMoralisUnresolved:
+    def test_quicknode_note_flags_bare_key_insufficient(self):
+        p = FREEMIUM_PROVIDERS["QuickNode"]
+        assert "per-endpoint" in p.chains_note.lower()
+        assert "NOT URL-embeddable" in p.chains_note
+
+    def test_moralis_recorded_as_skipped(self):
+        reason = SKIPPED_PROVIDERS["Moralis RPC"]
+        assert "2026-09-13" in reason
+        assert "REST" in reason
 
 
 class TestOneRpcKeyedUnresolved:

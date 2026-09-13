@@ -36,7 +36,8 @@ PROVIDER_RATE_LIMITS: dict[str, dict[str, int]] = {
     "alchemy.com": {"req_per_sec": 10, "burst": 20},
     "getblock.io": {"req_per_sec": 10, "burst": 20},
     "chainstack.com": {"req_per_sec": 10, "burst": 20},
-    "helius.xyz": {"req_per_sec": 10, "burst": 20},
+    "helius.xyz": {"req_per_sec": 10, "burst": 20},  # legacy host (rpc.helius.xyz)
+    "helius-rpc.com": {"req_per_sec": 10, "burst": 20},  # canonical host (mainnet.helius-rpc.com, wired 2026-09-13)
 }
 
 # Default rate limit when provider isn't listed
@@ -86,6 +87,7 @@ MAX_BLOCK_RANGE: dict[str, int | None] = {
     "getblock.io": 5000,
     "chainstack.com": 10000,
     "helius.xyz": None,
+    "helius-rpc.com": None,
 }
 
 DEFAULT_MAX_RANGE = 500
