@@ -43,6 +43,9 @@ These are seams we can layer on later; none blocks current operation.
 - [ ] **Second migration pass**: `dex_events` (28.75 GiB, unpartitioned → TTL can't burn) plus the
       small Solana/Tron tables (`solana_launches`, `tron_launches`, `evm_launches`, …).
       Same tooling; run after the in-flight migration completes. Do NOT edit `TABLES` mid-run.
+- [ ] **Reconcile evm_transfers TTL drift** (live `block_timestamp + 30d` vs the migration DDL's
+      `ingested_at + 90d`) — decide the correct retention window post-migration and align the
+      migration script + `migrations/` TTL files.
 - [ ] **Enable `BACKFILL_INCLUDE_REWINDS=1`** once the transfer tables are `ReplacingMergeTree`.
 - [ ] **Reclaim the `*_old_<ts>` table** after migration verification.
 - [ ] **GraphQL / subgraph-style schema layer** over ClickHouse (query surface, additive).
