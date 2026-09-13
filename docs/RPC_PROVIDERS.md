@@ -25,7 +25,7 @@ Set any of these to upgrade a chain's pool automatically:
 | BlockPI | `BLOCKPI_KEY` | 50M RU/mo | 40+ chains | Deepest free multi-chain tier after Ankr/dRPC |
 | QuickNode | `QUICKNODE_KEY` | 10M credits/mo | 83+ chains | Add-on marketplace; Solana + Bitcoin |
 | Helius | `HELIUS_KEY` | 1M credits/mo | Solana | LaserStream gRPC, DAS API, stake-weighted QoS |
-| Chainstack | `CHAINSTACK_KEY` | 3M req/mo | Major EVMs + Solana | Flat request pricing, no hidden throttling |
+| Chainstack | Per-node URL env (`CHAINSTACK_SOLANA_URL`, `CHAINSTACK_TRON_URL`) | 3M req/mo | Major EVMs + Solana + Tron | Per-node full URLs (may use HTTP Basic auth), not a single key |
 | Tatum | `TATUM_KEY` | 500k credits/mo | 130+ chains | Unified multi-chain API |
 | NOWNodes | `NOWNODES_KEY` | 20k req/mo | 100+ networks | Explorers included |
 | GetBlock | `GETBLOCK_KEY` | 40k trial req | 50+ chains | Dedicated-node options |

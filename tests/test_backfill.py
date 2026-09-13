@@ -372,3 +372,20 @@ async def test_mixin_sidecar_memory_gate_pauses(tmp_path: Path):
 
 async def _always_true() -> bool:
     return True
+
+
+def test_executor_unwired_by_default(tmp_path: Path):
+    """Backfill dispatch stays dormant unless explicitly opted in."""
+    from lite_indexer.indexer import LiteIndexer
+
+    indexer = LiteIndexer(chain="ethereum", data_dir=tmp_path)
+    assert indexer._backfill_executor is None
+
+
+def test_executor_wired_when_flag_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """BACKFILL_EXECUTOR_ENABLED=1 wires the EVM executor at construction."""
+    import lite_indexer.indexer as indexer_mod
+
+    monkeypatch.setattr(indexer_mod, "BACKFILL_EXECUTOR_ENABLED", True)
+    indexer = indexer_mod.LiteIndexer(chain="ethereum", data_dir=tmp_path)
+    assert indexer._backfill_executor is not None

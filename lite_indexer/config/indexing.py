@@ -169,6 +169,11 @@ DATA_RECONCILIATION_MAX_DISCREPANCY_PCT: float = float(os.environ.get("DATA_RECO
 # never burns the free pool's rate budget. Set BACKFILL_ENABLED=0 to turn
 # the sidecar off entirely.
 BACKFILL_ENABLED: bool = os.environ.get("BACKFILL_ENABLED", "1") == "1"
+# Whether the sidecar may DISPATCH (write) backfill chunks. OFF by default:
+# the queue safely collects gaps without racing the live sync loop, and the
+# write path stays dormant until ClickHouse dedup for backfilled ranges is
+# verified. Set BACKFILL_EXECUTOR_ENABLED=1 to activate the EVM executor.
+BACKFILL_EXECUTOR_ENABLED: bool = os.environ.get("BACKFILL_EXECUTOR_ENABLED", "0") == "1"
 # Max chunks held pending/in-flight at once (bounded memory + disk).
 BACKFILL_MAX_QUEUE_DEPTH: int = int(os.environ.get("BACKFILL_MAX_QUEUE_DEPTH", "256"))
 # Max backfill workers running concurrently per chain (small: freemium

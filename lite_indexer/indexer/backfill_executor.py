@@ -25,12 +25,18 @@ log = get_logger(__name__)
 logger = log
 
 
-class _EvmBackfillHost(Protocol):
-    """Surface the EVM backfill executor needs from a LiteIndexer."""
+class EvmBackfillHost(Protocol):
+    """Surface the EVM backfill executor needs from a LiteIndexer.
+
+    ``strategy`` is declared read-only (property) so a ``LiteIndexer`` whose
+    ``strategy`` is exposed as a property structurally satisfies it.
+    """
 
     chain: str
     rpc: RpcClient
-    strategy: AbstractChainStrategy
+
+    @property
+    def strategy(self) -> AbstractChainStrategy: ...
 
     @property
     def ch_writer(self) -> ClickHouseWriter: ...
@@ -38,7 +44,7 @@ class _EvmBackfillHost(Protocol):
     def _is_evm(self) -> bool: ...
 
 
-def build_evm_backfill_executor(host: _EvmBackfillHost) -> BackfillExecutor:
+def build_evm_backfill_executor(host: EvmBackfillHost) -> BackfillExecutor:
     """Build the concrete EVM backfill executor for ``host``.
 
     The executor fetches transfer logs for the chunk through a freemium
@@ -67,4 +73,4 @@ def build_evm_backfill_executor(host: _EvmBackfillHost) -> BackfillExecutor:
     return _execute
 
 
-__all__ = ["build_evm_backfill_executor"]
+__all__ = ["EvmBackfillHost", "build_evm_backfill_executor"]

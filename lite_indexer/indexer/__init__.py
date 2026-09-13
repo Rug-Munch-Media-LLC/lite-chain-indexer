@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from lite_indexer.chain_registry import ChainConfig, get_chain_config, list_supported_chains
 from lite_indexer.chains import GET_LOGS_ENDPOINTS
@@ -35,6 +35,8 @@ from lite_indexer.chains.demand import (
 )
 from lite_indexer.chunks import chunk_size_for_chain, sync_batch_for_chain
 from lite_indexer.config import (
+    BACKFILL_ENABLED,
+    BACKFILL_EXECUTOR_ENABLED,
     DATA_DIR,
     DISK_CAP_BYTES,
     GC_EVERY_N_CYCLES,
@@ -66,6 +68,7 @@ from lite_indexer.indexer._rpc_fetch import RpcFetchMixin
 from lite_indexer.indexer._sidecars import BackfillMixin, SidecarsMixin
 from lite_indexer.indexer._sync_loop import SyncLoopMixin
 from lite_indexer.indexer.backfill import BackfillExecutor, BackfillQueue
+from lite_indexer.indexer.backfill_executor import EvmBackfillHost, build_evm_backfill_executor
 from lite_indexer.logging import get_logger
 from lite_indexer.plugin import BasePlugin, PluginContext, PluginLoader
 from lite_indexer.rpc import RpcClient, RpcFetchFailedError
@@ -295,10 +298,13 @@ class LiteIndexer(
         self._ch_health = ClickHouseHealth()
 
         # Freemium backfill queue (lazy) + injected executor + gap signals.
-        # The queue is disk-persisted; the executor is left unset so no
-        # backfill dispatch happens until a host (daemon/operator) wires one.
+        # The queue is disk-persisted. The EVM executor is wired only when
+        # BACKFILL_EXECUTOR_ENABLED is set (opt-in): the queue collects gaps
+        # safely, and dispatch stays dormant until CH dedup is verified.
         self._backfill_queue: BackfillQueue | None = None
         self._backfill_executor: BackfillExecutor | None = None
+        if BACKFILL_ENABLED and BACKFILL_EXECUTOR_ENABLED:
+            self._backfill_executor = build_evm_backfill_executor(cast(EvmBackfillHost, self))
         self._backfill_seen_block: int | None = None
         self._reconcile_rewinds: list[tuple[int, int]] = []
 
