@@ -543,3 +543,59 @@ class TestAnkrFreeKeyChains:
         src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
         assert "ANKR FREE-KEY LIMITATION" in src
         assert "not allowed to access" in src
+
+
+# ── BlockVision (per-chain keyed, archive — live-verified 2026-09-13) ──
+# BlockVision keys are PER-CHAIN: ${BLOCKVISION_<CHAIN>_KEY}, host
+# <chain>-mainnet.blockvision.org (ethereum/bsc indexed; monad/sui served but
+# NOT in our 20-chain pool). Archive eth_getLogs was live-verified here:
+# ethereum blocks 1..2 → [], bsc → real logs.
+BLOCKVISION_CHAINS: dict[str, tuple[str, str]] = {
+    "ethereum": ("eth-mainnet", "BLOCKVISION_ETH_KEY"),
+    "bsc": ("bsc-mainnet", "BLOCKVISION_BSC_KEY"),
+}
+BLOCKVISION_UNINDEXED_CHAINS = ("monad", "sui")
+BLOCKVISION_TEST_KEY = "blockvision-key-test"
+
+
+class TestBlockVisionEndpoints:
+    def _source(self) -> str:
+        return Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
+
+    def test_indexed_chains_have_keyed_template(self):
+        src = self._source()
+        for chain, (host, env) in BLOCKVISION_CHAINS.items():
+            expected = f'"https://{host}.blockvision.org/v1/${{{env}}}"'
+            assert expected in src, f"{chain}: missing keyed BlockVision template {expected}"
+
+    def test_template_expands_via_expandvars(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("BLOCKVISION_ETH_KEY", BLOCKVISION_TEST_KEY)
+        template = "https://eth-mainnet.blockvision.org/v1/${BLOCKVISION_ETH_KEY}"
+        expected = f"https://eth-mainnet.blockvision.org/v1/{BLOCKVISION_TEST_KEY}"
+        assert _resolve_endpoint_url(template) == expected
+        assert _resolved_endpoints([template]) == [expected]
+
+    def test_bsc_template_expands_via_expandvars(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("BLOCKVISION_BSC_KEY", BLOCKVISION_TEST_KEY)
+        template = "https://bsc-mainnet.blockvision.org/v1/${BLOCKVISION_BSC_KEY}"
+        expected = f"https://bsc-mainnet.blockvision.org/v1/{BLOCKVISION_TEST_KEY}"
+        assert _resolved_endpoints([template]) == [expected]
+
+    def test_unresolved_keyed_template_dropped(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("BLOCKVISION_ETH_KEY", raising=False)
+        assert _resolved_endpoints(["https://eth-mainnet.blockvision.org/v1/${BLOCKVISION_ETH_KEY}"]) == []
+
+    def test_source_documents_archive_verification(self):
+        src = self._source()
+        assert "BLOCKVISION KEYED ARCHIVE" in src
+        assert "live-verified archive eth_getLogs 2026-09-13" in src
+
+    def test_unindexed_chains_not_in_active_evm_pool(self):
+        """monad/sui are served by BlockVision but are NOT our indexed chains."""
+        for chain in BLOCKVISION_UNINDEXED_CHAINS:
+            assert chain not in GET_LOGS_ENDPOINTS, chain
+            assert chain not in EXPECTED_EVM_CHAINS, chain
+        # ...but the provider registry documents them as available-but-unindexed.
+        src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "rpc_registry.py").read_text()
+        for chain in BLOCKVISION_UNINDEXED_CHAINS:
+            assert chain in src.lower(), chain

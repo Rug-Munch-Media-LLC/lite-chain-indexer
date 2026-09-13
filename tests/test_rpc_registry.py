@@ -38,6 +38,7 @@ class TestRegistryIntegrity:
             "Helius",
             "BlockPI",
             "Uniblock",
+            "BlockVision",
             "Pocket Network",
             "Infura",
         }
@@ -174,6 +175,33 @@ class TestBlockPIProvider:
 
     def test_blockpi_not_a_referral_provider(self):
         assert "BlockPI" not in {p.name for p in providers_with_referrals()}
+
+
+class TestBlockVisionProvider:
+    """BlockVision authenticates with a PER-CHAIN key, like BlockPI."""
+
+    def test_blockvision_registered_per_chain(self):
+        p = FREEMIUM_PROVIDERS["BlockVision"]
+        assert p.env_key == "BLOCKVISION_<CHAIN>_KEY"
+        assert "${BLOCKVISION_<CHAIN>_KEY}" in p.url_example
+        assert p.url_example.startswith("https://<chain>-mainnet.blockvision.org/v1/")
+        assert p.signup_url == "https://blockvision.org"
+        assert p.has_referral_program is False
+        assert "UNKNOWN" in p.free_tier
+
+    def test_blockvision_documents_indexed_chains(self):
+        p = FREEMIUM_PROVIDERS["BlockVision"]
+        for chain in ("ethereum", "bsc"):
+            assert chain in p.chains_note
+        assert "archive" in p.chains_note.lower()
+
+    def test_blockvision_documents_unindexed_chains(self):
+        p = FREEMIUM_PROVIDERS["BlockVision"]
+        for chain in ("monad", "sui"):
+            assert chain in p.chains_note
+
+    def test_blockvision_not_a_referral_provider(self):
+        assert "BlockVision" not in {p.name for p in providers_with_referrals()}
 
 
 class TestOneRpcKeyedUnresolved:

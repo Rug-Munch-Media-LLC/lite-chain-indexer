@@ -68,6 +68,17 @@ in the provider registry only — they are not added to the EVM pool.
 Polygon has no provisioned key, so its ``/public`` entry stays a candidate
 (flaky) rather than an active endpoint.
 
+BLOCKVISION KEYED ARCHIVE (live-probed 2026-09-13): BlockVision keys are
+per-chain, ``${BLOCKVISION_<CHAIN>_KEY}``, with per-chain hosts
+``https://<chain>-mainnet.blockvision.org/v1/${BLOCKVISION_<CHAIN>_KEY}``.
+Archive ``eth_getLogs`` was live-verified here: ethereum blocks 1..2
+returned ``[]`` and bsc returned real logs (``eth_chainId`` 0x1 / 0x38).
+Only ethereum and bsc are indexed; BlockVision also serves monad/sui
+(``monad-mainnet.blockvision.org``, ``sui-mainnet.blockvision.org``) but
+those are NOT in our 20-chain pool and are documented in the provider
+registry only. Keys are read at runtime from the environment; unset keys
+drop the endpoint from the active pool as usual. Signup: blockvision.org.
+
 Some endpoints require an API key from a free-tier provider (Alchemy,
 GetBlock, Chainstack, QuickNode, Infura). Set the corresponding ${ENV_VAR}
 in your environment — the indexer resolves placeholders at import time via
@@ -166,6 +177,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://mainnet.infura.io/v3/${INFURA_KEY}",  # Infura free tier
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=1&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://ethereum.blockpi.network/v1/rpc/${BLOCKPI_ETH_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs blocks 1..2 verified 2026-09-13)
+        "https://eth-mainnet.blockvision.org/v1/${BLOCKVISION_ETH_KEY}",  # T2 — BlockVision — live-verified archive eth_getLogs 2026-09-13 (eth_chainId 0x1, blocks 1..2 → [])
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -217,6 +229,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc-mainnet.infura.io/v3/${INFURA_KEY}",  # T3 — Infura free (archive-capable)
         "https://api.uniblock.dev/uni/v1/json-rpc?chainId=56&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://bsc.blockpi.network/v1/rpc/${BLOCKPI_BSC_KEY}",  # T2 — BlockPI per-chain keyed (archive-capable; eth_chainId + archive eth_getLogs live-verified 2026-09-13)
+        "https://bsc-mainnet.blockvision.org/v1/${BLOCKVISION_BSC_KEY}",  # T2 — BlockVision — live-verified archive eth_getLogs 2026-09-13 (eth_chainId 0x38, blocks 1..2 → real logs)
     ],
     # ── Polygon (6 endpoints) ─────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)

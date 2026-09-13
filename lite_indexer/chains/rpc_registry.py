@@ -174,6 +174,27 @@ FREEMIUM_PROVIDERS: dict[str, FreemiumProvider] = {
             signup_url="https://dashboard.uniblock.dev",
             has_referral_program=False,
         ),
+        FreemiumProvider(
+            name="BlockVision",
+            # BlockVision issues a PER-CHAIN key, like BlockPI: the registry
+            # documents the env var as ${BLOCKVISION_<CHAIN>_KEY}
+            # (e.g. BLOCKVISION_ETH_KEY, BLOCKVISION_BSC_KEY). Hosts are
+            # per-chain too (eth-mainnet / bsc-mainnet / monad-mainnet /
+            # sui-mainnet).
+            env_key="BLOCKVISION_<CHAIN>_KEY",
+            url_example="https://<chain>-mainnet.blockvision.org/v1/${BLOCKVISION_<CHAIN>_KEY}",
+            chains_note=(
+                "Archive-capable EVM + Move/Sui. Indexed (verified 2026-09-13): "
+                "ethereum (eth_chainId 0x1, archive eth_getLogs blocks 1..2 → []), "
+                "bsc (0x38, archive eth_getLogs → real logs). Also serves but NOT "
+                "indexed: monad (monad-mainnet.blockvision.org), sui "
+                "(sui-mainnet.blockvision.org, sui-mainnet-grpc.blockvision.org:443)."
+            ),
+            free_tier="free tier UNKNOWN — check blockvision.org dashboard/pricing",
+            referral_terms="no public affiliate program — recommend on merit",
+            signup_url="https://blockvision.org",
+            has_referral_program=False,
+        ),
     ]
 }
 
