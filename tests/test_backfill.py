@@ -342,10 +342,30 @@ def test_mixin_enqueues_gap_when_stalled(tmp_path: Path):
 
     assert added >= 1
     assert queue.contains("ethereum:101:110")
-    assert queue.contains("ethereum:200:203")
+    # Rewinds are NOT enrolled by default: the transfer tables are plain
+    # MergeTree (no per-key dedup), so re-writing a rewound range duplicates.
+    assert not queue.contains("ethereum:200:203")
     # Re-enqueue is a no-op.
     with patch.object(indexer.state, "load", return_value={"last_block": 100}):
         assert indexer._enqueue_backfill_gaps(tip=110) == 0
+
+
+def test_mixin_enrols_rewinds_only_when_flag_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """With ReplacingMergeTree tables (flag on), rewinds are safe to backfill."""
+    import lite_indexer.indexer._sidecars as sidecars
+    from lite_indexer.indexer import LiteIndexer
+
+    monkeypatch.setattr(sidecars, "BACKFILL_INCLUDE_REWINDS", True)
+    indexer = LiteIndexer(chain="ethereum", data_dir=tmp_path)
+    queue = BackfillQueue("ethereum", state_dir=tmp_path)
+    indexer._backfill_queue = queue
+    indexer._record_reconcile_rewind(200, 203)
+
+    with patch.object(indexer.state, "load", return_value={"last_block": 100}):
+        indexer._backfill_seen_block = 100
+        indexer._enqueue_backfill_gaps(tip=110)
+
+    assert queue.contains("ethereum:200:203")
 
 
 async def test_mixin_sidecar_noop_without_executor(tmp_path: Path):

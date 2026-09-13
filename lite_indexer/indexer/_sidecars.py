@@ -10,6 +10,7 @@ from typing import Any
 
 from lite_indexer.config import (
     BACKFILL_ENABLED,
+    BACKFILL_INCLUDE_REWINDS,
     BACKFILL_MAX_CHUNKS_PER_CYCLE,
     BACKFILL_MAX_CONCURRENCY,
     BACKFILL_MAX_QUEUE_DEPTH,
@@ -252,11 +253,14 @@ class BackfillMixin(IndexerMixinBase):
         self._backfill_seen_block = last_block
 
         rewinds = self._reconcile_rewinds
+        # Rewinds overlap ranges already indexed; only enrol them when the
+        # storage engine dedups (ReplacingMergeTree), else they duplicate.
+        rewind_ranges = list(rewinds) if BACKFILL_INCLUDE_REWINDS else []
         chunks = detect_gaps(
             self.chain,
             last_block,
             tip,
-            list(rewinds),
+            rewind_ranges,
             self.chunk_size,
             BACKFILL_MAX_QUEUE_DEPTH,
             include_forward_gap=stalled,

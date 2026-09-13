@@ -174,6 +174,12 @@ BACKFILL_ENABLED: bool = os.environ.get("BACKFILL_ENABLED", "1") == "1"
 # write path stays dormant until ClickHouse dedup for backfilled ranges is
 # verified. Set BACKFILL_EXECUTOR_ENABLED=1 to activate the EVM executor.
 BACKFILL_EXECUTOR_ENABLED: bool = os.environ.get("BACKFILL_EXECUTOR_ENABLED", "0") == "1"
+# Whether reconciliation rewinds are enrolled for backfill. OFF by default:
+# the transfer tables are plain MergeTree (no per-key dedup), so re-writing a
+# rewound range would duplicate rows. True forward gaps (a stalled/disabled
+# chain's backlog) are non-overlapping by construction and always safe. Flip
+# to 1 only once those tables are ReplacingMergeTree.
+BACKFILL_INCLUDE_REWINDS: bool = os.environ.get("BACKFILL_INCLUDE_REWINDS", "0") == "1"
 # Max chunks held pending/in-flight at once (bounded memory + disk).
 BACKFILL_MAX_QUEUE_DEPTH: int = int(os.environ.get("BACKFILL_MAX_QUEUE_DEPTH", "256"))
 # Max backfill workers running concurrently per chain (small: freemium
