@@ -1,14 +1,14 @@
 # Lite Chain Indexer 🪶
 
 **The self-hosted, zero-cost, multi-chain blockchain indexer.**
-Index transfers, DEX swaps, deployer activity, and internal-transfer traces across **16 chains (14 EVM + Solana + Tron)** using **only free public RPCs**. Zero infrastructure cost. Zero API keys required. ~2 GB RAM. **359M+ rows in production on a $5 VPS.**
+Index transfers, DEX swaps, deployer activity, and internal-transfer traces across **20 chains (18 EVM + Solana + Tron)** using **only free public RPCs** out of the box. Zero infrastructure cost. Zero API keys required. ~2 GB RAM. **359M+ rows in production on a $5 VPS.** Optional authenticated RPCs can be layered in via the private overlay for extra throughput.
 
 [![CI](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml/badge.svg?branch=main)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-v1.3.0-blue.svg)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/tags)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![16+ chains](https://img.shields.io/badge/chains-16-success.svg)](#chains-covered)
+[![20+ chains](https://img.shields.io/badge/chains-20-success.svg)](#chains-covered)
 [![1,100+ tests](https://img.shields.io/badge/tests-1%2C100%2B-success.svg)](#testing)
 
 ---
@@ -19,7 +19,7 @@ Index transfers, DEX swaps, deployer activity, and internal-transfer traces acro
 
 | Tool | Cost | Chains | Self-hosted | Free RPCs | Deployer Events | DEX Events | Internal Traces |
 |------|------|--------|:-----------:|:---------:|:---------------:|:----------:|:---------------:|
-| **Lite Chain Indexer** | **$0** | **16** | **✅** | **✅** | **✅** | **✅** | **✅** |
+| **Lite Chain Indexer** | **$0** | **20** | **✅** | **✅** | **✅** | **✅** | **✅** |
 | Subsquid | $50+/mo | 100+ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Ponder | Self-hosted | Any EVM | ✅ | ❌ | ❌ | ❌ | ❌ |
 | The Graph | $0.01/query | 30+ | ❌ | ❌ | ❌ | ❌ | ❌ |

@@ -83,13 +83,8 @@ def main() -> int:
 
     by_chain: dict[str, list[str]] = {}
     for node in running:
-        network = (
-            (node.get("network") or {}).get("name", "")
-            if isinstance(node.get("network"), dict)
-            else str(node.get("network") or "")
-        )
-        # The API returns network as id (NW-...); use the node name/endpoint
-        # host to infer the chain instead.
+        # The API returns network as id (NW-...); use the node endpoint host
+        # to infer the chain instead.
         ep = endpoint_for(node)
         if not ep:
             continue
