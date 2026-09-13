@@ -31,6 +31,12 @@ def setup_logging(level: str | None = None) -> None:
         stream=sys.stderr,
     )
 
+    # httpx/httpcore emit "HTTP Request: POST <full url>" at INFO — and our
+    # endpoint URLs embed provider API keys/tokens. Silence them so
+    # credentials never land in journald/CI logs. (2026-09-13 incident.)
+    for _noisy in ("httpx", "httpcore"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
+
     structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,

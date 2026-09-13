@@ -23,9 +23,9 @@ from lite_indexer.strategies.tron import TronStrategy
 
 # ── Chain Type Mapping ───────────────────────────────────────────────
 # Maps chain name → strategy type metadata.
-# EVM chains (15): ethereum, base, bsc, polygon, arbitrum, optimism,
+# EVM chains (18): ethereum, base, bsc, polygon, arbitrum, optimism,
 #                  avalanche, fantom, linea, scroll, zksync, mantle,
-#                  gnosis, celo, robinhood
+#                  gnosis, celo, robinhood, blast, fraxtal, metis
 # Non-EVM chains (2): solana, tron
 
 SUPPORTED_CHAINS: dict[str, dict[str, str]] = {
@@ -45,6 +45,9 @@ SUPPORTED_CHAINS: dict[str, dict[str, str]] = {
     "gnosis": {"type": "evm", "label": "Gnosis"},
     "celo": {"type": "evm", "label": "Celo"},
     "robinhood": {"type": "evm", "label": "Robinhood"},
+    "blast": {"type": "evm", "label": "Blast"},
+    "fraxtal": {"type": "evm", "label": "Fraxtal"},
+    "metis": {"type": "evm", "label": "Metis"},
     # Non-EVM chains
     "solana": {"type": "solana", "label": "Solana"},
     "tron": {"type": "tron", "label": "Tron"},
