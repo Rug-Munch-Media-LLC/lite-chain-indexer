@@ -18,6 +18,7 @@ import pytest
 
 from lite_indexer.chains.rpc_registry import (
     FREEMIUM_PROVIDERS,
+    SKIPPED_PROVIDERS,
     providers_with_referrals,
     signup_table,
 )
@@ -36,6 +37,7 @@ class TestRegistryIntegrity:
             "Ankr",
             "Helius",
             "BlockPI",
+            "Uniblock",
         }
         assert set(FREEMIUM_PROVIDERS) == expected
 
@@ -98,3 +100,23 @@ class TestReferralMetadata:
         p = next(iter(FREEMIUM_PROVIDERS.values()))
         with pytest.raises(FrozenInstanceError):
             p.name = "mutated"  # type: ignore[misc]
+
+
+class TestUniblockProvider:
+    def test_uniblock_registered(self):
+        p = FREEMIUM_PROVIDERS["Uniblock"]
+        assert p.env_key == "UNIBLOCK_KEY"
+        assert "${UNIBLOCK_KEY}" in p.url_example
+        assert p.url_example.startswith("https://api.uniblock.dev/uni/v1/json-rpc?chainId=")
+        assert p.signup_url == "https://dashboard.uniblock.dev"
+        assert p.has_referral_program is False
+
+    def test_uniblock_not_a_referral_provider(self):
+        assert "Uniblock" not in {p.name for p in providers_with_referrals()}
+
+
+class TestSkippedProviders:
+    def test_routemesh_recorded_as_skipped(self):
+        reason = SKIPPED_PROVIDERS["RouteMesh"]
+        assert "no DNS" in reason
+        assert "2026-09-13" in reason

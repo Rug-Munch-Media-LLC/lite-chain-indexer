@@ -40,6 +40,9 @@ SOLANA_ENDPOINTS: list[str] = [
     "${CHAINSTACK_SOLANA_URL}",  # Chainstack shared node (live-verified 2026-08-23: getSlot ok, ~250ms)
     "${GETBLOCK_SOLANA_URL}",  # GetBlock shared (live-verified 2026-08-23)
     "https://sol.nownodes.io/${NOWNODES_API_KEY}",  # NOWNodes (verified 2026-08-23)
+    # Uniblock unified JSON-RPC — fallback (live-verified getHealth 2026-09-13);
+    # keyed template, dropped from the pool when UNIBLOCK_KEY is unset.
+    "https://api.uniblock.dev/uni/v1/json-rpc?chainId=solana&apiKey=${UNIBLOCK_KEY}",  # Uniblock — live-verified 2026-09-13
 ]
 # NOTE: solana.drpc.org and rpc.ankr.com/solana KEYLESS were removed
 # 2026-08-03 — confirmed unusable on the free plan ("chain is not available

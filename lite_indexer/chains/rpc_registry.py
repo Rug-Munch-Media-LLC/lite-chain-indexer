@@ -123,7 +123,29 @@ FREEMIUM_PROVIDERS: dict[str, FreemiumProvider] = {
             referral_terms="no public affiliate program — recommend on merit",
             has_referral_program=False,
         ),
+        FreemiumProvider(
+            name="Uniblock",
+            env_key="UNIBLOCK_KEY",
+            url_example=("https://api.uniblock.dev/uni/v1/json-rpc?chainId=1&apiKey=${UNIBLOCK_KEY}"),
+            chains_note=(
+                "Unified JSON-RPC across all 20 indexed chains incl. robinhood "
+                "archive; auth via apiKey query param or x-api-key header"
+            ),
+            free_tier=("~40-60 CU/call metered; free-tier CU quota UNKNOWN — check dashboard.uniblock.dev"),
+            referral_terms="no public affiliate program — recommend on merit",
+            signup_url="https://dashboard.uniblock.dev",
+            has_referral_program=False,
+        ),
     ]
+}
+
+# Providers evaluated and deliberately NOT registered. Kept here so a
+# future audit does not re-probe a dead end (the probe report alone is
+# easy to lose; see docs/RPC_PROVIDERS.md).
+SKIPPED_PROVIDERS: dict[str, str] = {
+    # routemesh.org did not resolve (NXDOMAIN) from the fleet, 2026-09-13 —
+    # there is no endpoint to probe. Re-check only if the domain resolves.
+    "RouteMesh": "skipped 2026-09-13 — routemesh.org has no DNS (unresolved)",
 }
 
 
@@ -144,6 +166,7 @@ def signup_table() -> list[tuple[str, str, str]]:
 __all__ = [
     "FreemiumProvider",
     "FREEMIUM_PROVIDERS",
+    "SKIPPED_PROVIDERS",
     "providers_with_referrals",
     "signup_table",
 ]

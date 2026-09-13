@@ -25,6 +25,15 @@ both verified against 10-block eth_getLogs chunks from tip. Keep
 Ethereum chunks small (ETH_BATCH_SIZE=10) so free-tier range caps
 (Alchemy/blastapi = 10 blocks) and the ~20K result cap are respected.
 
+2026-09-13: Uniblock (api.uniblock.dev) wired as an archive eth_getLogs
+provider via the query-param template
+``.../json-rpc?chainId=<id>&apiKey=${UNIBLOCK_KEY}``. Live-verified
+topic-only eth_getLogs for robinhood/blast/fraxtal/metis + the major EVMs
+and ``getHealth`` for solana. It is the only non-official archive source for
+robinhood. The dead PublicNode hosts ``fantom-rpc.publicnode.com`` and
+``zksync-era-rpc.publicnode.com`` (HTTP 404, re-probed 2026-09-13) were
+removed from the candidate pool.
+
 Some endpoints require an API key from a free-tier provider (Alchemy,
 GetBlock, Chainstack, QuickNode, Infura). Set the corresponding ${ENV_VAR}
 in your environment — the indexer resolves placeholders at import time via
@@ -120,6 +129,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://lb.drpc.org/ogrpc?network=ethereum&dkey=${DRPC_KEY}",  # dRPC load balancer
         "https://rpc.ankr.com/eth/${ANKR_KEY}",  # Ankr keyed (keyless was Unauthorized)
         "https://mainnet.infura.io/v3/${INFURA_KEY}",  # Infura free tier
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=1&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Base (5 endpoints) ────────────────────────────────────────────
     # T1: tenderly, official mainnet.base.org (both verified eth_getLogs)
@@ -135,6 +145,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://base-mainnet.public.blastapi.io",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://lb.drpc.org/ogrpc?network=base&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/base/${ANKR_KEY}",
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=8453&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── BSC (8 endpoints) ─────────────────────────────────────────────
     # T1: nodereal public, 48.club (live-verified 2026-08-04 with the
@@ -164,6 +175,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://bsc-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
         "https://lb.drpc.org/ogrpc?network=bsc&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/bsc/${ANKR_KEY}",
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=56&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Polygon (6 endpoints) ─────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)
@@ -190,6 +202,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc-mainnet.matic.quiknode.pro",
         "https://lb.drpc.org/ogrpc?network=polygon&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/polygon/${ANKR_KEY}",
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=137&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Arbitrum (6 endpoints) ────────────────────────────────────────
     # T1: tenderly, drpc.org (verified)
@@ -210,6 +223,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://arbitrum.meowrpc.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://lb.drpc.org/ogrpc?network=arbitrum&dkey=${DRPC_KEY}",
         "https://rpc.ankr.com/arbitrum/${ANKR_KEY}",
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=42161&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Optimism (4 endpoints) ────────────────────────────────────────
     # T1: tenderly (verified)
@@ -223,6 +237,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://optimism-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://lb.drpc.org/ogrpc?network=optimism&dkey=${DRPC_KEY}",
         "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=10&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Avalanche (4 endpoints) ───────────────────────────────────────
     # T1: official api.avax.network, drpc.org (verified)
@@ -235,6 +250,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://avalanche-c-chain-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://avalanche-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
         "https://lb.drpc.org/ogrpc?network=avalanche&dkey=${DRPC_KEY}",  # freemium
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=43114&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Fantom (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.fantom.network + rpcapi.fantom.network (verified)
@@ -246,6 +262,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://fantom.drpc.org",  # T2 — drpc.org (verified)
         "https://fantom-mainnet.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
         "https://lb.drpc.org/ogrpc?network=fantom&dkey=${DRPC_KEY}",  # freemium
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=250&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Linea (5 endpoints) ───────────────────────────────────────────
     # T1: official rpc.linea.build, drpc.org (verified)
@@ -260,6 +277,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://1rpc.io/linea",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://linea-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
         "https://lb.drpc.org/ogrpc?network=linea&dkey=${DRPC_KEY}",  # freemium
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=59144&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Scroll (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.scroll.io, drpc.org (verified)
@@ -272,6 +290,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://scroll-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://scroll-mainnet.infura.io/v3/${INFURA_KEY}",  # T4 — Infura free
         "https://lb.drpc.org/ogrpc?network=scroll&dkey=${DRPC_KEY}",  # freemium
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=534352&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── zkSync Era (4 endpoints) ──────────────────────────────────────
     # T1: official mainnet.era.zksync.io, drpc.org (verified)
@@ -283,6 +302,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://zksync.gateway.tenderly.co",  # T2 — tenderly (verified 2026-08-03)
         "https://zksync-era.g.alchemy.com/v2/${ALCHEMY_KEY}",  # T4 — Alchemy free
         "https://lb.drpc.org/ogrpc?network=zksync&dkey=${DRPC_KEY}",  # freemium
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=324&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Mantle (4 endpoints) ──────────────────────────────────────────
     # T1: official rpc.mantle.xyz (verified)
@@ -296,6 +316,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://1rpc.io/mantle",  # T2 — 1rpc.io (50-block cap, verified 2026-08-03)
         "https://mantle-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://lb.drpc.org/ogrpc?network=mantle&dkey=${DRPC_KEY}",  # freemium
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=5000&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Gnosis (3 endpoints) ──────────────────────────────────────────
     # T1: official rpc.gnosischain.com, drpc.org (verified)
@@ -306,6 +327,7 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://gnosis.gateway.tenderly.co",
         "https://gnosis-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://lb.drpc.org/ogrpc?network=gnosis&dkey=${DRPC_KEY}",  # freemium
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=100&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Celo (3 endpoints) ────────────────────────────────────────────
     # T1: official forno.celo.org, ankr.com/celo (verified — only working ankr)
@@ -315,21 +337,31 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.ankr.com/celo",  # T1 — ankr (verified — celo only)
         "https://celo.drpc.org",  # T2 — drpc.org (verified)
         "https://lb.drpc.org/ogrpc?network=celo&dkey=${DRPC_KEY}",  # freemium
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=42220&apiKey=${UNIBLOCK_KEY}",  # T3 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Blast (verified 2026-09-01) ──────────────────────────────────
     # L2, chainId 81457 (0x13e31). publicnode: chainId ✓, getLogs ✓.
     "blast": [
         "https://blast-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
+        # T2: Uniblock — archive eth_getLogs (live-verified 2026-09-13);
+        #     keyed fallback so the chain is no longer single-endpoint.
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=81457&apiKey=${UNIBLOCK_KEY}",  # T2 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Fraxtal (verified 2026-09-01) ────────────────────────────────
     # L2, chainId 252. publicnode: chainId ✓, getLogs ✓.
     "fraxtal": [
         "https://fraxtal-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
+        # T2: Uniblock — archive eth_getLogs (live-verified 2026-09-13);
+        #     keyed fallback so the chain is no longer single-endpoint.
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=252&apiKey=${UNIBLOCK_KEY}",  # T2 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Metis (verified 2026-09-01) ──────────────────────────────────
     # L2, chainId 1088. publicnode: chainId ✓, getLogs ✓.
     "metis": [
         "https://metis-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
+        # T2: Uniblock — archive eth_getLogs (live-verified 2026-09-13);
+        #     keyed fallback so the chain is no longer single-endpoint.
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=1088&apiKey=${UNIBLOCK_KEY}",  # T2 — Uniblock — live-verified archive eth_getLogs 2026-09-13
     ],
     # ── Robinhood Chain (2 endpoints, verified 2026-09-01) ────────────
     # Arbitrum Orbit L2, chainId 4663 (0x1237), native ETH. The old spec
@@ -358,6 +390,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #     "method not available" — limited surface.
     "robinhood": [
         "https://rpc.mainnet.chain.robinhood.com",  # T1 — OFFICIAL, fully indexable
+        # Uniblock (2026-09-13): archive-capable topic-only eth_getLogs — the
+        # only non-official archive source for this chain; kept high-priority.
+        "https://api.uniblock.dev/uni/v1/json-rpc?chainId=4663&apiKey=${UNIBLOCK_KEY}",  # T1-high — Uniblock — live-verified archive eth_getLogs 2026-09-13
         "https://robinhood-rpc.publicnode.com",  # T2 — verified (getLogs archive-gated)
         "https://rpc.nodeflare.app/robinhood/public",  # T3 — verified chainId
         "https://robinhood.rpc.blxrbdn.com",  # T3 — chainId only (getLogs 403)
@@ -376,6 +411,10 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 #
 #   Non-EVM: solana (7), tron (3)
 #   Grand total source templates: 81 across 17 chains
+#
+# 2026-09-13: +18 Uniblock archive templates (15 EVM chains — robinhood,
+#   blast, fraxtal, metis + 14 T3 fallbacks) and +1 Solana template. Uniblock
+#   is the only non-official archive eth_getLogs source for robinhood.
 
 
 # ── Candidate Endpoints (awaiting live verification) ────────────────
@@ -424,7 +463,6 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
         "https://avalanche.mainnet.nodies.app",
     ],
     "fantom": [
-        "https://fantom-rpc.publicnode.com",
         "https://fantom-mainnet.public.blastapi.io",
     ],
     "linea": [
@@ -434,7 +472,6 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
         "https://scroll-mainnet.public.blastapi.io",
     ],
     "zksync": [
-        "https://zksync-era-rpc.publicnode.com",
         "https://mainnet.era.zksync.network",  # alternate official host
     ],
     "mantle": [],

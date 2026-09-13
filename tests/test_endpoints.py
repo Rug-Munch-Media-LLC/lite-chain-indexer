@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -20,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from lite_indexer.chains.endpoints import (
+    CANDIDATE_ENDPOINTS,
     GET_LOGS_ENDPOINTS,
     _resolve_endpoint_url,
     _resolved_endpoints,
@@ -145,11 +147,14 @@ class TestGetLogsEndpoints:
         Upper bound raised 66 -> 96 (2026-08-23): probe-promoted fallbacks
         (ee50656) + DRPC_KEY keyed depth (aeb7228) intentionally expanded
         the pool. Raised 96 -> 104 (2026-09-02): rate-limit crisis
-        endpoints for polygon/bsc + blast/fraxtal/metis pools. The bound
-        still guards against runaway duplication.
+        endpoints for polygon/bsc + blast/fraxtal/metis pools. Raised
+        104 -> 122 (2026-09-13): +18 Uniblock archive templates (robinhood,
+        blast/fraxtal/metis + 14 T3 fallbacks) — active only when
+        UNIBLOCK_KEY is set. The bound still guards against runaway
+        duplication.
         """
         total = sum(len(urls) for urls in GET_LOGS_ENDPOINTS.values())
-        assert len(GET_LOGS_ENDPOINTS) <= total <= 104
+        assert len(GET_LOGS_ENDPOINTS) <= total <= 122
 
 
 class TestNoderealKeyRequired:
@@ -207,3 +212,121 @@ class TestNoderealKeyRequired:
         assert proc.returncode != 0, "import should fail when NODEREAL_KEY is unset"
         assert "NODEREAL_KEY" in proc.stderr
         assert "required" in proc.stderr.lower()
+
+
+# ── Uniblock (archive eth_getLogs) — live-verified 2026-09-13 ─────────
+# Template: .../json-rpc?chainId=<id>&apiKey=${UNIBLOCK_KEY}; the query-param
+# form matches the existing ${VAR} URL-template model (like dRPC's dkey=).
+UNIBLOCK_EVM_CHAIN_IDS: dict[str, int] = {
+    "ethereum": 1,
+    "base": 8453,
+    "bsc": 56,
+    "polygon": 137,
+    "arbitrum": 42161,
+    "optimism": 10,
+    "avalanche": 43114,
+    "fantom": 250,
+    "linea": 59144,
+    "scroll": 534352,
+    "zksync": 324,
+    "mantle": 5000,
+    "gnosis": 100,
+    "celo": 42220,
+    "blast": 81457,
+    "fraxtal": 252,
+    "metis": 1088,
+    "robinhood": 4663,
+}
+# Chains where Uniblock is T2 (previously single-endpoint pools).
+UNIBLOCK_T2_CHAINS = ("blast", "fraxtal", "metis")
+UNIBLOCK_PREFIX = "https://api.uniblock.dev/uni/v1/json-rpc?chainId="
+UNIBLOCK_TEST_KEY = "uniblock-key-test"
+
+
+class TestUniblockEndpoints:
+    def test_template_expands_via_expandvars(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("UNIBLOCK_KEY", UNIBLOCK_TEST_KEY)
+        template = f"{UNIBLOCK_PREFIX}4663&apiKey=${{UNIBLOCK_KEY}}"
+        expected = f"{UNIBLOCK_PREFIX}4663&apiKey={UNIBLOCK_TEST_KEY}"
+        assert _resolve_endpoint_url(template) == expected
+        assert _resolved_endpoints([template]) == [expected]
+
+    def test_unresolved_template_is_dropped(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("UNIBLOCK_KEY", raising=False)
+        template = f"{UNIBLOCK_PREFIX}1&apiKey=${{UNIBLOCK_KEY}}"
+        assert _resolved_endpoints([template]) == []
+
+    def test_active_pool_contains_expanded_uniblock(self, tmp_path: Path):
+        """Import with UNIBLOCK_KEY set and assert every indexed chain gets
+        the expanded Uniblock URL (hermetic subprocess — no in-process reload
+        that would poison module state for the rest of the suite)."""
+        out = tmp_path / "uniblock_pool.json"
+        script = (
+            "import json, os\n"
+            "from lite_indexer.chains.endpoints import GET_LOGS_ENDPOINTS\n"
+            "from lite_indexer.chains.non_evm import SOLANA_ENDPOINTS\n"
+            "with open(os.environ['UNIBLOCK_TEST_OUT'], 'w') as fh:\n"
+            "    json.dump({'evm': GET_LOGS_ENDPOINTS, 'solana': SOLANA_ENDPOINTS}, fh)\n"
+        )
+        env = dict(os.environ)
+        env["NODEREAL_KEY"] = "test-key-123"
+        env["UNIBLOCK_KEY"] = UNIBLOCK_TEST_KEY
+        env["NATS_ENABLED"] = "0"
+        env["UNIBLOCK_TEST_OUT"] = str(out)
+        repo_root = Path(__file__).resolve().parents[1]
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            env=env,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        pool = json.loads(out.read_text())
+        for chain, chain_id in UNIBLOCK_EVM_CHAIN_IDS.items():
+            expected = f"{UNIBLOCK_PREFIX}{chain_id}&apiKey={UNIBLOCK_TEST_KEY}"
+            assert expected in pool["evm"][chain], f"{chain}: missing {expected}"
+        # robinhood Uniblock is high-priority (right after the official RPC);
+        # blast/fraxtal/metis sit at T2, immediately after their publicnode T1.
+        robinhood = pool["evm"]["robinhood"]
+        robinhood_expected = f"{UNIBLOCK_PREFIX}4663&apiKey={UNIBLOCK_TEST_KEY}"
+        assert robinhood.index(robinhood_expected) <= 1
+        for chain in UNIBLOCK_T2_CHAINS:
+            urls = pool["evm"][chain]
+            expected = f"{UNIBLOCK_PREFIX}{UNIBLOCK_EVM_CHAIN_IDS[chain]}&apiKey={UNIBLOCK_TEST_KEY}"
+            assert urls.index(expected) == 1
+        assert f"{UNIBLOCK_PREFIX}solana&apiKey={UNIBLOCK_TEST_KEY}" in pool["solana"]
+
+    def test_source_uses_only_env_placeholder(self):
+        src = Path(__file__).resolve().parents[1].joinpath("lite_indexer", "chains", "endpoints.py").read_text()
+        uniblock_lines = [ln for ln in src.splitlines() if "api.uniblock.dev/uni/v1/json-rpc" in ln]
+        assert uniblock_lines
+        for ln in uniblock_lines:
+            assert "apiKey=${UNIBLOCK_KEY}" in ln, ln
+        assert "Uniblock — live-verified archive eth_getLogs 2026-09-13" in src
+
+
+class TestDeadPublicnodeEndpointsRemoved:
+    """PublicNode retired Fantom (for Sonic) and the zksync-era host; both
+    404'd here on 2026-09-13 (re-probed twice) and were culled."""
+
+    DEAD = (
+        "https://fantom-rpc.publicnode.com",
+        "https://zksync-era-rpc.publicnode.com",
+    )
+
+    def test_not_in_active_pools(self):
+        for url in self.DEAD:
+            for chain, urls in GET_LOGS_ENDPOINTS.items():
+                assert url not in urls, f"{chain}: dead endpoint {url} in active pool"
+
+    def test_not_in_candidate_pool(self):
+        for url in self.DEAD:
+            for chain, urls in CANDIDATE_ENDPOINTS.items():
+                assert url not in urls, f"{chain}: dead endpoint {url} still a candidate"
+
+    def test_live_polygon_publicnode_kept(self):
+        # polygon-bor-rpc.publicnode.com is alive — do not over-cull.
+        assert "https://polygon-bor-rpc.publicnode.com" in GET_LOGS_ENDPOINTS["polygon"]
