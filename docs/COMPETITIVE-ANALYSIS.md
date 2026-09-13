@@ -32,7 +32,7 @@ unexploited differentiator is unchanged: **balance-at-block / state-as-a-service
 
 | Capability | Evidence |
 |---|---|
-| 16 chains (14 EVM + Solana + Tron), 61 curated free RPCs (tiered, live-verified, header-aware throttling, per-method routing, circuit breakers) | `lite_indexer/chains/`, `lite_indexer/rpc/`, `strategies/__init__.py` (SUPPORTED_CHAINS) |
+| 20 chains (18 EVM + Solana + Tron), 61 curated free RPCs (tiered, live-verified, header-aware throttling, per-method routing, circuit breakers) | `lite_indexer/chains/`, `lite_indexer/rpc/`, `strategies/__init__.py` (SUPPORTED_CHAINS) |
 | ClickHouse hot store: `evm_transfers` (285M+), `dex_events`, `deployer_events`, `solana_spl_balance_changes`, `internal_transfers` (traces) | `storage/clickhouse.py`, `traces/`, migrations 001–006 |
 | Address-first projections (`wallet_in_proj` / `wallet_out_proj`) → sub-second wallet queries | `storage/projections.py`, `api/params.py` |
 | Transparent Historical Access (hot ClickHouse + cold B2 parquet + DuckDB, transparent merge) | `storage/historical.py`, `storage/cold_store.py`, `storage/duckdb_query.py`, migration 006 |
@@ -80,7 +80,7 @@ Legend: ✅ full · ◐ partial · ❌ none. LCIndexer = current tree at main (v
 | Feature | Ponder | Subsquid | Graph | HyperIdx | Reth | LCIndexer | Gap? |
 |---|---|---|---|---|---|---|---|
 | **Cost ($0 runtime, no node)** | ✅ | ✅ | ◐ GRT | ✅ | ❌ 2TB node | ✅ **$5 VPS** | ✅ Edge |
-| Chains out of the box | ◐ EVM | ✅ 225+ (Portal) | ✅ 60+ | ✅ 83+ (HyperSync) | ◐ EVM node | ✅ 16 (14 EVM+Sol+Tron) | ⚠️ breadth |
+| Chains out of the box | ◐ EVM | ✅ 225+ (Portal) | ✅ 60+ | ✅ 83+ (HyperSync) | ◐ EVM node | ✅ 20 (18 EVM+Sol+Tron) | ⚠️ breadth |
 | Free RPCs built in / managed | ❌ BYO | ◐ Portal instead | ❌ BYO | ❌ HyperSync instead | ❌ | ✅ **61 curated, throttled** | ✅ Edge |
 | Snapshot bootstrap (skip genesis re-index) | ❌ | ◐ Portal data | ❌ | ◐ HyperSync | ❌ | ✅ **public B2 parquet** | ✅ Edge |
 | Non-RPC fast backfill scale | ❌ RPC-bound | ✅ Portal | ✅ Firehose | ✅ 2000x HyperSync | ✅ native | ◐ RPC-bound + bootstrap | ⚠️ |
@@ -131,10 +131,10 @@ one **unassailable differentiator** (state-at-block).
 
 | # | Feature | Effort | Impact | Why |
 |---|---|---|---|---|
-| T2.1 | **Balance-at-block / state-as-a-service** — `GET /api/v1/balances/{address}?chain=&token=&block=` computed from the existing incremental balance cache + indexed deltas, exact after the last reconcile anchor, approximate before. | L | 5 | Reth's killer feature costs ~2 TB/node/chain. Nobody offers **free state-at-block across 16 chains**. This is the "poor man's archive node" — the single biggest differentiator available to us. Leverages `balance_cache.py` + `reconciliation.py` + `token_prices` (instant USD portfolio). |
+| T2.1 | **Balance-at-block / state-as-a-service** — `GET /api/v1/balances/{address}?chain=&token=&block=` computed from the existing incremental balance cache + indexed deltas, exact after the last reconcile anchor, approximate before. | L | 5 | Reth's killer feature costs ~2 TB/node/chain. Nobody offers **free state-at-block across 20 chains**. This is the "poor man's archive node" — the single biggest differentiator available to us. Leverages `balance_cache.py` + `reconciliation.py` + `token_prices` (instant USD portfolio). |
 | T2.2 | **Factory / dynamic contract indexing** — plugin event → `ctx.register_contract(address, start_block)` at runtime (PairCreated → index new pool), persisted per chain. | M/L | 4 | Closes G3 (the #1 must-have). Matches Ponder/HyperIndex behavior; our deployer_events already tracks factories, so the discovery layer exists. |
 | T2.3 | **Schema-driven GraphQL** — declare `schema.yaml` (or reuse plugin `schema:` blocks), auto-build Strawberry types from ClickHouse tables + manifest; replace the 3 hardcoded queries with generated ones. | M/L | 4 | Closes G2 (the #2 must-have). This is the definitive parity item: Ponder/Subsquid/HyperIndex all auto-generate their API. |
-| T2.4 | **Wallet portfolio endpoint** — merge balance cache + `token_prices` + whale/intel into `GET /api/v1/intel/{address}/portfolio` (holdings, USD value, top positions, at-block snapshots). | M | 4 | Turns T2.1 into a product devs demo instantly ("my wallet, priced, on 16 chains, free"). |
+| T2.4 | **Wallet portfolio endpoint** — merge balance cache + `token_prices` + whale/intel into `GET /api/v1/intel/{address}/portfolio` (holdings, USD value, top positions, at-block snapshots). | M | 4 | Turns T2.1 into a product devs demo instantly ("my wallet, priced, on 20 chains, free"). |
 | T2.5 | **Cross-chain wallet graph API** — expose the existing `forensics/` (fund_tracer, entity_resolver, behavior_clusterer) as graph queries: `GET /api/v1/wallets/{a}/paths/{b}`, cluster members, common counterparties. | M | 4 | Redefines "wallet-native" from queries to graphs; nobody in the OSS indexer space ships fund-flow graphs. |
 
 ### Tier 3 — Moonshots (weeks)
@@ -160,7 +160,7 @@ Reth's only real advantage in this comparison is state access, at ~2 TB/node/cha
 We already maintain an incremental balance cache, a holder-balances materialized
 view, token prices, and on-chain reconciliation. Materializing **historical
 balances/holdings at block N** from indexed deltas (exact after the last reconcile
-anchor) gives ~80% of Reth's state value at 0.01% of its cost, across 16 chains,
+anchor) gives ~80% of Reth's state value at 0.01% of its cost, across 20 chains,
 still $5/mo. This is the feature that makes "the poor man's archive node" an honest
 pitch and it is the #1 thing no competitor in the free OSS space can match.
 

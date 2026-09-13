@@ -13,7 +13,7 @@
 ## 1. Executive summary
 
 LiteChainIndexer wins on **cost, self-healing, address-first analytics, and free-RPC
-operations** — nobody else ships 16 chains on a $5 VPS with 359M rows. But it is
+operations** — nobody else ships 20 chains on a $5 VPS with 359M rows. But it is
 currently a **data warehouse, not a data platform**. Every competitor except us
 treats **GraphQL** as the primary read interface, supports **factory/dynamic
 contracts**, and ships a **high-speed (non-RPC) backfill path**. Those three are
@@ -35,7 +35,7 @@ no competitor has in the free OSS space.
 
 | Capability | Evidence |
 |---|---|
-| 16 chains (14 EVM + Solana + Tron), 61 free RPCs | `lite_indexer/chains/`, README |
+| 20 chains (18 EVM + Solana + Tron), 61 free RPCs | `lite_indexer/chains/`, README |
 | ClickHouse: `evm_transfers`, `dex_events`, `deployer_events`, `solana_spl_balance_changes`, internal-transfer traces | `lite_indexer/storage/`, `traces/` |
 | Address-first projections (wallet-native sub-second) | README, `api/params.py` |
 | Plugin system (YAML manifest + Python handlers, **static** contract addresses) | `docs/PLUGINS.md` |
@@ -77,7 +77,7 @@ Legend: ✅ full · ◐ partial · ❌ none. LCIndexer = current state.
 | Feature | Ponder | Subsquid | The Graph | Reth | HyperIdx | LCIndexer | Class |
 |---|---|---|---|---|---|---|---|
 | **Cost ($0 runtime)** | ✅ | ✅ | ◐ (GRT) | ✅ | ✅ | ✅ **$5 VPS** | Edge |
-| Chains out of the box | ◐ EVM | ✅ 225+ via Portal | ✅ 60+ | ◐ EVM (node) | ✅ 83+ EVM+Sol+Fuel | ✅ 16 (14 EVM+Sol+Tron) | Gap (breadth) |
+| Chains out of the box | ◐ EVM | ✅ 225+ via Portal | ✅ 60+ | ◐ EVM (node) | ✅ 83+ EVM+Sol+Fuel | ✅ 20 (18 EVM+Sol+Tron) | Gap (breadth) |
 | Free RPCs built in | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ **61 curated** | Edge |
 | Non-RPC fast backfill | ◐ RPC-bound | ✅ Portal | ✅ Firehose | ✅ native | ✅ HyperSync 2000x | ❌ RPC-bound | **Must-have** |
 | Factory/dynamic contracts | ✅ | ✅ | ✅ | n/a | ✅ 1M+ | ❌ static manifest | **Must-have** |
@@ -122,7 +122,7 @@ Legend: ✅ full · ◐ partial · ❌ none. LCIndexer = current state.
 
 | # | Feature | Effort | Impact | Why |
 |---|---|---|---|---|
-| T2.1 | **Balance-at-block / state-as-a-service** — extend the existing balance cache + reconciliation into `balances_at(chain, address, token, block)` computed from indexed deltas (exact after reconcile anchor; approximate before). | L | 5 | Reth's killer feature is state access — but it requires a ~2 TB node per chain. Nobody offers **free state-at-block across 16 chains**. This is the "poor man's archive node" and the single biggest differentiator available. |
+| T2.1 | **Balance-at-block / state-as-a-service** — extend the existing balance cache + reconciliation into `balances_at(chain, address, token, block)` computed from indexed deltas (exact after reconcile anchor; approximate before). | L | 5 | Reth's killer feature is state access — but it requires a ~2 TB node per chain. Nobody offers **free state-at-block across 20 chains**. This is the "poor man's archive node" and the single biggest differentiator available. |
 | T2.2 | **Factory / dynamic contract indexing** — plugin event → register contract at runtime (PairCreated → index new pool; match Ponder/HyperIndex 1M-contract behavior). | M/L | 4 | Closes G3 (must-have) and unblocks every factory-driven protocol beyond Uniswap V2/V3. |
 | T2.3 | **Schema-driven GraphQL** — declare entity schemas, auto-build Strawberry types from ClickHouse tables + manifest (`schema.yaml`), replace the 3 hardcoded queries. | M/L | 4 | Closes G2 (must-have): Ponder/Subsquid/HyperIndex all auto-generate their API; ours is a fixed 3-query snapshot. This is the "definitive" parity item. |
 | T2.4 | **Contract verification + ABI auto-import** — paste an address → fetch verified ABI (Sourcify/Etherscan, both free) → generate a plugin manifest automatically. | M | 3 | Closes G11; pairs with T2.2 for the "plug-in any protocol in 60 seconds" story. |
@@ -164,7 +164,7 @@ Reth's only real advantage in this comparison is full state access, and it costs
 ~2 TB/node/chain. We already maintain an incremental balance cache and run
 on-chain reconciliation. Materializing *historical* balances/holdings at block N
 from indexed deltas (exact after the last reconcile anchor) gives 80% of Reth's
-state value at 0.01% of its cost, across 16 chains, still $5/mo. That is the
+state value at 0.01% of its cost, across 20 chains, still $5/mo. That is the
 single feature that makes "definitive free chain indexer" an honest claim.
 
 **Sequencing note:** do T1.1 + T1.2 in the same week (both touch the storage/bus

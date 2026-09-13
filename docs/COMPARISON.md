@@ -26,14 +26,14 @@ indexing options: **Ponder**, **Subsquid**, **a hosted Solana data platform**, a
 
 ### Cost
 
-- **Lite Chain Indexer: $0.** Runs on free public RPCs (123 built-in, verified endpoints across 16 chains). No subscription, no API key, no gateway fee. Hardware is whatever you already have — a $5 VPS runs all 16 chains.
+- **Lite Chain Indexer: $0.** Runs on free public RPCs (123 built-in, verified endpoints across 20 chains). No subscription, no API key, no gateway fee. Hardware is whatever you already have — a $5 VPS runs all 20 chains.
 - **Ponder: $0 + infra.** The software is free, but you pay for RPC access at scale (free tiers throttle quickly on `eth_getLogs`) and for the server/container running your indexers. Multiple chains multiply your RPC costs.
 - **Subsquid: $0 + infra.** Free self-hosted tier exists, but the hosted/gateway tiers (where most people end up at scale) cost real money. Self-hosting means sourcing and paying for your own data feeds.
 - **a hosted Solana data platform: $49+/mo.** A hosted Solana data platform. Predictable pricing, but it starts at $49/month for meaningful limits and it only covers Solana. There is no self-hosted option.
 
 ### Chains
 
-- **Lite Chain Indexer:** 16 chains out of the box — 14 EVM (Ethereum, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, Fantom, Linea, Scroll, zkSync Era, Mantle, Gnosis, Celo) + Solana + Tron. Adding a new EVM chain is a config change, not a rewrite.
+- **Lite Chain Indexer:** 20 chains out of the box — 18 EVM (Ethereum, Base, BSC, Polygon, Arbitrum, Optimism, Avalanche, Fantom, Linea, Scroll, zkSync Era, Mantle, Gnosis, Celo) + Solana + Tron. Adding a new EVM chain is a config change, not a rewrite.
 - **Ponder / Subsquid:** "Configurable" is doing heavy lifting — you can index any EVM chain, but you configure each one yourself (RPCs, handlers, deploy pipelines). Solana/Tron support is not a first-class citizen.
 - **a hosted Solana data platform:** Solana only.
 
