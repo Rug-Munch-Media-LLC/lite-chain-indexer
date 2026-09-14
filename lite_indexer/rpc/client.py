@@ -47,6 +47,7 @@ from lite_indexer.rpc.budgets import (
 from lite_indexer.rpc.jsonparse import decode_response_async
 from lite_indexer.rpc.ledger import (
     LEDGER,
+    account_id_for_endpoint,
     defer_reason,
     key_id_for_endpoint,
     provider_id_for_endpoint,
@@ -150,6 +151,7 @@ def _defer_reason_for(
             method,
             key_id_for_endpoint(endpoint),
             range_blocks=range_blocks,
+            account_id=account_id_for_endpoint(endpoint),
         )
     except Exception as exc:  # noqa: BLE001 — enforcement must never break RPC
         logger.debug("rpc_defer_gate_skipped", endpoint=endpoint[:50], error=str(exc)[:80])
@@ -160,20 +162,23 @@ def _warn_deferred(endpoint: str, method: str, reason: str) -> None:
     """Log a deferral at warning, once per provider+level (not spammy)."""
     provider_id = ""
     key_id = ""
+    account_id = ""
     level = 0
     try:
         provider_id = provider_id_for_endpoint(endpoint)
         key_id = key_id_for_endpoint(endpoint)
-        level = LEDGER.degrade_level_for(provider_id, key_id)
+        account_id = account_id_for_endpoint(endpoint)
+        level = LEDGER.degrade_level_for(provider_id, key_id, account_id=account_id)
     except Exception as exc:  # noqa: BLE001 — dedup bookkeeping must never raise
         logger.debug("rpc_defer_warn_skipped", endpoint=endpoint[:50], error=str(exc)[:80])
-    dedup_key = (provider_id, key_id, level)
+    dedup_key = (provider_id, account_id, level)
     if dedup_key in _defer_warned:
         return
     _defer_warned.add(dedup_key)
     logger.warning(
         "rpc_call_deferred",
         provider=provider_id,
+        account_id=account_id,
         key_id=key_id,
         level=level,
         method=method,

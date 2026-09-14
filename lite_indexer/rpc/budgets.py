@@ -49,7 +49,7 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
-from lite_indexer.rpc.ledger import key_id_for_endpoint, provider_id_for_endpoint
+from lite_indexer.rpc.ledger import account_id_for_endpoint, key_id_for_endpoint, provider_id_for_endpoint
 
 logger = get_logger(__name__)
 
@@ -59,10 +59,26 @@ _TIMESTAMP_HORIZON_S = 60.0
 
 
 def account_key_for_budget(endpoint: str) -> str:
-    """Account identity for budget keying: ``provider_id`` + optional key id."""
+    """Per-KEY identity for rps/concurrency keying: ``provider_id`` + key id.
+
+    Rate limits are metered per key, so two keys of one provider get separate
+    pacing/concurrency. The *quota* cap (``quota_key_for_budget``) is per
+    ACCOUNT instead, so keys never multiply the daily budget.
+    """
     provider_id = provider_id_for_endpoint(endpoint)
     key_id = key_id_for_endpoint(endpoint)
     return f"{provider_id}:{key_id}" if key_id else provider_id
+
+
+def quota_key_for_budget(endpoint: str) -> str:
+    """Per-ACCOUNT identity for the daily quota cap.
+
+    Keyed providers meter quota per account, not per key: N keys of one
+    account share ONE daily budget (extra keys buy rate, never quota). Uses
+    the ledger's :func:`account_id_for_endpoint`, which defaults to the
+    provider id.
+    """
+    return account_id_for_endpoint(endpoint)
 
 
 def _utc_day(now: float) -> int:
@@ -125,10 +141,10 @@ class ProviderBudgetTracker:
         self._time = time_fn
         self._states: dict[str, _BudgetState] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
-        # Daily request counter keyed by budget identity (account for provider
-        # budgets, exact endpoint for endpoint overrides) → (UTC day, count).
-        # Keying by identity (not endpoint) makes a provider-level daily_budget
-        # a HARD cap shared by all of that provider's endpoints.
+        # Daily request counter keyed by ACCOUNT quota identity → (UTC day,
+        # count). Keying by account (not key) makes a provider-level
+        # daily_budget a HARD cap shared by EVERY key/endpoint of that
+        # account, so extra keys never multiply the budget.
         self._daily_used: dict[str, tuple[int, int]] = {}
 
     # ── Identity / budget resolution ──────────────────────────────────
@@ -144,10 +160,21 @@ class ProviderBudgetTracker:
         )
 
     def budget_key(self, endpoint: str) -> str:
-        """Concurrency-key: endpoint-scoped when overridden, else account."""
+        """Per-KEY concurrency/rps key: endpoint-scoped when overridden, else account."""
         if endpoint in self._endpoint_budgets:
             return f"endpoint:{endpoint}"
         return f"account:{account_key_for_budget(endpoint)}"
+
+    def quota_key(self, endpoint: str) -> str:
+        """Per-ACCOUNT quota key: all keys of one account share a daily cap.
+
+        An explicit endpoint override keeps its own endpoint-scoped quota
+        (the operator named that exact URL); everything else is aggregated
+        per account so keys never multiply the budget.
+        """
+        if endpoint in self._endpoint_budgets:
+            return f"quota:endpoint:{endpoint}"
+        return f"quota:{quota_key_for_budget(endpoint)}"
 
     def enforces(self, endpoint: str) -> bool:
         """Whether this identity is actively budget-enforced."""
@@ -177,8 +204,8 @@ class ProviderBudgetTracker:
             state.request_times.popleft()
 
     def _daily_count(self, endpoint: str, now: float) -> int:
-        """Current UTC-day dispatch count for the endpoint's budget identity."""
-        key = self.budget_key(endpoint)
+        """Current UTC-day dispatch count for the endpoint's ACCOUNT quota."""
+        key = self.quota_key(endpoint)
         day = _utc_day(now)
         entry = self._daily_used.get(key)
         if entry is None or entry[0] != day:
@@ -187,8 +214,8 @@ class ProviderBudgetTracker:
         return entry[1]
 
     def _bump_daily(self, endpoint: str, now: float) -> int:
-        """Increment + return the UTC-day count for the budget identity."""
-        key = self.budget_key(endpoint)
+        """Increment + return the UTC-day count for the ACCOUNT quota."""
+        key = self.quota_key(endpoint)
         day = _utc_day(now)
         entry = self._daily_used.get(key)
         count = 0 if entry is None or entry[0] != day else entry[1]
@@ -386,7 +413,7 @@ class ProviderBudgetTracker:
         else:
             self._states.pop(endpoint, None)
             self._semaphores.pop(self.budget_key(endpoint), None)
-            self._daily_used.pop(self.budget_key(endpoint), None)
+            self._daily_used.pop(self.quota_key(endpoint), None)
 
 
 # Module-level tracker shared across the RPC layer.
@@ -452,6 +479,7 @@ __all__ = [
     "budget_for_endpoint",
     "budget_slot",
     "budget_wait_seconds",
+    "quota_key_for_budget",
     "record_budget_dispatch",
     "record_budget_response",
     "record_budget_success",

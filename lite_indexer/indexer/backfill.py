@@ -53,7 +53,13 @@ from lite_indexer.config import (
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.rpc.freemium import select_freemium_endpoint_for_chain
-from lite_indexer.rpc.ledger import LEDGER, ProviderLedger, key_id_for_endpoint, provider_id_for_endpoint
+from lite_indexer.rpc.ledger import (
+    LEDGER,
+    ProviderLedger,
+    account_id_for_endpoint,
+    key_id_for_endpoint,
+    provider_id_for_endpoint,
+)
 from lite_indexer.rpc.provider_caps import provider_concurrency_slot
 from lite_indexer.state import atomic_write_json
 
@@ -174,7 +180,7 @@ def window_decision(
     provider = provider_id_for_endpoint(endpoint)
     key_id = key_id_for_endpoint(endpoint) or None
     try:
-        state = active_ledger.state_for(provider, key_id, now)
+        state = active_ledger.state_for(provider, key_id, now, account_id=account_id_for_endpoint(endpoint))
     except Exception as exc:  # noqa: BLE001 — scheduling must never raise
         logger.debug("backfill_window_state_failed", error=str(exc)[:100])
         return WindowDecision(allowed=True, reason="ledger_error")

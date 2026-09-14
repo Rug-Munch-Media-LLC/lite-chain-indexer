@@ -23,6 +23,13 @@ Configuration (all from the environment; secret values are never logged):
   (default ``0`` = proxy-primary with a direct fallback, the earlier
   behaviour). Recommented for quota work: direct-first keeps the proxy
   pool's per-IP budget untouched until a direct IP is blocked.
+* ``RPC_PROXY_KEYLESS_ONLY`` — ``1`` routes **key-less** endpoints (no API
+  key in the URL) through the proxy pool while **keyed** endpoints stay
+  direct-first with the proxy used only after a transport failure. This is
+  the correct lever: key-less providers limit per IP (proxy helps), while
+  keyed providers meter quota per account/key (protocol hop adds latency
+  and burns proxy GB for no quota gain). Default ``0`` = today's
+  ``RPC_PROXY_FALLBACK_ONLY`` behaviour. Env-gated and opt-in.
 
 ``sticky`` pins one proxy per RPC endpoint until that proxy fails, then
 fails over to another. This is the recommended mode because providers
@@ -107,6 +114,24 @@ def parse_proxy_list(raw: str) -> list[ProxySpec]:
     return specs
 
 
+def is_keyless_endpoint(endpoint: str) -> bool:
+    """Whether an endpoint carries NO API key (per-IP limited).
+
+    Key-less providers meter requests per egress IP, so the residential proxy
+    pool is the right lever there. Keyed endpoints meter per account/key, so
+    proxying them burns GB for no quota gain. Detection reuses the generic,
+    non-secret key detection in ``rpc/ledger.py`` (imported lazily to avoid an
+    import cycle); an unresolvable endpoint is treated as keyed (direct) so a
+    routing error never pushes unknown traffic through the paid proxy.
+    """
+    try:
+        from lite_indexer.rpc.ledger import key_id_for_endpoint
+
+        return not key_id_for_endpoint(endpoint)
+    except Exception:  # noqa: BLE001 — routing must never raise
+        return False
+
+
 class ProxyRouter:
     """Assign proxies to endpoints (``sticky``) or round-robin (``rotate``).
 
@@ -124,12 +149,14 @@ class ProxyRouter:
         enabled: bool = False,
         mode: str = "sticky",
         fallback_only: bool = False,
+        keyless_only: bool = False,
         max_failures: int = 1,
     ) -> None:
         self._specs = list(specs)
         self._enabled = bool(enabled) and bool(self._specs)
         self._mode = mode if mode in _VALID_MODES else "sticky"
         self._fallback_only = bool(fallback_only)
+        self._keyless_only = bool(keyless_only)
         self._max_failures = max(1, int(max_failures))
         self._pins: dict[str, ProxySpec] = {}
         self._failed: dict[str, int] = {}
@@ -142,13 +169,21 @@ class ProxyRouter:
         enabled = os.environ.get("RPC_PROXY_ENABLED", "0") != "0"
         mode = (os.environ.get("RPC_PROXY_MODE", "sticky").strip().lower()) or "sticky"
         fallback_only = os.environ.get("RPC_PROXY_FALLBACK_ONLY", "0") != "0"
-        router = cls(parse_proxy_list(raw), enabled=enabled, mode=mode, fallback_only=fallback_only)
+        keyless_only = os.environ.get("RPC_PROXY_KEYLESS_ONLY", "0") != "0"
+        router = cls(
+            parse_proxy_list(raw),
+            enabled=enabled,
+            mode=mode,
+            fallback_only=fallback_only,
+            keyless_only=keyless_only,
+        )
         if router.enabled:
             logger.info(
                 "rpc_proxy_pool_loaded",
                 proxies=len(router._specs),
                 mode=router._mode,
                 fallback_only=router._fallback_only,
+                keyless_only=router._keyless_only,
             )
         return router
 
@@ -167,9 +202,29 @@ class ProxyRouter:
         """Whether the direct connection is primary and the proxy fallback-only."""
         return self._fallback_only
 
+    @property
+    def keyless_only(self) -> bool:
+        """Whether only key-less endpoints are proxied (keyed stay direct-first)."""
+        return self._keyless_only
+
     def proxy_count(self) -> int:
         """Number of parsed proxies (no values exposed)."""
         return len(self._specs)
+
+    def _direct_first(self, endpoint: str, keyless: bool | None = None) -> bool:
+        """Whether ``endpoint`` must be tried direct-first (proxy = fallback).
+
+        True in global ``fallback_only`` mode, or when ``keyless_only`` is on
+        and the endpoint is keyed. ``keyless`` may be supplied to avoid
+        re-detecting (callers that already know the endpoint shape).
+        """
+        if self._fallback_only:
+            return True
+        if self._keyless_only:
+            if keyless is None:
+                keyless = is_keyless_endpoint(endpoint)
+            return not keyless
+        return False
 
     def _healthy(self) -> list[ProxySpec]:
         return [s for s in self._specs if self._failed.get(s.url, 0) < self._max_failures]
@@ -182,14 +237,14 @@ class ProxyRouter:
         self._rr += 1
         return spec
 
-    def proxy_for(self, endpoint: str) -> ProxySpec | None:
+    def proxy_for(self, endpoint: str, *, keyless: bool | None = None) -> ProxySpec | None:
         """Return the proxy to use for ``endpoint`` (None = direct).
 
-        In ``fallback_only`` mode the direct connection is always primary,
-        so this returns None; callers use :meth:`fallback_proxy_for` only
-        after a direct transport failure.
+        Direct (None) in ``fallback_only`` mode, and for a keyed endpoint in
+        ``keyless_only`` mode — callers then use :meth:`fallback_proxy_for`
+        only after a direct transport failure.
         """
-        if not self._enabled or self._fallback_only:
+        if not self._enabled or self._direct_first(endpoint, keyless):
             return None
         if self._mode == "sticky":
             pinned = self._pins.get(endpoint)
@@ -201,13 +256,15 @@ class ProxyRouter:
             return spec
         return self._pick()
 
-    def fallback_proxy_for(self, endpoint: str) -> ProxySpec | None:
-        """Proxy to retry with after a DIRECT failure (fallback-only mode only).
+    def fallback_proxy_for(self, endpoint: str, *, keyless: bool | None = None) -> ProxySpec | None:
+        """Proxy to retry with after a DIRECT failure (direct-first endpoints only).
 
-        Returns None when the pool is disabled or the router is in
-        proxy-primary mode (where the direct retry is already handled).
+        Returns None when the pool is disabled or the endpoint is
+        proxy-primary (where a direct retry is already handled). In
+        ``keyless_only`` mode keyed endpoints are direct-first, so they DO
+        get a proxy fallback here.
         """
-        if not self._enabled or not self._fallback_only:
+        if not self._enabled or not self._direct_first(endpoint, keyless):
             return None
         pinned = self._pins.get(endpoint)
         if pinned is not None and self._failed.get(pinned.url, 0) < self._max_failures:
@@ -239,6 +296,7 @@ class ProxyRouter:
             "enabled": self._enabled,
             "mode": self._mode,
             "fallback_only": self._fallback_only,
+            "keyless_only": self._keyless_only,
             "proxy_count": len(self._specs),
             "pinned_endpoints": len(self._pins),
             "failed_proxies": len(self._failed),
@@ -274,6 +332,7 @@ __all__ = [
     "ProxyRouter",
     "ProxySpec",
     "fallback_proxy_for",
+    "is_keyless_endpoint",
     "mark_proxy_failed",
     "mark_proxy_success",
     "parse_proxy_entry",

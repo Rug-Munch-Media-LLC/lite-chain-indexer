@@ -23,3 +23,25 @@ placeholder, resolved via `os.path.expandvars` at import time. Endpoints
 whose variable is unset are excluded from the active pool — a fresh clone
 with zero env vars still indexes fine on the public pool. Secret values
 never enter the repository or the overlay file.
+
+## Capacity accounting: quota is per ACCOUNT, not per key
+
+Most keyed free tiers meter their free **quota** (compute units / credits /
+requests) per **account**; extra keys on the same account add *rate*
+(rps/concurrency), never quota. The quota ledger therefore groups usage by
+an `account_id` that defaults to the provider id — all keys of one provider
+draw **one** budget, so capacity is never over-counted N×. If you genuinely
+hold several accounts on one provider, name them with a JSON map in
+`LITE_INDEXER_ACCOUNT_IDS` (`{"<provider>": "<account>"}` or
+`{"<key-id>": "<account>"}`); per-key rate limits stay separate.
+
+## Proxy routing: key-less only
+
+Key-less public endpoints are limited **per egress IP**, so a residential
+proxy pool is the right lever for them. Keyed endpoints meter per
+account/key, so proxying them adds latency and burns GB for no quota gain.
+`RPC_PROXY_KEYLESS_ONLY=1` (with `RPC_PROXY_ENABLED=1`) routes key-less
+endpoints through the pool while keyed endpoints stay direct-first, using a
+proxy only after a transport failure. Default is off — behaviour is
+unchanged until explicitly enabled.
+

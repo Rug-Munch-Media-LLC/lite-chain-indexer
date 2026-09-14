@@ -9,11 +9,18 @@ and returns a degrade level so the caller can back off *before* the 429.
 
 Key differences from the other two layers:
 
-1. **Grouping is PER ACCOUNT (``provider_id``), not per URL.** KeyedProvider is
-   account-wide — every ``*.g.keyegateway.com`` URL for the same API key shares
-   one 30M CU/month budget — while ProviderD is per-IP and gets a per-domain
-   bucket. ``provider_id_for_endpoint()`` derives the account from the URL
-   hostname; known free-tier quotas are seeded in :data:`KNOWN_QUOTAS`.
+1. **Quota is grouped PER ACCOUNT (``account_id``), NOT per key.** Keyed
+   providers meter the free quota per ACCOUNT: N API keys belonging to one
+   account draw ONE budget (extra keys buy rate, never quota). An account is
+   the registrable domain by default — one account per provider — so multiple
+   keys never fan the quota out N×. An operator with several real accounts on
+   one host can map key/provider → account via
+   ``LITE_INDEXER_ACCOUNT_IDS``; per-KEY rate limits (rps/concurrency) are
+   tracked separately in ``rpc/budgets.py`` / ``rpc/provider_caps.py``.
+   ProviderD (key-less) is per-IP and gets a per-domain bucket.
+   ``account_id_for_endpoint()`` derives the account from the URL;
+   ``provider_id_for_endpoint()`` derives the registrable domain; known
+   free-tier quotas are seeded in :data:`KNOWN_QUOTAS`.
 
 2. **Tariff-weighted consumption.** ``eth_getLogs`` (75 CU) costs 15x an
    ``eth_chainId`` (5 CU). Each budget carries a ``method_tariff`` mapping
@@ -168,11 +175,38 @@ def _load_known_quotas() -> dict[str, QuotaSeed]:
 
 KNOWN_QUOTAS: dict[str, QuotaSeed] = _load_known_quotas()
 
+
+def _load_account_ids() -> dict[str, str]:
+    """Operator-supplied ``key_id``/``provider_id`` → ``account_id`` overrides.
+
+    Read from ``LITE_INDEXER_ACCOUNT_IDS`` (a JSON object). Both keys are
+    non-secret: a ``provider_id`` (registrable domain) groups all of that
+    provider's keys into one named account, while a ``key_id`` (the hashed
+    id from :func:`key_id_for_endpoint`) maps one key to a specific account.
+    Empty by default — every provider then collapses to a single account id
+    equal to its ``provider_id`` (one account per provider).
+    """
+    raw = os.environ.get("LITE_INDEXER_ACCOUNT_IDS", "")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("account_ids_parse_failed")
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if str(v)}
+
+
+KNOWN_ACCOUNT_IDS: dict[str, str] = _load_account_ids()
+
 # Dataclass field names used to filter persisted JSON on load (survives
 # schema drift by ignoring unknown keys).
 _QUOTA_FIELDS = frozenset(
     {
         "provider_id",
+        "account_id",
         "key_id",
         "unit_type",
         "period",
@@ -188,15 +222,22 @@ _QUOTA_FIELDS = frozenset(
 
 @dataclass
 class QuotaBudget:
-    """Persisted per-account quota state.
+    """Persisted per-ACCOUNT quota state.
 
     ``budget_units`` is ``None`` for providers without a documented free
     quota — they are tracked for stats but never degrade (graceful by
     default). ``consumed_units`` is tariff-weighted: an ``eth_getLogs``
     at 75 CU costs 15x an ``eth_chainId`` at 5 CU.
+
+    ``account_id`` is what the quota is keyed on (NOT ``key_id``): all keys
+    of one account share this budget. It defaults to ``provider_id`` (one
+    account per provider) so keys are never counted as separate capacity.
+    ``key_id`` is retained as non-secret provenance only — per-key rate
+    limits live in ``rpc/budgets.py`` / ``rpc/provider_caps.py``.
     """
 
     provider_id: str
+    account_id: str = ""
     key_id: str = ""
     unit_type: str = "raw"  # CU | credits | request_units | raw
     period: str = "day"  # day | 30d | month
@@ -207,6 +248,11 @@ class QuotaBudget:
     reset_at: float = 0.0
     updated_at: float = 0.0
 
+    def __post_init__(self) -> None:
+        # One account per provider unless the operator named a real account.
+        if not self.account_id:
+            self.account_id = self.provider_id
+
     def consumed_pct(self) -> float:
         """Percent of the budget consumed (None-safe → 0.0, can exceed 100)."""
         if not self.budget_units:
@@ -214,7 +260,7 @@ class QuotaBudget:
         return 100.0 * self.consumed_units / self.budget_units
 
     def parked(self, now: float | None = None) -> bool:
-        """Whether this key is parked until ``reset_at`` (level 3)."""
+        """Whether this account is parked until ``reset_at`` (level 3)."""
         now = time.time() if now is None else now
         return self.degrade_level >= 3 and now < self.reset_at
 
@@ -308,6 +354,29 @@ def key_id_for_endpoint(endpoint: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+def account_id_for_endpoint(endpoint: str) -> str:
+    """Resolve the quota ACCOUNT for an endpoint (never empty).
+
+    Quota is metered per ACCOUNT, not per key: N keys belonging to one
+    account share ONE budget, so extra keys add rate but never quota. The
+    account is resolved as:
+
+    1. a configured ``key_id`` override (:data:`KNOWN_ACCOUNT_IDS`) — lets an
+       operator map one key to a named account;
+    2. a configured ``provider_id`` override — groups every key of a provider
+       into one named account;
+    3. otherwise the ``provider_id`` itself (one account per provider).
+
+    The ``key_id`` is NEVER returned, so quota can never be fanned out across
+    keys. Per-key rate limits are tracked separately (``rpc/budgets.py``).
+    """
+    provider = provider_id_for_endpoint(endpoint)
+    key_id = key_id_for_endpoint(endpoint)
+    if key_id and key_id in KNOWN_ACCOUNT_IDS:
+        return KNOWN_ACCOUNT_IDS[key_id]
+    return KNOWN_ACCOUNT_IDS.get(provider, provider)
+
+
 class ProviderLedger:
     """Persisted per-account quota ledger + degrade ladder.
 
@@ -336,8 +405,8 @@ class ProviderLedger:
     # ── Keying ────────────────────────────────────────────────────────
 
     @staticmethod
-    def _budget_key(provider_id: str, key_id: str | None = None) -> str:
-        return f"{provider_id}:{key_id or ''}"
+    def _budget_key(provider_id: str, account_id: str | None = None) -> str:
+        return f"{provider_id}:{account_id or provider_id}"
 
     # ── Persistence ───────────────────────────────────────────────────
 
@@ -351,7 +420,18 @@ class ProviderLedger:
                     continue
                 clean = {k: v for k, v in data.items() if k in _QUOTA_FIELDS}
                 budget = QuotaBudget(**clean)
-                self._budgets[self._budget_key(budget.provider_id, budget.key_id)] = budget
+                key = self._budget_key(budget.provider_id, budget.account_id)
+                existing = self._budgets.get(key)
+                if existing is None:
+                    self._budgets[key] = budget
+                    continue
+                # Migration: a pre-account ledger wrote one budget PER key.
+                # Fold those into the single account budget so an upgrade
+                # neither loses consumption nor resurrects the N× over-count.
+                existing.consumed_units += budget.consumed_units
+                existing.degrade_level = max(existing.degrade_level, budget.degrade_level)
+                existing.reset_at = max(existing.reset_at, budget.reset_at)
+                existing.updated_at = max(existing.updated_at, budget.updated_at)
             if self._budgets:
                 logger.debug("quota_ledger_loaded", budgets=len(self._budgets), path=str(self._path))
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
@@ -415,7 +495,7 @@ class ProviderLedger:
         days = 30 if period == "30d" else 1
         return now + days * 86_400
 
-    def _seed_budget(self, provider_id: str, key_id: str | None = None) -> QuotaBudget:
+    def _seed_budget(self, provider_id: str, account_id: str, key_id: str | None = None) -> QuotaBudget:
         seed = KNOWN_QUOTAS.get(provider_id)
         now = time.time()
         if seed is None:
@@ -428,6 +508,7 @@ class ProviderLedger:
             period = seed.period
         return QuotaBudget(
             provider_id=provider_id,
+            account_id=account_id or provider_id,
             key_id=key_id or "",
             unit_type=unit_type,
             period=period,
@@ -439,13 +520,25 @@ class ProviderLedger:
             updated_at=now,
         )
 
-    def _ensure_budget(self, provider_id: str, key_id: str | None = None) -> QuotaBudget:
-        key = self._budget_key(provider_id, key_id)
+    def _ensure_budget(
+        self,
+        provider_id: str,
+        key_id: str | None = None,
+        account_id: str | None = None,
+    ) -> QuotaBudget:
+        """Return the ACCOUNT budget, seeding it once per account.
+
+        ``key_id`` is provenance only; the budget is keyed on ``account_id``
+        (defaulting to ``provider_id``), so N keys of one account share ONE
+        budget instead of N copies of the same quota.
+        """
+        account = account_id or provider_id
+        key = self._budget_key(provider_id, account)
         budget = self._budgets.get(key)
         if budget is None:
-            budget = self._seed_budget(provider_id, key_id)
+            budget = self._seed_budget(provider_id, account, key_id)
             self._budgets[key] = budget
-            logger.debug("quota_budget_seeded", provider=provider_id, key_id=key_id or "")
+            logger.debug("quota_budget_seeded", provider=provider_id, account_id=account, key_id=key_id or "")
         return budget
 
     def _maybe_reset(self, budget: QuotaBudget, now: float | None = None) -> None:
@@ -459,6 +552,7 @@ class ProviderLedger:
             logger.info(
                 "quota_period_reset",
                 provider=budget.provider_id,
+                account_id=budget.account_id,
                 key_id=budget.key_id,
                 next_reset_at=budget.reset_at,
             )
@@ -485,6 +579,8 @@ class ProviderLedger:
         method: str,
         key_id: str | None = None,
         now: float | None = None,
+        *,
+        account_id: str | None = None,
     ) -> int:
         """Record one call and return the resulting degrade level (0-3).
 
@@ -492,19 +588,23 @@ class ProviderLedger:
         (e.g. ``eth_getLogs`` 15x ``eth_chainId`` for CU budgets) and
         recomputes the degrade ladder level.
 
+        The call is charged to the ACCOUNT budget (``account_id``, defaulting
+        to ``provider_id``): two keys of one account draw the same budget.
+
         Args:
-            provider_id: Account-level provider id (``"keyegateway"``, ...).
+            provider_id: Provider id (registrable domain).
             method: JSON-RPC method name (``"eth_getLogs"``, ``"eth_call"``).
-            key_id: Optional API-key id for account grouping within a
-                provider (KeyedProvider/KeyedProvider2 account-wide keys).
+            key_id: Optional API-key id — provenance only; NOT a quota key.
             now: Epoch time override (tests).
+            account_id: Optional account id; defaults to ``provider_id`` so
+                keys never split one account's quota.
 
         Returns:
             Degrade level: 0 normal, 1 (70%) widen polls/narrow getLogs,
-            2 (85%) head-only, 3 (95%) park key until ``reset_at``.
+            2 (85%) head-only, 3 (95%) park account until ``reset_at``.
         """
         now = time.time() if now is None else now
-        budget = self._ensure_budget(provider_id, key_id)
+        budget = self._ensure_budget(provider_id, key_id, account_id)
         self._maybe_reset(budget, now)
         if budget.budget_units is not None:
             budget.consumed_units += self._tariff_for(budget, method)
@@ -514,17 +614,18 @@ class ProviderLedger:
         return budget.degrade_level
 
     def record_endpoint_call(self, endpoint: str, method: str, now: float | None = None) -> int:
-        """Record a call from an endpoint URL (derives provider/key id).
+        """Record a call from an endpoint URL (derives account/key id).
 
-        Convenience wrapper for the RPC layer: ``provider_id_for_endpoint``
-        groups KeyedProvider/KeyedProvider2 URLs by account while unknown hosts get a
-        per-hostname bucket (never degraded).
+        Convenience wrapper for the RPC layer: ``account_id_for_endpoint``
+        groups all keys of one provider account into a single budget while
+        unknown/key-less hosts get a per-domain bucket (never degraded).
         """
         return self.record_call(
             provider_id_for_endpoint(endpoint),
             method,
             key_id_for_endpoint(endpoint),
-            now=now,
+            now,
+            account_id=account_id_for_endpoint(endpoint),
         )
 
     def degrade_level_for(
@@ -532,9 +633,11 @@ class ProviderLedger:
         provider_id: str,
         key_id: str | None = None,
         now: float | None = None,
+        *,
+        account_id: str | None = None,
     ) -> int:
         """Current degrade level (0-3) for an account without recording a call."""
-        budget = self._budgets.get(self._budget_key(provider_id, key_id))
+        budget = self._budgets.get(self._budget_key(provider_id, account_id or provider_id))
         if budget is None:
             return 0
         now = time.time() if now is None else now
@@ -546,16 +649,25 @@ class ProviderLedger:
         self,
         provider_id: str,
         key_id: str | None = None,
+        *,
+        account_id: str | None = None,
     ) -> float:
-        """Percent of the budget consumed (0.0 for unknown/unmanaged)."""
-        budget = self._budgets.get(self._budget_key(provider_id, key_id))
+        """Percent of the account budget consumed (0.0 for unknown/unmanaged)."""
+        budget = self._budgets.get(self._budget_key(provider_id, account_id or provider_id))
         if budget is None:
             return 0.0
         return budget.consumed_pct()
 
-    def parked(self, provider_id: str, key_id: str | None = None, now: float | None = None) -> bool:
-        """Whether the account key is parked (level 3) until ``reset_at``."""
-        budget = self._budgets.get(self._budget_key(provider_id, key_id))
+    def parked(
+        self,
+        provider_id: str,
+        key_id: str | None = None,
+        now: float | None = None,
+        *,
+        account_id: str | None = None,
+    ) -> bool:
+        """Whether the account is parked (level 3) until ``reset_at``."""
+        budget = self._budgets.get(self._budget_key(provider_id, account_id or provider_id))
         if budget is None:
             return False
         now = time.time() if now is None else now
@@ -566,15 +678,18 @@ class ProviderLedger:
         provider_id: str,
         key_id: str | None = None,
         now: float | None = None,
+        *,
+        account_id: str | None = None,
     ) -> dict[str, Any]:
         """Public read-only view of one account's quota state."""
-        budget = self._budgets.get(self._budget_key(provider_id, key_id))
+        budget = self._budgets.get(self._budget_key(provider_id, account_id or provider_id))
         if budget is None:
             return {}
         now = time.time() if now is None else now
         self._maybe_reset(budget, now)
         return {
             "provider_id": budget.provider_id,
+            "account_id": budget.account_id,
             "key_id": budget.key_id,
             "unit_type": budget.unit_type,
             "period": budget.period,
@@ -590,18 +705,28 @@ class ProviderLedger:
 
     def snapshot(self, now: float | None = None) -> dict[str, dict[str, Any]]:
         """Full ledger view (for logging / metrics)."""
-        return {key: self.state_for(budget.provider_id, budget.key_id, now) for key, budget in self._budgets.items()}
+        return {
+            key: self.state_for(budget.provider_id, budget.key_id, now, account_id=budget.account_id)
+            for key, budget in self._budgets.items()
+        }
 
-    def reset(self, provider_id: str, key_id: str | None = None, now: float | None = None) -> None:
-        """Manually zero a budget (e.g. operator top-up) and persist."""
-        budget = self._ensure_budget(provider_id, key_id)
+    def reset(
+        self,
+        provider_id: str,
+        key_id: str | None = None,
+        now: float | None = None,
+        *,
+        account_id: str | None = None,
+    ) -> None:
+        """Manually zero an ACCOUNT budget (e.g. operator top-up) and persist."""
+        budget = self._ensure_budget(provider_id, key_id, account_id)
         now = time.time() if now is None else now
         budget.consumed_units = 0.0
         budget.degrade_level = 0
         budget.reset_at = self._compute_reset_at(budget.period, now)
         budget.updated_at = now
         self.persist()
-        logger.info("quota_budget_reset", provider=provider_id, key_id=key_id or "")
+        logger.info("quota_budget_reset", provider=provider_id, account_id=budget.account_id, key_id=key_id or "")
 
 
 # Module-level ledger shared across the codebase (persists to disk).
@@ -612,9 +737,9 @@ def record_call(provider_id: str, method: str, key_id: str | None = None) -> int
     """Record a call in the shared ledger (convenience wrapper).
 
     Args:
-        provider_id: Account-level provider id (``"keyegateway"``, ...).
+        provider_id: Provider id (registrable domain).
         method: JSON-RPC method name.
-        key_id: Optional API-key id.
+        key_id: Optional API-key id (provenance; quota is per account).
 
     Returns:
         Degrade level (0-3) after recording.
@@ -625,7 +750,8 @@ def record_call(provider_id: str, method: str, key_id: str | None = None) -> int
 def record_endpoint_call(endpoint: str, method: str) -> int:
     """Record a call from an endpoint URL in the shared ledger.
 
-    Derives the account provider id and API-key id from the URL.
+    Derives the account id (per-account quota) and key id (provenance) from
+    the URL.
 
     Args:
         endpoint: RPC endpoint URL.
@@ -670,6 +796,8 @@ def defer_reason(
     method: str,
     key_id: str | None = None,
     range_blocks: int | None = None,
+    *,
+    account_id: str | None = None,
 ) -> str | None:
     """Reason string when a call should be DEFERRED, else ``None``.
 
@@ -687,20 +815,21 @@ def defer_reason(
       * level 0 / unknown providers (no seeded quota) → never deferred
 
     Args:
-        provider_id: Account-level provider id (``"keyegateway"``, ...).
+        provider_id: Provider id (registrable domain).
         method: JSON-RPC method name.
-        key_id: Optional API-key id for account grouping.
+        key_id: Optional API-key id (provenance only; quota is per account).
         range_blocks: Optional block range for ``eth_getLogs`` so level 1
             can tell a wide backfill scan from a narrow head-follow window.
             Ignored for other methods; level-1 never defers when the range
             is unknown (``None``).
+        account_id: Optional account id; defaults to ``provider_id``.
 
     Returns:
         Reason string when the call should be skipped, else ``None``.
         Never raises: on any ledger error it degrades to ``None`` (allow).
     """
     try:
-        level = LEDGER.degrade_level_for(provider_id, key_id)
+        level = LEDGER.degrade_level_for(provider_id, key_id, account_id=account_id)
         if level <= 0:
             return None
         if level >= 3:
@@ -726,11 +855,13 @@ __all__ = [
     "CU_PER_UNIT",
     "DEGRADE_LADDER",
     "HEAVY_DEFER_METHODS",
+    "KNOWN_ACCOUNT_IDS",
     "KNOWN_QUOTAS",
     "LEDGER",
     "LEVEL1_GETLOGS_RANGE_BLOCKS",
     "ProviderLedger",
     "QuotaBudget",
+    "account_id_for_endpoint",
     "defer_reason",
     "degrade_action",
     "key_id_for_endpoint",

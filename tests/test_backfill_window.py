@@ -110,7 +110,14 @@ class _StubLedger:
     def __init__(self, state: dict[str, object]) -> None:
         self._state = state
 
-    def state_for(self, provider: str, key_id: str | None = None, now: float | None = None) -> dict[str, object]:
+    def state_for(
+        self,
+        provider: str,
+        key_id: str | None = None,
+        now: float | None = None,
+        *,
+        account_id: str | None = None,
+    ) -> dict[str, object]:
         return self._state
 
 
