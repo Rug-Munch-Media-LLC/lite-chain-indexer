@@ -56,6 +56,8 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "endpoints_verified",
     "endpoints_failed_verify",
     "endpoint_logs_capability_excluded",
+    "rpc_budget_daily_approaching",
+    "rpc_budget_daily_exhausted",
     "clickhouse_inserts",
     "clickhouse_errors",
     "bloom_cache_hits",

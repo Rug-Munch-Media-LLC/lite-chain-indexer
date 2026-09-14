@@ -18,6 +18,11 @@ Configuration (all from the environment; secret values are never logged):
 
 * ``RPC_PROXY_ENABLED`` — ``1`` enables proxy routing (default ``0``).
 * ``RPC_PROXY_MODE`` — ``sticky`` (default) or ``rotate``.
+* ``RPC_PROXY_FALLBACK_ONLY`` — ``1`` makes the DIRECT connection primary
+  and the proxy a fallback used only after a direct transport failure
+  (default ``0`` = proxy-primary with a direct fallback, the earlier
+  behaviour). Recommented for quota work: direct-first keeps the proxy
+  pool's per-IP budget untouched until a direct IP is blocked.
 
 ``sticky`` pins one proxy per RPC endpoint until that proxy fails, then
 fails over to another. This is the recommended mode because providers
@@ -118,11 +123,13 @@ class ProxyRouter:
         *,
         enabled: bool = False,
         mode: str = "sticky",
+        fallback_only: bool = False,
         max_failures: int = 1,
     ) -> None:
         self._specs = list(specs)
         self._enabled = bool(enabled) and bool(self._specs)
         self._mode = mode if mode in _VALID_MODES else "sticky"
+        self._fallback_only = bool(fallback_only)
         self._max_failures = max(1, int(max_failures))
         self._pins: dict[str, ProxySpec] = {}
         self._failed: dict[str, int] = {}
@@ -134,9 +141,15 @@ class ProxyRouter:
         raw = os.environ.get("WEBSHARE_PROXY_LIST", "")
         enabled = os.environ.get("RPC_PROXY_ENABLED", "0") != "0"
         mode = (os.environ.get("RPC_PROXY_MODE", "sticky").strip().lower()) or "sticky"
-        router = cls(parse_proxy_list(raw), enabled=enabled, mode=mode)
+        fallback_only = os.environ.get("RPC_PROXY_FALLBACK_ONLY", "0") != "0"
+        router = cls(parse_proxy_list(raw), enabled=enabled, mode=mode, fallback_only=fallback_only)
         if router.enabled:
-            logger.info("rpc_proxy_pool_loaded", proxies=len(router._specs), mode=router._mode)
+            logger.info(
+                "rpc_proxy_pool_loaded",
+                proxies=len(router._specs),
+                mode=router._mode,
+                fallback_only=router._fallback_only,
+            )
         return router
 
     @property
@@ -148,6 +161,11 @@ class ProxyRouter:
     def mode(self) -> str:
         """Configured routing mode (``sticky`` or ``rotate``)."""
         return self._mode
+
+    @property
+    def fallback_only(self) -> bool:
+        """Whether the direct connection is primary and the proxy fallback-only."""
+        return self._fallback_only
 
     def proxy_count(self) -> int:
         """Number of parsed proxies (no values exposed)."""
@@ -165,8 +183,13 @@ class ProxyRouter:
         return spec
 
     def proxy_for(self, endpoint: str) -> ProxySpec | None:
-        """Return the proxy to use for ``endpoint`` (None = direct)."""
-        if not self._enabled:
+        """Return the proxy to use for ``endpoint`` (None = direct).
+
+        In ``fallback_only`` mode the direct connection is always primary,
+        so this returns None; callers use :meth:`fallback_proxy_for` only
+        after a direct transport failure.
+        """
+        if not self._enabled or self._fallback_only:
             return None
         if self._mode == "sticky":
             pinned = self._pins.get(endpoint)
@@ -177,6 +200,22 @@ class ProxyRouter:
                 self._pins[endpoint] = spec
             return spec
         return self._pick()
+
+    def fallback_proxy_for(self, endpoint: str) -> ProxySpec | None:
+        """Proxy to retry with after a DIRECT failure (fallback-only mode only).
+
+        Returns None when the pool is disabled or the router is in
+        proxy-primary mode (where the direct retry is already handled).
+        """
+        if not self._enabled or not self._fallback_only:
+            return None
+        pinned = self._pins.get(endpoint)
+        if pinned is not None and self._failed.get(pinned.url, 0) < self._max_failures:
+            return pinned
+        spec = self._pick()
+        if spec is not None:
+            self._pins[endpoint] = spec
+        return spec
 
     def mark_failed(self, endpoint: str, spec: ProxySpec | None = None) -> None:
         """Mark a proxy failed and unpin the endpoint (failover on next pick)."""
@@ -199,6 +238,7 @@ class ProxyRouter:
         return {
             "enabled": self._enabled,
             "mode": self._mode,
+            "fallback_only": self._fallback_only,
             "proxy_count": len(self._specs),
             "pinned_endpoints": len(self._pins),
             "failed_proxies": len(self._failed),
@@ -212,6 +252,11 @@ PROXY_ROUTER = ProxyRouter.from_env()
 def proxy_for_endpoint(endpoint: str) -> ProxySpec | None:
     """Proxy to use for ``endpoint`` (None → direct connection)."""
     return PROXY_ROUTER.proxy_for(endpoint)
+
+
+def fallback_proxy_for(endpoint: str) -> ProxySpec | None:
+    """Proxy to retry with after a direct failure (fallback-only mode)."""
+    return PROXY_ROUTER.fallback_proxy_for(endpoint)
 
 
 def mark_proxy_failed(endpoint: str, spec: ProxySpec | None = None) -> None:
@@ -228,6 +273,7 @@ __all__ = [
     "PROXY_ROUTER",
     "ProxyRouter",
     "ProxySpec",
+    "fallback_proxy_for",
     "mark_proxy_failed",
     "mark_proxy_success",
     "parse_proxy_entry",

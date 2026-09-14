@@ -135,6 +135,51 @@ class TestBudgetEnforcement:
         clock.advance(0.5)
         assert tracker.wait_seconds(EP) == 0.0
 
+    def test_daily_budget_is_a_hard_cap(self) -> None:
+        clock = _Clock()
+        tracker = _tracker(
+            clock,
+            provider_budgets={"example.com": _provider_budget(daily_budget=5)},
+            cooldown_seconds=1.0,
+            cooldown_backoff=1.0,
+        )
+        for _ in range(5):
+            tracker.record_dispatch(EP)
+        assert tracker.used_today(EP) == 5
+        assert tracker.budget_available(EP) is False  # hard cap
+        clock.advance(60.0)  # cool-down would have elapsed long ago
+        assert tracker.budget_available(EP) is False  # still capped
+        clock.advance(86_400.0)  # next UTC day resets
+        assert tracker.budget_available(EP) is True
+
+    def test_daily_cap_aggregates_per_provider_identity(self) -> None:
+        clock = _Clock()
+        ep2 = "https://rpc2.example.com/v1"
+        tracker = _tracker(
+            clock,
+            provider_budgets={"example.com": _provider_budget(daily_budget=5)},
+            cooldown_seconds=1.0,
+            cooldown_backoff=1.0,
+        )
+        for _ in range(3):
+            tracker.record_dispatch(EP)
+        for _ in range(2):
+            tracker.record_dispatch(ep2)
+        # Provider-level cap is shared across all of the provider's endpoints.
+        assert tracker.used_today(EP) == tracker.used_today(ep2) == 5
+        assert tracker.budget_available(EP) is False
+        assert tracker.budget_available(ep2) is False
+
+    def test_daily_exhaustion_emits_metric(self) -> None:
+        from lite_indexer import metrics
+
+        before = metrics.get("rpc_budget_daily_exhausted")
+        clock = _Clock()
+        tracker = _tracker(clock, provider_budgets={"example.com": _provider_budget(daily_budget=2)})
+        for _ in range(2):
+            tracker.record_dispatch(EP)
+        assert metrics.get("rpc_budget_daily_exhausted") > before
+
     @pytest.mark.asyncio
     async def test_concurrency_cap_enforced(self) -> None:
         tracker = _tracker(_Clock(), provider_budgets={"example.com": _provider_budget(max_concurrency=1)})

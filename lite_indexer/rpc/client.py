@@ -217,6 +217,35 @@ async def _budget_before(endpoint: str) -> None:
     record_budget_dispatch(endpoint)
 
 
+async def _post_direct(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    payload: Any,
+    timeout: float,
+) -> httpx.Response:
+    """POST directly, retrying ONCE via a proxy after a transport failure.
+
+    Only active in ``RPC_PROXY_FALLBACK_ONLY`` mode (``fallback_proxy_for``
+    returns None otherwise), so the default direct behaviour is unchanged.
+    The passed client already carries its configured timeout.
+    """
+    try:
+        return await client.post(endpoint, json=payload)
+    except (httpx.TransportError, httpx.TimeoutException) as exc:
+        fallback = rpc_proxy.fallback_proxy_for(endpoint)
+        if fallback is None:
+            raise
+        logger.warning(
+            "rpc_proxy_fallback_used",
+            endpoint=endpoint[:50],
+            proxy=fallback.label,
+            error=str(exc)[:80],
+        )
+        metrics_incr("rpc_proxy_fallback_used")
+        proxy_client = await _get_call_client(timeout, proxy=fallback)
+        return await proxy_client.post(endpoint, json=payload)
+
+
 async def _post_json(
     endpoint: str,
     payload: Any,
@@ -226,14 +255,18 @@ async def _post_json(
 ) -> httpx.Response:
     """POST a JSON body, routing through the residency proxy when enabled.
 
-    Falls back to ONE direct retry on a proxy transport failure
-    (``rpc_proxy_fallback_direct``) and unpins the failed proxy so the next
-    call fails over. With no proxy configured this is a plain pooled POST.
+    Two directions are supported, selected by ``RPC_PROXY_FALLBACK_ONLY``:
+
+    * proxy-primary (default) — proxy first, ONE direct retry on a proxy
+      transport failure (``rpc_proxy_fallback_direct``).
+    * direct-primary / fallback-only — direct first, ONE proxy retry on a
+      direct transport failure (``rpc_proxy_fallback_used``). This keeps
+      the proxy pool's per-IP budget untouched until a direct IP is
+      blocked, which is the quota-safe default for the scheduler.
     """
     spec = proxy if proxy is not None else rpc_proxy.proxy_for_endpoint(endpoint)
     if spec is None:
-        client = await _get_call_client(timeout)
-        return await client.post(endpoint, json=payload)
+        return await _post_direct(await _get_call_client(timeout), endpoint, payload, timeout)
     try:
         client = await _get_call_client(timeout, proxy=spec)
         return await client.post(endpoint, json=payload)
@@ -975,9 +1008,12 @@ class RpcClient:
                 try:
                     async with budget_slot(endpoint):
                         async with provider_concurrency_slot(account_key):
+                            # Direct client keeps its own pool; _post_direct
+                            # adds the fallback-only proxy retry. Proxy-primary
+                            # mode routes through _post_json.
                             if proxy_spec is None:
                                 client = await self._get_client()
-                                resp = await client.post(endpoint, json=payload, timeout=RPC_TIMEOUT)
+                                resp = await _post_direct(client, endpoint, payload, RPC_TIMEOUT)
                             else:
                                 resp = await _post_json(endpoint, payload, RPC_TIMEOUT, proxy=proxy_spec)
                 finally:

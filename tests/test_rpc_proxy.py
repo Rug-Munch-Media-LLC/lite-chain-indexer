@@ -151,6 +151,30 @@ class TestRouter:
         assert "pass" not in json.dumps(snap)
         assert snap["proxy_count"] == 1
 
+    def test_fallback_only_makes_direct_primary(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("WEBSHARE_PROXY_LIST", "proxy.example:8080")
+        monkeypatch.setenv("RPC_PROXY_ENABLED", "1")
+        monkeypatch.setenv("RPC_PROXY_FALLBACK_ONLY", "1")
+        router = ProxyRouter.from_env()
+        assert router.enabled is True
+        assert router.fallback_only is True
+        assert router.proxy_for("https://rpc.example") is None  # direct primary
+        spec = router.fallback_proxy_for("https://rpc.example")
+        assert spec is not None and spec.label == "proxy.example:8080"
+
+
+class _FlakyDirectClient:
+    """Direct client whose connections fail (blocked IP)."""
+
+    is_closed = False
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def post(self, url: str, **kw: Any) -> _Resp:
+        self.calls += 1
+        raise httpx.ConnectError("direct ip blocked")
+
 
 class TestClientIntegration:
     @pytest.fixture(autouse=True)
@@ -211,3 +235,23 @@ class TestClientIntegration:
         assert seen[0] is spec
         assert seen[1] is None  # the direct retry
         assert router.snapshot()["failed_proxies"] == 1
+
+    @pytest.mark.asyncio
+    async def test_fallback_only_direct_failure_retries_via_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spec = ProxySpec("http://proxy.example:8080", "proxy.example:8080")
+        router = ProxyRouter([spec], enabled=True, mode="sticky", fallback_only=True)
+        monkeypatch.setattr(rpc_proxy, "PROXY_ROUTER", router)
+        flaky_direct = _FlakyDirectClient()
+        proxy_client = _DirectClient()
+        seen: list[Any] = []
+
+        async def fake(timeout: float, proxy: Any = None) -> Any:
+            seen.append(proxy)
+            return proxy_client if proxy is not None else flaky_direct
+
+        monkeypatch.setattr(rc, "_get_call_client", fake)
+        resp = await rc._post_json("https://rpc.example", {"a": 1}, 5.0)
+        assert resp.status_code == 200
+        assert flaky_direct.calls == 1  # direct attempted first
+        assert proxy_client.calls == 1  # proxy used only after the failure
+        assert seen == [None, spec]

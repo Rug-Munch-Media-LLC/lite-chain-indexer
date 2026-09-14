@@ -83,6 +83,10 @@ class _BudgetState:
     cooldown_level: int = 0
     preemptive_cools: int = 0
     last_status: int = 200
+    # One-shot flags so the approaching/exhausted quota events log exactly
+    # once per identity per UTC day instead of on every dispatch.
+    approach_logged: bool = False
+    exhausted_logged: bool = False
 
 
 class ProviderBudgetTracker:
@@ -121,6 +125,11 @@ class ProviderBudgetTracker:
         self._time = time_fn
         self._states: dict[str, _BudgetState] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
+        # Daily request counter keyed by budget identity (account for provider
+        # budgets, exact endpoint for endpoint overrides) → (UTC day, count).
+        # Keying by identity (not endpoint) makes a provider-level daily_budget
+        # a HARD cap shared by all of that provider's endpoints.
+        self._daily_used: dict[str, tuple[int, int]] = {}
 
     # ── Identity / budget resolution ──────────────────────────────────
 
@@ -167,6 +176,26 @@ class ProviderBudgetTracker:
         while state.request_times and state.request_times[0] < cutoff:
             state.request_times.popleft()
 
+    def _daily_count(self, endpoint: str, now: float) -> int:
+        """Current UTC-day dispatch count for the endpoint's budget identity."""
+        key = self.budget_key(endpoint)
+        day = _utc_day(now)
+        entry = self._daily_used.get(key)
+        if entry is None or entry[0] != day:
+            self._daily_used[key] = (day, 0)
+            return 0
+        return entry[1]
+
+    def _bump_daily(self, endpoint: str, now: float) -> int:
+        """Increment + return the UTC-day count for the budget identity."""
+        key = self.budget_key(endpoint)
+        day = _utc_day(now)
+        entry = self._daily_used.get(key)
+        count = 0 if entry is None or entry[0] != day else entry[1]
+        count += 1
+        self._daily_used[key] = (day, count)
+        return count
+
     def _semaphore(self, endpoint: str) -> asyncio.Semaphore:
         key = self.budget_key(endpoint)
         sem = self._semaphores.get(key)
@@ -179,7 +208,13 @@ class ProviderBudgetTracker:
     # ── Accounting ────────────────────────────────────────────────────
 
     def record_dispatch(self, endpoint: str, now: float | None = None) -> None:
-        """Record one dispatched request; may trigger the pre-emptive cool."""
+        """Record one dispatched request; may trigger the pre-emptive cool.
+
+        Enforces the daily budget as a HARD cap: once the identity's UTC-day
+        count reaches ``daily_budget`` it is unavailable for the rest of the
+        day. Below that, crossing ``preemptive_pct`` arms the pre-emptive
+        cool-down (route around it before the provider 429s).
+        """
         if not self.enforces(endpoint):
             return
         now = self._time() if now is None else now
@@ -188,9 +223,33 @@ class ProviderBudgetTracker:
         state.used_today += 1
         state.request_times.append(now)
         budget = self.budget_for(endpoint)
-        if budget.daily_budget > 0 and not self.is_cooled(endpoint, now):
-            threshold = budget.daily_budget * budget.preemptive_pct / 100.0
-            if state.used_today >= threshold:
+        if budget.daily_budget <= 0:
+            return
+        used = self._bump_daily(endpoint, now)
+        if used >= budget.daily_budget:
+            if not state.exhausted_logged:
+                state.exhausted_logged = True
+                metrics_incr("rpc_budget_daily_exhausted")
+                logger.warning(
+                    "rpc_budget_daily_exhausted",
+                    endpoint=endpoint[:60],
+                    used_today=used,
+                    daily_budget=budget.daily_budget,
+                )
+            return
+        threshold = budget.daily_budget * budget.preemptive_pct / 100.0
+        if used >= threshold:
+            if not state.approach_logged:
+                state.approach_logged = True
+                metrics_incr("rpc_budget_daily_approaching")
+                logger.warning(
+                    "rpc_budget_daily_approaching",
+                    endpoint=endpoint[:60],
+                    used_today=used,
+                    daily_budget=budget.daily_budget,
+                    pct=round(100.0 * used / budget.daily_budget, 1),
+                )
+            if not self.is_cooled(endpoint, now):
                 self._cool(endpoint, state, budget, now)
 
     def _cool(self, endpoint: str, state: _BudgetState, budget: ProviderBudget, now: float) -> None:
@@ -243,9 +302,18 @@ class ProviderBudgetTracker:
         return state.cooled_until > now
 
     def budget_available(self, endpoint: str, now: float | None = None) -> bool:
-        """Whether the identity still has budget (not pre-emptively cooled)."""
+        """Whether the identity still has budget.
+
+        False when pre-emptively cooled OR when the hard daily cap is
+        reached (the identity stays unavailable until the UTC day rolls
+        over).
+        """
         if not self.enforces(endpoint):
             return True
+        now = self._time() if now is None else now
+        budget = self.budget_for(endpoint)
+        if budget.daily_budget > 0 and self._daily_count(endpoint, now) >= budget.daily_budget:
+            return False
         return not self.is_cooled(endpoint, now)
 
     def wait_seconds(self, endpoint: str, now: float | None = None) -> float:
@@ -273,7 +341,7 @@ class ProviderBudgetTracker:
     def used_today(self, endpoint: str, now: float | None = None) -> int:
         """Requests recorded for the identity during the current UTC day."""
         now = self._time() if now is None else now
-        return self._state(endpoint, now).used_today
+        return self._daily_count(endpoint, now)
 
     # ── Concurrency slot ──────────────────────────────────────────────
 
@@ -298,7 +366,7 @@ class ProviderBudgetTracker:
         """Read-only view of every tracked identity (for logging/metrics)."""
         return {
             endpoint: {
-                "used_today": state.used_today,
+                "used_today": self._daily_count(endpoint, self._time()),
                 "in_flight": state.in_flight,
                 "max_in_flight": state.max_in_flight,
                 "cooldown_level": state.cooldown_level,
@@ -314,9 +382,11 @@ class ProviderBudgetTracker:
         if endpoint is None:
             self._states.clear()
             self._semaphores.clear()
+            self._daily_used.clear()
         else:
             self._states.pop(endpoint, None)
             self._semaphores.pop(self.budget_key(endpoint), None)
+            self._daily_used.pop(self.budget_key(endpoint), None)
 
 
 # Module-level tracker shared across the RPC layer.
