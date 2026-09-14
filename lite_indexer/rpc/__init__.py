@@ -39,7 +39,7 @@ from lite_indexer.rpc.capabilities import (
     is_archive_capable,
     method_requires_archive,
 )
-from lite_indexer.rpc.client import RpcClient, fetch_block_timestamps
+from lite_indexer.rpc.client import RpcClient, clear_timestamp_cache, fetch_block_timestamps
 from lite_indexer.rpc.health import (
     is_endpoint_healthy,
     monitor_endpoint_health,
@@ -100,6 +100,7 @@ class RpcFetchFailedError(RuntimeError):
 
 __all__ = [
     "RpcClient",
+    "clear_timestamp_cache",
     "RpcFetchFailedError",
     "apply_endpoint_backoff",
     "ban_endpoint",

@@ -434,7 +434,7 @@ class RPCRateTracker:
 RATE_TRACKER = RPCRateTracker()
 
 
-async def throttle_before(endpoint: str, method: str) -> None:
+async def throttle_before(endpoint: str, method: str, *, max_wait: float | None = None) -> None:
     """Block until a request to ``endpoint`` for ``method`` may proceed.
 
     Waits for the exact Retry-After/backoff window when one is armed, or
@@ -445,10 +445,19 @@ async def throttle_before(endpoint: str, method: str) -> None:
     Args:
         endpoint: RPC endpoint URL.
         method: JSON-RPC method name.
+        max_wait: Optional hard cap (seconds) on this sleep. A caller with an
+            overall phase deadline passes its per-request timeout so a
+            throttle wait can never outlive the operation it paces; the
+            remaining wait is simply skipped (the request proceeds and the
+            provider decides). Retry-After windows above the cap are clamped,
+            not honored exactly — use only where a bounded phase matters more
+            than absolute politeness.
     """
     import asyncio
 
     wait = RATE_TRACKER.wait_seconds_for(endpoint, method)
+    if max_wait is not None and wait > max_wait:
+        wait = max(0.0, max_wait)
     if wait > 0:
         logger.debug(
             "rpc_throttle_wait",

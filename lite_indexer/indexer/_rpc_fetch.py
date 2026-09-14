@@ -6,11 +6,12 @@ mixed into LiteIndexer. Method names/behavior unchanged — tests validate.
 
 from __future__ import annotations
 
+import asyncio
 import gc  # noqa: F401 — used by maintenance mixin body
 from datetime import UTC, datetime  # noqa: F401 — UTC/datetime used in mixin bodies
 from typing import Any  # noqa: F401
 
-from lite_indexer.config import TRACE_CONCURRENCY, TRACE_MAX_BLOCKS_PER_CYCLE
+from lite_indexer.config import TIMESTAMP_PHASE_DEADLINE_S, TRACE_CONCURRENCY, TRACE_MAX_BLOCKS_PER_CYCLE
 from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.logging import get_logger
 from lite_indexer.strategies.evm.strategy import EVMChainStrategy
@@ -182,7 +183,24 @@ class RpcFetchMixin(IndexerMixinBase):
         if not block_numbers:
             return events
 
-        timestamps = await self.fetch_block_timestamps(block_numbers)
+        # Never let timestamp enrichment abort or stall the cycle: the
+        # strategies' fetchers are themselves bounded, but this outer
+        # deadline guarantees it regardless of chain type. On failure every
+        # event falls back to "now" below, so the ClickHouse insert still
+        # runs (a slightly-off timestamp beats a stalled sync).
+        try:
+            timestamps: dict[int, str] = await asyncio.wait_for(
+                self.fetch_block_timestamps(block_numbers),
+                timeout=TIMESTAMP_PHASE_DEADLINE_S,
+            )
+        except Exception as exc:  # noqa: BLE001 — enrichment is best-effort
+            logger.warning(
+                "timestamp_enrichment_failed",
+                chain=self.chain,
+                blocks=len(block_numbers),
+                error=str(exc)[:120],
+            )
+            timestamps = {}
 
         for event in events:
             bn = event.get("blockNumber")

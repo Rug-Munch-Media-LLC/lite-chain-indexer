@@ -30,7 +30,9 @@ from lite_indexer.config import (
     RPC_RETRY_BASE_DELAY_S,
     RPC_RETRY_MAX_DELAY_S,
     RPC_TIMEOUT,
+    TIMESTAMP_CACHE_MAX,
     TIMESTAMP_FETCH_TIMEOUT,
+    TIMESTAMP_PHASE_DEADLINE_S,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
@@ -78,6 +80,36 @@ logger = get_logger(__name__)
 # Max eth_getBlockByNumber header fetches per timestamp-enrichment call.
 # Larger sets are sampled and interpolated (see fetch_block_timestamps).
 _TS_SAMPLE_MAX_FETCHES = 64
+
+# Immutable block->timestamp LRU keyed by (chain, block). Timestamps never
+# change for a given (chain, block), so results are safe to serve across
+# cycles and overlapping catch-up ranges — the same header is never re-fetched.
+# Bounded by TIMESTAMP_CACHE_MAX; single-writer event-loop access only.
+_ts_cache: OrderedDict[tuple[str, int], str] = OrderedDict()
+
+
+def _ts_cache_get(chain: str, block: int) -> str | None:
+    key = (chain, block)
+    value = _ts_cache.get(key)
+    if value is None:
+        return None
+    _ts_cache.move_to_end(key)
+    return value
+
+
+def _ts_cache_put(chain: str, block: int, ts: str) -> None:
+    if not ts:
+        return
+    key = (chain, block)
+    _ts_cache[key] = ts
+    _ts_cache.move_to_end(key)
+    while len(_ts_cache) > TIMESTAMP_CACHE_MAX:
+        _ts_cache.popitem(last=False)
+
+
+def clear_timestamp_cache() -> None:
+    """Drop the in-process block->timestamp LRU (tests/ops)."""
+    _ts_cache.clear()
 
 
 def _safe_record(recorder: Any, *args: Any, **kwargs: Any) -> None:
@@ -534,6 +566,7 @@ class RpcClient:
         calls: list[tuple[str, list[Any] | None]],
         *,
         timeout: float = RPC_CALL_TIMEOUT,
+        fallback: bool = True,
     ) -> list[dict[str, Any] | None]:
         """Send N same-shape calls as ONE JSON-RPC array POST.
 
@@ -543,15 +576,21 @@ class RpcClient:
         request caps (paced once); ledger cost is still recorded per element
         (weight-aware). Elements are returned in input order.
 
-        Fallback: any batch-level failure (transport, 429, non-array
-        response, unusable body) transparently re-issues the unresolved
-        elements as individual :meth:`call` invocations — never lose data.
-        Per-element JSON-RPC errors are returned verbatim in their slot.
+        Fallback: when ``fallback`` is True (default), any batch-level failure
+        (transport, 429, non-array response, unusable body) transparently
+        re-issues the unresolved elements as individual :meth:`call`
+        invocations — never lose data. Callers that CANNOT afford a
+        per-element fallback storm (e.g. the non-critical timestamp phase,
+        which interpolates instead) pass ``fallback=False``: the unresolved
+        slots come back as None and the caller decides. Per-element JSON-RPC
+        errors are always returned verbatim in their slot.
 
         Args:
             endpoint: RPC endpoint URL.
             calls: ``(method, params)`` pairs, max ``RPC_BATCH_MAX`` per POST.
             timeout: Per-request timeout in seconds.
+            fallback: When False, a failed batch yields None slots instead of
+                being re-issued element-by-element.
 
         Returns:
             One raw JSON-RPC response dict (``result`` or ``error``) per
@@ -559,13 +598,15 @@ class RpcClient:
         """
         if not calls:
             return []
+        results: list[dict[str, Any] | None] = [None] * len(calls)
         if not RPC_BATCH_ENABLED:
+            if not fallback:
+                return results
             return await self._call_batch_fallback(endpoint, calls, timeout)
 
         from lite_indexer.rpc.capabilities import archive_guard_reason
         from lite_indexer.rpc.circuit import circuit_open
 
-        results: list[dict[str, Any] | None] = [None] * len(calls)
         if await circuit_open(endpoint):
             logger.debug("rpc_batch_circuit_skip", endpoint=endpoint[:50])
             return results
@@ -596,12 +637,14 @@ class RpcClient:
             except Exception as exc:  # noqa: BLE001 — batch must degrade, not fail
                 logger.warning("rpc_batch_failed", endpoint=endpoint[:50], error=str(exc)[:80])
                 metrics_incr("rpc_batch_fallback")
-                results = await self._call_batch_fallback(endpoint, calls, timeout, results)
+                if fallback:
+                    results = await self._call_batch_fallback(endpoint, calls, timeout, results)
                 continue
 
             if not isinstance(data, list):
                 metrics_incr("rpc_batch_fallback")
-                results = await self._call_batch_fallback(endpoint, calls, timeout, results)
+                if fallback:
+                    results = await self._call_batch_fallback(endpoint, calls, timeout, results)
                 continue
 
             by_id = {item.get("id"): item for item in data if isinstance(item, dict)}
@@ -616,7 +659,8 @@ class RpcClient:
             metrics_incr("rpc_batch_calls")
             if matched == 0:
                 metrics_incr("rpc_batch_fallback")
-                results = await self._call_batch_fallback(endpoint, calls, timeout, results)
+                if fallback:
+                    results = await self._call_batch_fallback(endpoint, calls, timeout, results)
         return results
 
     async def _post_batch(
@@ -630,7 +674,7 @@ class RpcClient:
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
 
         account_key = account_key_for_endpoint(endpoint)
-        await throttle_before(endpoint, method)
+        await throttle_before(endpoint, method, max_wait=timeout)
         await provider_throttle_before(endpoint)
         await _budget_before(endpoint)
         async with budget_slot(endpoint):
@@ -1123,110 +1167,161 @@ async def fetch_block_timestamps(
     block_numbers: set[int],
     chain: str = "ethereum",
     bloom_cache: Any = None,
+    *,
+    deadline_s: float | None = None,
 ) -> dict[int, str]:
-    """Fetch timestamps for a set of block numbers in parallel.
+    """Fetch timestamps for a set of block numbers, cheaply and non-blocking.
 
-    Falls back to approximate timestamps if RPC fails, using the
-    chain's average block time (from CHAIN_BLOCK_TIMES) instead of a
-    hardcoded 12s value — fast chains like Base (2s) and Arbitrum
-    (0.25s) would otherwise get badly skewed estimates.
+    The timestamp phase is enrichment, never the durable record, so it is
+    designed to be the CHEAPEST possible RPC cost and to never stall a sync
+    cycle (the 2026-09-14 root cause: ~1 ``eth_getBlockByNumber`` per block
+    for a 500-block range, which 429'd, tripped ``all_endpoints_down`` and
+    hung the cycle before the ClickHouse insert).
 
-    When a ``bloom_cache`` is provided, the ``logsBloom`` from each
-    fetched block header is stored in it — this warms the TrueBlocks
-    pre-filter cache for free (headers are already being fetched).
+    Layered guarantees:
+
+    1. **Cache first.** Block timestamps are immutable, so a bounded
+       in-process LRU serves every repeat/overlapping block for free.
+    2. **Bounded fetch.** Cache misses are sampled to at most
+       ``_TS_SAMPLE_MAX_FETCHES`` anchors and sent as JSON-RPC *batches*
+       (one HTTP POST per ``RPC_BATCH_MAX`` elements) with batching's
+       per-element fallback disabled — a failing batch costs zero extra
+       calls instead of one per element.
+    3. **Hard deadline.** The whole fetch is capped by ``deadline_s``
+       (default ``TIMESTAMP_PHASE_DEADLINE_S``); on timeout or error the
+       phase returns what it has and the rest is interpolated.
+    4. **Interpolation.** Cache hits + fetched anchors are linearly
+       interpolated/extrapolated with the chain's average block time, so a
+       short deadline degrades accuracy, never the cycle.
 
     Args:
-        client: RpcClient instance.
+        client: RpcClient instance (or a test double exposing ``call_batch``).
         endpoints: List of RPC endpoints for the chain.
         block_numbers: Set of block numbers to resolve.
         chain: Chain name used to look up the average block time.
-        bloom_cache: Optional :class:`BloomCache` to populate with
-            header logsBloom values.
+        bloom_cache: Optional :class:`BloomCache` to populate with header
+            logsBloom values (headers are already being fetched).
+        deadline_s: Overall deadline for the RPC portion, in seconds.
+            ``None`` uses ``TIMESTAMP_PHASE_DEADLINE_S``.
 
     Returns:
-        Dict of {block_number: ISO-8601 timestamp string}.
+        Dict of {block_number: ISO-8601 timestamp string}. Blocks that could
+        not be resolved or interpolated are simply absent.
     """
     if not block_numbers:
         return {}
 
-    # 2026-09-02 catch-up fix: fetching one header PER BLOCK made deep
-    # catch-up glacial — a 1000-block cycle issued 1000 eth_getBlockByNumber
-    # calls just for timestamps (the dominant RPC cost, ~10x the getLogs
-    # work), which is why bsc/polygon/base crawled at ~95 blocks/min and
-    # dex_events sat 4-9 days behind. When the set is large, fetch a bounded
-    # SAMPLE of anchor headers and interpolate the rest linearly between
-    # anchors (real timestamps, accurate to block-time variance) — the same
-    # approximation the avg-block-time fallback already accepted.
-    batch = sorted(block_numbers)
-    if len(batch) > _TS_SAMPLE_MAX_FETCHES:
-        stride = -(-len(batch) // _TS_SAMPLE_MAX_FETCHES)  # ceil division
-        anchors = set(batch[::stride])
-        anchors.update((batch[0], batch[-1]))
-        fetch_list = sorted(anchors)
-    else:
-        fetch_list = batch
+    budget = TIMESTAMP_PHASE_DEADLINE_S if deadline_s is None else deadline_s
 
+    # 1. Cache first: only fetch what is not already known (immutable).
     timestamps: dict[int, str] = {}
-    endpoint = get_best_endpoint(endpoints)
+    missing: list[int] = []
+    for bn in sorted(block_numbers):
+        cached = _ts_cache_get(chain, bn)
+        if cached is not None:
+            timestamps[bn] = cached
+        else:
+            missing.append(bn)
 
-    async def _record_block(block_num: int, block: Any) -> str | None:
-        """Parse a header's timestamp and warm the bloom cache (best-effort)."""
-        if not (block and "timestamp" in block):
-            return None
+    if missing:
+        # 2. Bounded fetch: sample anchors for large sets (interpolate the
+        # rest) and collapse the anchors into JSON-RPC batches.
+        if len(missing) > _TS_SAMPLE_MAX_FETCHES:
+            stride = -(-len(missing) // _TS_SAMPLE_MAX_FETCHES)  # ceil division
+            anchors = set(missing[::stride])
+            anchors.update((missing[0], missing[-1]))
+            fetch_list = sorted(anchors)
+        else:
+            fetch_list = list(missing)
+
+        endpoint = get_best_endpoint(endpoints)
+
+        async def _record_block(block_num: int, block: Any) -> str | None:
+            """Parse a header's timestamp, warm bloom + the timestamp LRU."""
+            if not (block and "timestamp" in block):
+                return None
+            try:
+                ts_int = int(block["timestamp"], 16)
+            except (ValueError, TypeError):
+                return None
+            from datetime import UTC, datetime
+
+            if bloom_cache is not None and block.get("logsBloom"):
+                with contextlib.suppress(Exception):
+                    await bloom_cache.set(chain, block_num, str(block["logsBloom"]))
+            ts = datetime.fromtimestamp(ts_int, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _ts_cache_put(chain, block_num, ts)
+            return ts
+
+        async def _fetch_anchors() -> None:
+            batch_fn = getattr(client, "call_batch", None)
+            if callable(batch_fn):
+                # ONE JSON-RPC array POST per RPC_BATCH_MAX anchors. The
+                # per-element fallback is intentionally OFF here: a failed
+                # batch must cost zero extra calls (interpolation covers the
+                # gap) rather than explode into one call per anchor.
+                responses = await batch_fn(
+                    endpoint,
+                    [("eth_getBlockByNumber", [hex(bn), False]) for bn in fetch_list],
+                    fallback=False,
+                )
+                for block_num, resp in zip(fetch_list, responses, strict=False):
+                    block = resp.get("result") if isinstance(resp, dict) and "result" in resp else resp
+                    ts = await _record_block(block_num, block)
+                    if ts is not None:
+                        timestamps[block_num] = ts
+                return
+
+            # No batch support (lightweight test double / non-batch client):
+            # bounded concurrency, still under the phase deadline.
+            semaphore = asyncio.Semaphore(GET_LOGS_SEMAPHORE_LIMIT)
+
+            async def _get_ts(block_num: int) -> tuple[int, str | None]:
+                async with semaphore:
+                    try:
+                        block = await client.eth_get_block_by_number(endpoint, block_num)
+                    except (
+                        httpx.HTTPError,
+                        ConnectionError,
+                        OSError,
+                        TimeoutError,
+                        ValueError,
+                        KeyError,
+                        TypeError,
+                    ) as exc:
+                        logger.warning("block_ts_fetch_failed", block=block_num, error=str(exc)[:80])
+                        return block_num, None
+                    return block_num, await _record_block(block_num, block)
+
+            results = await asyncio.gather(*(_get_ts(bn) for bn in fetch_list), return_exceptions=True)
+            for res in results:
+                if isinstance(res, tuple) and res[1] is not None:
+                    timestamps[res[0]] = res[1]
+
+        # 3. Hard deadline. wait_for cancels the fetch (including any in-flight
+        # throttle/budget sleep) so the phase can never outlive the cycle.
         try:
-            ts_int = int(block["timestamp"], 16)
-        except (ValueError, TypeError):
-            return None
-        from datetime import UTC, datetime
+            await asyncio.wait_for(_fetch_anchors(), timeout=max(0.0, budget))
+        except TimeoutError:
+            logger.warning(
+                "timestamp_phase_deadline",
+                chain=chain,
+                blocks=len(missing),
+                anchors=len(fetch_list),
+                deadline_s=round(budget, 2),
+            )
+        except Exception as exc:  # noqa: BLE001 — enrichment must never abort the cycle
+            logger.warning(
+                "timestamp_phase_failed",
+                chain=chain,
+                blocks=len(missing),
+                error=str(exc)[:120],
+            )
 
-        if bloom_cache is not None and block.get("logsBloom"):
-            with contextlib.suppress(Exception):
-                await bloom_cache.set(chain, block_num, str(block["logsBloom"]))
-        return datetime.fromtimestamp(ts_int, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    batch_fn = getattr(client, "call_batch", None)
-    if callable(batch_fn):
-        # ONE JSON-RPC array POST per RPC_BATCH_MAX headers instead of one
-        # HTTP request per block (the dominant catch-up RPC cost). call_batch
-        # itself falls back to individual requests on any batch failure.
-        responses = await batch_fn(
-            endpoint,
-            [("eth_getBlockByNumber", [hex(bn), False]) for bn in fetch_list],
-        )
-        for block_num, resp in zip(fetch_list, responses, strict=False):
-            block = resp.get("result") if isinstance(resp, dict) and "result" in resp else resp
-            ts = await _record_block(block_num, block)
-            if ts is not None:
-                timestamps[block_num] = ts
-    else:  # pragma: no cover — lightweight test doubles without call_batch
-        semaphore = asyncio.Semaphore(GET_LOGS_SEMAPHORE_LIMIT)
-
-        async def _get_ts(block_num: int) -> tuple[int, str | None]:
-            async with semaphore:
-                try:
-                    block = await client.eth_get_block_by_number(endpoint, block_num)
-                except (
-                    httpx.HTTPError,
-                    ConnectionError,
-                    OSError,
-                    TimeoutError,
-                    ValueError,
-                    KeyError,
-                    TypeError,
-                ) as exc:
-                    logger.warning("block_ts_fetch_failed", block=block_num, error=str(exc)[:80])
-                    return block_num, None
-                return block_num, await _record_block(block_num, block)
-
-        results = await asyncio.gather(*(_get_ts(bn) for bn in fetch_list), return_exceptions=True)
-        for res in results:
-            if isinstance(res, tuple) and res[1] is not None:
-                timestamps[res[0]] = res[1]
-
-    # Interpolate missing timestamps between fetched anchors (linear in
-    # block number — real anchor timestamps, so accuracy tracks actual
-    # block-time variance), and extrapolate outside the anchor range with
-    # the chain's average block time.
+    # 4. Interpolate unresolved blocks between the known anchors (real
+    # timestamps) and extrapolate outside the anchor range with the chain's
+    # average block time. Anchors include cache hits, so a fully cached
+    # neighbourhood needs no fetch at all.
     if len(timestamps) < len(block_numbers):
         from datetime import datetime, timedelta
 

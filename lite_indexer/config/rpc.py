@@ -45,6 +45,19 @@ RPC_CALL_CLIENTS_MAX: int = int(os.environ.get("RPC_CALL_CLIENTS_MAX", "4"))
 # Timeout for block timestamp fetch calls
 TIMESTAMP_FETCH_TIMEOUT = 15
 
+# ── Block-timestamp phase (rpc/client.fetch_block_timestamps) ──────────
+# Timestamps are enrichment, not the durable record: on a slow or
+# rate-limited provider the phase must never stall the sync cycle. The
+# deadline below bounds the WHOLE timestamp fetch (cache misses, batch
+# POSTs, throttle waits and retries); anything unresolved by then is
+# interpolated from the range anchors. A missing timestamp is far cheaper
+# than a hung cycle.
+TIMESTAMP_PHASE_DEADLINE_S: float = float(os.environ.get("TIMESTAMP_PHASE_DEADLINE_S", "20.0"))
+# Max block->timestamp pairs held in the immutable in-process LRU. Block
+# timestamps never change, so the cache is safe to serve across cycles and
+# overlapping catch-up ranges without re-dialing RPC.
+TIMESTAMP_CACHE_MAX: int = int(os.environ.get("TIMESTAMP_CACHE_MAX", "8192"))
+
 # Exponential backoff retry for transient RPC failures (in RpcClient.call):
 # attempts at 0s, 0.1s, 0.2s, 0.4s (base doubles each attempt, capped at 1s).
 RPC_RETRY_ATTEMPTS = int(os.environ.get("RPC_RETRY_ATTEMPTS", "3"))

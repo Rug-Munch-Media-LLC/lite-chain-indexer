@@ -171,6 +171,32 @@ async def test_batch_max_chunks_requests(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+async def test_batch_failure_without_fallback_leaves_none(monkeypatch: pytest.MonkeyPatch):
+    """``fallback=False`` must NOT explode a failed batch into per-element calls."""
+    http = _Http(reject_batches=True)
+    _wire(monkeypatch, http)
+
+    individual: list[str] = []
+
+    async def _fake_call(
+        self: rc.RpcClient, endpoint: str, method: str, params: list[Any] | None = None, timeout: float = 0.0
+    ) -> dict[str, Any]:
+        individual.append(method)
+        return {"result": method}
+
+    monkeypatch.setattr(rc.RpcClient, "call", _fake_call)
+    results = await rc.RpcClient().call_batch(
+        "https://batch.example",
+        [("eth_getBlockByNumber", ["0x1", False]), ("eth_getBlockByNumber", ["0x2", False])],
+        fallback=False,
+    )
+
+    assert results == [None, None]
+    assert individual == [], "no individual fallback when fallback=False"
+    assert metrics.get("rpc_batch_fallback") == 1.0
+
+
+@pytest.mark.asyncio
 async def test_batch_disabled_uses_individual(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(rc, "RPC_BATCH_ENABLED", False)
     http = _Http()
