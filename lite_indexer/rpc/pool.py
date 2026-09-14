@@ -40,6 +40,18 @@ BUDGET_EXHAUSTED_PENALTY = 20000
 _SELECTION_COUNTS: dict[str, int] = {}
 
 
+def _logs_capability_excluded(endpoint: str) -> bool:
+    """Whether ``endpoint`` is permanently unable to serve broad getLogs.
+
+    A capability refusal must not count toward failure streaks / bans /
+    circuit-open (it is a fixed property of the endpoint for the method, not
+    an abuse signal). Lazy import avoids an import cycle.
+    """
+    from lite_indexer.rpc.capabilities import is_logs_capability_excluded
+
+    return is_logs_capability_excluded(endpoint)
+
+
 def selection_counts() -> dict[str, int]:
     """Copy of the per-endpoint selection counters (tests/telemetry)."""
     return dict(_SELECTION_COUNTS)
@@ -79,10 +91,17 @@ def ban_endpoint(endpoint: str, reason: str = "") -> None:
     ``ENDPOINT_BAN_CAP_SECONDS``. A single success calls
     :func:`unban_endpoint` to clear the ban.
 
+    A capability-excluded endpoint (known to structurally refuse broad
+    ``eth_getLogs``) is never banned: the refusal is a permanent property of
+    the endpoint for that method, not an abuse signal.
+
     Args:
         endpoint: RPC endpoint URL.
         reason: Human-readable reason (e.g. ``http_429``) for logging.
     """
+    if _logs_capability_excluded(endpoint):
+        logger.debug("endpoint_ban_skipped_logs_capability", endpoint=endpoint[:60], reason=reason)
+        return
     level = _endpoint_ban_level.get(endpoint, 0)
     duration = min(ENDPOINT_BAN_BASE_SECONDS * (2**level), ENDPOINT_BAN_CAP_SECONDS)
     _endpoint_bans[endpoint] = time.time() + duration
@@ -356,8 +375,13 @@ def record_endpoint_failure(endpoint: str) -> None:
 
     Use for genuine failures (timeouts, connection errors, bad responses).
     For 429 rate limits use :func:`record_rate_limit` instead — they must
-    NOT trip the circuit breaker.
+    NOT trip the circuit breaker. A capability-excluded endpoint (known to
+    structurally refuse broad ``eth_getLogs``) is ignored entirely: the
+    refusal is a permanent method property, not an abuse signal.
     """
+    if _logs_capability_excluded(endpoint):
+        logger.debug("endpoint_failure_ignored_logs_capability", endpoint=endpoint[:60])
+        return
     _endpoint_failures.setdefault(endpoint, []).append(time.time())
     from lite_indexer.rpc.routing import CIRCUIT_BREAKER
 

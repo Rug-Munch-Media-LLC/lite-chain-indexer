@@ -64,6 +64,7 @@ from lite_indexer.rpc import (
     get_best_endpoint,
     select_endpoint_for_method,
 )
+from lite_indexer.rpc.capabilities import logs_capable_endpoints
 from lite_indexer.rpc.client import fetch_block_timestamps
 from lite_indexer.rpc.range_split import classify_range_error, fetch_range_split
 from lite_indexer.storage.parquet import ParquetExporter
@@ -191,8 +192,14 @@ class RPCFetcher:
     # ── Endpoint selection ───────────────────────────────────────────
 
     def endpoints_for(self, chain: str) -> list[str]:
-        """Return the active RPC endpoints for ``chain`` ([] when unknown)."""
-        return self._endpoints.get(chain, [])
+        """Return the active RPC endpoints for ``chain`` ([] when unknown).
+
+        Endpoints known to structurally refuse broad ``eth_getLogs``
+        (capability-excluded) are filtered out so the on-demand log path
+        never selects one — even when the fetcher snapshotted the pool
+        before verification ran.
+        """
+        return logs_capable_endpoints(self._endpoints.get(chain, []))
 
     async def _select_endpoint(self, chain: str, method: str) -> str | None:
         """Pick the best endpoint for ``method`` on ``chain`` (None when none)."""

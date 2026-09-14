@@ -69,6 +69,11 @@ def is_archive_capable(endpoint: str, method: str) -> bool:
     if record is None:
         return False
     if method in _ARCHIVE_GETLOGS_METHODS:
+        # A capability-excluded endpoint (broad topic-only getLogs refused
+        # live) must never be admitted for getLogs, regardless of an
+        # archive flag or a positive range probe.
+        if record.logs_capable is False:
+            return False
         return bool(record.archive or record.getlogs_max_range > 0)
     return bool(record.archive)
 

@@ -55,6 +55,7 @@ _COUNTER_NAMES: tuple[str, ...] = (
     "ws_head_fallback",
     "endpoints_verified",
     "endpoints_failed_verify",
+    "endpoint_logs_capability_excluded",
     "clickhouse_inserts",
     "clickhouse_errors",
     "bloom_cache_hits",
@@ -176,6 +177,10 @@ _LABELED_GAUGE_SPECS: dict[str, tuple[str, ...]] = {
     "lite_indexer_last_block": ("chain",),
     # Healthy RPC endpoints per chain (RpcPoolExhausted alert).
     "lite_indexer_rpc_pool_healthy_endpoints": ("chain",),
+    # Usable (broad-getLogs-capable) endpoints per chain — the log-path pool
+    # after capability exclusions (publicnode-class tip-only endpoints are
+    # excluded from the log path).
+    "lite_indexer_rpc_pool_logs_endpoints": ("chain",),
     # Reconciliation divergence (DataReconciliationMismatch alert).
     "lite_indexer_reconciliation_discrepancy_pct": ("chain",),
     # NATS publisher circuit state (NatsCircuitOpen alert).

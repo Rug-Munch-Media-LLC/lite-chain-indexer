@@ -99,6 +99,91 @@ class _GetLogsProbeStatus(enum.Enum):
     OTHER_ERROR = "other_error"
 
 
+class GetLogsCapability(enum.Enum):
+    """Broad eth_getLogs capability classification for an endpoint.
+
+    Distinct from a transient failure: ``CANNOT_SERVE_LOGS`` is a permanent
+    property of the endpoint for the getLogs method (the provider rejects
+    the request shape/capability rather than merely a too-large range), so it
+    must never be counted as an abuse signal / ban.
+    """
+
+    CAPABLE = "capable"
+    CANNOT_SERVE_LOGS = "cannot_serve_logs"
+    TRANSIENT = "transient"
+
+
+# Capability-rejection signals: an endpoint that answers eth_blockNumber but
+# structurally refuses broad topic-only eth_getLogs. Verified live
+# (2026-09-14) the public pool contains such endpoints; without this gate
+# they pollute the log path and get mis-counted as bans until the pool burns
+# down to the few working endpoints.
+#   - JSON-RPC error code -32701 ("Please specify an address ...")
+#   - HTTP 405 (method not allowed)
+#   - auth/tenant/key refusals and malformed-range refusals
+CAPABILITY_HTTP_STATUSES: frozenset[int] = frozenset({405})
+CAPABILITY_ERROR_CODES: frozenset[int] = frozenset({-32701})
+CAPABILITY_ERROR_MARKERS: tuple[str, ...] = (
+    "must authenticate",
+    "unauthorized",
+    "invalid block range",
+    "api key disabled",
+    "tenant disabled",
+    "please specify an address",
+)
+
+
+def _error_code_and_message(payload: Any) -> tuple[int | None, str]:
+    """Extract ``(code, message)`` from a JSON-RPC error payload.
+
+    Handles both the spec object form and the plain-string form some RPCs
+    emit (polygon-rpc.com ``"API key disabled, tenant disabled"``).
+    """
+    if not isinstance(payload, dict):
+        return None, ""
+    err = payload.get("error")
+    if err is None:
+        return None, ""
+    if isinstance(err, dict):
+        code = err.get("code")
+        try:
+            code_int = int(code) if code is not None else None
+        except (TypeError, ValueError):
+            code_int = None
+        return code_int, str(err.get("message", err))
+    return None, str(err)
+
+
+def classify_logs_capability(http_status: int | None, payload: Any) -> GetLogsCapability:
+    """Classify one eth_getLogs response for capability gating.
+
+    Returns :data:`GetLogsCapability.CAPABLE` only when the response carries
+    a real ``result`` list; ``CANNOT_SERVE_LOGS`` for structural capability
+    refusals (see :data:`CAPABILITY_ERROR_CODES` / markers / HTTP 405);
+    ``TRANSIENT`` for everything else (timeouts, 5xx, malformed payloads,
+    genuine range limits — none of which should permanently exclude the
+    endpoint).
+    """
+    if http_status in CAPABILITY_HTTP_STATUSES:
+        return GetLogsCapability.CANNOT_SERVE_LOGS
+    if not isinstance(payload, dict):
+        return GetLogsCapability.TRANSIENT
+    if isinstance(payload.get("result"), list):
+        return GetLogsCapability.CAPABLE
+    code, message = _error_code_and_message(payload)
+    if code is not None and code in CAPABILITY_ERROR_CODES:
+        return GetLogsCapability.CANNOT_SERVE_LOGS
+    lowered = message.lower()
+    if any(marker in lowered for marker in CAPABILITY_ERROR_MARKERS):
+        return GetLogsCapability.CANNOT_SERVE_LOGS
+    return GetLogsCapability.TRANSIENT
+
+
+def is_logs_capability_failure(http_status: int | None, payload: Any) -> bool:
+    """Whether a getLogs response is a structural capability refusal."""
+    return classify_logs_capability(http_status, payload) is GetLogsCapability.CANNOT_SERVE_LOGS
+
+
 @dataclass
 class CapabilityRecord:
     """Persisted capability probe results for one RPC endpoint.
@@ -121,6 +206,12 @@ class CapabilityRecord:
     block_receipts: bool = False
     cu_tariff: dict[str, float] = field(default_factory=dict)
     probed_at: float = 0.0
+    # Broad tip-range eth_getLogs capability: True = serves topic-only
+    # getLogs (the indexer's core workload), False = CANNOT_SERVE_LOGS
+    # (permanent capability refusal), None = never probed / transient.
+    # A False endpoint may still serve eth_blockNumber (tip/head-only) but
+    # must NEVER be selected for eth_getLogs.
+    logs_capable: bool | None = None
 
 
 # ── Registry ───────────────────────────────────────────────────────────
@@ -143,6 +234,37 @@ def set_capability(record: CapabilityRecord) -> None:
 def capability_records() -> dict[str, CapabilityRecord]:
     """Return a copy of the endpoint capability registry."""
     return dict(_CAPABILITY_RECORDS)
+
+
+def set_logs_capability(endpoint: str, chain: str, capable: bool) -> CapabilityRecord:
+    """Persist the broad-getLogs capability for one endpoint.
+
+    Creates a record when none exists (chain + endpoint only), preserving
+    any previously probed archive / range fields.
+    """
+    record = _CAPABILITY_RECORDS.get(endpoint)
+    if record is None:
+        record = CapabilityRecord(endpoint=endpoint, chain=chain)
+    record.logs_capable = capable
+    record.probed_at = time.time()
+    _CAPABILITY_RECORDS[endpoint] = record
+    return record
+
+
+def is_logs_capability_excluded(endpoint: str) -> bool:
+    """Whether ``endpoint`` is known to reject broad eth_getLogs.
+
+    A capability-excluded endpoint must never receive ``eth_getLogs`` (it is
+    permanently tip/head-only). Unknown or transiently-failed endpoints
+    return False so a single timeout never removes healthy capacity.
+    """
+    record = _CAPABILITY_RECORDS.get(endpoint)
+    return record is not None and record.logs_capable is False
+
+
+def logs_capable_endpoints(endpoints: list[str]) -> list[str]:
+    """Filter ``endpoints`` to those not capability-excluded from getLogs."""
+    return [ep for ep in endpoints if not is_logs_capability_excluded(ep)]
 
 
 # ── Raw eth_getLogs probe helper ──────────────────────────────────────
@@ -208,6 +330,69 @@ async def _probe_getlogs_once(
 
 
 # ── Probes ─────────────────────────────────────────────────────────────
+
+
+async def probe_logs_capability(
+    endpoint: str,
+    tip: int | None,
+    timeout: float = CAPABILITY_PROBE_TIMEOUT,
+) -> GetLogsCapability:
+    """Probe broad, topic-only ``eth_getLogs`` over a real tip range.
+
+    Issues exactly the request shape the indexer uses in production
+    (``fromBlock = tip - 2``, ``toBlock = "latest"``, topic-only) and
+    requires a ``result`` **list**. Endpoints that answer eth_blockNumber
+    but reject this shape (publicnode's -32701, HTTP 405, auth/tenant
+    refusals, malformed-range refusals) classify as
+    :data:`GetLogsCapability.CANNOT_SERVE_LOGS`; transport/timeout/5xx
+    classify as TRANSIENT so a flaky endpoint is not permanently excluded.
+    When ``tip`` is unknown the probe cannot anchor a real range and returns
+    TRANSIENT (never exclude on missing data).
+
+    Args:
+        endpoint: RPC endpoint URL.
+        tip: Chain tip block number to anchor the probe range (None when
+            unresolvable).
+        timeout: Per-request timeout in seconds.
+
+    Returns:
+        The capability classification for this endpoint.
+    """
+    if tip is None:
+        logger.debug("capability_logs_probe_no_tip", endpoint=endpoint[:60])
+        return GetLogsCapability.TRANSIENT
+    from_block = hex(max(0, int(tip) - 2))
+    payload: dict[str, Any] = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_getLogs",
+        "params": [{"fromBlock": from_block, "toBlock": "latest"}],
+    }
+    status_code: int | None = None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            resp = await client.post(endpoint, json=payload)
+            status_code = resp.status_code
+            data = resp.json()
+    except httpx.TimeoutException:
+        logger.debug("capability_logs_probe_timeout", endpoint=endpoint[:60], from_block=from_block)
+        return GetLogsCapability.TRANSIENT
+    except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
+        logger.debug(
+            "capability_logs_probe_transient",
+            endpoint=endpoint[:60],
+            error=str(exc)[:80],
+        )
+        return GetLogsCapability.TRANSIENT
+
+    outcome = classify_logs_capability(status_code, data)
+    logger.debug(
+        "capability_logs_probe",
+        endpoint=endpoint[:60],
+        http_status=status_code,
+        outcome=outcome.value,
+    )
+    return outcome
 
 
 async def probe_archive(client: RpcClient, endpoint: str, chain: str) -> bool:
@@ -429,22 +614,32 @@ __all__ = [
     "ARCHIVE_METHODS",
     "ARCHIVE_METHOD_PREFIXES",
     "CAPABILITY_PROBE_TIMEOUT",
+    "CAPABILITY_ERROR_CODES",
+    "CAPABILITY_ERROR_MARKERS",
+    "CAPABILITY_HTTP_STATUSES",
     "ArchiveRoutingError",
     "CapabilityRecord",
     "GETLOGS_RANGE_LADDER",
+    "GetLogsCapability",
     "NoArchiveEndpointError",
     "SEEDED_CU_TARIFF",
     "TRANSFER_TOPIC",
     "archive_capable_endpoints",
     "archive_guard_reason",
     "capability_records",
+    "classify_logs_capability",
     "get_capability",
     "is_archive_capable",
+    "is_logs_capability_excluded",
+    "is_logs_capability_failure",
+    "logs_capable_endpoints",
     "method_requires_archive",
     "probe_archive",
     "probe_block_receipts",
     "probe_cu_tariff",
     "probe_endpoint_capabilities",
     "probe_getlogs_range",
+    "probe_logs_capability",
     "set_capability",
+    "set_logs_capability",
 ]

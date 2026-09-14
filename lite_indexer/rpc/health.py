@@ -15,6 +15,7 @@ import httpx
 from lite_indexer.chains import ENDPOINT_VERIFY_INTERVAL, ENDPOINT_VERIFY_TIMEOUT, VERIFY_BLOCK_DELTA
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.rpc.capabilities import is_logs_capability_failure
 
 logger = get_logger(__name__)
 
@@ -88,6 +89,21 @@ async def verify_endpoint(
                 return True
 
             if "error" in data:
+                # Capability refusal (JSON-RPC -32701, auth/tenant/key
+                # disabled, malformed range, HTTP 405): a permanent property
+                # of the endpoint for getLogs — reject, never accept it as a
+                # range-limited success (that bug let publicnode-class
+                # endpoints pollute the log pool).
+                if is_logs_capability_failure(getattr(resp, "status_code", 200), data):
+                    logger.debug(
+                        "verify_endpoint_logs_capability_rejected",
+                        endpoint=endpoint[:50],
+                        chain=chain,
+                    )
+                    _endpoint_verified_ok[endpoint] = False
+                    metrics_incr("endpoints_failed_verify")
+                    return False
+
                 # 2026-09-02: some RPCs (e.g. polygon-rpc.com when the
                 # tenant/API key is disabled) return ``error`` as a plain
                 # STRING, not an object — ``.get()`` on it crashed the whole
