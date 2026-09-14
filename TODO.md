@@ -25,12 +25,18 @@ keyed stack lives in the private runtime overlay (`LITE_INDEXER_ENDPOINT_OVERLAY
 
 ---
 
-## In flight (2026-09-14)
+## Recently completed (2026-09-14)
 
-- [ ] **MergeTree → partitioned ReplacingMergeTree migration** (evm_transfers 2.0 B rows,
-      internal_transfers, solana_transfers). Enables TTL to actually **burn** (partition-level
-      drops) and unblocks safe rewind-backfill. Tooling: `scripts/migrate-ch-merge-to-replacing.sh`,
-      runbook `docs/MIGRATION_MERGETREE_REPLACING.md`.
+- [x] **MergeTree → partitioned ReplacingMergeTree migration** — `evm_transfers` (2.02 B rows),
+      `internal_transfers`, `solana_transfers` swapped to `ReplacingMergeTree` +
+      `PARTITION BY toYYYYMM(block_timestamp)`; row parity verified, 64.4 M exact-duplicate rows
+      deduped, rollback copies dropped. TTL now burns at partition level.
+- [x] **Memory-wedge fix** — continuous `memory-watchdog` thread recycles the daemon at
+      `MEMORY_RECYCLE_MB`, independent of the sync loop (a post-cycle-only check could not fire
+      once a mid-cycle cgroup `MemoryHigh` throttle wedged the daemon; it ran 5 h 45 m, 0 writes).
+- [x] **Stall-check watchdog re-installed durably** (it was symlinked into volatile `/tmp`).
+- [x] **`BACKFILL_INCLUDE_REWINDS=1`** enabled (safe now that the transfer tables dedup).
+- [x] **Reclaimed the `*_old_<ts>` rollback copies.**
 
 ---
 
@@ -40,14 +46,21 @@ These are seams we can layer on later; none blocks current operation.
 
 - [ ] **Dynamic / factory contract discovery** (Ponder-style): discover pools/vaults/factories
       from a seed contract + event, then index their children. Strategy-level, additive.
-- [ ] **Second migration pass**: `dex_events` (28.75 GiB, unpartitioned → TTL can't burn) plus the
-      small Solana/Tron tables (`solana_launches`, `tron_launches`, `evm_launches`, …).
-      Same tooling; run after the in-flight migration completes. Do NOT edit `TABLES` mid-run.
-- [ ] **Reconcile evm_transfers TTL drift** (live `block_timestamp + 30d` vs the migration DDL's
-      `ingested_at + 90d`) — decide the correct retention window post-migration and align the
+- [ ] **Second migration pass** — per-table verdicts (2026-09-14 schema review):
+      - `dex_events` (28.76 GiB): `ORDER BY (chain, block_number, log_index)` — unique, safe to
+        dedup. Needs `ddl_create` to re-state the **column-level** TTLs (`block_timestamp + 90d`)
+        as well as the table-level `ingested_at + 90d`, and to carry the `dex_events_summary`
+        projection. MV `dex_ohlcv_hourly_mv` reads it (name-bound → survives the swap).
+      - `wallet_labels` (1.56 GiB): `PARTITION BY toYYYYMM(loaded_at)`, `ORDER BY (address,
+        label_name, source)`, `TTL loaded_at + toIntervalMonth(6)`.
+      - ⚠️ `solana_spl_balance_changes` — **do NOT migrate as-is**: `ORDER BY (mint, slot,
+        token_account)` is **not unique** (a token account can change several times per slot), so
+        RMT would silently drop legitimate rows. Needs a richer key (e.g. `+ tx_hash`) first.
+      Same tooling; do NOT edit `TABLES` mid-run.
+- [ ] **Reconcile TTL drift** — live `evm_transfers` TTL (`block_timestamp + 30d`) vs the migration
+      DDL's `ingested_at + 90d`; and `dex_events` uses both column-level (`block_timestamp + 90d`)
+      and table-level (`ingested_at + 90d`) TTLs. Decide the retention window and align the
       migration script + `migrations/` TTL files.
-- [ ] **Enable `BACKFILL_INCLUDE_REWINDS=1`** once the transfer tables are `ReplacingMergeTree`.
-- [ ] **Reclaim the `*_old_<ts>` table** after migration verification.
 - [ ] **GraphQL / subgraph-style schema layer** over ClickHouse (query surface, additive).
 - [ ] **Expand transaction tracing** (internal transfers) from 3 chains to all where our free
       tiers serve `trace_block` (per-chain mapping lives in the private runtime overlay;
