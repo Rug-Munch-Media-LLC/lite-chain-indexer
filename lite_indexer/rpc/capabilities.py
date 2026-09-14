@@ -8,10 +8,13 @@ blind guesses:
   - ``archive`` — whether the node can serve state at genesis-era
     blocks (``eth_getBalance`` at block 1 / 256). Backfill and
     historical scans can only be routed to archive-capable endpoints.
-  - ``getlogs_max_range`` — the largest ``eth_getLogs`` block range the
-    endpoint accepts (binary-searched; a client-side timeout is
-    classified as a range error because a slow endpoint is effectively
-    range-limited at the requested size).
+  - ``getlogs_max_range`` — a conservative lower bound on the largest
+    ``eth_getLogs`` block range the endpoint accepts. Probed with a small,
+    fixed call budget (ascending ladder, stop at first failure); a
+    client-side timeout is classified as a range error because a slow
+    endpoint is effectively range-limited at the requested size. The exact
+    maximum is intentionally not binary-searched — routing only needs a
+    safe chunk size, and an exact search dominated startup latency.
   - ``block_receipts`` — whether ``eth_getBlockReceipts`` is supported
     (one-call receipt fetches; unsupported endpoints must fall back to
     the per-tx loop in ``lite_indexer.strategies.evm.receipts``).
@@ -55,15 +58,23 @@ logger = get_logger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────
 # Timeout for each individual capability probe call. Verification uses a
-# separate, tighter liveness timeout; capability probes are allowed
-# slightly more slack but must stay well under the RPC call timeout so a
-# slow endpoint cannot stall the verification cycle.
-CAPABILITY_PROBE_TIMEOUT = 8.0
+# separate, tighter liveness timeout; capability probes must stay well
+# under the RPC call timeout so a slow endpoint cannot stall the
+# verification cycle. Kept short (~3 s) because a capability verdict is
+# reached from a couple of bounded calls, not an exhaustive search.
+CAPABILITY_PROBE_TIMEOUT = 3.0
 
-# eth_getLogs range ladder probed before binary search kicks in.
+# Bounded eth_getLogs range probe (2026-09-14 latency fix). The probe used
+# to binary-search the exact max range (up to 8 extra calls, each up to the
+# probe timeout) — measured ~40 s per chain during startup on bsc. Instead
+# it ascends a few candidate sizes and STOPS at the first failure, so the
+# verdict is a conservative LOWER BOUND reached in at most
+# ``GETLOGS_PROBE_MAX_CALLS`` round-trips at ``GETLOGS_PROBE_TIMEOUT`` each.
+# Routing only needs a safe chunk size; the exact maximum does not matter.
 GETLOGS_RANGE_LADDER: tuple[int, ...] = (10, 100, 1000, 10000)
-# Hard cap on binary-search steps between two ladder rungs (bounds cost).
-GETLOGS_BINARY_MAX_STEPS = 8
+GETLOGS_PROBE_CANDIDATES: tuple[int, ...] = (10, 100, 1000)
+GETLOGS_PROBE_MAX_CALLS = 3
+GETLOGS_PROBE_TIMEOUT = 2.5
 
 # Well-known, funded EOA (vitalik.eth) — a balance at genesis-era blocks
 # only resolves on an archive-capable node; non-archive nodes error with
@@ -346,6 +357,16 @@ def get_capability(endpoint: str) -> CapabilityRecord | None:
     return record
 
 
+def peek_capability(endpoint: str) -> CapabilityRecord | None:
+    """Return the IN-MEMORY capability record only (never touches disk).
+
+    Hot-path safe: chunk sizing calls this per endpoint per range, and the
+    registry is hydrated once at startup (:func:`load_capabilities`), so the
+    disk fallback in :func:`get_capability` would only add latency here.
+    """
+    return _CAPABILITY_RECORDS.get(endpoint)
+
+
 def set_capability(record: CapabilityRecord) -> None:
     """Persist a capability record for its endpoint URL (memory + disk)."""
     _CAPABILITY_RECORDS[record.endpoint] = record
@@ -587,15 +608,21 @@ async def probe_getlogs_range(
     endpoint: str,
     topic0: str,
     latest_block: int | None = None,
-    timeout: float = CAPABILITY_PROBE_TIMEOUT,
+    timeout: float = GETLOGS_PROBE_TIMEOUT,
 ) -> int:
-    """Binary-search the largest eth_getLogs block range ``endpoint`` serves.
+    """Probe a conservative eth_getLogs max range within a fixed call budget.
 
-    Probes the ladder ``10 → 100 → 1000 → 10000`` blocks; on the first
-    rung that fails, binary-searches between the last good rung and the
-    failed size (halving the search space, bounded by
-    :data:`GETLOGS_BINARY_MAX_STEPS`). Client-side timeouts are treated
-    as range errors, so slow endpoints get a conservative range.
+    Ascends :data:`GETLOGS_PROBE_CANDIDATES` from small to large and stops at
+    the first rung that fails (or once :data:`GETLOGS_PROBE_MAX_CALLS` calls
+    are spent). The returned value is a **conservative lower bound**, not the
+    exact maximum: routing only needs a safe chunk size, and binary-searching
+    the exact max added up to 8 extra round-trips — each up to the probe
+    timeout — which was the dominant startup cost (measured ~40 s/chain on
+    bsc, 2026-09-14).
+
+    A client-side timeout is treated as a range error, so a slow endpoint gets
+    a conservative range. A ``0`` return means even the smallest candidate
+    failed (the endpoint cannot serve logs at any probed size).
 
     Args:
         client: RpcClient instance (used only for tip discovery).
@@ -607,7 +634,8 @@ async def probe_getlogs_range(
         timeout: Per-request probe timeout in seconds.
 
     Returns:
-        The largest accepted range size (0 when even 10 blocks failed).
+        A conservative largest accepted range size (0 when the first
+        candidate failed).
     """
     anchor = latest_block
     if anchor is None:
@@ -615,52 +643,37 @@ async def probe_getlogs_range(
     if anchor is None:
         anchor = 1
 
-    async def probe_size(size: int) -> _GetLogsProbeStatus:
-        from_block = max(1, anchor - size + 1)
-        return await _probe_getlogs_once(endpoint, from_block, anchor, topic0, timeout=timeout)
-
+    calls = 0
     last_good = 0
-    failed: int | None = None
-    for size in GETLOGS_RANGE_LADDER:
-        status = await probe_size(size)
+    for size in GETLOGS_PROBE_CANDIDATES:
+        if calls >= GETLOGS_PROBE_MAX_CALLS:
+            break
+        calls += 1
+        from_block = max(1, anchor - size + 1)
+        status = await _probe_getlogs_once(endpoint, from_block, anchor, topic0, timeout=timeout)
         if status == _GetLogsProbeStatus.OK:
             last_good = size
             continue
-        failed = size
-        break
-
-    if failed is None:
-        # Everything through 10000 served — ladder ceiling is the answer.
+        # First failure bounds the range — keep the last accepted rung as a
+        # conservative lower bound and stop spending calls.
         logger.debug(
-            "capability_getlogs_range_ceiling",
+            "capability_getlogs_range_bounded",
             endpoint=endpoint[:60],
-            max_range=GETLOGS_RANGE_LADDER[-1],
+            max_range=last_good,
+            failed_at=size,
+            calls=calls,
         )
-        return GETLOGS_RANGE_LADDER[-1]
-    if last_good == 0:
-        logger.debug(
-            "capability_getlogs_range_zero",
-            endpoint=endpoint[:60],
-            first_failed=failed,
-        )
-        return 0
+        return last_good
 
-    low, high = last_good, failed
-    steps = 0
-    while high - low > 1 and steps < GETLOGS_BINARY_MAX_STEPS:
-        mid = (low + high) // 2
-        if await probe_size(mid) == _GetLogsProbeStatus.OK:
-            low = mid
-        else:
-            high = mid
-        steps += 1
-
+    # No failure observed within the budget — every probed candidate was
+    # accepted, so the last accepted rung is the (possibly capped) ceiling.
     logger.debug(
-        "capability_getlogs_range_result",
+        "capability_getlogs_range_ceiling",
         endpoint=endpoint[:60],
-        max_range=low,
+        max_range=last_good,
+        calls=calls,
     )
-    return low
+    return last_good
 
 
 async def probe_block_receipts(
@@ -762,6 +775,9 @@ __all__ = [
     "ArchiveRoutingError",
     "CapabilityRecord",
     "GETLOGS_RANGE_LADDER",
+    "GETLOGS_PROBE_CANDIDATES",
+    "GETLOGS_PROBE_MAX_CALLS",
+    "GETLOGS_PROBE_TIMEOUT",
     "GetLogsCapability",
     "NoArchiveEndpointError",
     "SEEDED_CU_TARIFF",
@@ -778,6 +794,7 @@ __all__ = [
     "load_capabilities",
     "logs_capable_endpoints",
     "method_requires_archive",
+    "peek_capability",
     "probe_archive",
     "probe_block_receipts",
     "probe_cu_tariff",

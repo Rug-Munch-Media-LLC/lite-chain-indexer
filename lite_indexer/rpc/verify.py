@@ -32,7 +32,7 @@ from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.metrics import set_labeled_gauge
 from lite_indexer.rpc.capabilities import (
-    CAPABILITY_PROBE_TIMEOUT,
+    GETLOGS_PROBE_TIMEOUT,
     TRANSFER_TOPIC,
     CapabilityRecord,
     GetLogsCapability,
@@ -149,12 +149,19 @@ async def _probe_and_record_capabilities(
         The broad-getLogs capability classification (TRANSIENT on probe error).
     """
     existing = get_capability(endpoint)
-    if (
-        existing is not None
-        and existing.logs_capable is not None
-        and (time.time() - existing.probed_at) < ENDPOINT_VERIFY_INTERVAL
-    ):
-        return GetLogsCapability.CAPABLE if existing.logs_capable else GetLogsCapability.CANNOT_SERVE_LOGS
+    if existing is not None and (time.time() - existing.probed_at) < ENDPOINT_VERIFY_INTERVAL:
+        # Warm cache: reuse the persisted verdict + measured range instead of
+        # re-running the probes. This is the whole point of persisting gating
+        # state (D2) — a restart inside the interval must not re-probe.
+        if existing.logs_capable is True:
+            return GetLogsCapability.CAPABLE
+        if existing.logs_capable is False:
+            return GetLogsCapability.CANNOT_SERVE_LOGS
+        if existing.getlogs_max_range > 0:
+            # Range is known but the broad verdict was transient/unknown:
+            # keep TRANSIENT (never exclude on a timeout) and reuse the
+            # cached range — no ladder re-run.
+            return GetLogsCapability.TRANSIENT
 
     try:
         archive = await probe_archive(client, endpoint, chain)
@@ -162,9 +169,9 @@ async def _probe_and_record_capabilities(
             client,
             endpoint,
             TRANSFER_TOPIC,
-            timeout=CAPABILITY_PROBE_TIMEOUT,
+            timeout=GETLOGS_PROBE_TIMEOUT,
         )
-        status = await probe_logs_capability(endpoint, tip)
+        status = await probe_logs_capability(endpoint, tip, timeout=GETLOGS_PROBE_TIMEOUT)
         logs_capable = None if status is GetLogsCapability.TRANSIENT else status is GetLogsCapability.CAPABLE
         set_capability(
             CapabilityRecord(
@@ -237,6 +244,7 @@ async def verify_chain_endpoints(
 
     _ORIGINALS.setdefault(chain, list(chain_endpoints))
     probe_sem = probe_semaphore or asyncio.Semaphore(max(1, ENDPOINT_VERIFY_CONCURRENCY))
+    started = time.monotonic()
 
     # Get latest block for verification range
     tip_for_verify = await rpc_client.eth_block_number(get_best_endpoint(chain_endpoints))
@@ -289,6 +297,7 @@ async def verify_chain_endpoints(
         verified=len(verified_endpoints),
         log_capable=len(log_capable),
         tip_only=len(tip_only),
+        wall_s=round(time.monotonic() - started, 2),
     )
     result = EndpointVerifyResult(
         chain=chain,
