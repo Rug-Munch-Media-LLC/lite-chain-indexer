@@ -468,10 +468,18 @@ class SyncLoopMixin(IndexerMixinBase):
         # is required. Solana deployer events are captured structurally by
         # the strategy (creation tx fee payer) and written as-is.
         deployer_written = 0
+        deployer_candidates = 0
         evm_strategy = self.strategy if isinstance(self.strategy, EVMChainStrategy) else None
         solana_strategy = self.strategy if isinstance(self.strategy, SolanaStrategy) else None
         tron_strategy = self.strategy if isinstance(self.strategy, TronStrategy) else None
         if self.deployers_enabled:
+            # D6: how many deployer rows were pending this cycle — used to
+            # distinguish "nothing to write" from "write failed" so state
+            # does not advance over unwritten rows.
+            if evm_strategy and evm_strategy._last_pair_events:
+                deployer_candidates = len(evm_strategy._last_pair_events)
+            elif solana_strategy and solana_strategy._last_deployer_events:
+                deployer_candidates = len(solana_strategy._last_deployer_events)
             deployer_written = await write_deployer_events(
                 self.chain,
                 evm_strategy,
@@ -487,6 +495,12 @@ class SyncLoopMixin(IndexerMixinBase):
         # function persists to ClickHouse AND fans out to NATS, mirroring the
         # deployer-event path. Best-effort: a write failure logs and keeps the
         # event buffered for the next cycle. Buffers are drained below.
+        launch_candidates = 0
+        if solana_strategy is not None:
+            launch_candidates += len(getattr(solana_strategy, "_last_launch_events", None) or [])
+            launch_candidates += len(getattr(solana_strategy, "_last_bundle_events", None) or [])
+        if tron_strategy is not None:
+            launch_candidates += len(getattr(tron_strategy, "_last_launch_events", None) or [])
         launch_written = 0
         if solana_strategy is not None:
             launch_written += await flush_solana_launch_bundles(solana_strategy, self.ch_writer, self.nats_publisher)
@@ -600,6 +614,8 @@ class SyncLoopMixin(IndexerMixinBase):
             trace_written = await self.ch_writer.write_internal_transfers(self.chain, trace_events)
             if trace_written:
                 summary["traces_written_ch"] = trace_written
+        else:
+            trace_written = 0
 
         # 7b. Reorg staging (EVM + Solana, gated by REORG_PROTECTION_ENABLED):
         # checkpoint the batch tip block hash/slot blockhash, then verify
@@ -682,6 +698,34 @@ class SyncLoopMixin(IndexerMixinBase):
         # daemon mode the first chain to publish starts the single shared
         # subscriber and later chains are no-ops.
         await self._maybe_start_webhook_delivery()
+
+        # 7e. Writer completeness gate (D6, 2026-09-14). Best-effort writers
+        # (deployer/launch/trace) used to fail silently while state advanced
+        # to to_block, claiming coverage whose rows were never persisted. If
+        # an ENABLED writer had pending rows and wrote none, do NOT advance —
+        # the range is retried next cycle instead of being skipped.
+        failed_writers: list[str] = []
+        if self.deployers_enabled and deployer_candidates and deployer_written == 0:
+            failed_writers.append("deployer")
+        if launch_candidates and launch_written == 0:
+            failed_writers.append("launch")
+        if trace_events and ch_available and trace_written == 0:
+            failed_writers.append("trace")
+        if failed_writers:
+            for _kind in failed_writers:
+                metrics.incr_labeled("lite_indexer_writer_gap", chain=self.chain)
+            logger.error(
+                "sync_aborted_writer_incomplete",
+                chain=self.chain,
+                from_block=from_block,
+                to_block=to_block,
+                failed_writers=failed_writers,
+            )
+            summary["status"] = "writer_incomplete"
+            summary["failed_writers"] = failed_writers
+            summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
+            self._save_current_state()
+            return summary
 
         # 8. Save state
         total_events = len(events) + len(dex_events) + deployer_written + len(trace_events)

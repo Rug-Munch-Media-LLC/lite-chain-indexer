@@ -67,6 +67,35 @@ def _no_live_clickhouse(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
 
 
 @pytest.fixture(autouse=True)
+def _isolate_gating_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the durable gating store at a per-test temp DB (D2 isolation).
+
+    Capability/health/ban state is now written through to SQLite. Without
+    this, every test that calls ``set_capability`` / ``ban_endpoint`` would
+    write to the production ``rpc_cache.sqlite``. Also clears the in-memory
+    registries so state never leaks between tests.
+    """
+    from lite_indexer.rpc import cache_db, pool
+    from lite_indexer.rpc import capabilities as cap
+    from lite_indexer.rpc import health as hh
+    from lite_indexer.rpc import verify as vf
+
+    db_path = tmp_path / "gating.sqlite"
+    cache_db.reset_db(str(db_path))
+    cap.clear_capabilities()
+    hh.clear_health_state()
+    pool.clear_ban_state()
+    vf.clear_startup_results()
+    monkeypatch.setattr(vf, "_GATING_STATE_LOADED", False)
+    yield
+    cache_db.reset_db(str(db_path))
+    cap.clear_capabilities()
+    hh.clear_health_state()
+    pool.clear_ban_state()
+    vf.clear_startup_results()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_rpc_throttle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Point the shared RPC throttle tracker at a temp file per test.
 

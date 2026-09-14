@@ -8,6 +8,7 @@ verify endpoints against eth_getLogs, and caches results.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import httpx
@@ -29,7 +30,59 @@ logger = get_logger(__name__)
 _endpoint_last_verified: dict[str, float] = {}  # url -> last verify timestamp
 _endpoint_verified_ok: dict[str, bool] = {}  # url -> last verify result
 
+# D2 (2026-09-14): persist health verdicts so a restart does not reset the
+# ENDPOINT_VERIFY_INTERVAL cache and re-probe the entire pool.
+_HEALTH_KIND = "health"
+
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+
+def _set_health(endpoint: str, ok: bool) -> None:
+    """Record an endpoint health verdict in memory + the durable store."""
+    _endpoint_verified_ok[endpoint] = ok
+    at = _endpoint_last_verified.get(endpoint, 0.0)
+    if ok:
+        at = time.time()
+        _endpoint_last_verified[endpoint] = at
+    try:
+        from lite_indexer.rpc import cache_db
+
+        cache_db.state_put(
+            _HEALTH_KIND,
+            endpoint,
+            json.dumps({"ok": bool(ok), "at": float(at)}),
+            ttl=float(ENDPOINT_VERIFY_INTERVAL),
+        )
+    except Exception:  # noqa: BLE001 — persistence must never break probing
+        logger.debug("health_persist_failed", endpoint=endpoint[:60])
+
+
+def load_health_state() -> int:
+    """Load persisted endpoint-health verdicts (daemon startup)."""
+    try:
+        from lite_indexer.rpc import cache_db
+
+        stored = cache_db.state_load(_HEALTH_KIND)
+    except Exception:  # noqa: BLE001
+        return 0
+    loaded = 0
+    for endpoint, text in stored.items():
+        try:
+            data = json.loads(text)
+            _endpoint_verified_ok[endpoint] = bool(data.get("ok", False))
+            _endpoint_last_verified[endpoint] = float(data.get("at", 0.0) or 0.0)
+            loaded += 1
+        except (ValueError, TypeError):
+            continue
+    if loaded:
+        logger.info("endpoint_health_loaded", records=loaded)
+    return loaded
+
+
+def clear_health_state() -> None:
+    """Drop the in-memory health registry (tests / shutdown)."""
+    _endpoint_verified_ok.clear()
+    _endpoint_last_verified.clear()
 
 
 # ── Verification ───────────────────────────────────────────────────────
@@ -83,14 +136,13 @@ async def verify_endpoint(
             data = resp.json()
 
             if not isinstance(data, dict):
-                _endpoint_verified_ok[endpoint] = False
+                _set_health(endpoint, False)
                 metrics_incr("endpoints_failed_verify")
                 return False
 
             # Accept any valid result (list or null — both mean endpoint works)
             if "result" in data and not ("error" in data and data.get("error")):
-                _endpoint_verified_ok[endpoint] = True
-                _endpoint_last_verified[endpoint] = time.time()
+                _set_health(endpoint, True)
                 metrics_incr("endpoints_verified")
                 return True
 
@@ -106,7 +158,7 @@ async def verify_endpoint(
                         endpoint=endpoint[:50],
                         chain=chain,
                     )
-                    _endpoint_verified_ok[endpoint] = False
+                    _set_health(endpoint, False)
                     metrics_incr("endpoints_failed_verify")
                     return False
 
@@ -127,18 +179,17 @@ async def verify_endpoint(
                         error=err_msg[:80],
                     )
                     # Still accept — it may work with appropriate ranges
-                    _endpoint_verified_ok[endpoint] = True
-                    _endpoint_last_verified[endpoint] = time.time()
+                    _set_health(endpoint, True)
                     metrics_incr("endpoints_verified")
                     return True
 
-            _endpoint_verified_ok[endpoint] = False
+            _set_health(endpoint, False)
             metrics_incr("endpoints_failed_verify")
             return False
 
     except httpx.TimeoutException:
         logger.debug("verify_endpoint_timeout", endpoint=endpoint[:50], chain=chain)
-        _endpoint_verified_ok[endpoint] = False
+        _set_health(endpoint, False)
         metrics_incr("endpoints_failed_verify")
         return False
     except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
@@ -148,7 +199,7 @@ async def verify_endpoint(
             chain=chain,
             error=str(exc)[:80],
         )
-        _endpoint_verified_ok[endpoint] = False
+        _set_health(endpoint, False)
         metrics_incr("endpoints_failed_verify")
         return False
 
@@ -298,7 +349,7 @@ async def monitor_endpoint_health(
         timeout: Per-endpoint probe timeout in seconds.
     """
     from lite_indexer.chains import GET_LOGS_ENDPOINTS
-    from lite_indexer.rpc.pool import ban_endpoint, record_endpoint_failure
+    from lite_indexer.rpc.pool import record_endpoint_failure
 
     target_chains = chains if chains is not None else sorted(GET_LOGS_ENDPOINTS)
     logger.info(
@@ -323,7 +374,7 @@ async def monitor_endpoint_health(
             for url in endpoints:
                 status = await _probe_endpoint(url, timeout)
                 ok = status == 200
-                _endpoint_verified_ok[url] = ok
+                _set_health(url, ok)
                 if ok:
                     up.append(url)
                     up_total += 1
@@ -335,8 +386,12 @@ async def monitor_endpoint_health(
                     # the endpoint for an exponential window instead of
                     # just a 300s cooldown.
                     if status in (403, 429):
+                        # D4 (2026-09-14): the probe path records health /
+                        # soft cooldown only — it must NEVER hard-ban. A 403
+                        # is usually a capability/geo/Cloudflare refusal, and
+                        # a 429 is a rate limit that lifts in seconds; hard
+                        # bans here caused the ban/rebirth storm.
                         rate_limited.append(url)
-                        ban_endpoint(url, reason=f"probe_http_{status}")
 
             # Per-chain endpoint health metrics for monitoring: emitted on
             # every cycle with per-chain up/down + the endpoint list, plus

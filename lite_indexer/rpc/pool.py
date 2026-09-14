@@ -12,6 +12,7 @@ do NOT trip the circuit breaker or hard-ban (see
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 from lite_indexer.config import (
@@ -80,6 +81,66 @@ _endpoint_bans: dict[str, float] = {}
 # url -> ban count (feeds the exponential backoff curve).
 _endpoint_ban_level: dict[str, int] = {}
 
+# D2 (2026-09-14): persist ban windows + 429 streaks so a restart does not
+# reset them and immediately re-hammer the pool.
+_BAN_KIND = "ban"
+
+
+def _persist_ban(endpoint: str) -> None:
+    """Write-through the endpoint's ban/streak state (or delete when clear)."""
+    try:
+        from lite_indexer.rpc import cache_db
+    except Exception:  # noqa: BLE001
+        return
+    banned_until = _endpoint_bans.get(endpoint, 0.0)
+    streak = int(_endpoint_429_streaks.get(endpoint, 0))
+    now = time.time()
+    active = banned_until > now
+    if not active and streak == 0:
+        cache_db.state_delete(_BAN_KIND, endpoint)
+        return
+    payload = json.dumps(
+        {
+            "until": float(banned_until) if active else 0.0,
+            "level": int(_endpoint_ban_level.get(endpoint, 0)),
+            "streak": streak,
+        }
+    )
+    cache_db.state_put(_BAN_KIND, endpoint, payload, ttl=max(0.0, banned_until - now) + 600.0)
+
+
+def load_ban_state() -> int:
+    """Load persisted ban windows + 429 streaks (daemon startup)."""
+    try:
+        from lite_indexer.rpc import cache_db
+
+        stored = cache_db.state_load(_BAN_KIND)
+    except Exception:  # noqa: BLE001
+        return 0
+    now = time.time()
+    loaded = 0
+    for endpoint, text in stored.items():
+        try:
+            data = json.loads(text)
+            until = float(data.get("until", 0.0) or 0.0)
+            if until > now:
+                _endpoint_bans[endpoint] = until
+                _endpoint_ban_level[endpoint] = int(data.get("level", 0) or 0)
+                _endpoint_429_streaks[endpoint] = int(data.get("streak", 0) or 0)
+                loaded += 1
+        except (ValueError, TypeError):
+            continue
+    if loaded:
+        logger.info("endpoint_bans_loaded", records=loaded)
+    return loaded
+
+
+def clear_ban_state() -> None:
+    """Drop the in-memory ban/streak state (tests / shutdown)."""
+    _endpoint_bans.clear()
+    _endpoint_ban_level.clear()
+    _endpoint_429_streaks.clear()
+
 
 # ── Hard Ban (403/429) ───────────────────────────────────────────────
 
@@ -107,6 +168,7 @@ def ban_endpoint(endpoint: str, reason: str = "") -> None:
     _endpoint_bans[endpoint] = time.time() + duration
     _endpoint_ban_level[endpoint] = level + 1
     metrics_incr("endpoints_banned")
+    _persist_ban(endpoint)
     logger.warning(
         "endpoint_banned",
         endpoint=endpoint[:60],
@@ -121,6 +183,7 @@ def unban_endpoint(endpoint: str) -> None:
     if endpoint in _endpoint_bans:
         _endpoint_bans.pop(endpoint, None)
         _endpoint_ban_level.pop(endpoint, None)
+        _persist_ban(endpoint)
         logger.debug("endpoint_unbanned", endpoint=endpoint[:60])
 
 
@@ -414,6 +477,7 @@ def record_rate_limit(endpoint: str) -> None:
     # anywhere clears the streak (see record_endpoint_success).
     streak = _endpoint_429_streaks.get(endpoint, 0) + 1
     _endpoint_429_streaks[endpoint] = streak
+    _persist_ban(endpoint)
     if streak >= _RATE_LIMIT_STREAK_BAN_THRESHOLD:
         ban_s = min(
             _RATE_LIMIT_STREAK_BAN_BASE_S * (2 ** (streak - _RATE_LIMIT_STREAK_BAN_THRESHOLD)),
@@ -438,6 +502,7 @@ def record_endpoint_success(endpoint: str) -> None:
     CIRCUIT_BREAKER.record_success(endpoint)
     unban_endpoint(endpoint)
     _endpoint_429_streaks.pop(endpoint, None)
+    _persist_ban(endpoint)
 
 
 async def apply_endpoint_backoff(url: str) -> None:

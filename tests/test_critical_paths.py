@@ -280,14 +280,20 @@ async def test_verified_endpoints_applied(tmp_path, monkeypatch):
     if indexer._ndjson_writer is not None:
         indexer._ndjson_writer.write_events = Mock(return_value=0)
 
-    await indexer.sync_loop()
+    try:
+        await indexer.sync_loop()
+        # The sync fetched via one of the verified (swapped) endpoints
+        assert used_endpoints, "no RPC fetch occurred during sync"
+        assert all(ep in verified for ep in used_endpoints), f"fetch used unverified endpoints: {used_endpoints}"
 
-    # The sync fetched via one of the verified (swapped) endpoints
-    assert used_endpoints, "no RPC fetch occurred during sync"
-    assert all(ep in verified for ep in used_endpoints), f"fetch used unverified endpoints: {used_endpoints}"
-
-    # The original configuration is restored after the cycle
-    assert chains_mod.GET_LOGS_ENDPOINTS["ethereum"] == original_endpoints
+        # D5 (2026-09-14): the verified set is DURABLE for the
+        # ENDPOINT_VERIFY_INTERVAL window — it is NOT restored to the full
+        # configured list after each cycle (that was the bug that left the
+        # log pool empty between cycles). Restore explicitly below so this
+        # test does not leak state into the shared GET_LOGS_ENDPOINTS dict.
+        assert chains_mod.GET_LOGS_ENDPOINTS["ethereum"] == verified
+    finally:
+        chains_mod.GET_LOGS_ENDPOINTS["ethereum"] = original_endpoints
 
 
 @pytest.mark.asyncio

@@ -29,8 +29,9 @@ consult via :func:`get_capability`).
 from __future__ import annotations
 
 import enum
+import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -118,18 +119,35 @@ class GetLogsCapability(enum.Enum):
 # (2026-09-14) the public pool contains such endpoints; without this gate
 # they pollute the log path and get mis-counted as bans until the pool burns
 # down to the few working endpoints.
-#   - JSON-RPC error code -32701 ("Please specify an address ...")
-#   - HTTP 405 (method not allowed)
+#   - HTTP 401/403/405 (auth refusal / Cloudflare challenge / method not
+#     allowed) — previously only 405 was treated as a refusal, so a
+#     publicnode-style 403 (HTML body) fell through to TRANSIENT and was then
+#     hard-banned as ``http_403`` on the fetch path.
+#   - JSON-RPC errors: -32701 (address required), -32601 (method not found)
 #   - auth/tenant/key refusals and malformed-range refusals
-CAPABILITY_HTTP_STATUSES: frozenset[int] = frozenset({405})
-CAPABILITY_ERROR_CODES: frozenset[int] = frozenset({-32701})
+CAPABILITY_HTTP_STATUSES: frozenset[int] = frozenset({401, 403, 405})
+CAPABILITY_ERROR_CODES: frozenset[int] = frozenset({-32701, -32601})
 CAPABILITY_ERROR_MARKERS: tuple[str, ...] = (
     "must authenticate",
     "unauthorized",
+    "address",
     "invalid block range",
     "api key disabled",
     "tenant disabled",
     "please specify an address",
+    "method not found",
+    "method not allowed",
+)
+# HTML / bot-challenge bodies are capability refusals, not transient errors.
+# Applied to a non-JSON body (and to any error message text).
+CAPABILITY_BODY_MARKERS: tuple[str, ...] = (
+    "just a moment",
+    "attention required",
+    "cloudflare",
+    "captcha",
+    "challenge",
+    "access denied",
+    "forbidden",
 )
 
 
@@ -159,13 +177,23 @@ def classify_logs_capability(http_status: int | None, payload: Any) -> GetLogsCa
 
     Returns :data:`GetLogsCapability.CAPABLE` only when the response carries
     a real ``result`` list; ``CANNOT_SERVE_LOGS`` for structural capability
-    refusals (see :data:`CAPABILITY_ERROR_CODES` / markers / HTTP 405);
-    ``TRANSIENT`` for everything else (timeouts, 5xx, malformed payloads,
-    genuine range limits — none of which should permanently exclude the
-    endpoint).
+    refusals (HTTP 401/403/405, JSON-RPC ``-32701``/``-32601``, auth/tenant/
+    address markers, or a non-JSON HTML/bot-challenge body);
+    ``TRANSIENT`` for everything else (timeouts, 5xx, genuine range limits —
+    none of which should permanently exclude the endpoint).
+
+    ``payload`` may be the decoded JSON object OR the raw response text
+    (non-JSON bodies are still classified, never silently dropped).
     """
     if http_status in CAPABILITY_HTTP_STATUSES:
         return GetLogsCapability.CANNOT_SERVE_LOGS
+    if isinstance(payload, str):
+        lowered = payload.lower()
+        if any(marker in lowered for marker in CAPABILITY_BODY_MARKERS):
+            return GetLogsCapability.CANNOT_SERVE_LOGS
+        if any(marker in lowered for marker in CAPABILITY_ERROR_MARKERS):
+            return GetLogsCapability.CANNOT_SERVE_LOGS
+        return GetLogsCapability.TRANSIENT
     if not isinstance(payload, dict):
         return GetLogsCapability.TRANSIENT
     if isinstance(payload.get("result"), list):
@@ -175,6 +203,8 @@ def classify_logs_capability(http_status: int | None, payload: Any) -> GetLogsCa
         return GetLogsCapability.CANNOT_SERVE_LOGS
     lowered = message.lower()
     if any(marker in lowered for marker in CAPABILITY_ERROR_MARKERS):
+        return GetLogsCapability.CANNOT_SERVE_LOGS
+    if any(marker in lowered for marker in CAPABILITY_BODY_MARKERS):
         return GetLogsCapability.CANNOT_SERVE_LOGS
     return GetLogsCapability.TRANSIENT
 
@@ -218,21 +248,112 @@ class CapabilityRecord:
 # endpoint URL -> CapabilityRecord. The pool admission / routing layer
 # reads this via get_capability() to prefer archive endpoints for
 # historical ranges and to size getLogs chunks within the probed maximum.
+#
+# Persisted to the shared SQLite gating table (D2, 2026-09-14): an in-memory
+# dict alone meant every daemon restart re-probed the entire world. Records
+# are written through on set and loaded lazily/at startup.
 _CAPABILITY_RECORDS: dict[str, CapabilityRecord] = {}
+_CAPABILITY_KIND = "capability"
+# Verdict freshness: mirrors ENDPOINT_VERIFY_INTERVAL (defined here to avoid
+# importing the chains package into this low-level module).
+CAPABILITY_PERSIST_TTL = 3600.0
+
+
+def _record_payload(record: CapabilityRecord) -> str:
+    """JSON payload for one capability record (secret-free: URL + verdicts)."""
+    return json.dumps(asdict(record), separators=(",", ":"), sort_keys=True)
+
+
+def _record_from_payload(endpoint: str, text: str) -> CapabilityRecord | None:
+    """Decode a persisted capability payload; None when malformed."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        return CapabilityRecord(
+            endpoint=endpoint,
+            chain=str(data.get("chain", "")),
+            archive=bool(data.get("archive", False)),
+            getlogs_max_range=int(data.get("getlogs_max_range", 0) or 0),
+            block_receipts=bool(data.get("block_receipts", False)),
+            cu_tariff={str(k): float(v) for k, v in (data.get("cu_tariff") or {}).items()},
+            probed_at=float(data.get("probed_at", 0.0) or 0.0),
+            logs_capable=data.get("logs_capable") if data.get("logs_capable") is None else bool(data["logs_capable"]),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _persist_record(record: CapabilityRecord) -> None:
+    """Write-through one capability record to the durable gating store."""
+    try:
+        from lite_indexer.rpc import cache_db
+
+        cache_db.state_put(_CAPABILITY_KIND, record.endpoint, _record_payload(record), ttl=CAPABILITY_PERSIST_TTL)
+    except Exception:  # noqa: BLE001 — persistence must never break probing
+        logger.debug("capability_persist_failed", endpoint=record.endpoint[:60])
+
+
+def load_capabilities() -> int:
+    """Load persisted capability verdicts into memory (daemon startup).
+
+    Returns the number of records loaded. Fresh in-memory entries win.
+    """
+    try:
+        from lite_indexer.rpc import cache_db
+
+        stored = cache_db.state_load(_CAPABILITY_KIND)
+    except Exception:  # noqa: BLE001
+        logger.debug("capability_load_failed")
+        return 0
+    loaded = 0
+    for endpoint, text in stored.items():
+        if endpoint in _CAPABILITY_RECORDS:
+            continue
+        record = _record_from_payload(endpoint, text)
+        if record is not None:
+            _CAPABILITY_RECORDS[endpoint] = record
+            loaded += 1
+    if loaded:
+        logger.info("capabilities_loaded", records=loaded)
+    return loaded
+
+
+def clear_capabilities() -> None:
+    """Drop the in-memory capability registry (tests / shutdown)."""
+    _CAPABILITY_RECORDS.clear()
 
 
 def get_capability(endpoint: str) -> CapabilityRecord | None:
-    """Return the persisted capability record for ``endpoint`` (or None)."""
-    return _CAPABILITY_RECORDS.get(endpoint)
+    """Return the capability record for ``endpoint`` (memory, then disk)."""
+    record = _CAPABILITY_RECORDS.get(endpoint)
+    if record is not None:
+        return record
+    try:
+        from lite_indexer.rpc import cache_db
+
+        text = cache_db.state_get(_CAPABILITY_KIND, endpoint)
+    except Exception:  # noqa: BLE001
+        return None
+    if text is None:
+        return None
+    record = _record_from_payload(endpoint, text)
+    if record is not None:
+        _CAPABILITY_RECORDS[endpoint] = record
+    return record
 
 
 def set_capability(record: CapabilityRecord) -> None:
-    """Persist a capability record for its endpoint URL."""
+    """Persist a capability record for its endpoint URL (memory + disk)."""
     _CAPABILITY_RECORDS[record.endpoint] = record
+    _persist_record(record)
 
 
 def capability_records() -> dict[str, CapabilityRecord]:
-    """Return a copy of the endpoint capability registry."""
+    """Return a copy of the in-memory endpoint capability registry."""
     return dict(_CAPABILITY_RECORDS)
 
 
@@ -242,12 +363,12 @@ def set_logs_capability(endpoint: str, chain: str, capable: bool) -> CapabilityR
     Creates a record when none exists (chain + endpoint only), preserving
     any previously probed archive / range fields.
     """
-    record = _CAPABILITY_RECORDS.get(endpoint)
+    record = get_capability(endpoint)
     if record is None:
         record = CapabilityRecord(endpoint=endpoint, chain=chain)
     record.logs_capable = capable
     record.probed_at = time.time()
-    _CAPABILITY_RECORDS[endpoint] = record
+    set_capability(record)
     return record
 
 
@@ -258,7 +379,7 @@ def is_logs_capability_excluded(endpoint: str) -> bool:
     permanently tip/head-only). Unknown or transiently-failed endpoints
     return False so a single timeout never removes healthy capacity.
     """
-    record = _CAPABILITY_RECORDS.get(endpoint)
+    record = get_capability(endpoint)
     return record is not None and record.logs_capable is False
 
 
@@ -304,6 +425,9 @@ async def _probe_getlogs_once(
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             resp = await client.post(endpoint, json=payload)
+            if resp.status_code in CAPABILITY_HTTP_STATUSES:
+                # Auth/challenge/method refusal — not a range limitation.
+                return _GetLogsProbeStatus.OTHER_ERROR
             data = resp.json()
     except httpx.TimeoutException:
         logger.debug("capability_getlogs_timeout", endpoint=endpoint[:60], from_block=from_block, to_block=to_block)
@@ -373,7 +497,23 @@ async def probe_logs_capability(
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             resp = await client.post(endpoint, json=payload)
             status_code = resp.status_code
-            data = resp.json()
+            # HTTP auth/challenge/method-refusal statuses are capability
+            # refusals regardless of the body — classify BEFORE json() so an
+            # HTML Cloudflare body cannot raise into TRANSIENT.
+            if status_code in CAPABILITY_HTTP_STATUSES:
+                logger.debug(
+                    "capability_logs_probe_http_refusal",
+                    endpoint=endpoint[:60],
+                    http_status=status_code,
+                )
+                return GetLogsCapability.CANNOT_SERVE_LOGS
+            try:
+                data = resp.json()
+            except ValueError:
+                # Non-JSON body (HTML challenge / gateway page) — classify on
+                # the raw text instead of letting the decode error hide a
+                # structural refusal.
+                data = getattr(resp, "text", "") or ""
     except httpx.TimeoutException:
         logger.debug("capability_logs_probe_timeout", endpoint=endpoint[:60], from_block=from_block)
         return GetLogsCapability.TRANSIENT
@@ -613,10 +753,12 @@ async def probe_endpoint_capabilities(
 __all__ = [
     "ARCHIVE_METHODS",
     "ARCHIVE_METHOD_PREFIXES",
-    "CAPABILITY_PROBE_TIMEOUT",
+    "CAPABILITY_BODY_MARKERS",
     "CAPABILITY_ERROR_CODES",
     "CAPABILITY_ERROR_MARKERS",
     "CAPABILITY_HTTP_STATUSES",
+    "CAPABILITY_PERSIST_TTL",
+    "CAPABILITY_PROBE_TIMEOUT",
     "ArchiveRoutingError",
     "CapabilityRecord",
     "GETLOGS_RANGE_LADDER",
@@ -628,10 +770,12 @@ __all__ = [
     "archive_guard_reason",
     "capability_records",
     "classify_logs_capability",
+    "clear_capabilities",
     "get_capability",
     "is_archive_capable",
     "is_logs_capability_excluded",
     "is_logs_capability_failure",
+    "load_capabilities",
     "logs_capable_endpoints",
     "method_requires_archive",
     "probe_archive",

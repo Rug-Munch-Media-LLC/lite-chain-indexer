@@ -48,6 +48,32 @@ from lite_indexer.rpc.pool import get_best_endpoint
 
 logger = get_logger(__name__)
 
+_GATING_STATE_LOADED = False
+
+
+def _load_persisted_gating_state() -> None:
+    """Load capability/health/ban state from SQLite once per process (D2).
+
+    Best-effort: a missing/broken DB degrades to the in-memory empty state
+    (the pre-D2 behavior) and never blocks startup.
+    """
+    global _GATING_STATE_LOADED
+    if _GATING_STATE_LOADED:
+        return
+    _GATING_STATE_LOADED = True
+    try:
+        from lite_indexer.rpc.capabilities import load_capabilities
+        from lite_indexer.rpc.health import load_health_state
+        from lite_indexer.rpc.pool import load_ban_state
+
+        caps = load_capabilities()
+        health = load_health_state()
+        bans = load_ban_state()
+        logger.info("gating_state_loaded", capabilities=caps, health=health, bans=bans)
+    except Exception:  # noqa: BLE001 — persistence is best-effort
+        logger.warning("gating_state_load_failed", exc_info=True)
+
+
 # One-shot startup verification results consumed by each chain's first sync
 # cycle. Keyed by chain. Populated by :func:`verify_all_chains`; popped by
 # :func:`consume_startup_result` so the expensive first pass happens once at
@@ -57,6 +83,15 @@ _STARTUP_RESULTS: dict[str, EndpointVerifyResult] = {}
 # finishes, so a chain's sync loop starts the moment its own verify is done
 # instead of waiting for the whole pass. Awaited by :func:`wait_startup_result`.
 _STARTUP_FUTURES: dict[str, asyncio.Future[EndpointVerifyResult | None]] = {}
+# D5 (2026-09-14): the verified log set is DURABLE for the
+# ENDPOINT_VERIFY_INTERVAL window — a timestamped cache keyed by chain. It
+# used to be popped after one cycle, so cycle 2+ re-verified and the
+# rpc_pool_logs_endpoints gauge never settled.
+_VERIFIED_CACHE: dict[str, tuple[float, EndpointVerifyResult]] = {}
+# The FULL configured endpoint list per chain, captured before the first
+# verified-set swap so re-verification always reconsiders every configured
+# endpoint (not just the previously verified subset).
+_ORIGINALS: dict[str, list[str]] = {}
 
 
 @dataclass
@@ -186,11 +221,21 @@ async def verify_chain_endpoints(
     Returns:
         :class:`EndpointVerifyResult`, or ``None`` if no endpoints are configured.
     """
-    chain_endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
+    chain_endpoints = _ORIGINALS.get(chain) or GET_LOGS_ENDPOINTS.get(chain, [])
     if not chain_endpoints:
         logger.error("no_endpoints_for_chain", chain=chain)
         return None
 
+    # Durable verified set: reuse the last verdict while it is fresh so a
+    # second cycle neither re-probes nor restores, and the pool gauge stays
+    # populated.
+    cached = _fresh_verified(chain)
+    if cached is not None:
+        set_labeled_gauge("lite_indexer_rpc_pool_logs_endpoints", len(cached.verified_endpoints), chain=chain)
+        logger.debug("endpoint_verify_cache_hit", chain=chain, log_capable=len(cached.verified_endpoints))
+        return cached
+
+    _ORIGINALS.setdefault(chain, list(chain_endpoints))
     probe_sem = probe_semaphore or asyncio.Semaphore(max(1, ENDPOINT_VERIFY_CONCURRENCY))
 
     # Get latest block for verification range
@@ -245,12 +290,28 @@ async def verify_chain_endpoints(
         log_capable=len(log_capable),
         tip_only=len(tip_only),
     )
-    return EndpointVerifyResult(
+    result = EndpointVerifyResult(
         chain=chain,
         original_endpoints=list(chain_endpoints),
         verified_endpoints=log_capable,
         tip_only_endpoints=tip_only,
     )
+    # Durable for the verification interval (D5).
+    _VERIFIED_CACHE[chain] = (time.time(), result)
+    return result
+
+
+def _fresh_verified(chain: str, now: float | None = None) -> EndpointVerifyResult | None:
+    """Return the cached verified set when still inside the interval (else None)."""
+    entry = _VERIFIED_CACHE.get(chain)
+    if entry is None:
+        return None
+    at, result = entry
+    now = time.time() if now is None else now
+    if (now - at) >= ENDPOINT_VERIFY_INTERVAL:
+        _VERIFIED_CACHE.pop(chain, None)
+        return None
+    return result
 
 
 def consume_startup_result(chain: str) -> EndpointVerifyResult | None:
@@ -268,26 +329,34 @@ async def wait_startup_result(chain: str, timeout: float | None = None) -> Endpo
 
     Unlike :func:`consume_startup_result`, this blocks only on THIS chain's
     future — a chain starts syncing the moment its own verification lands,
-    without waiting for the rest of the pass. Falls back to any buffered
-    result (or None) when the chain was not part of the startup pass, the
-    wait times out, or the pass was cancelled.
+    without waiting for the rest of the pass. The result is also written to
+    the durable verified cache (D5) so subsequent cycles reuse it for
+    ``ENDPOINT_VERIFY_INTERVAL`` instead of re-probing; falls back to any
+    buffered/cached result (or None) when the chain was not part of the
+    startup pass, the wait times out, or the pass was cancelled.
     """
     future = _STARTUP_FUTURES.get(chain)
-    if future is None:
-        return consume_startup_result(chain)
-    try:
-        result = await (asyncio.wait_for(asyncio.shield(future), timeout) if timeout else asyncio.shield(future))
-    except (TimeoutError, asyncio.CancelledError):
-        return consume_startup_result(chain)
-    _STARTUP_FUTURES.pop(chain, None)
-    _STARTUP_RESULTS.pop(chain, None)
-    return result
+    if future is not None:
+        try:
+            result = await (asyncio.wait_for(asyncio.shield(future), timeout) if timeout else asyncio.shield(future))
+        except (TimeoutError, asyncio.CancelledError):
+            result = _STARTUP_RESULTS.get(chain)
+        _STARTUP_FUTURES.pop(chain, None)
+        if result is not None:
+            _VERIFIED_CACHE[chain] = (time.time(), result)
+        return result
+    cached = _fresh_verified(chain)
+    if cached is not None:
+        return cached
+    return consume_startup_result(chain)
 
 
 def clear_startup_results() -> None:
-    """Clear buffered startup results + unresolved futures (tests / restart)."""
+    """Clear startup results, futures, and the durable verified cache (tests)."""
     _STARTUP_RESULTS.clear()
     _STARTUP_FUTURES.clear()
+    _VERIFIED_CACHE.clear()
+    _ORIGINALS.clear()
 
 
 async def verify_all_chains(
@@ -332,6 +401,11 @@ async def verify_all_chains(
     if not targets:
         logger.info("endpoint_verify_startup_skipped", reason="no_configured_endpoints")
         return results
+
+    # D2 (2026-09-14): load persisted gating state FIRST so a restart reuses
+    # capability verdicts, health timestamps, and ban windows instead of
+    # re-probing/re-banning the whole pool.
+    _load_persisted_gating_state()
 
     limit = concurrency if concurrency is not None else ENDPOINT_VERIFY_CONCURRENCY
     # ONE global semaphore across every chain's probes (not one per chain):
@@ -411,6 +485,10 @@ def apply_verified_endpoints(result: EndpointVerifyResult) -> None:
     """
     import lite_indexer.chains as chains_mod
 
+    # Capture the full configured list before the first swap so later
+    # re-verification reconsiders every configured endpoint, and the log set
+    # can stay applied across cycles (D5: no per-cycle restore).
+    _ORIGINALS.setdefault(result.chain, list(result.original_endpoints))
     if result.verified_endpoints:
         chains_mod.GET_LOGS_ENDPOINTS[result.chain] = list(result.verified_endpoints)
     elif result.tip_only_endpoints:

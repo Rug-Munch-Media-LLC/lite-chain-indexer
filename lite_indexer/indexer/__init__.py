@@ -684,16 +684,9 @@ class LiteIndexer(
           - ClickHouse: strategy.write_clickhouse()
 
         The verified endpoint swap applied by ``_evm_verify_endpoints`` is
-        in effect for the whole cycle; the originals are restored on exit
-        (finally) so the next cycle starts from the configured list.
+        the DURABLE verified set (D5, 2026-09-14): it is kept for the
+        ``ENDPOINT_VERIFY_INTERVAL`` window and re-applied each cycle from
+        the cache, so the log pool never reverts to the full configured list
+        (which includes capability-refused endpoints) between cycles.
         """
-        try:
-            return await self._sync_loop_body(summary, start_time)
-        finally:
-            # Restore EVM endpoints after the sync cycle (verified swap is
-            # only valid for one cycle).
-            try:
-                if self._is_evm() and self._verify_result is not None:
-                    restore_original_endpoints(self._verify_result)
-            except (KeyError, TypeError) as exc:
-                logger.warning("endpoint_restore_failed", chain=self.chain, error=str(exc)[:80])
+        return await self._sync_loop_body(summary, start_time)

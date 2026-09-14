@@ -56,7 +56,20 @@ CREATE INDEX IF NOT EXISTS idx_rpc_cache_expires ON rpc_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_rpc_cache_range ON rpc_cache(chain, from_block, to_block);
 CREATE INDEX IF NOT EXISTS idx_rpc_cache_block ON rpc_cache(chain, block_number);
 CREATE INDEX IF NOT EXISTS idx_rpc_cache_accessed ON rpc_cache(accessed_at);
+CREATE TABLE IF NOT EXISTS gating_state (
+    kind       TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    PRIMARY KEY (kind, key)
+);
+CREATE INDEX IF NOT EXISTS idx_gating_state_expires ON gating_state(expires_at);
 """
+
+# Cap for the gating-state table (capability verdicts, health, bans). Small
+# and bounded; prune oldest rows when exceeded. 0 disables the cap.
+GATING_STATE_MAX_ENTRIES = 5000
 
 # Enforce the size cap every N writes (SUM over 200k rows is not free).
 _SIZE_CHECK_EVERY = 32
@@ -297,6 +310,119 @@ class ResponseCacheDB:
             logger.debug("rpc_cache_db_stats_failed", error=str(exc)[:100])
             return {}
 
+    # ── Gating state (capability / health / bans) ─────────────────────
+    # A small, bounded key/value store used to survive restarts: capability
+    # verdicts, endpoint-health timestamps, and ban windows. Every method is
+    # exception-safe (a broken DB degrades to a cache miss).
+
+    def state_get(self, kind: str, key: str, now: float | None = None) -> str | None:
+        """Return a gating-state payload, or None (miss / expired / error)."""
+        conn = self._connect()
+        if conn is None:
+            return None
+        now = time.time() if now is None else now
+        try:
+            with self._lock:
+                row = conn.execute(
+                    "SELECT payload, expires_at FROM gating_state WHERE kind = ? AND key = ?",
+                    (kind, key),
+                ).fetchone()
+                if row is None:
+                    return None
+                payload, expires_at = row
+                if float(expires_at) <= now:
+                    conn.execute("DELETE FROM gating_state WHERE kind = ? AND key = ?", (kind, key))
+                    conn.commit()
+                    return None
+                return str(payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("gating_state_get_failed", kind=kind, error=str(exc)[:100])
+            return None
+
+    def state_put(
+        self,
+        kind: str,
+        key: str,
+        payload: str,
+        *,
+        ttl: float = 0.0,
+        now: float | None = None,
+    ) -> bool:
+        """Upsert one gating-state entry (ttl <= 0 means no expiry)."""
+        conn = self._connect()
+        if conn is None:
+            return False
+        now = time.time() if now is None else now
+        expires_at = now + ttl if ttl > 0 else float("inf")
+        try:
+            with self._lock:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO gating_state
+                        (kind, key, payload, updated_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (kind, key, payload, now, expires_at),
+                )
+                if GATING_STATE_MAX_ENTRIES > 0:
+                    row = conn.execute("SELECT COUNT(*) FROM gating_state").fetchone()
+                    count = int(row[0]) if row else 0
+                    if count > GATING_STATE_MAX_ENTRIES:
+                        conn.execute(
+                            "DELETE FROM gating_state WHERE rowid IN "
+                            "(SELECT rowid FROM gating_state ORDER BY updated_at ASC LIMIT ?)",
+                            (count - GATING_STATE_MAX_ENTRIES,),
+                        )
+                conn.commit()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("gating_state_put_failed", kind=kind, error=str(exc)[:100])
+            return False
+
+    def state_delete(self, kind: str, key: str) -> None:
+        """Remove one gating-state entry (best-effort)."""
+        conn = self._connect()
+        if conn is None:
+            return
+        try:
+            with self._lock:
+                conn.execute("DELETE FROM gating_state WHERE kind = ? AND key = ?", (kind, key))
+                conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("gating_state_delete_failed", kind=kind, error=str(exc)[:100])
+
+    def state_load(self, kind: str, now: float | None = None) -> dict[str, str]:
+        """Return every live entry for ``kind`` as ``{key: payload}``."""
+        conn = self._connect()
+        if conn is None:
+            return {}
+        now = time.time() if now is None else now
+        try:
+            with self._lock:
+                conn.execute("DELETE FROM gating_state WHERE expires_at <= ?", (now,))
+                conn.commit()
+                rows = conn.execute(
+                    "SELECT key, payload FROM gating_state WHERE kind = ?",
+                    (kind,),
+                ).fetchall()
+            return {str(k): str(v) for k, v in rows}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("gating_state_load_failed", kind=kind, error=str(exc)[:100])
+            return {}
+
+    def state_count(self, kind: str) -> int:
+        """Number of live entries for ``kind`` (0 when unavailable)."""
+        conn = self._connect()
+        if conn is None:
+            return 0
+        try:
+            with self._lock:
+                row = conn.execute("SELECT COUNT(*) FROM gating_state WHERE kind = ?", (kind,)).fetchone()
+            return int(row[0]) if row else 0
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("gating_state_count_failed", kind=kind, error=str(exc)[:100])
+            return 0
+
 
 # ── Process-wide singleton ─────────────────────────────────────────────
 
@@ -338,9 +464,40 @@ def configured_path() -> str:
     return _OVERRIDE_PATH or RPC_CACHE_DB
 
 
+def state_get(kind: str, key: str, now: float | None = None) -> str | None:
+    """Module-level gating-state read (see :meth:`ResponseCacheDB.state_get`)."""
+    return get_db().state_get(kind, key, now)
+
+
+def state_put(kind: str, key: str, payload: str, *, ttl: float = 0.0, now: float | None = None) -> bool:
+    """Module-level gating-state upsert (see :meth:`ResponseCacheDB.state_put`)."""
+    return get_db().state_put(kind, key, payload, ttl=ttl, now=now)
+
+
+def state_delete(kind: str, key: str) -> None:
+    """Module-level gating-state delete (see :meth:`ResponseCacheDB.state_delete`)."""
+    get_db().state_delete(kind, key)
+
+
+def state_load(kind: str, now: float | None = None) -> dict[str, str]:
+    """Module-level gating-state bulk read (see :meth:`ResponseCacheDB.state_load`)."""
+    return get_db().state_load(kind, now)
+
+
+def state_count(kind: str) -> int:
+    """Module-level gating-state count (see :meth:`ResponseCacheDB.state_count`)."""
+    return get_db().state_count(kind)
+
+
 __all__ = [
+    "GATING_STATE_MAX_ENTRIES",
     "ResponseCacheDB",
     "configured_path",
     "get_db",
     "reset_db",
+    "state_count",
+    "state_delete",
+    "state_get",
+    "state_load",
+    "state_put",
 ]
