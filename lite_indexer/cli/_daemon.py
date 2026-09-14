@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import threading
 import time
 from collections.abc import Sequence
 from functools import partial
@@ -23,13 +24,17 @@ from lite_indexer.config import (
     DATA_DIR,
     DISK_CAP_BYTES,
     MAX_CONCURRENT_CHAINS,
+    MEMORY_HIGH_MB,
     MEMORY_PAUSE_SLEEP,
     MEMORY_RECYCLE_MB,
+    MEMORY_WATCHDOG_ENABLED,
+    MEMORY_WATCHDOG_INTERVAL_S,
     METRICS_GAUGE_INTERVAL_SECONDS,
     PRICING_ENABLED,
 )
 from lite_indexer.health import ChainStallTracker
 from lite_indexer.indexer import LiteIndexer
+from lite_indexer.indexer._resource_guards import get_guarded_memory_mb
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics_server import start_metrics_server, stop_metrics_server
 from lite_indexer.storage.clickhouse import ClickHouseWriter
@@ -64,6 +69,85 @@ async def recycle_if_over_budget(
     await asyncio.gather(*(ix.aclose() for ix in indexers), return_exceptions=True)
     logger.info("memory_recycle_exit", rss_mb=mem_mb, recycle_mb=MEMORY_RECYCLE_MB)
     os._exit(0)
+
+
+def _watchdog_sleep(seconds: int) -> None:
+    """Sleep helper for the watchdog loop (patch point for tests)."""
+    time.sleep(seconds)
+
+
+async def _aclose_all(indexers: Sequence[LiteIndexer]) -> None:
+    """Close every indexer client, ignoring individual failures."""
+    await asyncio.gather(*(ix.aclose() for ix in indexers), return_exceptions=True)
+
+
+def _close_indexers_best_effort(indexers: Sequence[LiteIndexer]) -> None:
+    """Close indexer clients from the watchdog thread, best-effort.
+
+    Runs its own short-lived event loop (never touches the daemon's main
+    loop); any failure is swallowed — ``os._exit`` follows regardless.
+    """
+    if not indexers:
+        return
+    try:
+        asyncio.run(_aclose_all(indexers))
+    except Exception as exc:  # noqa: BLE001 — watchdog must never raise
+        logger.warning("memory_watchdog_close_failed", error=str(exc)[:100])
+
+
+def start_memory_watchdog(indexers: Sequence[LiteIndexer]) -> threading.Thread | None:
+    """Start the continuous memory watchdog thread; returns it (or None).
+
+    2026-09-14 wedge post-mortem: the post-cycle ``recycle_if_over_budget``
+    check only runs AFTER a sync cycle completes, so a memory burst
+    mid-cycle throttled the task into uninterruptible sleep on
+    ``mem_cgroup_handle_over_high`` and the check never ran — 5h45m wedged,
+    0 writes, no logs. This thread is independent of the asyncio sync
+    loop: every :data:`MEMORY_WATCHDOG_INTERVAL_S` it reads the guarded
+    memory (cgroup-aware) and, at or above :data:`MEMORY_RECYCLE_MB`,
+    logs ``memory_recycle_watchdog``, closes clients best-effort and
+    ``os._exit(0)``s (idempotent via an event) so systemd ``Restart=always``
+    restarts the daemon with a fresh heap. At :data:`MEMORY_HIGH_MB` it
+    logs a pre-emergency ``memory_high_watchdog`` but does NOT exit.
+
+    Disabled (returns None) when ``MEMORY_WATCHDOG_ENABLED=0`` or
+    ``MEMORY_RECYCLE_MB <= 0``.
+    """
+    if not MEMORY_WATCHDOG_ENABLED or MEMORY_RECYCLE_MB <= 0:
+        return None
+
+    exit_once = threading.Event()
+    stop = threading.Event()
+
+    def _loop() -> None:
+        while not stop.is_set():
+            mem = get_guarded_memory_mb()
+            if memory_recycle_needed(mem):
+                logger.warning(
+                    "memory_recycle_watchdog",
+                    rss_mb=mem,
+                    recycle_mb=MEMORY_RECYCLE_MB,
+                    interval_s=MEMORY_WATCHDOG_INTERVAL_S,
+                )
+                _close_indexers_best_effort(indexers)
+                if not exit_once.is_set():
+                    exit_once.set()
+                    logger.info("memory_recycle_watchdog_exit", rss_mb=mem, recycle_mb=MEMORY_RECYCLE_MB)
+                    os._exit(0)
+                return
+            if mem >= MEMORY_HIGH_MB:
+                logger.warning(
+                    "memory_high_watchdog",
+                    rss_mb=mem,
+                    high_mb=MEMORY_HIGH_MB,
+                    recycle_mb=MEMORY_RECYCLE_MB,
+                )
+            _watchdog_sleep(MEMORY_WATCHDOG_INTERVAL_S)
+
+    thread = threading.Thread(target=_loop, name="memory-watchdog", daemon=True)
+    thread.stop_event = stop  # type: ignore[attr-defined]  # test seam
+    thread.start()
+    return thread
 
 
 def export_global_metrics() -> None:
@@ -188,6 +272,12 @@ async def main_daemon(
 
     # Live indexers, kept so shutdown can close their HTTP clients.
     indexers: list[LiteIndexer] = []
+
+    # Continuous memory watchdog (2026-09-14 wedge fix): independent of the
+    # sync loop so a mid-cycle cgroup MemoryHigh throttle cannot prevent the
+    # recycle check from running. Secondary path: post-cycle
+    # recycle_if_over_budget in _chain_loop.
+    start_memory_watchdog(indexers)
 
     async def _chain_loop(chain: str) -> None:
         """Independent per-chain polling loop with its own poll interval.

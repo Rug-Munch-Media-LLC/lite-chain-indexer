@@ -141,6 +141,22 @@ MEMORY_PAUSE_SLEEP: int = int(os.environ.get("MEMORY_PAUSE_SLEEP", "30"))
 # Set MEMORY_RECYCLE_MB=0 to disable self-recycling.
 MEMORY_RECYCLE_MB: int = int(os.environ.get("MEMORY_RECYCLE_MB", "3072"))
 
+# ── Continuous memory watchdog thread ────────────────────────────────────
+# 2026-09-14 incident: after a migration the daemon ran 5h45m wedged in
+# D-state on mem_cgroup_handle_over_high (RSS 5.8 GiB, swap 100% full,
+# 0 writes, no logs). The post-cycle recycle check never ran because the
+# kernel throttled the task mid-cycle — a check that only runs AFTER a
+# sync cycle cannot fire when the cycle itself is the thing being
+# throttled. This watchdog is a plain daemon thread, fully independent
+# of the asyncio sync loop: every MEMORY_WATCHDOG_INTERVAL_S it reads the
+# guarded memory (cgroup-aware) and, at or above MEMORY_RECYCLE_MB, logs
+# ``memory_recycle_watchdog`` and os._exit(0)s so systemd restarts the
+# daemon with a fresh heap. It also logs ``memory_high_watchdog`` at
+# MEMORY_HIGH_MB (pre-emergency pressure signal) but only exits at the
+# recycle ceiling. Set MEMORY_WATCHDOG_ENABLED=0 to disable.
+MEMORY_WATCHDOG_ENABLED: bool = os.environ.get("MEMORY_WATCHDOG_ENABLED", "1") == "1"
+MEMORY_WATCHDOG_INTERVAL_S: int = int(os.environ.get("MEMORY_WATCHDOG_INTERVAL_S", "5"))
+
 # ── Bounded cache caps ───────────────────────────────────────────────────
 # Every long-lived in-memory collection gets an explicit ceiling; see
 # lite_indexer/util/bounded.py. Without these the daemon leaks slowly.
