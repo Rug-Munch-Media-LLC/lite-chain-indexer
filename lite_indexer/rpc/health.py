@@ -12,9 +12,15 @@ import time
 
 import httpx
 
-from lite_indexer.chains import ENDPOINT_VERIFY_INTERVAL, ENDPOINT_VERIFY_TIMEOUT, VERIFY_BLOCK_DELTA
+from lite_indexer.chains import (
+    ENDPOINT_VERIFY_CONCURRENCY,
+    ENDPOINT_VERIFY_INTERVAL,
+    ENDPOINT_VERIFY_TIMEOUT,
+    VERIFY_BLOCK_DELTA,
+)
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.rpc.budgets import budget_available
 from lite_indexer.rpc.capabilities import is_logs_capability_failure
 
 logger = get_logger(__name__)
@@ -151,6 +157,8 @@ async def verify_endpoints_for_chain(
     endpoints: list[str],
     chain: str,
     latest_block: int | None = None,
+    *,
+    semaphore: asyncio.Semaphore | None = None,
 ) -> list[str]:
     """Verify all endpoints for a chain, returning only healthy ones.
 
@@ -161,30 +169,44 @@ async def verify_endpoints_for_chain(
         endpoints: List of RPC URLs for this chain.
         chain: Chain name.
         latest_block: Optional latest block for range-based verification.
+        semaphore: Optional SHARED probe bound. The startup pass passes one
+            global semaphore so in-flight probes stay memory-bounded across
+            all chains; a standalone call creates its own small bound.
 
     Returns:
         List of verified healthy endpoints (maintains original order).
     """
     now = time.time()
-    verified: list[str] = []
 
-    for ep in endpoints:
+    # Probe endpoints CONCURRENTLY (bounded). The liveness gate is one
+    # eth_getLogs probe per endpoint; serializing it made a chain's first
+    # verify take minutes even before the capability probes ran.
+    probe_sem = semaphore or asyncio.Semaphore(max(1, ENDPOINT_VERIFY_CONCURRENCY))
+
+    async def _check(ep: str) -> tuple[str, bool]:
         # Skip unresolved ${ENV_VAR} placeholders — they can never be dialed
         # (DNS/JSON errors) and would otherwise retry every sync cycle.
         if "${" in ep:
             logger.debug("verify_skip_unresolved_env", endpoint=ep[:50], chain=chain)
-            continue
+            return ep, False
 
-        # Skip if recently verified
+        # Honor the per-provider budget layer: never spend verification
+        # probes on an identity that is pre-emptively cooled or has hit its
+        # daily hard cap. Keeps the parallel startup pass inside quotas.
+        if not budget_available(ep):
+            logger.debug("verify_skip_budget_unavailable", endpoint=ep[:50], chain=chain)
+            return ep, False
+
+        # Skip if recently verified (reuse the cached verdict).
         last_v = _endpoint_last_verified.get(ep, 0)
         if (now - last_v) < ENDPOINT_VERIFY_INTERVAL:
-            if _endpoint_verified_ok.get(ep, False):
-                verified.append(ep)
-            continue
+            return ep, _endpoint_verified_ok.get(ep, False)
 
-        ok = await verify_endpoint(ep, chain, latest_block)
-        if ok:
-            verified.append(ep)
+        async with probe_sem:
+            return ep, await verify_endpoint(ep, chain, latest_block)
+
+    outcomes = await asyncio.gather(*(_check(ep) for ep in endpoints))
+    verified = [ep for ep, ok in outcomes if ok]
 
     # Fall through: if no endpoints passed, return all originals
     if not verified:

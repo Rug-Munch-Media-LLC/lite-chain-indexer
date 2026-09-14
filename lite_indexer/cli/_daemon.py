@@ -397,6 +397,24 @@ async def main_daemon(
     # Launch one independent task per chain, high-priority chains first so
     # they claim concurrency slots before low-priority chains.
     ordered_chains = sorted(chains, key=lambda c: chain_priority(c), reverse=True)
+
+    # ── Parallel startup endpoint verification ──────────────────────────
+    # Verification used to run inside each chain's sync loop, serialized by
+    # MAX_CONCURRENT_CHAINS, so only the first few chains got a log pool and
+    # the rest sat at rpc_pool_logs_endpoints{chain}=0 for hours (observed
+    # base 15:20 -> polygon 15:27, ~7.5 min apart). This pass runs ALL chains
+    # concurrently (ENDPOINT_VERIFY_CONCURRENCY) as a background task; each
+    # chain loop waits only on ITS OWN result via wait_startup_result, so it
+    # starts as soon as its verification lands — no chain is blocked behind
+    # the whole pass. Fail-soft: any failure is logged and the loop still
+    # starts, falling back to the in-loop verification path.
+    from lite_indexer.rpc.verify import verify_all_chains
+
+    startup_verify_task = asyncio.create_task(
+        verify_all_chains(ordered_chains),
+        name="endpoint-verify-startup",
+    )
+
     chain_tasks = [asyncio.create_task(_chain_loop(c), name=f"daemon-chain-{c}") for c in ordered_chains]
 
     # Periodic endpoint health monitor — probes every configured EVM RPC,
@@ -442,11 +460,14 @@ async def main_daemon(
     health_task.cancel()
     discovery_task.cancel()
     metrics_task.cancel()
+    startup_verify_task.cancel()
     if price_task is not None:
         price_task.cancel()
     for task in chain_tasks:
         task.cancel()
-    await asyncio.gather(health_task, discovery_task, metrics_task, *chain_tasks, return_exceptions=True)
+    await asyncio.gather(
+        health_task, discovery_task, metrics_task, startup_verify_task, *chain_tasks, return_exceptions=True
+    )
     if price_task is not None:
         await asyncio.gather(price_task, return_exceptions=True)
 

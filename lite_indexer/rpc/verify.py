@@ -19,10 +19,15 @@ endpoint's :class:`~lite_indexer.rpc.capabilities.CapabilityRecord`.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 
-from lite_indexer.chains import ENDPOINT_VERIFY_INTERVAL, GET_LOGS_ENDPOINTS
+from lite_indexer.chains import (
+    ENDPOINT_VERIFY_CONCURRENCY,
+    ENDPOINT_VERIFY_INTERVAL,
+    GET_LOGS_ENDPOINTS,
+)
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.metrics import set_labeled_gauge
@@ -42,6 +47,16 @@ from lite_indexer.rpc.health import verify_endpoints_for_chain
 from lite_indexer.rpc.pool import get_best_endpoint
 
 logger = get_logger(__name__)
+
+# One-shot startup verification results consumed by each chain's first sync
+# cycle. Keyed by chain. Populated by :func:`verify_all_chains`; popped by
+# :func:`consume_startup_result` so the expensive first pass happens once at
+# daemon start instead of serially inside the per-chain loops.
+_STARTUP_RESULTS: dict[str, EndpointVerifyResult] = {}
+# Per-chain futures resolved AS SOON AS that chain's startup verification
+# finishes, so a chain's sync loop starts the moment its own verify is done
+# instead of waiting for the whole pass. Awaited by :func:`wait_startup_result`.
+_STARTUP_FUTURES: dict[str, asyncio.Future[EndpointVerifyResult | None]] = {}
 
 
 @dataclass
@@ -145,7 +160,12 @@ async def _probe_and_record_capabilities(
         return GetLogsCapability.TRANSIENT
 
 
-async def verify_chain_endpoints(chain: str, rpc_client: RpcClient) -> EndpointVerifyResult | None:
+async def verify_chain_endpoints(
+    chain: str,
+    rpc_client: RpcClient,
+    *,
+    probe_semaphore: asyncio.Semaphore | None = None,
+) -> EndpointVerifyResult | None:
     """Verify all configured endpoints for an EVM chain.
 
     Returns ``None`` when the chain has no endpoints configured — the
@@ -158,6 +178,10 @@ async def verify_chain_endpoints(chain: str, rpc_client: RpcClient) -> EndpointV
     Args:
         chain: Chain name.
         rpc_client: RPC client used to fetch the tip for range checks.
+        probe_semaphore: Optional SHARED bound applied to every probe
+            (liveness + capability). The startup pass passes one global
+            semaphore so in-flight probes stay memory-bounded across all
+            chains; a standalone call creates its own bound.
 
     Returns:
         :class:`EndpointVerifyResult`, or ``None`` if no endpoints are configured.
@@ -167,21 +191,37 @@ async def verify_chain_endpoints(chain: str, rpc_client: RpcClient) -> EndpointV
         logger.error("no_endpoints_for_chain", chain=chain)
         return None
 
+    probe_sem = probe_semaphore or asyncio.Semaphore(max(1, ENDPOINT_VERIFY_CONCURRENCY))
+
     # Get latest block for verification range
     tip_for_verify = await rpc_client.eth_block_number(get_best_endpoint(chain_endpoints))
     verified_endpoints = await verify_endpoints_for_chain(
         chain_endpoints,
         chain,
         latest_block=tip_for_verify,
+        semaphore=probe_sem,
     )
+
     # Gate every liveness-verified endpoint on the broad tip-range getLogs
     # probe. Capability refusals are excluded from the log path and kept as
     # tip-only; transient failures stay in the log set (never excluded on a
     # timeout). Archive + range capabilities are persisted alongside.
+    #
+    # PROBED IN PARALLEL: the per-endpoint archive + range-ladder probes
+    # dominate a chain's verification time; serializing them made a single
+    # chain's first verify take minutes, which (multiplied by 21 chains) was
+    # the real reason the log pool stayed empty. All probes share the one
+    # global ``probe_sem`` so the bound is memory-safe across chains;
+    # provider-account concurrency remains bounded inside RpcClient's budget
+    # slots.
+    async def _gate(ep: str) -> tuple[str, GetLogsCapability]:
+        async with probe_sem:
+            return ep, await _probe_and_record_capabilities(rpc_client, ep, chain, tip_for_verify)
+
+    gated = await asyncio.gather(*(_gate(ep) for ep in verified_endpoints))
     log_capable: list[str] = []
     tip_only: list[str] = []
-    for ep in verified_endpoints:
-        status = await _probe_and_record_capabilities(rpc_client, ep, chain, tip_for_verify)
+    for ep, status in gated:
         if status is GetLogsCapability.CANNOT_SERVE_LOGS:
             tip_only.append(ep)
             metrics_incr("endpoint_logs_capability_excluded")
@@ -211,6 +251,149 @@ async def verify_chain_endpoints(chain: str, rpc_client: RpcClient) -> EndpointV
         verified_endpoints=log_capable,
         tip_only_endpoints=tip_only,
     )
+
+
+def consume_startup_result(chain: str) -> EndpointVerifyResult | None:
+    """Pop the pre-verified startup result for ``chain`` (one-shot).
+
+    The per-chain sync loop calls this before falling back to a fresh
+    verification, so the expensive cold pass happens once at daemon start
+    and the first sync cycle applies the already-verified log pool.
+    """
+    return _STARTUP_RESULTS.pop(chain, None)
+
+
+async def wait_startup_result(chain: str, timeout: float | None = None) -> EndpointVerifyResult | None:
+    """Wait for ``chain``'s startup verification (returns None when absent).
+
+    Unlike :func:`consume_startup_result`, this blocks only on THIS chain's
+    future — a chain starts syncing the moment its own verification lands,
+    without waiting for the rest of the pass. Falls back to any buffered
+    result (or None) when the chain was not part of the startup pass, the
+    wait times out, or the pass was cancelled.
+    """
+    future = _STARTUP_FUTURES.get(chain)
+    if future is None:
+        return consume_startup_result(chain)
+    try:
+        result = await (asyncio.wait_for(asyncio.shield(future), timeout) if timeout else asyncio.shield(future))
+    except (TimeoutError, asyncio.CancelledError):
+        return consume_startup_result(chain)
+    _STARTUP_FUTURES.pop(chain, None)
+    _STARTUP_RESULTS.pop(chain, None)
+    return result
+
+
+def clear_startup_results() -> None:
+    """Clear buffered startup results + unresolved futures (tests / restart)."""
+    _STARTUP_RESULTS.clear()
+    _STARTUP_FUTURES.clear()
+
+
+async def verify_all_chains(
+    chains: list[str],
+    *,
+    rpc_client: RpcClient | None = None,
+    concurrency: int | None = None,
+    store_results: bool = True,
+) -> dict[str, EndpointVerifyResult | None]:
+    """Verify every EVM chain's endpoints CONCURRENTLY (startup pass).
+
+    Verification previously ran inside each chain's sync loop and was
+    serialized by ``MAX_CONCURRENT_CHAINS``, so all but the first few
+    chains sat with an empty log pool for hours. This pass runs before the
+    sync loops settle and covers every chain under a small dedicated
+    concurrency bound.
+
+    Each chain's verification populates the existing endpoint-health cache
+    and capability registry, so the subsequent per-chain calls (and a
+    restart within ``ENDPOINT_VERIFY_INTERVAL``) skip re-probing. Results
+    are buffered in :data:`_STARTUP_RESULTS` for one-shot consumption by
+    the chain loops.
+
+    Fail-soft: a chain whose probe raises is logged and recorded as
+    ``None``; a chain with zero log-capable endpoints logs ``no_log_endpoints``
+    and is recorded with an empty set. Neither aborts the pass.
+
+    Args:
+        chains: Chain names to verify (non-EVM / unconfigured skipped).
+        rpc_client: Optional shared client (created + closed here when None).
+        concurrency: Max in-flight verification probes GLOBALLY (default
+            :data:`ENDPOINT_VERIFY_CONCURRENCY`). One shared semaphore is
+            handed to every chain so the bound is memory-safe.
+        store_results: Buffer results for :func:`consume_startup_result`.
+
+    Returns:
+        Mapping ``chain -> EndpointVerifyResult | None`` for the chains
+        that have configured endpoints.
+    """
+    targets = [chain for chain in chains if GET_LOGS_ENDPOINTS.get(chain)]
+    results: dict[str, EndpointVerifyResult | None] = {}
+    if not targets:
+        logger.info("endpoint_verify_startup_skipped", reason="no_configured_endpoints")
+        return results
+
+    limit = concurrency if concurrency is not None else ENDPOINT_VERIFY_CONCURRENCY
+    # ONE global semaphore across every chain's probes (not one per chain):
+    # every chain task runs, but at most `limit` probes are ever in flight.
+    # This bounds peak memory (each probe can buffer a large getLogs
+    # response) while letting all chains progress in parallel.
+    probe_semaphore = asyncio.Semaphore(max(1, int(limit)))
+    client = rpc_client or RpcClient()
+    owns_client = rpc_client is None
+    started = time.monotonic()
+
+    loop = asyncio.get_running_loop()
+    if store_results:
+        for chain in targets:
+            _STARTUP_FUTURES.setdefault(chain, loop.create_future())
+
+    def _resolve(chain: str, result: EndpointVerifyResult | None) -> None:
+        """Publish a chain's result to the buffered map + its waiter future."""
+        if not store_results:
+            return
+        if result is not None:
+            _STARTUP_RESULTS[chain] = result
+        future = _STARTUP_FUTURES.get(chain)
+        if future is not None and not future.done():
+            future.set_result(result)
+
+    async def _verify_one(chain: str) -> tuple[str, EndpointVerifyResult | None]:
+        try:
+            result = await verify_chain_endpoints(chain, client, probe_semaphore=probe_semaphore)
+        except Exception:  # noqa: BLE001 — one chain must never abort the pass
+            logger.warning("endpoint_verify_chain_failed", chain=chain, exc_info=True)
+            result = None
+        # Resolve as soon as THIS chain is done so its sync loop starts
+        # without waiting for the rest of the pass.
+        _resolve(chain, result)
+        if result is None or not result.verified_endpoints:
+            logger.warning("no_log_endpoints", chain=chain, total=result.total if result else 0)
+        return chain, result
+
+    try:
+        outcomes = await asyncio.gather(*(_verify_one(chain) for chain in targets))
+    finally:
+        # Never leave a chain waiting forever, even if the pass was aborted.
+        for chain in targets:
+            future = _STARTUP_FUTURES.get(chain)
+            if future is not None and not future.done():
+                future.set_result(None)
+        if owns_client:
+            await client.aclose()
+
+    for chain, result in outcomes:
+        results[chain] = result
+
+    with_logs = sum(1 for r in results.values() if r is not None and r.verified_endpoints)
+    logger.info(
+        "endpoint_verify_startup_complete",
+        chains=len(targets),
+        chains_with_logs=with_logs,
+        concurrency=max(1, int(limit)),
+        wall_s=round(time.monotonic() - started, 1),
+    )
+    return results
 
 
 def apply_verified_endpoints(result: EndpointVerifyResult) -> None:
@@ -247,7 +430,10 @@ def restore_original_endpoints(result: EndpointVerifyResult) -> None:
 
 __all__ = [
     "EndpointVerifyResult",
-    "verify_chain_endpoints",
     "apply_verified_endpoints",
+    "clear_startup_results",
+    "consume_startup_result",
     "restore_original_endpoints",
+    "verify_all_chains",
+    "verify_chain_endpoints",
 ]

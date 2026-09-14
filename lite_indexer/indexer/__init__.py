@@ -78,6 +78,7 @@ from lite_indexer.rpc.verify import (
     apply_verified_endpoints,
     restore_original_endpoints,
     verify_chain_endpoints,
+    wait_startup_result,
 )
 from lite_indexer.state import StateHighWater, StateManager
 from lite_indexer.storage import (
@@ -634,7 +635,14 @@ class LiteIndexer(
 
         Returns a summary dict if we should abort, or None to proceed.
         """
-        result = await verify_chain_endpoints(self.chain, self.rpc)
+        # Prefer the daemon's parallel startup result (already verified +
+        # capability-gated). Wait only on THIS chain's future, so the loop
+        # starts the moment its own verification lands instead of waiting for
+        # the whole pass; falls back to in-loop verification when no startup
+        # pass covered this chain.
+        result = await wait_startup_result(self.chain)
+        if result is None:
+            result = await verify_chain_endpoints(self.chain, self.rpc)
         if result is None:
             summary["status"] = "no_endpoints"
             summary["errors"].append(f"no endpoints configured for {self.chain}")
