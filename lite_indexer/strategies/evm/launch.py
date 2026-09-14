@@ -25,6 +25,7 @@ import os
 from datetime import UTC, datetime
 from typing import Any
 
+from lite_indexer.config import RETENTION_POLICY
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 
@@ -34,7 +35,9 @@ EVM_LAUNCHES_TABLE: str = os.environ.get("CH_EVM_LAUNCHES_TABLE", "wallet_memory
 
 NATS_EVENT_TYPE = "launch"
 
-_EVM_LAUNCHES_DDL = """
+_EVM_LAUNCHES_RULE = RETENTION_POLICY["evm_launches"]
+
+_EVM_LAUNCHES_DDL = f"""
 CREATE TABLE IF NOT EXISTS wallet_memory.evm_launches (
     chain LowCardinality(String),
     block_number UInt64,
@@ -49,7 +52,7 @@ CREATE TABLE IF NOT EXISTS wallet_memory.evm_launches (
     ingested_at DateTime64(3) DEFAULT now64(3)
 ) ENGINE = MergeTree()
 ORDER BY (chain, block_number, tx_hash)
-TTL block_timestamp + INTERVAL 365 DAY
+TTL {_EVM_LAUNCHES_RULE.time_column} + INTERVAL {_EVM_LAUNCHES_RULE.days} DAY
 """
 
 _EVM_LAUNCH_INSERT_COLUMNS = (

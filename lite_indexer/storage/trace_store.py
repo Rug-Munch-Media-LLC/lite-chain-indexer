@@ -21,11 +21,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from lite_indexer.config import CH_TRACE_TABLE, RETENTION_DAYS
+from lite_indexer.config import CH_TRACE_TABLE, RETENTION_POLICY
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 
 logger = get_logger(__name__)
+
+_TRACE_RULE = RETENTION_POLICY["internal_transfers"]
 
 _TRACE_DDL = f"""
 CREATE TABLE IF NOT EXISTS {CH_TRACE_TABLE} (
@@ -44,7 +46,7 @@ CREATE TABLE IF NOT EXISTS {CH_TRACE_TABLE} (
     ingested_at DateTime64(3) DEFAULT now64(3)
 ) ENGINE = MergeTree()
 ORDER BY (chain, block_number, tx_hash, trace_address)
-TTL block_timestamp + INTERVAL {RETENTION_DAYS.get("internal_transfers", 90)} DAY
+TTL {_TRACE_RULE.time_column} + INTERVAL {_TRACE_RULE.days} DAY
 """
 
 _INSERT_COLUMNS = (

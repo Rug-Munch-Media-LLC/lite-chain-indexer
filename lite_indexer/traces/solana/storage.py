@@ -8,12 +8,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from lite_indexer.config import RETENTION_POLICY
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 
 from .helpers import SOLANA_TRANSFERS_TABLE
 
 logger = get_logger(__name__)
+
+_SOLANA_TRANSFERS_RULE = RETENTION_POLICY["solana_transfers"]
 
 _SOLANA_TRACE_DDL = f"""
 CREATE TABLE IF NOT EXISTS {SOLANA_TRANSFERS_TABLE} (
@@ -33,7 +36,7 @@ CREATE TABLE IF NOT EXISTS {SOLANA_TRANSFERS_TABLE} (
     ingested_at DateTime64(3) DEFAULT now64(3)
 ) ENGINE = MergeTree()
 ORDER BY (signature, instruction_path)
-TTL block_timestamp + INTERVAL 90 DAY
+TTL {_SOLANA_TRANSFERS_RULE.time_column} + INTERVAL {_SOLANA_TRANSFERS_RULE.days} DAY
 """
 
 _SOLANA_TRACE_INSERT_COLUMNS = (

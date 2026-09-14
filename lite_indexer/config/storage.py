@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 # Load the shared env file (same file the daemon's systemd unit sources
@@ -114,6 +115,43 @@ CH_HOLDER_BALANCES_TABLE: str = "wallet_memory.holder_balances"
 CH_HOLDER_BALANCES_MV: str = "wallet_memory.holder_balances_mv"
 WALLET_OUT_PROJECTION: str = "wallet_out_proj"
 WALLET_IN_PROJECTION: str = "wallet_in_proj"
+
+@dataclass(frozen=True)
+class RetentionRule:
+    """Hot-window retention for one ClickHouse table.
+
+    Attributes:
+        table: Bare table name (no database prefix).
+        days: Hot-window length in days; older partitions/rows are dropped
+            by the table-level TTL once they are archived to B2 Parquet.
+        time_column: Column the TTL anchors on. Event time is preferred so
+            backfills of old blocks do not extend retention.
+    """
+
+    table: str
+    days: int
+    time_column: str
+
+
+# ── Hot/cold retention classes (SINGLE SOURCE OF TRUTH) ────────────────
+# Lean hot window in ClickHouse; everything older lives permanently as B2
+# Parquet and is queried in place via s3(). Archive-before-drop is
+# mandatory — a TTL must never outrun the archive pipeline. Keep this map in
+# lock-step with migrations/013_retention_classes.sql, the runtime DDLs
+# (which read this dict), and tests/test_retention.py.
+RETENTION_POLICY: dict[str, RetentionRule] = {
+    "evm_transfers": RetentionRule("evm_transfers", 30, "block_timestamp"),
+    "dex_events": RetentionRule("dex_events", 90, "block_timestamp"),
+    "internal_transfers": RetentionRule("internal_transfers", 90, "block_timestamp"),
+    "solana_transfers": RetentionRule("solana_transfers", 90, "block_timestamp"),
+    "scam_addresses": RetentionRule("scam_addresses", 180, "first_seen_at"),
+    "wallet_labels": RetentionRule("wallet_labels", 180, "loaded_at"),
+    "deployer_history": RetentionRule("deployer_history", 180, "deployed_at"),
+    "evm_launches": RetentionRule("evm_launches", 365, "block_timestamp"),
+    "solana_launches": RetentionRule("solana_launches", 365, "block_timestamp"),
+    "tron_launches": RetentionRule("tron_launches", 365, "block_timestamp"),
+}
+
 
 # Retention (days) per table before column-level degradation.
 RETENTION_DAYS: dict[str, int] = {

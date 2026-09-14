@@ -19,6 +19,7 @@ from lite_indexer.config import (
     SOLANA_CH_TABLE,
 )
 from lite_indexer.logging import get_logger
+from lite_indexer.retention import ensure_retention_policies
 
 logger = get_logger(__name__)
 
@@ -283,3 +284,10 @@ class SchemaMixin:
         ):
             self._degrade_column_ttl(client, CH_DEX_TABLE, column, dex_days)
         self._ensure_summary_projection(client, CH_DEX_TABLE, DEX_SUMMARY_COLUMNS)
+
+        # Table-level hot-window TTLs for every retention class (single
+        # source: lite_indexer.config.RETENTION_POLICY). Mirrors migration
+        # 013 so a fresh deployment gets the same TTLs the migration applies.
+        applied = ensure_retention_policies(client)
+        if applied:
+            logger.info("retention_ttls_ensured", tables=len(applied))

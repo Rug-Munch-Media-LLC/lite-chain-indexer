@@ -81,6 +81,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from lite_indexer.config import RETENTION_POLICY
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 
@@ -559,7 +560,9 @@ def bonding_curve_pda(mint: str) -> str | None:
 # ── Persistence / Streaming ───────────────────────────────────────────
 
 
-_SOLANA_LAUNCHES_DDL = """
+_SOLANA_LAUNCH_RULE = RETENTION_POLICY["solana_launches"]
+
+_SOLANA_LAUNCHES_DDL = f"""
 CREATE TABLE IF NOT EXISTS wallet_memory.solana_launches (
     chain LowCardinality(String) DEFAULT 'solana',
     slot UInt64,
@@ -576,7 +579,7 @@ CREATE TABLE IF NOT EXISTS wallet_memory.solana_launches (
     ingested_at DateTime64(3) DEFAULT now64(3)
 ) ENGINE = MergeTree()
 ORDER BY (mint, slot)
-TTL block_timestamp + INTERVAL 365 DAY
+TTL {_SOLANA_LAUNCH_RULE.time_column} + INTERVAL {_SOLANA_LAUNCH_RULE.days} DAY
 """
 
 _SOLANA_LAUNCH_INSERT_COLUMNS = (
