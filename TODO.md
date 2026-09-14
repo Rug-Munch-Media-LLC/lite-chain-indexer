@@ -12,7 +12,7 @@ keyed stack lives in the private runtime overlay (`LITE_INDEXER_ENDPOINT_OVERLAY
 ## Recently completed
 
 - [x] **MCP server** (`lite_indexer/mcp_server.py`) — read-only indexer tools for agents
-- [x] **Hyperliquid EVM** as chain 21 (official + Pocket keyless; dRPC/thirdweb/Dwellir overlay)
+- [x] **Hyperliquid EVM** as chain 21 (official + Pocket keyless; keyed overlay endpoints)
 - [x] **Reorg handling fails closed** on unknown status (was treating lookup errors as "no reorg")
 - [x] **Prometheus `/metrics` exporter + scrape job** (the `LiteIndexer*` alerts were structurally dead)
 - [x] **State / quota-ledger / attestation backups** (daily, local + B2)
@@ -50,10 +50,10 @@ These are seams we can layer on later; none blocks current operation.
 - [ ] **Reclaim the `*_old_<ts>` table** after migration verification.
 - [ ] **GraphQL / subgraph-style schema layer** over ClickHouse (query surface, additive).
 - [ ] **Expand transaction tracing** (internal transfers) from 3 chains to all where our free
-      tiers serve `trace_block`: **dRPC** = ethereum, base, optimism, gnosis, fantom, fraxtal;
-      **BlockPI** = bsc, optimism, fantom. (Alchemy/PublicNode refuse; Tenderly public rate-limits.)
-      Wire per-chain trace endpoints in `traces/endpoints.py` (add to the private overlay for keyed
-      ones). Also probe `debug_traceBlockByNumber` for chains where `trace_block` is unavailable
+      tiers serve `trace_block` (per-chain mapping lives in the private runtime overlay;
+      see LITE_INDEXER_ENDPOINT_OVERLAY). Wire per-chain trace endpoints in `traces/endpoints.py`
+      (add to the private overlay for keyed ones). Also probe `debug_traceBlockByNumber` for chains
+      where `trace_block` is unavailable
       (arbitrum, polygon, avalanche, linea, scroll, zksync, mantle, celo, blast, metis).
       Trace methods are CU-heavy (~3.0 CU) — the quota ledger already meters them.
 - [ ] **Free external backfill ingest** (research: `/root/.knowledge/FREE-BACKFILL-DATASETS-2026-09-14.md`).
@@ -68,7 +68,7 @@ These are seams we can layer on later; none blocks current operation.
       Trap: Flipside appears defunct — don't build on it.
 - [ ] **Browser UI / query console**.
 - [ ] More non-EVM drivers (Aptos, Sui, Cosmos) — registry presets exist; drivers missing.
-- [ ] Promote **stale provider keys** (QuickNode/Moralis/CoinGecko Pro/Birdeye/Solscan) or drop them.
+- [ ] Promote or drop stale keyed provider endpoints (see private overlay inventory).
 
 ---
 
@@ -76,7 +76,6 @@ These are seams we can layer on later; none blocks current operation.
 
 - `evm_transfers` TTL is `ingested_at + 90d`; historical backfill rows (2022–2023) therefore never
   expire until the table is partitioned — resolved by the in-flight migration.
-- Dwellir free tier blocks `eth_getLogs` (tip reads only); Alchemy's Hyperliquid endpoint is
-  free-tier-blocked. Both noted, not wired for logs.
+- Some overlay endpoints are free-tier-blocked for `eth_getLogs` (tip reads only). Noted, not wired for logs.
 - Public git history still contains the pre-overlay provider methodology (no keys; gitleaks clean).
   HEAD is clean and guarded by the CI leak gate.
