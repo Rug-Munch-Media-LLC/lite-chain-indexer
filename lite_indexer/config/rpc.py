@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
+from dataclasses import dataclass
+from typing import Any
 
 # Load the shared env file (same file the daemon's systemd unit sources
 # via EnvironmentFile) BEFORE any os.environ reads below, so every entry
@@ -216,6 +219,148 @@ RPC_THROTTLE_MAX_WAIT: float = float(os.environ.get("RPC_THROTTLE_MAX_WAIT", "30
 # wide, etc.). Callers queue when the budget is exhausted rather than fire.
 RPC_PROVIDER_MAX_CONCURRENCY: int = int(os.environ.get("RPC_PROVIDER_MAX_CONCURRENCY", "4"))
 RPC_PROVIDER_RPS: float = float(os.environ.get("RPC_PROVIDER_RPS", "10.0"))
+
+# ── Per-provider / per-endpoint request budgets (rpc/budgets.py) ───────
+# Attach a concrete (rps, max_concurrency, optional daily budget) to a
+# provider ACCOUNT (registrable domain + key id) or to a single endpoint
+# URL. The load-distribution defect this fixes: selection kept favouring
+# the lowest-latency endpoint, so the same handful of free endpoints blew
+# their per-IP request caps and got soft-banned while 30+ other endpoints
+# sat idle. A per-identity budget — and a PRE-EMPTIVE cool-down at
+# ``RPC_BUDGET_PREEMPTIVE_PCT`` of the daily budget, i.e. *before* the
+# provider's 429/softban arrives — spreads the load instead of waiting for
+# eviction.
+#
+# The public tree ships only the generic mechanism plus generic keyless
+# defaults. Concrete free-tier values are supplied by the operator from
+# the private overlay/env as JSON, never baked into git::
+#
+#   RPC_PROVIDER_BUDGETS='{"<provider-id>": {"rps": 5, "max_concurrency": 2,
+#                                            "daily_budget": 100000}}'
+#   RPC_ENDPOINT_BUDGETS='{"https://<host>/<path>": {"rps": 3,
+#                                                    "daily_budget": 20000}}'
+#
+# Every field is optional; a missing field falls back to the generic default
+# below (and finally to RPC_PROVIDER_RPS / RPC_PROVIDER_MAX_CONCURRENCY).
+# ``daily_budget`` is a request count per UTC day (0 = unlimited).
+# An endpoint entry wins over a provider entry; both win over the default.
+RPC_PROVIDER_DAILY_BUDGET: int = int(os.environ.get("RPC_PROVIDER_DAILY_BUDGET", "0"))
+RPC_BUDGET_PREEMPTIVE_PCT: float = float(os.environ.get("RPC_BUDGET_PREEMPTIVE_PCT", str(RPC_PREEMPTIVE_THRESHOLD_PCT)))
+# Base cool-down applied when a budget hits the pre-emptive threshold; each
+# repeat multiplies by RPC_BUDGET_COOLDOWN_BACKOFF, capped (then recovers —
+# see rpc/budgets.py record_success / UTC day rollover).
+RPC_BUDGET_COOLDOWN_SECONDS: float = float(os.environ.get("RPC_BUDGET_COOLDOWN_SECONDS", "120.0"))
+RPC_BUDGET_COOLDOWN_BACKOFF: float = float(os.environ.get("RPC_BUDGET_COOLDOWN_BACKOFF", "2.0"))
+RPC_BUDGET_COOLDOWN_MAX_SECONDS: float = float(os.environ.get("RPC_BUDGET_COOLDOWN_MAX_SECONDS", "1800.0"))
+# Hard cap on the speculative per-budget pacing sleep (never blocks a call
+# longer than the shared throttle cap; Retry-After still wins where relevant).
+RPC_BUDGET_MAX_WAIT: float = float(os.environ.get("RPC_BUDGET_MAX_WAIT", str(RPC_THROTTLE_MAX_WAIT)))
+
+
+@dataclass(frozen=True)
+class ProviderBudget:
+    """A request budget attached to a provider account or one endpoint.
+
+    Attributes:
+        rps: Requests/sec ceiling (0 = unlimited).
+        max_concurrency: Max concurrent in-flight requests (0 = unlimited).
+        daily_budget: Request count per UTC day (0 = unlimited).
+        preemptive_pct: Cool the identity once this percent of
+            ``daily_budget`` is consumed (default 80 = before the 429).
+        explicit: True when the value came from an operator-supplied map
+            rather than the generic keyless default. Only explicit (or
+            daily-budgeted) identities are actively enforced here — the
+            generic path keeps deferring to the existing provider caps.
+    """
+
+    rps: float
+    max_concurrency: int
+    daily_budget: int = 0
+    preemptive_pct: float = 80.0
+    explicit: bool = False
+
+
+def _budget_from_mapping(spec: Any) -> ProviderBudget | None:
+    """Parse one JSON budget entry; ``None`` if malformed (never raises)."""
+    if not isinstance(spec, dict):
+        return None
+    try:
+        rps = float(spec.get("rps", RPC_PROVIDER_RPS))
+        max_concurrency = int(spec.get("max_concurrency", RPC_PROVIDER_MAX_CONCURRENCY))
+        daily_budget = int(spec.get("daily_budget", 0))
+        preemptive_pct = float(spec.get("preemptive_pct", RPC_BUDGET_PREEMPTIVE_PCT))
+    except (TypeError, ValueError):
+        return None
+    return ProviderBudget(
+        rps=max(0.0, rps),
+        max_concurrency=max(0, max_concurrency),
+        daily_budget=max(0, daily_budget),
+        preemptive_pct=preemptive_pct,
+        explicit=True,
+    )
+
+
+def parse_provider_budgets(raw: str) -> dict[str, ProviderBudget]:
+    """Parse an operator budget map (JSON object keyed by identity).
+
+    Malformed input degrades to an empty map — a bad env var must never
+    stop the indexer from starting.
+    """
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, ProviderBudget] = {}
+    for identity, spec in data.items():
+        budget = _budget_from_mapping(spec)
+        if budget is not None and identity:
+            out[str(identity)] = budget
+    return out
+
+
+RPC_PROVIDER_BUDGETS: dict[str, ProviderBudget] = parse_provider_budgets(os.environ.get("RPC_PROVIDER_BUDGETS", ""))
+RPC_ENDPOINT_BUDGETS: dict[str, ProviderBudget] = parse_provider_budgets(os.environ.get("RPC_ENDPOINT_BUDGETS", ""))
+
+#: Generic keyless default (explicit=False → the additive enforcement layer
+#: is a no-op for it; existing provider caps already pace this profile).
+DEFAULT_PROVIDER_BUDGET: ProviderBudget = ProviderBudget(
+    rps=RPC_PROVIDER_RPS,
+    max_concurrency=RPC_PROVIDER_MAX_CONCURRENCY,
+    daily_budget=RPC_PROVIDER_DAILY_BUDGET,
+    preemptive_pct=RPC_BUDGET_PREEMPTIVE_PCT,
+    explicit=False,
+)
+
+
+def resolve_provider_budget(
+    provider_id: str,
+    endpoint: str | None = None,
+    *,
+    provider_budgets: dict[str, ProviderBudget] | None = None,
+    endpoint_budgets: dict[str, ProviderBudget] | None = None,
+    default: ProviderBudget | None = None,
+) -> ProviderBudget:
+    """Resolve the budget for an identity.
+
+    Precedence: exact endpoint URL override → provider-account id override
+    → generic default. Lookup maps/defaults are injectable for tests.
+    """
+    if endpoint_budgets is None:
+        endpoint_budgets = RPC_ENDPOINT_BUDGETS
+    if provider_budgets is None:
+        provider_budgets = RPC_PROVIDER_BUDGETS
+    if default is None:
+        default = DEFAULT_PROVIDER_BUDGET
+    if endpoint and endpoint in endpoint_budgets:
+        return endpoint_budgets[endpoint]
+    if provider_id and provider_id in provider_budgets:
+        return provider_budgets[provider_id]
+    return default
+
 
 # RPC auto-discovery: how often (seconds) to scan chainlist.org for new
 # free endpoints. 0 disables. Default: daily.

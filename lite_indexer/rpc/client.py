@@ -34,6 +34,14 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.rpc import proxy as rpc_proxy
+from lite_indexer.rpc.budgets import (
+    budget_slot,
+    budget_wait_seconds,
+    record_budget_dispatch,
+    record_budget_response,
+    record_budget_success,
+)
 from lite_indexer.rpc.jsonparse import decode_response_async
 from lite_indexer.rpc.ledger import (
     LEDGER,
@@ -152,23 +160,37 @@ def _warn_deferred(endpoint: str, method: str, reason: str) -> None:
 # timeout, never evicted and never closed — the primary socket leak (the
 # live process held 150 open sockets). It is now capped at
 # RPC_CALL_CLIENTS_MAX with LRU eviction, and an evicted client is closed.
-_call_clients: OrderedDict[float, httpx.AsyncClient] = OrderedDict()
+_call_clients: OrderedDict[tuple[float, str | None], httpx.AsyncClient] = OrderedDict()
 
 
-async def _get_call_client(timeout: float) -> httpx.AsyncClient:
-    """Get a pooled module-level httpx client for the given timeout.
+async def _get_call_client(timeout: float, proxy: rpc_proxy.ProxySpec | None = None) -> httpx.AsyncClient:
+    """Get a pooled module-level httpx client for the given timeout/proxy.
 
     The pool is capped at :data:`RPC_CALL_CLIENTS_MAX`; the least-recently
     used client is evicted and closed when the cap is exceeded. Every
     client gets explicit connection limits so sockets stay bounded.
+
+    When ``proxy`` is supplied the client routes through it; a proxy whose
+    scheme needs an optional dependency that is missing degrades to a direct
+    client (logged) rather than failing the call.
     """
-    client = _call_clients.get(timeout)
+    key = (timeout, proxy.url if proxy is not None else None)
+    client = _call_clients.get(key)
     if client is not None and not client.is_closed:
-        _call_clients.move_to_end(timeout)
+        _call_clients.move_to_end(key)
         return client
-    client = httpx.AsyncClient(timeout=httpx.Timeout(timeout), limits=http_limits())
-    _call_clients[timeout] = client
-    _call_clients.move_to_end(timeout)
+    kwargs: dict[str, Any] = {"timeout": httpx.Timeout(timeout), "limits": http_limits()}
+    if proxy is not None:
+        kwargs["proxy"] = proxy.url
+    try:
+        client = httpx.AsyncClient(**kwargs)
+    except (ImportError, ValueError) as exc:
+        # e.g. a socks5 proxy without the optional socks transport installed.
+        logger.warning("rpc_proxy_client_unavailable", proxy=proxy.label if proxy else "", error=str(exc)[:80])
+        kwargs.pop("proxy", None)
+        client = httpx.AsyncClient(**kwargs)
+    _call_clients[key] = client
+    _call_clients.move_to_end(key)
     while len(_call_clients) > RPC_CALL_CLIENTS_MAX:
         _, evicted = _call_clients.popitem(last=False)
         with contextlib.suppress(Exception):
@@ -184,6 +206,47 @@ async def aclose_call_clients() -> None:
         if not client.is_closed:
             with contextlib.suppress(Exception):
                 await client.aclose()
+
+
+async def _budget_before(endpoint: str) -> None:
+    """Honor the identity budget: pace to rps, then record the dispatch."""
+    wait = budget_wait_seconds(endpoint)
+    if wait > 0:
+        logger.debug("rpc_budget_wait", endpoint=endpoint[:50], wait_s=round(wait, 2))
+        await asyncio.sleep(wait)
+    record_budget_dispatch(endpoint)
+
+
+async def _post_json(
+    endpoint: str,
+    payload: Any,
+    timeout: float,
+    *,
+    proxy: rpc_proxy.ProxySpec | None = None,
+) -> httpx.Response:
+    """POST a JSON body, routing through the residency proxy when enabled.
+
+    Falls back to ONE direct retry on a proxy transport failure
+    (``rpc_proxy_fallback_direct``) and unpins the failed proxy so the next
+    call fails over. With no proxy configured this is a plain pooled POST.
+    """
+    spec = proxy if proxy is not None else rpc_proxy.proxy_for_endpoint(endpoint)
+    if spec is None:
+        client = await _get_call_client(timeout)
+        return await client.post(endpoint, json=payload)
+    try:
+        client = await _get_call_client(timeout, proxy=spec)
+        return await client.post(endpoint, json=payload)
+    except httpx.ProxyError as exc:
+        logger.warning(
+            "rpc_proxy_fallback_direct",
+            endpoint=endpoint[:50],
+            proxy=spec.label,
+            error=str(exc)[:80],
+        )
+        rpc_proxy.mark_proxy_failed(endpoint, spec)
+        client = await _get_call_client(timeout)
+        return await client.post(endpoint, json=payload)
 
 
 # ── RPC Client ─────────────────────────────────────────────────────────
@@ -296,6 +359,9 @@ class RpcClient:
         # Auto-tune soft spacing: a straining endpoint gets progressively
         # wider gaps instead of a hard ban (NodeCore-style adaptation).
         await autotune_wait(endpoint)
+        # Per-identity budget: pace to the rps budget and record the dispatch
+        # (may pre-emptively cool the identity at its daily-budget threshold).
+        await _budget_before(endpoint)
         started = time.perf_counter()
 
         # Exponential backoff retry for TRANSIENT failures only (timeouts,
@@ -315,15 +381,16 @@ class RpcClient:
                 _safe_record(record_endpoint_call, endpoint, method)
                 _safe_record(incr_in_flight, endpoint)
                 try:
-                    async with provider_concurrency_slot(account_key):
-                        client = await _get_call_client(timeout)
-                        resp = await client.post(endpoint, json=payload)
+                    async with budget_slot(endpoint):
+                        async with provider_concurrency_slot(account_key):
+                            resp = await _post_json(endpoint, payload, timeout)
                 finally:
                     _safe_record(decr_in_flight, endpoint)
                 _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
                 bytes_received = len(getattr(resp, "content", b"") or b"")
                 record_rpc_response(endpoint, method, resp.status_code, resp.headers)
                 _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
+                record_budget_response(endpoint, resp.status_code)
 
                 # Empty response check — often a transient gateway glitch.
                 body_text = getattr(resp, "text", "")
@@ -360,6 +427,7 @@ class RpcClient:
                         # opens via record_endpoint_failure; without this it would
                         # oscillate open↔half-open via cooldown and never re-close).
                         record_endpoint_success(endpoint)
+                        record_budget_success(endpoint)
                         await record_circuit_success(endpoint)
                     else:
                         record_rpc_usage(
@@ -531,11 +599,13 @@ class RpcClient:
         account_key = account_key_for_endpoint(endpoint)
         await throttle_before(endpoint, method)
         await provider_throttle_before(endpoint)
-        async with provider_concurrency_slot(account_key):
-            client = await _get_call_client(timeout)
-            resp = await client.post(endpoint, json=payload)
+        await _budget_before(endpoint)
+        async with budget_slot(endpoint):
+            async with provider_concurrency_slot(account_key):
+                resp = await _post_json(endpoint, payload, timeout)
         record_rpc_response(endpoint, method, resp.status_code, resp.headers)
         _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
+        record_budget_response(endpoint, resp.status_code)
         if resp.status_code == 429:
             record_rate_limit(endpoint)
             raise httpx.HTTPStatusError("batch rate limited", request=httpx.Request("POST", endpoint), response=resp)
@@ -885,6 +955,10 @@ class RpcClient:
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
 
         account_key = account_key_for_endpoint(endpoint)
+        # Identity budget + proxy: recorded once per range (retries below do
+        # not re-count against the budget).
+        await _budget_before(endpoint)
+        proxy_spec = rpc_proxy.proxy_for_endpoint(endpoint)
         for attempt in range(max_retries):
             # Apply provider rate limiting before request
             await apply_provider_rate_limit(endpoint)
@@ -899,14 +973,19 @@ class RpcClient:
                 started = time.perf_counter()
                 _safe_record(incr_in_flight, endpoint)
                 try:
-                    async with provider_concurrency_slot(account_key):
-                        client = await self._get_client()
-                        resp = await client.post(endpoint, json=payload, timeout=RPC_TIMEOUT)
+                    async with budget_slot(endpoint):
+                        async with provider_concurrency_slot(account_key):
+                            if proxy_spec is None:
+                                client = await self._get_client()
+                                resp = await client.post(endpoint, json=payload, timeout=RPC_TIMEOUT)
+                            else:
+                                resp = await _post_json(endpoint, payload, RPC_TIMEOUT, proxy=proxy_spec)
                 finally:
                     _safe_record(decr_in_flight, endpoint)
                 _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
                 record_rpc_response(endpoint, "eth_getLogs", resp.status_code, resp.headers)
                 _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
+                record_budget_response(endpoint, resp.status_code)
 
                 if resp.status_code == 429:
                     # Respect an explicit Retry-After EXACTLY; otherwise use
@@ -941,10 +1020,12 @@ class RpcClient:
                     result = data["result"]
                     if isinstance(result, list):
                         _safe_record(record_rpc_outcome, endpoint, ok=True)
+                        record_budget_success(endpoint)
                         return ("ok", result)
                     # result is null — endpoint works but no logs in range
                     if result is None:
                         _safe_record(record_rpc_outcome, endpoint, ok=True)
+                        record_budget_success(endpoint)
                         return ("ok", [])
                 kind = classify_logs_error(data)
                 _safe_record(record_rpc_outcome, endpoint, ok=False)

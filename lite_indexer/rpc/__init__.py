@@ -22,6 +22,16 @@ Split into sub-modules:
 
 from __future__ import annotations
 
+from lite_indexer.rpc.budgets import (
+    BUDGET_TRACKER,
+    ProviderBudgetTracker,
+    budget_available,
+    budget_slot,
+    budget_wait_seconds,
+    record_budget_dispatch,
+    record_budget_response,
+    record_budget_success,
+)
 from lite_indexer.rpc.capabilities import (
     ArchiveRoutingError,
     NoArchiveEndpointError,
@@ -131,6 +141,15 @@ __all__ = [
     "ProviderRateLimiter",
     "provider_slot",
     "record_provider_response",
+    # per-provider / per-endpoint budgets
+    "BUDGET_TRACKER",
+    "ProviderBudgetTracker",
+    "budget_available",
+    "budget_slot",
+    "budget_wait_seconds",
+    "record_budget_dispatch",
+    "record_budget_response",
+    "record_budget_success",
     # archive-class routing
     "ArchiveRoutingError",
     "NoArchiveEndpointError",

@@ -54,7 +54,11 @@ async def test_fast_primary_skips_hedge():
 
 
 @pytest.mark.asyncio
-async def test_slow_primary_hedged_and_fast_leg_wins():
+async def test_slow_primary_hedged_and_fast_leg_wins(monkeypatch):
+    # Pin the primary: endpoint selection is fair-spread now (it may pick any
+    # healthy peer), but this test isolates the HEDGER. Force the slow
+    # endpoint as primary so a hedge must fire.
+    monkeypatch.setattr(hedging, "get_best_endpoint", lambda eps: EPS[0])
     client = StubClient(delays={EPS[0]: 1.0, EPS[1]: 0.0})
     t0 = time.perf_counter()
     out = await hedged_call(client, EPS, "eth_getLogs", [{"fromBlock": "0x1"}])

@@ -24,8 +24,31 @@ from lite_indexer.config import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.rpc.budgets import budget_available
 
 logger = get_logger(__name__)
+
+# Penalty applied to an endpoint whose per-identity budget is pre-emptively
+# cooled. Matches the circuit-open penalty: the endpoint drops out of the
+# healthy set so load flows to a budget-available peer instead of piling on
+# the one about to be 429'd.
+BUDGET_EXHAUSTED_PENALTY = 20000
+
+# Fairness/rotation counters: how many times each endpoint has been chosen.
+# Selection prefers the least-used half of the healthy set (so no endpoint
+# absorbs a chain) and uses P2C only as the latency tiebreak within it.
+_SELECTION_COUNTS: dict[str, int] = {}
+
+
+def selection_counts() -> dict[str, int]:
+    """Copy of the per-endpoint selection counters (tests/telemetry)."""
+    return dict(_SELECTION_COUNTS)
+
+
+def reset_selection_state() -> None:
+    """Clear the fairness counters (tests / shutdown)."""
+    _SELECTION_COUNTS.clear()
+
 
 # ── State ──────────────────────────────────────────────────────────────
 _endpoint_failures: dict[str, list[float]] = {}
@@ -240,7 +263,6 @@ def get_best_endpoint(endpoints: list[str]) -> str:
     from lite_indexer.rpc.routing import (
         STALE_ENDPOINT_PENALTY,
         is_circuit_open,
-        select_p2c,
         stale_endpoints,
     )
 
@@ -271,6 +293,11 @@ def get_best_endpoint(endpoints: list[str]) -> str:
         if ep in stale:
             penalty += STALE_ENDPOINT_PENALTY
 
+        # Per-identity budget gate: an endpoint pre-emptively cooled at its
+        # daily-budget threshold is skipped (before the provider 429s it).
+        if not budget_available(ep):
+            penalty += BUDGET_EXHAUSTED_PENALTY
+
         # Add verification penalty (unverified endpoints deprioritized)
         from lite_indexer.rpc.health import is_endpoint_healthy
 
@@ -293,11 +320,32 @@ def get_best_endpoint(endpoints: list[str]) -> str:
         logger.warning("all_endpoints_down", count=len(endpoints))
         return least_banned_endpoint(endpoints)
 
-    pool_size = max(2, len(healthy) // 2)
-    # P2C over the top healthy subset: two candidates are drawn and the
-    # lower damped-latency score wins (replaces pure random.choice while
-    # preserving the penalty/breaker filtering above).
-    return select_p2c(healthy[:pool_size])
+    # Fair-spread rotation over the healthy subset (P2C within the
+    # least-used half): no endpoint absorbs a chain.
+    return _select_fair(healthy)
+
+
+def _select_fair(healthy: list[str]) -> str:
+    """Fair-spread selection: least-used half of the healthy set, P2C tiebreak.
+
+    The global load-distribution fix: instead of always handing the chain to
+    the lowest-latency (fastest) endpoint until it 429s, candidates are the
+    least-recently-chosen half of the healthy pool, and P2C picks within that
+    window by damped latency. The chosen endpoint's counter increments, so it
+    rotates out of the window and no endpoint can absorb a chain. P2C remains
+    the tiebreak, so latency still matters among equally-used peers.
+    """
+    if len(healthy) == 1:
+        chosen = healthy[0]
+    else:
+        ordered = sorted(enumerate(healthy), key=lambda item: (_SELECTION_COUNTS.get(item[1], 0), item[0]))
+        window = max(2, (len(ordered) + 1) // 2)
+        candidates = [ep for _i, ep in ordered[:window]]
+        from lite_indexer.rpc.routing import select_p2c
+
+        chosen = select_p2c(candidates)
+    _SELECTION_COUNTS[chosen] = _SELECTION_COUNTS.get(chosen, 0) + 1
+    return chosen
 
 
 # ── Failure Tracking ────────────────────────────────────────────────
