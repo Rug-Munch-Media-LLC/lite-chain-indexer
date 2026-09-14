@@ -61,13 +61,13 @@ alert_json() {
     local title="$1" message="$2" severity="${3:-warning}"
     local payload
     payload=$(printf '{"title":"%s","message":"%s","severity":"%s","source":"%s","timestamp":"%s"}' \
-      "$title" "$message" "$severity" "lite-indexer@$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+        "$title" "$message" "$severity" "lite-indexer@$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
     curl -sSf -X POST "http://127.0.0.1:9099/alert" \
-      -H "Content-Type: application/json" -d "$payload" \
-      --connect-timeout 5 -m 15 >/dev/null 2>&1 && return 0
+        -H "Content-Type: application/json" -d "$payload" \
+        --connect-timeout 5 -m 15 >/dev/null 2>&1 && return 0
     curl -sSf -X POST "http://127.0.0.1:5678/webhook/alert" \
-      -H "Content-Type: application/json" -d "$payload" \
-      --connect-timeout 5 -m 15 >/dev/null 2>&1 && return 0
+        -H "Content-Type: application/json" -d "$payload" \
+        --connect-timeout 5 -m 15 >/dev/null 2>&1 && return 0
     if command -v redis-cli >/dev/null 2>&1; then
         redis-cli LPUSH rag:telegram_queue "$payload" >/dev/null 2>&1 && return 0
     fi
@@ -87,8 +87,8 @@ restart_if_cooldown_elapsed() {
     if [ "${elapsed}" -lt $((RESTART_COOLDOWN_MIN * 60)) ]; then
         log "restart throttled: ${reason} — last restart ${elapsed}s ago (<${RESTART_COOLDOWN_MIN}min cooldown); skipping to let RPC circuit breakers recover"
         alert_json "LiteIndexer STILL stalled (restart throttled)" \
-          "${reason}; last restart ${elapsed}s ago — if this repeats, investigate RPC providers manually" \
-          "critical" || true
+            "${reason}; last restart ${elapsed}s ago — if this repeats, investigate RPC providers manually" \
+            "critical" || true
         return 1
     fi
     log "restarting ${SERVICE}: ${reason}"
@@ -97,6 +97,18 @@ restart_if_cooldown_elapsed() {
     alert_json "LiteIndexer restarted" "${reason}" "warning" || true
     return 0
 }
+
+# ── Migration guard ──────────────────────────────────────────────────
+# The MergeTree->ReplacingMergeTree migration deliberately STOPS the indexer
+# (for a gap-free copy) and pauses merges. Restarting it mid-copy would write
+# to the source table after its copy snapshot, and those rows would be lost at
+# the swap — the 2026-09-14 second-pass copy was corrupted exactly this way.
+# If a migration is in flight, do nothing.
+if [[ -f "${MIGRATION_LOCK:-/var/lib/lite-indexer/migration.lock}" ]] ||
+    pgrep -f "run-ch-migration.sh" >/dev/null 2>&1; then
+    log "migration in progress — watchdog skipping (indexer intentionally stopped)"
+    exit 0
+fi
 
 # ── 0. Is the service running at all? (process watchdog) ─────────────
 if ! systemctl is-active --quiet "${SERVICE}"; then
@@ -203,7 +215,8 @@ fi
 # state file is silently failing extraction → reset the highwater to the
 # last slot that produced real data (from the table, not the state file)
 # and restart, so the fixed strategy re-extracts the gap.
-DATA_FRESH_CHAINS="$(timeout 30 "${PYTHON}" - <<'PYEOF'
+DATA_FRESH_CHAINS="$(
+    timeout 30 "${PYTHON}" - <<'PYEOF'
 import json, os, sys
 import clickhouse_driver
 
@@ -260,7 +273,7 @@ print(c.execute('SELECT max(slot) FROM wallet_memory.solana_transfers')[0][0])
 " 2>/dev/null || echo 0)"
         if [ "${LAST_SLOT:-0}" -gt 0 ] 2>/dev/null; then
             printf '{"last_block": %s, "last_timestamp": "%s", "chain": "%s", "reset_by": "watchdog-data-freshness"}
-'               "${LAST_SLOT}" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" "${chain}"               > "/var/data/chain-indexer/state/highwater_${chain}.json"
+' "${LAST_SLOT}" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" "${chain}" >"/var/data/chain-indexer/state/highwater_${chain}.json"
             log "highwater_${chain} reset to last real data slot ${LAST_SLOT} (silent extraction failure detected)"
         fi
     done

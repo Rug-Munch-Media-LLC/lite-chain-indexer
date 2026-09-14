@@ -425,7 +425,10 @@ copy_units() {
             log "copying unit $u ..."
             t0=$SECONDS
             # shellcheck disable=SC2016
-            ch "INSERT INTO \`$DB\`.\`$name_new\` SETTINGS optimize_on_insert=0 SELECT * FROM \`$DB\`.\`$t\` WHERE $(unit_predicate "$t" "$unit" "$u")"
+            # Bounded-memory copy: the 8 GiB CH container OOM'd a default
+            # INSERT SELECT (rc=241, 2026-09-14). Fewer threads + smaller blocks
+            # keep the copy within budget alongside other server activity.
+            ch "INSERT INTO \`$DB\`.\`$name_new\` SETTINGS optimize_on_insert=0, max_threads=2, max_insert_block_size=65536 SELECT * FROM \`$DB\`.\`$t\` WHERE $(unit_predicate "$t" "$unit" "$u")"
             t1=$SECONDS
             log "unit $u inserted in $((t1 - t0))s"
         fi
