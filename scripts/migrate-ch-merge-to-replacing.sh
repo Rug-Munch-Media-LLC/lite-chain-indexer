@@ -62,23 +62,38 @@ ONLY_TABLE=""
 UNIT_OVERRIDE=""
 SAMPLE_ROWS=10000
 
-TABLES=(evm_transfers internal_transfers solana_transfers)
+# NOTE: only UNPARTITIONED plain-MergeTree tables belong here — migration buys
+# them partition-level TTL drops + dedup. Deliberately EXCLUDED:
+#   * solana_spl_balance_changes — already PARTITION BY toYYYYMM(block_timestamp)
+#     (TTL burns), and ORDER BY (mint, slot, token_account) is NOT unique (a token
+#     account can change several times per slot) -> RMT would silently drop rows.
+#   * deployer_history — already partitioned by toYYYYMM(deployed_at).
+#   * scam_addresses / deployer_events / evm_launches / solana_launches /
+#     tron_launches — tiny or not time-series; TTL burn is negligible.
+TABLES=(evm_transfers internal_transfers solana_transfers dex_events wallet_labels)
 declare -A TS_COL=(
     [evm_transfers]="block_timestamp"
     [internal_transfers]="block_timestamp"
     [solana_transfers]="block_timestamp"
+    [dex_events]="block_timestamp"
+    [wallet_labels]="loaded_at"
 )
 declare -A ORDER_BY=(
     [evm_transfers]="chain, block_number, log_index"
     [internal_transfers]="chain, block_number, tx_hash, trace_address"
     [solana_transfers]="signature, instruction_path"
+    [dex_events]="chain, block_number, log_index"
+    [wallet_labels]="address, label_name, source"
 )
-# Table-level TTL is re-stated explicitly: CREATE ... AS ... ENGINE= drops it.
+# Table-level TTL is re-stated explicitly: CREATE ... AS ... ENGINE= drops it
+# (column-level TTLs and projections ARE preserved by CREATE ... AS).
 # Values mirror the live schema (migration 012 defines the longer-term policy).
 declare -A TTL_EXPR=(
     [evm_transfers]="ingested_at + toIntervalDay(90)"
     [internal_transfers]="block_timestamp + toIntervalDay(90)"
     [solana_transfers]="ingested_at + toIntervalDay(30)"
+    [dex_events]="ingested_at + toIntervalDay(90)"
+    [wallet_labels]="loaded_at + toIntervalMonth(6)"
 )
 # Copy unit: chain = primary-key prefix range scan (cheap, resumable).
 # partition = month of block_timestamp (full scan on an unpartitioned source).
@@ -86,6 +101,8 @@ declare -A COPY_UNIT=(
     [evm_transfers]="chain"
     [internal_transfers]="partition"
     [solana_transfers]="partition"
+    [dex_events]="chain"
+    [wallet_labels]="partition"
 )
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
@@ -210,6 +227,21 @@ bytes_on_disk() {
 
 human_bytes() { numfmt --to=iec --suffix=B "$1" 2>/dev/null || printf '%sB' "$1"; }
 
+# Safety gate: ReplacingMergeTree dedups on the ORDER BY key, so the key must be
+# unique per logical row -- otherwise the migration SILENTLY drops legitimate
+# rows (this is exactly why solana_spl_balance_changes is excluded). uniq() is
+# HLL (memory-bounded) so the check does not OOM on billion-row tables; it is
+# approximate, so only a *material* collision ratio blocks. SKIP_UNIQUE_CHECK=1
+# overrides.
+key_collision_ratio() {
+    local t="$1"
+    # Unbiased hash sample over the WHOLE table (a plain LIMIT samples by part order,
+    # which skewed a known-unique key to a bogus ~52%). A failed check must NOT read
+    # as "unique", so the caller validates the output is numeric.
+    ch "SELECT if(count() = 0, 0, 1 - uniq(${ORDER_BY[$t]}) / count()) \
+FROM \`$DB\`.\`$t\` WHERE cityHash64(${ORDER_BY[$t]}) % ${UNIQUE_SAMPLE_MOD:-20} = 0"
+}
+
 # ---------------------------------------------------------------------------
 preflight() {
     local t="$1" name_new
@@ -237,6 +269,31 @@ preflight() {
     fi
     if [[ "$engine" != "MergeTree" ]]; then
         die "refusing: $DB.$t engine is '$engine', expected plain MergeTree"
+    fi
+
+    # ORDER BY key uniqueness: RMT dedups on this key, so a material collision
+    # ratio means the migration would drop legitimate rows. Runs only for tables
+    # actually being migrated (already-migrated tables returned above).
+    if [[ "${SKIP_UNIQUE_CHECK:-0}" != "1" && "$rows" != "0" ]]; then
+        local ratio pct
+        ratio="$(key_collision_ratio "$t")"
+        if [[ ! "$ratio" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            warn "key uniqueness check unavailable for $DB.$t (query failed, likely the \
+ClickHouse memory cap); proceeding WITHOUT the RMT row-loss guard"
+        else
+            pct="$(awk -v r="$ratio" 'BEGIN{printf "%.4f", r*100}')"
+            printf '  key collisions: ~%s%% (sampled/approximate; ORDER BY: %s)\n' "$pct" "${ORDER_BY[$t]}"
+            # The check is sampled + HLL, so a few percent is estimation noise (a
+            # known-unique key measured ~3.9% on 312 M rows). Only a GROSS collision
+            # ratio blocks; the definitive unsafe tables are excluded in TABLES above.
+            if awk -v r="$ratio" 'BEGIN{exit !(r > 0.15)}'; then
+                die "refusing: ORDER BY (${ORDER_BY[$t]}) collides on ~${pct}% of $DB.$t rows \
+(order-of-magnitude collision — RMT would drop rows). Fix the key or set SKIP_UNIQUE_CHECK=1."
+            elif awk -v r="$ratio" 'BEGIN{exit !(r > 0.05)}'; then
+                warn "ORDER BY (${ORDER_BY[$t]}) has ~${pct}% approximate collision in $DB.$t \
+(>> the ~2-3% HLL/sampling error); verify before copy"
+            fi
+        fi
     fi
 
     local avail=""
