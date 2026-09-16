@@ -44,6 +44,7 @@ from lite_indexer.query.address_backfill import AddressBackfill, BackfillResult
 from lite_indexer.query.biglake_source import BigLakeSource
 from lite_indexer.query.cache import QueryCache
 from lite_indexer.query.envio_source import EnvioSource
+from lite_indexer.query.indexed_source import IndexedXyzSource
 from lite_indexer.query.rpc_fetcher import RPCFetcher
 from lite_indexer.storage.cold_store import TABLE_COLUMNS, TABLE_KINDS, TABLE_ORDER, ColdStore
 
@@ -136,6 +137,8 @@ class QueryRouter:
         envio: Optional :class:`EnvioSource` (defaults to enabled —
             Envio HyperRPC for bounded wallet transfers and eth/base
             trace blocks the indexed tiers missed).
+        indexed: Optional :class:`IndexedXyzSource` (defaults to enabled —
+            Indexed.xyz R2 lake: an independent third path for EVM chains).
         client_factory: Optional zero-arg callable returning a ClickHouse
             client lazily (used by the API so constructing the router does
             not force a connection at startup).
@@ -155,6 +158,7 @@ class QueryRouter:
         backfill: AddressBackfill | None = None,
         biglake: BigLakeSource | None = None,
         envio: EnvioSource | None = None,
+        indexed: IndexedXyzSource | None = None,
         client_factory: Any | None = None,
         on_demand_enabled: bool = ON_DEMAND_RPC_ENABLED,
         max_block_range: int = ON_DEMAND_RPC_MAX_BLOCK_RANGE,
@@ -168,6 +172,7 @@ class QueryRouter:
         self._backfill = backfill
         self.biglake = biglake if biglake is not None else BigLakeSource()
         self.envio = envio if envio is not None else EnvioSource()
+        self.indexed = indexed if indexed is not None else IndexedXyzSource()
         self.on_demand_enabled = bool(on_demand_enabled)
         self.max_block_range = int(max_block_range)
         self.limit_default = int(limit_default)
@@ -469,20 +474,21 @@ class QueryRouter:
             return [r for r in rows if _matches(r, filters)]
         return [r for r in rows if any(_matches(r, item) for item in filters)]
 
-    async def _biglake_dates(
+    async def _lake_dates(
         self, chain: str, from_block: int | None, to_block: int | None
     ) -> list[str] | None:
-        """Derive AWS-lake ``date=`` partitions for a block range.
+        """Derive date partitions (``date=`` / ``dt=``) for a block range.
 
-        The lake is date-partitioned and carries no block→date index, so
-        deep queries need the calendar span of the block range. Resolves it
-        with two Envio block lookups and caps the window at 31 days.
+        The external lakes are date-partitioned and carry no block→date
+        index, so deep queries need the calendar span of the block range.
+        Resolves it with two Envio block lookups and caps the window at
+        31 days.
 
         Returns:
-            ``YYYY-MM-DD`` list, or None when it cannot be derived (the
-            caller then falls back to the lake's default month scope).
+            ``YYYY-MM-DD`` list, or None when it cannot be derived (callers
+            then fall back to their own defaults).
         """
-        if chain != "ethereum" or from_block is None or to_block is None:
+        if from_block is None or to_block is None:
             return None
         if not self.envio.available():
             return None
@@ -529,7 +535,7 @@ class QueryRouter:
         if not self.biglake.available():
             return []
         address = self._address_from_filters(filters) or self._single_address(filters)
-        dates = await self._biglake_dates(chain, from_block, to_block)
+        dates = await self._lake_dates(chain, from_block, to_block)
         try:
             rows = await asyncio.to_thread(
                 self.biglake.query,
@@ -581,6 +587,50 @@ class QueryRouter:
         filtered = self._filter_rows(table, rows, filters)
         if filtered:
             metrics_incr("envio_routes")
+        return filtered
+
+    async def _indexed_route(
+        self,
+        table: str,
+        chain: str,
+        *,
+        from_block: int | None,
+        to_block: int | None,
+        filters: dict[str, Any] | list[dict[str, Any]] | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Try the Indexed.xyz R2 lake for bounded wallet queries.
+
+        Independent third path for EVM chains (ethereum/base/gnosis/linea/
+        optimism/zksync/zora). Date partitions are derived from the block
+        range via :meth:`_lake_dates`. Best-effort: failures return an
+        empty list so routing falls through to the RPC leg.
+        """
+        if table != "evm_transfers" or from_block is None or to_block is None:
+            return []
+        if not self.indexed.available() or chain not in self.indexed.CHAINS:
+            return []
+        address = self._address_from_filters(filters) or self._single_address(filters)
+        if not address:
+            return []
+        dates = await self._lake_dates(chain, from_block, to_block)
+        try:
+            rows = await asyncio.to_thread(
+                self.indexed.query,
+                table,
+                chain,
+                from_block=from_block,
+                to_block=to_block,
+                address=address,
+                dates=dates,
+                limit=limit,
+            )
+        except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
+            logger.warning("indexed_route_failed", error=str(exc)[:120])
+            return []
+        filtered = self._filter_rows(table, rows, filters)
+        if filtered:
+            metrics_incr("indexed_routes")
         return filtered
 
     # ── RPC leg ──────────────────────────────────────────────────────
@@ -741,6 +791,7 @@ class QueryRouter:
                     table, ch_rows, cold_rows, biglake_rows, envio_rows, limit=limit
                 )
 
+        indexed_rows: list[dict[str, Any]] = []
         if (
             use_rpc
             and self.on_demand_enabled
@@ -748,11 +799,38 @@ class QueryRouter:
                 table, ch_rows, cold_rows + biglake_rows + envio_rows, from_block, to_block, limit
             )
         ):
+            indexed_rows = await self._indexed_route(
+                table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
+            )
+            if indexed_rows:
+                merged = self._merge_rows(
+                    table, ch_rows, cold_rows, biglake_rows, envio_rows, indexed_rows, limit=limit
+                )
+
+        if (
+            use_rpc
+            and self.on_demand_enabled
+            and self._needs_rpc_fallback(
+                table,
+                ch_rows,
+                cold_rows + biglake_rows + envio_rows + indexed_rows,
+                from_block,
+                to_block,
+                limit,
+            )
+        ):
             metrics_incr("ondemand_rpc_routes")
             rpc_rows = await self._rpc_route(table, chain, from_block, to_block, filters, limit)
             if rpc_rows:
                 merged = self._merge_rows(
-                    table, ch_rows, cold_rows, biglake_rows, envio_rows, rpc_rows, limit=limit
+                    table,
+                    ch_rows,
+                    cold_rows,
+                    biglake_rows,
+                    envio_rows,
+                    indexed_rows,
+                    rpc_rows,
+                    limit=limit,
                 )
         return merged
 

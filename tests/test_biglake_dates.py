@@ -78,7 +78,7 @@ def _router(envio: Any = None, biglake: Any = None) -> QueryRouter:
 
 
 def test_dates_derived_from_block_timestamps() -> None:
-    dates = asyncio.run(_router()._biglake_dates("ethereum", 100, 200))
+    dates = asyncio.run(_router()._lake_dates("ethereum", 100, 200))
     assert dates == ["2026-09-01", "2026-09-02", "2026-09-03"]
 
 
@@ -89,26 +89,31 @@ def test_dates_capped_at_31_days() -> None:
             200: int(datetime(2026, 9, 1, tzinfo=UTC).timestamp()),
         }
     )
-    dates = asyncio.run(_router(envio=envio)._biglake_dates("ethereum", 100, 200))
+    dates = asyncio.run(_router(envio=envio)._lake_dates("ethereum", 100, 200))
     assert dates is not None
     assert len(dates) == 32
     assert dates[0] == "2026-08-01"
     assert dates[-1] == "2026-09-01"
 
 
-def test_dates_none_for_non_ethereum_or_missing_range() -> None:
+def test_dates_none_for_missing_range() -> None:
     router = _router()
-    assert asyncio.run(router._biglake_dates("base", 100, 200)) is None
-    assert asyncio.run(router._biglake_dates("ethereum", None, 200)) is None
-    assert asyncio.run(router._biglake_dates("ethereum", 100, None)) is None
+    assert asyncio.run(router._lake_dates("ethereum", None, 200)) is None
+    assert asyncio.run(router._lake_dates("ethereum", 100, None)) is None
+
+
+def test_dates_derived_for_non_ethereum_chain() -> None:
+    # The date derivation is chain-agnostic (Envio block lookups per chain).
+    dates = asyncio.run(_router()._lake_dates("base", 100, 200))
+    assert dates == ["2026-09-01", "2026-09-02", "2026-09-03"]
 
 
 def test_dates_none_when_envio_unavailable_or_failing() -> None:
     unavailable = FakeEnvio(available=False)
-    assert asyncio.run(_router(envio=unavailable)._biglake_dates("ethereum", 100, 200)) is None
+    assert asyncio.run(_router(envio=unavailable)._lake_dates("ethereum", 100, 200)) is None
     assert unavailable.calls == 0
     failing = FakeEnvio(fail=True)
-    assert asyncio.run(_router(envio=failing)._biglake_dates("ethereum", 100, 200)) is None
+    assert asyncio.run(_router(envio=failing)._lake_dates("ethereum", 100, 200)) is None
 
 
 def test_biglake_route_passes_derived_dates() -> None:
