@@ -305,6 +305,26 @@ print(" ".join(p for p in sys.stdin.read().split() if p.split(":", 1)[0] not in 
 	log "fresh-data exemption: fresh=[${FRESH_CHAINS}] remaining stale=[${STALE_CHAINS}] no-advance=[${NO_ADVANCE_CHAINS}]"
 fi
 
+# ── 1b. SOLANA silent-extraction guard (2026-08-24 mode) ─────────────
+# Runs BEFORE the catch-up exits so it can never be masked by them.
+# The reset MUST be paired with an immediate restart: the running daemon
+# re-saves its in-memory highwater within ~15s and would overwrite a
+# file-only reset (observed 2026-09-17). So: only reset when a restart is
+# actually permitted; otherwise defer and say so.
+SOL_HW="$(python3 -c "import json; print(int(json.load(open('/var/data/chain-indexer/state/highwater_solana.json')).get('last_block') or 0))" 2>/dev/null || echo 0)"
+SOL_DATA="$(docker exec rmi-clickhouse clickhouse-client -q "SELECT max(slot) FROM wallet_memory.solana_transfers" 2>/dev/null || echo 0)"
+if [ "${SOL_HW:-0}" -gt 0 ] && [ "${SOL_DATA:-0}" -gt 0 ] && [ "$((SOL_HW - SOL_DATA))" -gt 200000 ]; then
+	SINCE_RESTART=$(( $(date +%s) - $(cat "${RESTART_MARKER}" 2>/dev/null || echo 0) ))
+	if [ "${SINCE_RESTART}" -ge $((RESTART_COOLDOWN_MIN * 60)) ]; then
+		printf '{"last_block": %s, "last_timestamp": "%s", "chain": "solana", "reset_by": "watchdog-data-freshness"}\n' "${SOL_DATA}" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >/var/data/chain-indexer/state/highwater_solana.json
+		if restart_if_cooldown_elapsed "data-freshness failure: solana:hw=${SOL_HW}:data=${SOL_DATA} (highwater reset to last real data)"; then
+			exit 2
+		fi
+	else
+		log "data-freshness: solana broken (hw=${SOL_HW} data=${SOL_DATA}) but restart throttled — reset deferred (would be overwritten)"
+		exit 1
+	fi
+fi
 if [ -n "${STALE_CHAINS}" ]; then
 	# 2026-09-17 GLOBAL-PROGRESS GUARD: if ANY chain is writing data right now,
 	# the daemon is demonstrably working — chains waiting for their turn (or
