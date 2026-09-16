@@ -39,6 +39,17 @@
 #
 set -u
 
+# Load deployment env defensively so MANUAL runs behave exactly like timer
+# runs. 2026-09-17 incident: manual runs lacked CLICKHOUSE_PASSWORD, so the
+# fresh-data exemption silently no-op'd and the watchdog restarted healthy,
+# actively-writing chains (self-inflicted thrash).
+if [ -f /srv/secrets/lite-indexer.env ]; then
+	# shellcheck disable=SC1091
+	set -a
+	. /srv/secrets/lite-indexer.env
+	set +a
+fi
+
 SERVICE="${SERVICE:-lite-indexer.service}"
 PYTHON="${PYTHON:-/usr/bin/python3}"
 TIMEOUT_S="${TIMEOUT_S:-90}"
