@@ -43,6 +43,7 @@ from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.query.address_backfill import AddressBackfill, BackfillResult
 from lite_indexer.query.biglake_source import BigLakeSource
 from lite_indexer.query.cache import QueryCache
+from lite_indexer.query.envio_source import EnvioSource
 from lite_indexer.query.rpc_fetcher import RPCFetcher
 from lite_indexer.storage.cold_store import TABLE_COLUMNS, TABLE_KINDS, TABLE_ORDER, ColdStore
 
@@ -132,6 +133,9 @@ class QueryRouter:
         biglake: Optional :class:`BigLakeSource` (defaults to enabled —
             reads AWS's free Ethereum archive for ranges the indexed
             tiers cannot serve).
+        envio: Optional :class:`EnvioSource` (defaults to enabled —
+            Envio HyperRPC for bounded wallet transfers and eth/base
+            trace blocks the indexed tiers missed).
         client_factory: Optional zero-arg callable returning a ClickHouse
             client lazily (used by the API so constructing the router does
             not force a connection at startup).
@@ -150,6 +154,7 @@ class QueryRouter:
         *,
         backfill: AddressBackfill | None = None,
         biglake: BigLakeSource | None = None,
+        envio: EnvioSource | None = None,
         client_factory: Any | None = None,
         on_demand_enabled: bool = ON_DEMAND_RPC_ENABLED,
         max_block_range: int = ON_DEMAND_RPC_MAX_BLOCK_RANGE,
@@ -162,6 +167,7 @@ class QueryRouter:
         self.cache = cache if cache is not None else QueryCache()
         self._backfill = backfill
         self.biglake = biglake if biglake is not None else BigLakeSource()
+        self.envio = envio if envio is not None else EnvioSource()
         self.on_demand_enabled = bool(on_demand_enabled)
         self.max_block_range = int(max_block_range)
         self.limit_default = int(limit_default)
@@ -499,6 +505,40 @@ class QueryRouter:
             metrics_incr("biglake_routes")
         return filtered
 
+    async def _envio_route(
+        self,
+        table: str,
+        chain: str,
+        *,
+        from_block: int | None,
+        to_block: int | None,
+        filters: dict[str, Any] | list[dict[str, Any]] | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Try Envio HyperRPC for bounded wallet queries the indexed tiers missed.
+
+        Only serves ``evm_transfers`` address queries with an explicit
+        block window; anything else falls through to the RPC leg.
+        """
+        if table != "evm_transfers" or from_block is None or to_block is None:
+            return []
+        if not self.envio.available() or chain not in EnvioSource.CHAIN_IDS:
+            return []
+        address = self._address_from_filters(filters) or self._single_address(filters)
+        if not address:
+            return []
+        try:
+            rows = await asyncio.to_thread(
+                self.envio.address_transfers, chain, address, from_block, to_block, limit=limit
+            )
+        except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
+            logger.warning("envio_route_failed", error=str(exc)[:120])
+            return []
+        filtered = self._filter_rows(table, rows, filters)
+        if filtered:
+            metrics_incr("envio_routes")
+        return filtered
+
     # ── RPC leg ──────────────────────────────────────────────────────
 
     def _rpc_cache_key(
@@ -641,6 +681,7 @@ class QueryRouter:
             if biglake_rows:
                 merged = self._merge_rows(table, ch_rows, cold_rows, biglake_rows, limit=limit)
 
+        envio_rows: list[dict[str, Any]] = []
         if (
             use_rpc
             and self.on_demand_enabled
@@ -648,11 +689,26 @@ class QueryRouter:
                 table, ch_rows, cold_rows + biglake_rows, from_block, to_block, limit
             )
         ):
+            envio_rows = await self._envio_route(
+                table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
+            )
+            if envio_rows:
+                merged = self._merge_rows(
+                    table, ch_rows, cold_rows, biglake_rows, envio_rows, limit=limit
+                )
+
+        if (
+            use_rpc
+            and self.on_demand_enabled
+            and self._needs_rpc_fallback(
+                table, ch_rows, cold_rows + biglake_rows + envio_rows, from_block, to_block, limit
+            )
+        ):
             metrics_incr("ondemand_rpc_routes")
             rpc_rows = await self._rpc_route(table, chain, from_block, to_block, filters, limit)
             if rpc_rows:
                 merged = self._merge_rows(
-                    table, ch_rows, cold_rows, biglake_rows, rpc_rows, limit=limit
+                    table, ch_rows, cold_rows, biglake_rows, envio_rows, rpc_rows, limit=limit
                 )
         return merged
 
