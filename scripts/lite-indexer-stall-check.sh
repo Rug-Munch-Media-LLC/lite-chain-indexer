@@ -249,7 +249,7 @@ print(" ".join(no_advance))
 # while windows complete. Restarts for these were looping and starving
 # the catch-up (and spamming Telegram). Exempt fresh-data chains from
 # the stale/no-advance restart paths.
-FRESH_WINDOW_MIN="${FRESH_WINDOW_MIN:-30}"
+FRESH_WINDOW_MIN="${FRESH_WINDOW_MIN:-45}"
 FRESH_CHAINS="$(
 	timeout 30 "${PYTHON}" - <<'PYEOF'
 import os

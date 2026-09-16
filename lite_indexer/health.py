@@ -223,7 +223,7 @@ async def check_chain_lag(
         # so the stall watchdog restarted the service and killed the in-flight
         # batch every cycle (observed 2026-08-05: polygon/ethereum/optimism
         # genuinely stalled). The watchdog's own NO_ADVANCE signal
-        # (state_age > STALL_MINUTES=30) still catches genuine wedges.
+        # (state_age > STALL_MINUTES=75) still catches genuine wedges.
         poll_interval = _CHAIN_BLOCK_TIMES.get(chain, 12.0) * 3 + 30
         if state_age is not None and state_age > max(1800, poll_interval):
             result["status"] = "stale"
