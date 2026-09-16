@@ -238,7 +238,7 @@ print(" ".join(no_advance))
 # while windows complete. Restarts for these were looping and starving
 # the catch-up (and spamming Telegram). Exempt fresh-data chains from
 # the stale/no-advance restart paths.
-FRESH_WINDOW_MIN="${FRESH_WINDOW_MIN:-15}"
+FRESH_WINDOW_MIN="${FRESH_WINDOW_MIN:-30}"
 FRESH_CHAINS="$(
 	timeout 30 "${PYTHON}" - <<'PYEOF'
 import os
@@ -252,9 +252,15 @@ try:
         user=os.getenv("CLICKHOUSE_USER", "rmi"),
         password=os.getenv("CLICKHOUSE_PASSWORD", ""),
     )
+    # 2026-09-17: during catch-up a chain writes into dex/deployer tables even
+    # while its evm_transfers batch is still in flight — missing that made the
+    # watchdog restart actively-working chains (thrash). Check all write paths.
     rows = c.execute(
-        f"SELECT chain FROM wallet_memory.evm_transfers "
-        f"WHERE ingested_at >= now() - INTERVAL {win} MINUTE GROUP BY chain"
+        f"SELECT chain FROM ("
+        f"  SELECT chain, ingested_at FROM wallet_memory.evm_transfers"
+        f"  UNION ALL SELECT chain, ingested_at FROM wallet_memory.dex_events"
+        f"  UNION ALL SELECT chain, ingested_at FROM wallet_memory.deployer_events"
+        f") WHERE ingested_at >= now() - INTERVAL {win} MINUTE GROUP BY chain"
     )
     fresh = {str(r[0]) for r in rows}
     try:
