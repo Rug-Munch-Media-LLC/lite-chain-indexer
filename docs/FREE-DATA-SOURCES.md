@@ -6,6 +6,7 @@ Goal: no single provider failure interrupts wallet history, tracing, or backfill
 | Source | Chains | Data | Access | Status |
 |---|---|---|---|---|
 | AWS public blockchain ("BigLake") | Ethereum, Bitcoin | blocks, txs, logs, token_transfers, **traces**, contracts (full history) | anonymous S3 via DuckDB | ✅ integrated (`biglake_source`) |
+| **AWS v1.1 (SonarX + chains)** | arbitrum, base, aptos, provenance, xrp (sonarx); bnb, cronos, stellar, ton | **traces** + transfers + logs + receipts + txs (+approvals); bnb: blocks/txs; ~1-week lag on sonarx, bnb fresh to yesterday | public S3 `s3://aws-public-blockchain/v1.1/…`, anonymous, DuckDB | ✅ verified 2026-09-16 (base 251.7M traces/day!) |
 | Envio HyperRPC / HyperSync | 79+ EVM + Solana (early) | logs, txs, receipts; `trace_block` on eth/base `-traces` subdomains | free API token in URL | ✅ integrated (`envio_source`) |
 | SQD Portal | Solana, Tron, Bitcoin, Hyperliquid, **EVM (13 chains)** | Solana instructions/token balances; TRC-20 + native internals; HL fills; **EVM execution traces — complete history, callFrom/callTo filters** | HTTP POST JSONL (public endpoints) | ✅ integrated (`sqd_source`) |
 | **Indexed.xyz** | ethereum, base, gnosis, linea, optimism, zksync, zora, sui, pgn, arweave | raw blocks/txs/logs + **decoded** logs, CC0 | public R2 credentials (below), S3 API / DuckDB | ✅ **INTEGRATED** (f660fcc — router third path, minutes-fresh) |
@@ -74,6 +75,19 @@ filter on **`block_timestamp` first** or you'll trip the 10-billion-row scan lim
 Limits: 60 queries/hour/user · 60s timeout · 10B rows scanned. Solana is near-realtime
 (verified minutes-fresh); Ethereum/Base are snapshot-era (good depth, incl. traces).
 
+### AWS v1.1 — SonarX bulk lake (arbitrum/base traces + transfers)
+
+```sql
+SELECT count(*) FROM read_parquet(
+  's3://aws-public-blockchain/v1.1/sonarx/base/traces/date=2026-09-09/*.parquet');  -- 251.7M rows
+```
+
+Layout: `v1.1/sonarx/{chain}/{table}/date=YYYY-MM-DD/`. Tables: blocks, transactions, transactions_failed,
+logs, receipts, transfers, approvals, traces. Chains: arbitrum, base, aptos, provenance, xrp.
+Also `v1.1/bnb/{blocks,transactions}` (fresh), `cronos/`, `stellar/`, `ton/`. Schemas: UPPERCASE columns
+for sonarx (BLOCK_NUMBER, FROM_ADDRESS, PATH, TRANSACTION_HASH…). Ideal for bulk backfill/analytics;
+SQD remains the live/full-history on-demand tier.
+
 ### SQD EVM traces (free, complete history)
 
 ```bash
@@ -98,7 +112,7 @@ Full datasets are licensed; the public layout (`<chain>/<topic>/<startSlot>_<end
 | Need | Independent paths |
 |---|---|
 | ETH wallet history | BigLake · Indexed.xyz · Envio · SQD |
-| Traces (internal transfers, EVM) | **SQD Portal — FREE, complete history, 13 chains** (ethereum, arbitrum, arbitrum-nova, base, polygon, avalanche, optimism, gnosis, celo, zksync, scroll, linea, mantle) · BigLake (eth, full history) · Envio `-traces` (eth/base/arbitrum/gnosis live) · CryptoHouse (eth/base snapshots) · Bitquery (paid — no longer needed) |
+| Traces (internal transfers, EVM) | **SQD Portal — FREE, complete history, 13 chains** (ethereum, arbitrum, arbitrum-nova, base, polygon, avalanche, optimism, gnosis, celo, zksync, scroll, linea, mantle) · BigLake (eth, full history) · **AWS v1.1 SonarX (arbitrum/base, bulk, ~1wk lag)** · Envio `-traces` (eth/base/arbitrum/gnosis live) · CryptoHouse (eth/base snapshots) · Bitquery (paid — no longer needed) |
 | Multi-chain EVM (base/opt/gnosis/linea/zksync) | Indexed.xyz · Envio · own indexer (hot+B2) |
 | Solana history | SQD · Envio (beta) · **CryptoHouse (live SQL)** · Bitquery (licensed) · own indexer |
 | Tron | SQD · own indexer |
