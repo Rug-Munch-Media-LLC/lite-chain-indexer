@@ -41,6 +41,7 @@ from lite_indexer.config import (
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.query.address_backfill import AddressBackfill, BackfillResult
+from lite_indexer.query.biglake_source import BigLakeSource
 from lite_indexer.query.cache import QueryCache
 from lite_indexer.query.rpc_fetcher import RPCFetcher
 from lite_indexer.storage.cold_store import TABLE_COLUMNS, TABLE_KINDS, TABLE_ORDER, ColdStore
@@ -128,6 +129,9 @@ class QueryRouter:
             ``fetch_deployer`` / ``fetch_block_info``), or None to build a
             default :class:`RPCFetcher`.
         cache: A :class:`QueryCache` (a default is built when omitted).
+        biglake: Optional :class:`BigLakeSource` (defaults to enabled —
+            reads AWS's free Ethereum archive for ranges the indexed
+            tiers cannot serve).
         client_factory: Optional zero-arg callable returning a ClickHouse
             client lazily (used by the API so constructing the router does
             not force a connection at startup).
@@ -145,6 +149,7 @@ class QueryRouter:
         cache: QueryCache | None = None,
         *,
         backfill: AddressBackfill | None = None,
+        biglake: BigLakeSource | None = None,
         client_factory: Any | None = None,
         on_demand_enabled: bool = ON_DEMAND_RPC_ENABLED,
         max_block_range: int = ON_DEMAND_RPC_MAX_BLOCK_RANGE,
@@ -156,6 +161,7 @@ class QueryRouter:
         self.rpc = rpc_pool if rpc_pool is not None else RPCFetcher(max_block_range=max_block_range)
         self.cache = cache if cache is not None else QueryCache()
         self._backfill = backfill
+        self.biglake = biglake if biglake is not None else BigLakeSource()
         self.on_demand_enabled = bool(on_demand_enabled)
         self.max_block_range = int(max_block_range)
         self.limit_default = int(limit_default)
@@ -200,10 +206,19 @@ class QueryRouter:
         never raises.
         """
         try:
-            return await self._get_backfill().backfill_address(address, chain=chain, force=force, max_tx=max_tx)
+            return await self._get_backfill().backfill_address(
+                address, chain=chain, force=force, max_tx=max_tx
+            )
         except Exception as exc:  # noqa: BLE001 — backfill is best-effort
-            logger.warning("ondemand_backfill_failed", chain=chain, address=str(address)[:12], error=str(exc)[:120])
-            return BackfillResult(address=str(address or ""), chain=chain, skipped=True, reason="error")
+            logger.warning(
+                "ondemand_backfill_failed",
+                chain=chain,
+                address=str(address)[:12],
+                error=str(exc)[:120],
+            )
+            return BackfillResult(
+                address=str(address or ""), chain=chain, skipped=True, reason="error"
+            )
 
     async def get_address_activity(
         self,
@@ -246,7 +261,9 @@ class QueryRouter:
             f"LIMIT {int(limit)}"
         )
         try:
-            rows, column_types = client.execute(sql, {"address": address, "chain": chain}, with_column_types=True)
+            rows, column_types = client.execute(
+                sql, {"address": address, "chain": chain}, with_column_types=True
+            )
         except Exception as exc:  # noqa: BLE001 — reads are best-effort
             metrics_incr("ondemand_ch_errors")
             logger.debug("ondemand_address_activity_failed", error=str(exc)[:100])
@@ -362,7 +379,11 @@ class QueryRouter:
             return ""
         if isinstance(filters, dict):
             return " AND ".join(f"{col} = {_cold_lit(value)}" for col, value in filters.items())
-        return "(" + " OR ".join(f"{item['col']} = {_cold_lit(item['value'])}" for item in filters) + ")"
+        return (
+            "("
+            + " OR ".join(f"{item['col']} = {_cold_lit(item['value'])}" for item in filters)
+            + ")"
+        )
 
     # ── Merge ────────────────────────────────────────────────────────
 
@@ -420,6 +441,63 @@ class QueryRouter:
                 return len(ch_rows) + len(cold_rows) < limit
             return False
         return False
+
+    # ── BigLake leg (AWS public Ethereum archive) ────────────────────
+
+    @staticmethod
+    def _filter_rows(
+        table: str,  # noqa: ARG004 — kept for future per-table filter semantics
+        rows: list[dict[str, Any]],
+        filters: dict[str, Any] | list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        """Apply router filter semantics (dict=AND eq, list=OR eq) to rows."""
+        if not filters:
+            return rows
+
+        def _matches(row: dict[str, Any], cond: dict[str, Any]) -> bool:
+            return all(
+                str(row.get(col, "")).lower() == str(val).lower() for col, val in cond.items()
+            )
+
+        if isinstance(filters, dict):
+            return [r for r in rows if _matches(r, filters)]
+        return [r for r in rows if any(_matches(r, item) for item in filters)]
+
+    async def _biglake_route(
+        self,
+        table: str,
+        chain: str,
+        *,
+        from_block: int | None,
+        to_block: int | None,
+        filters: dict[str, Any] | list[dict[str, Any]] | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Try the AWS public lake for ranges the indexed tiers could not serve.
+
+        Best-effort: any failure returns an empty list so routing falls
+        through to the RPC leg as before.
+        """
+        if not self.biglake.available():
+            return []
+        address = self._address_from_filters(filters) or self._single_address(filters)
+        try:
+            rows = await asyncio.to_thread(
+                self.biglake.query,
+                table,
+                chain,
+                from_block=from_block,
+                to_block=to_block,
+                address=address,
+                limit=limit,
+            )
+        except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
+            logger.warning("biglake_route_failed", error=str(exc)[:120])
+            return []
+        filtered = self._filter_rows(table, rows, filters)
+        if filtered:
+            metrics_incr("biglake_routes")
+        return filtered
 
     # ── RPC leg ──────────────────────────────────────────────────────
 
@@ -488,7 +566,9 @@ class QueryRouter:
                 else:
                     addr = self._address_from_filters(filters)
                     if addr is not None:
-                        rows = await self.rpc.fetch_address_transfers(chain, addr, from_block, to_block, limit=limit)
+                        rows = await self.rpc.fetch_address_transfers(
+                            chain, addr, from_block, to_block, limit=limit
+                        )
             elif table == "deployer_events":
                 contract = self._single_address(filters)
                 if contract is not None:
@@ -541,21 +621,39 @@ class QueryRouter:
         self._check_table(table)
         limit = max(1, min(int(limit), 1000))
 
-        ch_rows = self._query_ch(table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit)
+        ch_rows = self._query_ch(
+            table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
+        )
         cold_rows = self._query_cold(
             table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
         )
         merged = self._merge_rows(table, ch_rows, cold_rows, limit=limit)
 
+        biglake_rows: list[dict[str, Any]] = []
         if (
             use_rpc
             and self.on_demand_enabled
             and self._needs_rpc_fallback(table, ch_rows, cold_rows, from_block, to_block, limit)
         ):
+            biglake_rows = await self._biglake_route(
+                table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
+            )
+            if biglake_rows:
+                merged = self._merge_rows(table, ch_rows, cold_rows, biglake_rows, limit=limit)
+
+        if (
+            use_rpc
+            and self.on_demand_enabled
+            and self._needs_rpc_fallback(
+                table, ch_rows, cold_rows + biglake_rows, from_block, to_block, limit
+            )
+        ):
             metrics_incr("ondemand_rpc_routes")
             rpc_rows = await self._rpc_route(table, chain, from_block, to_block, filters, limit)
             if rpc_rows:
-                merged = self._merge_rows(table, ch_rows, cold_rows, rpc_rows, limit=limit)
+                merged = self._merge_rows(
+                    table, ch_rows, cold_rows, biglake_rows, rpc_rows, limit=limit
+                )
         return merged
 
     # ── Public query API ─────────────────────────────────────────────
@@ -695,7 +793,9 @@ class QueryRouter:
             result = await self.rpc.fetch_deployer(chain, addr, creation_tx=hint)
         except Exception as exc:  # noqa: BLE001 — RPC is best-effort
             metrics_incr("ondemand_rpc_errors")
-            logger.warning("ondemand_deployer_failed", chain=chain, address=addr, error=str(exc)[:100])
+            logger.warning(
+                "ondemand_deployer_failed", chain=chain, address=addr, error=str(exc)[:100]
+            )
             return rows[0] if rows else None
         if result:
             self.cache.set(cache_key, result)
