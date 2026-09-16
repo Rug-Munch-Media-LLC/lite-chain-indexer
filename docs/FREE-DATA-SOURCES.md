@@ -46,6 +46,28 @@ curl -s -u 'crypto:' https://crypto-clickhouse.clickhouse.com \
   --data-binary "SELECT count() FROM solana.token_transfers WHERE block_timestamp >= now() - INTERVAL 10 MINUTE"
 ```
 
+**Validated recipes (2026-09-16):**
+
+```sql
+-- Solana: every transaction touching a wallet's token balances (last 30 min)
+SELECT signature, block_timestamp, err FROM solana.transactions
+WHERE block_timestamp >= now() - INTERVAL 30 MINUTE
+  AND arrayExists(x -> x.owner = '<WALLET>', post_token_balances) LIMIT 10;
+
+-- Ethereum: internal traces for an address (parity-style, snapshot ≤ 2026-04-30)
+SELECT block_timestamp, from_address, to_address, value, call_type
+FROM ethereum.traces WHERE to_address = '<ADDR>' LIMIT 10;
+
+-- Ethereum: decoded event logs (event_signature/event_params populate on newer rows)
+SELECT block_number, event_signature, event_params FROM ethereum.logs
+WHERE address = '<CONTRACT>' ORDER BY block_number DESC LIMIT 10;
+```
+
+**Data boundaries:** Solana = live (verified minutes-fresh). Ethereum & Base = snapshot through
+**2026-04-30** (traces/logs included). Bonus: `polymarket` db (markets, positions, PnL).
+`solana.transactions` also carries `pre/post_token_balances`, `log_messages`, `balance_changes`
+— the richest wallet-delta source of any free provider.
+
 **Query rules (learned the hard way):** the sort key is ``(block_timestamp, block_slot, id)`` —
 filter on **`block_timestamp` first** or you'll trip the 10-billion-row scan limit.
 Limits: 60 queries/hour/user · 60s timeout · 10B rows scanned. Solana is near-realtime
