@@ -7,7 +7,7 @@ Goal: no single provider failure interrupts wallet history, tracing, or backfill
 |---|---|---|---|---|
 | AWS public blockchain ("BigLake") | Ethereum, Bitcoin | blocks, txs, logs, token_transfers, **traces**, contracts (full history) | anonymous S3 via DuckDB | ✅ integrated (`biglake_source`) |
 | Envio HyperRPC / HyperSync | 79+ EVM + Solana (early) | logs, txs, receipts; `trace_block` on eth/base `-traces` subdomains | free API token in URL | ✅ integrated (`envio_source`) |
-| SQD Portal | Solana, Tron, Bitcoin, Hyperliquid, EVM | Solana instructions/token balances; TRC-20 + native internals; HL fills | HTTP POST JSONL (public endpoints) | ✅ integrated (`sqd_source`) |
+| SQD Portal | Solana, Tron, Bitcoin, Hyperliquid, **EVM (13 chains)** | Solana instructions/token balances; TRC-20 + native internals; HL fills; **EVM execution traces — complete history, callFrom/callTo filters** | HTTP POST JSONL (public endpoints) | ✅ integrated (`sqd_source`) |
 | **Indexed.xyz** | ethereum, base, gnosis, linea, optimism, zksync, zora, sui, pgn, arweave | raw blocks/txs/logs + **decoded** logs, CC0 | public R2 credentials (below), S3 API / DuckDB | ✅ **INTEGRATED** (f660fcc — router third path, minutes-fresh) |
 | solarchive.org | Solana | txs/accounts/tokens Parquet (CC-BY) | public HTTPS — data host currently 404 | 🟡 monitor |
 | **CryptoHouse** (crypto.clickhouse.com) | Solana (LIVE), Ethereum/Base (snapshot-era ≈24.99M blocks), Polymarket | blocks, transactions, token_transfers, **instructions**, accounts, rewards, **traces/logs** (eth/base), + MVs | ✅ **HTTP direct access verified** — `https://crypto-clickhouse.clickhouse.com`, user `crypto`, empty password (native 9440 TLS flaky from Talos) | ✅ verified 2026-09-16 |
@@ -74,6 +74,15 @@ filter on **`block_timestamp` first** or you'll trip the 10-billion-row scan lim
 Limits: 60 queries/hour/user · 60s timeout · 10B rows scanned. Solana is near-realtime
 (verified minutes-fresh); Ethereum/Base are snapshot-era (good depth, incl. traces).
 
+### SQD EVM traces (free, complete history)
+
+```bash
+python3 -m lite_indexer.query.sqd_source evm-traces polygon --from-block N --to-block M --address 0xWALLET
+```
+
+13 EVM chains, blocks from 2021+ verified, ``callFrom``/``callTo`` filters (two queries per wallet).
+Wired into the router as the ``internal_transfers`` leg — failures fall through to RPC.
+
 ### Bitquery cloud samples (public S3, no key)
 
 ```sql
@@ -89,7 +98,7 @@ Full datasets are licensed; the public layout (`<chain>/<topic>/<startSlot>_<end
 | Need | Independent paths |
 |---|---|
 | ETH wallet history | BigLake · Indexed.xyz · Envio · SQD |
-| ETH traces | BigLake · Envio `-traces` · CryptoHouse (snapshot-era traces) |
+| Traces (internal transfers, EVM) | **SQD Portal — FREE, complete history, 13 chains** (ethereum, arbitrum, arbitrum-nova, base, polygon, avalanche, optimism, gnosis, celo, zksync, scroll, linea, mantle) · BigLake (eth, full history) · Envio `-traces` (eth/base/arbitrum/gnosis live) · CryptoHouse (eth/base snapshots) · Bitquery (paid — no longer needed) |
 | Multi-chain EVM (base/opt/gnosis/linea/zksync) | Indexed.xyz · Envio · own indexer (hot+B2) |
 | Solana history | SQD · Envio (beta) · **CryptoHouse (live SQL)** · Bitquery (licensed) · own indexer |
 | Tron | SQD · own indexer |

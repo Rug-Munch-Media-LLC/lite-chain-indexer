@@ -46,6 +46,7 @@ from lite_indexer.query.cache import QueryCache
 from lite_indexer.query.envio_source import EnvioSource
 from lite_indexer.query.indexed_source import IndexedXyzSource
 from lite_indexer.query.rpc_fetcher import RPCFetcher
+from lite_indexer.query.sqd_source import SQDSource
 from lite_indexer.storage.cold_store import TABLE_COLUMNS, TABLE_KINDS, TABLE_ORDER, ColdStore
 
 logger = get_logger(__name__)
@@ -139,6 +140,8 @@ class QueryRouter:
             trace blocks the indexed tiers missed).
         indexed: Optional :class:`IndexedXyzSource` (defaults to enabled —
             Indexed.xyz R2 lake: an independent third path for EVM chains).
+        sqd: Optional :class:`SQDSource` (defaults to enabled — SQD portal
+            full-history EVM traces for ``internal_transfers``).
         client_factory: Optional zero-arg callable returning a ClickHouse
             client lazily (used by the API so constructing the router does
             not force a connection at startup).
@@ -159,6 +162,7 @@ class QueryRouter:
         biglake: BigLakeSource | None = None,
         envio: EnvioSource | None = None,
         indexed: IndexedXyzSource | None = None,
+        sqd: SQDSource | None = None,
         client_factory: Any | None = None,
         on_demand_enabled: bool = ON_DEMAND_RPC_ENABLED,
         max_block_range: int = ON_DEMAND_RPC_MAX_BLOCK_RANGE,
@@ -173,6 +177,7 @@ class QueryRouter:
         self.biglake = biglake if biglake is not None else BigLakeSource()
         self.envio = envio if envio is not None else EnvioSource()
         self.indexed = indexed if indexed is not None else IndexedXyzSource()
+        self.sqd = sqd if sqd is not None else SQDSource()
         self.on_demand_enabled = bool(on_demand_enabled)
         self.max_block_range = int(max_block_range)
         self.limit_default = int(limit_default)
@@ -633,6 +638,38 @@ class QueryRouter:
             metrics_incr("indexed_routes")
         return filtered
 
+    async def _sqd_traces_route(
+        self,
+        table: str,
+        chain: str,
+        *,
+        from_block: int | None,
+        to_block: int | None,
+        filters: dict[str, Any] | list[dict[str, Any]] | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Try the SQD portal traces dataset for full-history EVM internals.
+
+        Serves ``internal_transfers`` for ~13 EVM chains with ``callFrom`` /
+        ``callTo`` server-side filtering. Best-effort: failures return [].
+        """
+        if table != "internal_transfers" or from_block is None or to_block is None:
+            return []
+        if not self.sqd.available() or chain not in SQDSource.EVM_DATASETS:
+            return []
+        address = self._address_from_filters(filters) or self._single_address(filters)
+        try:
+            rows = await asyncio.to_thread(
+                self.sqd.evm_traces, chain, from_block, to_block, address=address, limit=limit
+            )
+        except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
+            logger.warning("sqd_traces_route_failed", error=str(exc)[:120])
+            return []
+        filtered = self._filter_rows(table, rows, filters)
+        if filtered:
+            metrics_incr("sqd_traces_routes")
+        return filtered
+
     # ── RPC leg ──────────────────────────────────────────────────────
 
     def _rpc_cache_key(
@@ -807,6 +844,7 @@ class QueryRouter:
                     table, ch_rows, cold_rows, biglake_rows, envio_rows, indexed_rows, limit=limit
                 )
 
+        sqd_rows: list[dict[str, Any]] = []
         if (
             use_rpc
             and self.on_demand_enabled
@@ -814,6 +852,33 @@ class QueryRouter:
                 table,
                 ch_rows,
                 cold_rows + biglake_rows + envio_rows + indexed_rows,
+                from_block,
+                to_block,
+                limit,
+            )
+        ):
+            sqd_rows = await self._sqd_traces_route(
+                table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
+            )
+            if sqd_rows:
+                merged = self._merge_rows(
+                    table,
+                    ch_rows,
+                    cold_rows,
+                    biglake_rows,
+                    envio_rows,
+                    indexed_rows,
+                    sqd_rows,
+                    limit=limit,
+                )
+
+        if (
+            use_rpc
+            and self.on_demand_enabled
+            and self._needs_rpc_fallback(
+                table,
+                ch_rows,
+                cold_rows + biglake_rows + envio_rows + indexed_rows + sqd_rows,
                 from_block,
                 to_block,
                 limit,
@@ -829,6 +894,7 @@ class QueryRouter:
                     biglake_rows,
                     envio_rows,
                     indexed_rows,
+                    sqd_rows,
                     rpc_rows,
                     limit=limit,
                 )

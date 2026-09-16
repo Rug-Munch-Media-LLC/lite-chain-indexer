@@ -79,8 +79,37 @@ class SQDSource:
         "solana-mainnet": "solana",
         "tron-mainnet": "tron",
         "ethereum-mainnet": "evm",
+        "arbitrum-one": "evm",
+        "arbitrum-nova": "evm",
+        "base-mainnet": "evm",
+        "polygon-mainnet": "evm",
+        "avalanche-mainnet": "evm",
+        "optimism-mainnet": "evm",
+        "gnosis-mainnet": "evm",
+        "celo-mainnet": "evm",
+        "zksync-mainnet": "evm",
+        "scroll-mainnet": "evm",
+        "linea-mainnet": "evm",
+        "mantle-mainnet": "evm",
         "bitcoin-mainnet": "bitcoin",
         "hyperliquid-fills": "hyperliquidFills",
+    }
+
+    #: EVM chains → SQD dataset slug (portal serves FULL-history traces).
+    EVM_DATASETS: dict[str, str] = {
+        "ethereum": "ethereum-mainnet",
+        "arbitrum": "arbitrum-one",
+        "arbitrum-nova": "arbitrum-nova",
+        "base": "base-mainnet",
+        "polygon": "polygon-mainnet",
+        "avalanche": "avalanche-mainnet",
+        "optimism": "optimism-mainnet",
+        "gnosis": "gnosis-mainnet",
+        "celo": "celo-mainnet",
+        "zksync": "zksync-mainnet",
+        "scroll": "scroll-mainnet",
+        "linea": "linea-mainnet",
+        "mantle": "mantle-mainnet",
     }
 
     def __init__(
@@ -610,7 +639,123 @@ class SQDSource:
         return rows[: max(1, int(limit))]
 
 
+    # ── EVM: full-history execution traces ───────────────────────────
+
+    _TRACE_FIELDS: dict[str, Any] = {
+        "block": {"number": True, "timestamp": True},
+        "trace": {
+            "transactionIndex": True,
+            "traceAddress": True,
+            "subtraces": True,
+            "type": True,
+            "error": True,
+            "revertReason": True,
+            "callFrom": True,
+            "callTo": True,
+            "callValue": True,
+            "callGas": True,
+            "callInput": True,
+            "callResultGasUsed": True,
+        },
+    }
+
+    def _map_trace(self, chain: str, block: dict[str, Any], rec: dict[str, Any]) -> dict[str, Any]:
+        """Map one portal trace record (``action``/``result`` nesting) to a row."""
+        header = block.get("header", {})
+        action = rec.get("action") or {}
+        result = rec.get("result") or {}
+        trace_address = rec.get("traceAddress") or []
+        value_raw = action.get("value") or "0x0"
+        try:
+            value = str(int(str(value_raw), 16))
+        except (TypeError, ValueError):
+            value = str(value_raw)
+        gas_raw = result.get("gasUsed") or "0x0"
+        try:
+            gas_used = int(str(gas_raw), 16)
+        except (TypeError, ValueError):
+            gas_used = 0
+        input_raw = str(action.get("input") or "")
+        return {
+            "chain": chain,
+            "block_number": int(header.get("number") or 0),
+            "block_timestamp": self._ts(header.get("timestamp")),
+            "tx_hash": "",
+            "trace_address": ".".join(str(x) for x in trace_address),
+            "from_address": str(action.get("from") or "").lower(),
+            "to_address": str(action.get("to") or "").lower(),
+            "value_wei": value,
+            "call_type": str(rec.get("callType") or rec.get("type") or ""),
+            "gas_used": gas_used,
+            "error": "" if not rec.get("error") else str(rec.get("error"))[:200],
+            "input_method_id": input_raw[:10] if input_raw.startswith("0x") else "",
+            "ingested_at": datetime.now(UTC),
+        }
+
+    def evm_traces(
+        self,
+        chain: str,
+        from_block: int,
+        to_block: int,
+        *,
+        address: str | None = None,
+        limit: int = 200,
+        max_batches: int = 48,
+    ) -> list[dict[str, Any]]:
+        """Full-history EVM execution traces → ``internal_transfers`` row shape.
+
+        The SQD portal traces dataset covers ~13 EVM chains with complete
+        history (blocks from 2021+ verified) and supports ``callFrom`` /
+        ``callTo`` server-side address filters. ``tx_hash`` is empty (portal
+        traces carry only the transaction index).
+        """
+        if not self.available() or chain not in self.EVM_DATASETS:
+            return []
+        dataset = self.EVM_DATASETS[chain]
+        addr = str(address or "").strip().lower()
+        selectors_list: list[dict[str, Any]] = [{"callFrom": [addr]}, {"callTo": [addr]}] if addr else [{}]
+        seen: set[tuple[Any, ...]] = set()
+        rows: list[dict[str, Any]] = []
+        for selector in selectors_list:
+            blocks = self.stream(
+                dataset,
+                from_block,
+                to_block,
+                fields=self._TRACE_FIELDS,
+                selectors={"traces": [selector]},
+                max_batches=max_batches,
+            )
+            for block in blocks:
+                header_number = block.get("header", {}).get("number")
+                for rec in block.get("traces", []) or []:
+                    trace_address = rec.get("traceAddress") or []
+                    key = (
+                        header_number,
+                        rec.get("transactionIndex"),
+                        ".".join(str(x) for x in trace_address),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append(self._map_trace(chain, block, rec))
+        rows.sort(key=lambda r: (r["block_number"], r["trace_address"]), reverse=True)
+        return rows[: max(1, int(limit))]
+
+
 # ── CLI ──────────────────────────────────────────────────────────────
+
+
+def _cmd_evm_traces(args: argparse.Namespace) -> int:
+    src = SQDSource()
+    rows = src.evm_traces(
+        args.chain,
+        int(args.from_block, 0),
+        int(args.to_block, 0),
+        address=args.address,
+        limit=args.limit,
+    )
+    print(json.dumps(rows[: args.limit], default=str, indent=2))  # noqa: T201
+    return 0
 
 
 def _cmd_head(args: argparse.Namespace) -> int:
@@ -740,6 +885,14 @@ def _cli() -> int:
     p_hf.add_argument("--to-block", required=True)
     p_hf.add_argument("--limit", type=int, default=100)
     p_hf.set_defaults(fn=_cmd_hl_fills)
+
+    p_et = sub.add_parser("evm-traces", help="Full-history EVM traces (internal transfers)")
+    p_et.add_argument("chain", choices=sorted(SQDSource.EVM_DATASETS))
+    p_et.add_argument("--from-block", required=True)
+    p_et.add_argument("--to-block", required=True)
+    p_et.add_argument("--address", default=None, help="wallet filter (callFrom OR callTo)")
+    p_et.add_argument("--limit", type=int, default=100)
+    p_et.set_defaults(fn=_cmd_evm_traces)
 
     args = parser.parse_args()
     return int(args.fn(args))

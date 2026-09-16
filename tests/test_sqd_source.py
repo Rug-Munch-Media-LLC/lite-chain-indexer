@@ -199,3 +199,52 @@ def test_hyperliquid_owner_fills_mapping() -> None:
     assert rows[0]["coin"] == "BTC"
     assert rows[0]["direction"] == "Open Long"
     assert fake.calls[0]["payload"]["fills"][0] == {"user": ["0xabc"]}
+
+
+def test_evm_dataset_mapping() -> None:
+    assert SQDSource.EVM_DATASETS["arbitrum"] == "arbitrum-one"
+    assert SQDSource.EVM_DATASETS["base"] == "base-mainnet"
+    assert SQDSource.DATASET_TYPES["polygon-mainnet"] == "evm"
+    assert SQDSource.DATASET_TYPES["arbitrum-one"] == "evm"
+
+
+def test_evm_traces_mapping() -> None:
+    trace = {
+        "transactionIndex": 0,
+        "traceAddress": [0, 1],
+        "type": "call",
+        "error": None,
+        "subtraces": 2,
+        "action": {"from": "0xAA", "to": "0xBB", "value": "0x64", "input": "0xabcdef12dead"},
+        "result": {"gasUsed": "0x5208"},
+    }
+    block = {"header": {"number": 100, "timestamp": 1788377894}, "traces": [trace]}
+    src, fake = _source([(200, _jl(block))])
+    rows = src.evm_traces("polygon", 100, 100)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["chain"] == "polygon"
+    assert r["trace_address"] == "0.1"
+    assert r["value_wei"] == "100"
+    assert r["gas_used"] == 21000
+    assert r["from_address"] == "0xaa"
+    assert r["to_address"] == "0xbb"
+    assert r["input_method_id"] == "0xabcdef12"
+    assert fake.calls[0]["payload"]["traces"] == [{}]
+    assert fake.calls[0]["payload"]["type"] == "evm"
+    assert "polygon-mainnet" in fake.calls[0]["url"]
+
+
+def test_evm_traces_address_filter_uses_two_queries() -> None:
+    block = {"header": {"number": 100, "timestamp": 1788377894}, "traces": []}
+    src, fake = _source([(200, _jl(block)), (200, _jl(block))])
+    src.evm_traces("base", 100, 100, address="0xAbC")
+    assert fake.calls[0]["payload"]["traces"] == [{"callFrom": ["0xabc"]}]
+    assert fake.calls[1]["payload"]["traces"] == [{"callTo": ["0xabc"]}]
+    assert "base-mainnet" in fake.calls[0]["url"]
+
+
+def test_evm_traces_unknown_chain_gated() -> None:
+    src, fake = _source([])
+    assert src.evm_traces("bsc", 1, 2) == []
+    assert fake.calls == []
