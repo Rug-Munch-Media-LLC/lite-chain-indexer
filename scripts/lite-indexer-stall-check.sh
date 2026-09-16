@@ -8,10 +8,11 @@
 #   1. PROCESS WATCHDOG — if the lite-indexer.service is not active (dead
 #      process, failed start), start it immediately.
 #   2. STALL DETECTION — run the lag health check
-#      (python -m lite_indexer.health --lag --json). If ANY chain reports
-#      status "stale" (state file not updated for several poll intervals —
-#      typically a wedged event loop, e.g. a synchronous ClickHouse
-#      connect blocking all chain tasks) the service is restarted.
+#      (python -m lite_indexer.health --lag --json). Chains that are BEHIND
+#      HEAD but still advancing (state file fresh) are CATCHING UP: notify
+#      (throttled), never restart — 2026-09-17 (bsc/zksync restart thrash
+#      interrupted all ingestion and fixed nothing). Restarts happen only on
+#      NO-ADVANCE (state genuinely frozen) or a dead service.
 #   3. NO-ADVANCE DETECTION — if any chain's state file has not been
 #      updated for more than STALL_MINUTES (default 30 minutes) the chain
 #      has not advanced and the service is restarted (auto-reset).
@@ -54,6 +55,11 @@ RESTART_MARKER="${RESTART_MARKER:-/var/data/chain-indexer/lite-indexer-last-rest
 # than the RPC circuits need the rest.
 FORCE_RESTART_AFTER="${FORCE_RESTART_AFTER:-3}"
 THROTTLE_STREAK_FILE="${THROTTLE_STREAK_FILE:-/var/data/chain-indexer/lite-indexer-throttle-streak}"
+# 2026-09-17: chains BEHIND HEAD but still advancing are catching up, not
+# stuck. The full-daemon restart for them interrupted ALL ingestion and never
+# helped (bsc/zksync thrash). Catch-up is now notify-only (throttled).
+CATCHUP_NOTIFY_FILE="${CATCHUP_NOTIFY_FILE:-/var/data/chain-indexer/lite-indexer-catchup-notify-ts}"
+CATCHUP_NOTIFY_COOLDOWN_S="${CATCHUP_NOTIFY_COOLDOWN_S:-21600}"
 
 # shellcheck disable=SC2317
 log() { echo "[$(date -Iseconds)] $*"; }
@@ -283,19 +289,24 @@ print(" ".join(p for p in sys.stdin.read().split() if p.split(":", 1)[0] not in 
 fi
 
 if [ -n "${STALE_CHAINS}" ]; then
-	if restart_if_cooldown_elapsed "stalled chain(s): ${STALE_CHAINS}"; then
-		exit 2
+	# Restart ONLY when the chain is genuinely frozen (no-advance). A chain
+	# that is behind head but still advancing is catching up — restarting the
+	# whole daemon for it interrupts every other chain's ingestion (bsc/zksync
+	# 2026-09-16 thrash). Notify (throttled) instead.
+	if [ -n "${NO_ADVANCE_CHAINS}" ]; then
+		if restart_if_cooldown_elapsed "stalled chain(s): ${STALE_CHAINS} (no-advance: ${NO_ADVANCE_CHAINS})"; then
+			exit 2
+		fi
+		exit 1
 	fi
+	CATCHUP_TS="$(cat "${CATCHUP_NOTIFY_FILE}" 2>/dev/null || echo 0)"
+	if [ "$(( $(date +%s) - CATCHUP_TS ))" -ge "${CATCHUP_NOTIFY_COOLDOWN_S}" ]; then
+		date +%s >"${CATCHUP_NOTIFY_FILE}" 2>/dev/null || true
+		alert_json "LiteIndexer catching up (no restart)" "behind head but advancing: ${STALE_CHAINS}" "info" || true
+	fi
+	log "catching up (no restart): ${STALE_CHAINS}"
 	exit 1
 fi
-
-if [ -n "${NO_ADVANCE_CHAINS}" ]; then
-	if restart_if_cooldown_elapsed "chain(s) not advanced for >${STALL_MINUTES}min: ${NO_ADVANCE_CHAINS}"; then
-		exit 2
-	fi
-	exit 1
-fi
-
 # ── 2b. DATA-FRESHNESS check (2026-09-01 self-healing) ───────────────
 # Blind spot fixed: the checks above trust the STATE FILE. The 2026-08-24
 # solana incident: the strategy extracted 0 events for 8 days while the
