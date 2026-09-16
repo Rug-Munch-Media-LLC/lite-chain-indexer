@@ -289,6 +289,7 @@ captured — all optional, all degrading gracefully when unavailable:
 | AWS public blockchain ("BigLake") | Ethereum genesis→yesterday incl. traces; Parquet backfill to B2 | `lite_indexer.query.biglake_source` |
 | Envio HyperRPC / HyperSync | 79+ EVM chains — wallet transfers; eth/base `trace_block` | `lite_indexer.query.envio_source` |
 | SQD Portal | Solana (owner activity, token balances), Tron (TRC-20 + native internals), Bitcoin, Hyperliquid fills | `lite_indexer.query.sqd_source` |
+| Indexed.xyz (CC0, Cloudflare R2) | Ethereum/Base/Gnosis/Linea/Optimism/zkSync/Zora + Sui/PGN/Arweave — raw blocks/txs/logs + decoded logs | see `docs/FREE-DATA-SOURCES.md` |
 
 One call assembles a wallet's history across every tier, with per-row
 provenance tags (`tier` / `kind`):
