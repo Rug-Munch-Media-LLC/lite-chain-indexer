@@ -80,6 +80,9 @@ def setup_logging(level: str | None = None) -> None:
         level=getattr(logging, log_level, logging.INFO),
         stream=sys.stderr,
     )
+    # Repeated calls (import-time auto-config then an explicit daemon level)
+    # must still apply the requested level to the existing handlers.
+    logging.getLogger().setLevel(getattr(logging, log_level, logging.INFO))
 
     # httpx/httpcore emit "HTTP Request: POST <full url>" at INFO — and our
     # endpoint URLs embed provider API keys/tokens. Silence them so
@@ -118,3 +121,9 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
         A structlog BoundLogger.
     """
     return cast(structlog.stdlib.BoundLogger, structlog.get_logger(name or __name__))
+
+
+# Auto-configure on import: early module-level logs (endpoint overlay/pool
+# loading) would otherwise render via structlog's default stdout console
+# renderer, polluting CLI stdout. All logs belong on stderr as JSON.
+setup_logging()

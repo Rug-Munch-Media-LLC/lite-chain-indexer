@@ -278,6 +278,31 @@ ORDER BY volume DESC;
 
 ---
 
+## Federated Data Sources (free external tiers)
+
+Beyond the local hot index (ClickHouse) and the B2 cold store, the query
+layer federates free external archives for ranges the indexer never
+captured — all optional, all degrading gracefully when unavailable:
+
+| Source | Coverage | Module |
+|---|---|---|
+| AWS public blockchain ("BigLake") | Ethereum genesis→yesterday incl. traces; Parquet backfill to B2 | `lite_indexer.query.biglake_source` |
+| Envio HyperRPC / HyperSync | 79+ EVM chains — wallet transfers; eth/base `trace_block` | `lite_indexer.query.envio_source` |
+| SQD Portal | Solana (owner activity, token balances), Tron (TRC-20 + native internals), Bitcoin, Hyperliquid fills | `lite_indexer.query.sqd_source` |
+
+One call assembles a wallet's history across every tier, with per-row
+provenance tags (`tier` / `kind`):
+
+```bash
+python -m lite_indexer.query.trace_wallet solana <owner> --from-block <slot> --to-block <slot>
+python -m lite_indexer.query.trace_wallet tron <addr> --from-block N --to-block M
+python -m lite_indexer.query.trace_wallet ethereum 0x... --from-block N --to-block M
+```
+
+Config: `BIGLAKE_ENABLED`, `ENVIO_RPC_TOKEN`, `SQD_API_KEY` (public SQD
+endpoints currently work without a key). CLI stdout is pure JSON; logs go
+to stderr.
+
 ## Development
 
 ### Setup

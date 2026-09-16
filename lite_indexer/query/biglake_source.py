@@ -343,7 +343,18 @@ def _cmd_backfill(args: argparse.Namespace) -> int:
     return rc
 
 
+def _silence_console_logs() -> None:
+    """CLI stdout must stay machine-parseable (JSON only); logs go to stderr."""
+    try:
+        from loguru import logger as _loguru
+
+        _loguru.remove()
+    except ImportError:
+        pass
+
+
 def _cli() -> int:
+    _silence_console_logs()
     parser = argparse.ArgumentParser(prog="biglake_source", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 

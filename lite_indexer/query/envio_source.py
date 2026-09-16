@@ -340,7 +340,18 @@ def _cmd_trace_block(args: argparse.Namespace) -> int:
     return 0
 
 
+def _silence_console_logs() -> None:
+    """CLI stdout must stay machine-parseable (JSON only); logs go to stderr."""
+    try:
+        from loguru import logger as _loguru
+
+        _loguru.remove()
+    except ImportError:
+        pass
+
+
 def _cli() -> int:
+    _silence_console_logs()
     parser = argparse.ArgumentParser(prog="envio_source", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
