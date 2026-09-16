@@ -44,6 +44,9 @@ from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
 
+#: ERC-20 ``Transfer`` event topic (Tron logs carry it without the 0x prefix).
+ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
 
 class SQDPortalError(RuntimeError):
     """Raised when the Portal returns a non-retryable error."""
@@ -225,9 +228,16 @@ class SQDSource:
 
     @staticmethod
     def _ts(value: Any) -> datetime | None:
+        """Epoch → datetime; auto-detects milliseconds (Tron uses ms)."""
         try:
-            return datetime.fromtimestamp(int(value), tz=UTC)
+            seconds = int(value)
         except (TypeError, ValueError):
+            return None
+        if seconds > 10**12:
+            seconds //= 1000
+        try:
+            return datetime.fromtimestamp(seconds, tz=UTC)
+        except (OverflowError, OSError, ValueError):
             return None
 
     def solana_owner_activity(
@@ -357,6 +367,249 @@ class SQDSource:
         return rows[: max(1, int(limit))]
 
 
+    # ── Tron: TRC-20 transfers + internal transactions ───────────────
+
+    @staticmethod
+    def _tron_hex40(address: str) -> str:
+        """Normalize a Tron address (``0x..`` / ``41..`` / plain hex) to 40 hex chars."""
+        a = address.strip().lower()
+        if a.startswith("0x"):
+            a = a[2:]
+        if a.startswith("41") and len(a) == 42:
+            a = a[2:]
+        if len(a) != 40 or any(c not in "0123456789abcdef" for c in a):
+            raise ValueError(f"invalid tron address: {address!r}")
+        return a
+
+    @classmethod
+    def _tron_topic(cls, address: str) -> str:
+        return "0" * 24 + cls._tron_hex40(address)
+
+    @staticmethod
+    def _tron_base58(address: str) -> str:
+        """Tron hex (40 chars, optional 0x/41) → base58check T-address."""
+        import hashlib
+
+        hex40 = address.strip().lower()
+        if hex40.startswith("0x"):
+            hex40 = hex40[2:]
+        if hex40.startswith("41") and len(hex40) == 42:
+            hex40 = hex40[2:]
+        payload = bytes.fromhex("41" + hex40)
+        checksum = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+        num = int.from_bytes(payload + checksum, "big")
+        alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+        out = ""
+        while num:
+            num, rem = divmod(num, 58)
+            out = alphabet[rem] + out
+        return out
+
+    def tron_trc20_transfers(
+        self,
+        address: str,
+        from_block: int,
+        to_block: int,
+        *,
+        limit: int = 200,
+        max_batches: int = 48,
+    ) -> list[dict[str, Any]]:
+        """TRC-20 transfers where ``address`` is sender or recipient.
+
+        Logs are filtered by the (padded) wallet in ``topic1``/``topic2``
+        with the ERC-20 ``Transfer`` topic — verified supported 2026-09-16.
+        Rows use the ``evm_transfers`` shape (Tron hex addresses, base58
+        token address to match the warehouse).
+        """
+        if not self.available():
+            return []
+        topic = self._tron_topic(address)
+        topic0 = ERC20_TRANSFER_TOPIC[2:]  # Tron topics carry no 0x prefix
+        fields = {
+            "block": {"number": True, "timestamp": True},
+            "log": {"address": True, "topics": True, "data": True, "transactionIndex": True},
+        }
+        seen: set[tuple[Any, ...]] = set()
+        rows: list[dict[str, Any]] = []
+        for side_key in ("topic1", "topic2"):
+            blocks = self.stream(
+                "tron-mainnet",
+                from_block,
+                to_block,
+                fields=fields,
+                selectors={"logs": [{"topic0": [topic0], side_key: [topic]}]},
+                max_batches=max_batches,
+            )
+            for block in blocks:
+                header = block.get("header", {})
+                bn = int(header.get("number", 0))
+                ts = self._ts(header.get("timestamp"))
+                for rec in block.get("logs", []) or []:
+                    topics = rec.get("topics") or []
+                    if len(topics) < 3:
+                        continue
+                    frm = ("0x" + str(topics[1])[-40:]).lower()
+                    to = ("0x" + str(topics[2])[-40:]).lower()
+                    data = rec.get("data") or ""
+                    try:
+                        value = str(int(data, 16))
+                    except (TypeError, ValueError):
+                        value = "0"
+                    key = (bn, rec.get("transactionIndex"), frm, to, data)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    try:
+                        token = self._tron_base58(str(rec.get("address") or ""))
+                    except ValueError:
+                        token = str(rec.get("address") or "")
+                    rows.append(
+                        {
+                            "chain": "tron",
+                            "block_number": bn,
+                            "tx_hash": "",
+                            "from_address": frm,
+                            "to_address": to,
+                            "token_address": token,
+                            "value": value,
+                            "block_timestamp": ts,
+                            "log_index": int(rec.get("transactionIndex") or 0),
+                            "ingested_at": datetime.now(UTC),
+                        }
+                    )
+        rows.sort(key=lambda r: (r["block_number"], r["log_index"]), reverse=True)
+        return rows[: max(1, int(limit))]
+
+    def tron_internal_transfers(
+        self,
+        address: str,
+        from_block: int,
+        to_block: int,
+        *,
+        limit: int = 200,
+        max_batches: int = 48,
+    ) -> list[dict[str, Any]]:
+        """Native (TRX) internal transactions touching ``address``.
+
+        Uses the ``transferTo`` / ``caller`` filters (41-prefixed hex) and
+        maps to the ``internal_transfers`` row shape.
+        """
+        if not self.available():
+            return []
+        addr41 = "41" + self._tron_hex40(address)
+        fields = {
+            "block": {"number": True, "timestamp": True},
+            "internalTransaction": {
+                "callerAddress": True,
+                "transferToAddress": True,
+                "callValueInfo": True,
+                "internalTransactionIndex": True,
+                "transactionIndex": True,
+                "rejected": True,
+            },
+        }
+        seen: set[tuple[Any, ...]] = set()
+        rows: list[dict[str, Any]] = []
+        for key_name in ("transferTo", "caller"):
+            blocks = self.stream(
+                "tron-mainnet",
+                from_block,
+                to_block,
+                fields=fields,
+                selectors={"internalTransactions": [{key_name: [addr41]}]},
+                max_batches=max_batches,
+            )
+            for block in blocks:
+                header = block.get("header", {})
+                bn = int(header.get("number", 0))
+                ts = self._ts(header.get("timestamp"))
+                for rec in block.get("internalTransactions", []) or []:
+                    caller = str(rec.get("callerAddress") or "")
+                    to = str(rec.get("transferToAddress") or "")
+                    value = 0
+                    for ci in rec.get("callValueInfo") or []:
+                        try:
+                            value += int(ci.get("callValue") or 0)
+                        except (TypeError, ValueError):
+                            continue
+                    trace = f"{rec.get('transactionIndex', 0)}.{rec.get('internalTransactionIndex', 0)}"
+                    rk = (bn, trace, caller, to)
+                    if rk in seen:
+                        continue
+                    seen.add(rk)
+                    rows.append(
+                        {
+                            "chain": "tron",
+                            "block_number": bn,
+                            "block_timestamp": ts,
+                            "tx_hash": "",
+                            "trace_address": trace,
+                            "from_address": ("0x" + caller[2:]).lower() if caller.startswith("41") else caller.lower(),
+                            "to_address": ("0x" + to[2:]).lower() if to.startswith("41") else to.lower(),
+                            "value_wei": str(value),
+                            "call_type": "call",
+                            "gas_used": 0,
+                            "error": "rejected" if rec.get("rejected") else "",
+                            "input_method_id": "",
+                            "ingested_at": datetime.now(UTC),
+                        }
+                    )
+        rows.sort(key=lambda r: (r["block_number"], r["trace_address"]), reverse=True)
+        return rows[: max(1, int(limit))]
+
+    # ── Hyperliquid: per-user fills ──────────────────────────────────
+
+    def hyperliquid_owner_fills(
+        self,
+        user: str,
+        from_block: int,
+        to_block: int,
+        *,
+        limit: int = 200,
+        max_batches: int = 48,
+    ) -> list[dict[str, Any]]:
+        """Fill records for a Hyperliquid user (``user`` selector filter)."""
+        if not self.available():
+            return []
+        fields = {
+            "block": {"number": True, "timestamp": True},
+            "fill": {"user": True, "coin": True, "px": True, "sz": True, "side": True, "dir": True, "fee": True},
+        }
+        blocks = self.stream(
+            "hyperliquid-fills",
+            from_block,
+            to_block,
+            fields=fields,
+            selectors={"fills": [{"user": [user]}]},
+            max_batches=max_batches,
+        )
+        rows: list[dict[str, Any]] = []
+        for block in blocks:
+            header = block.get("header", {})
+            bn = int(header.get("number", 0))
+            ts = self._ts(header.get("timestamp"))
+            for rec in block.get("fills", []) or []:
+                if user and str(rec.get("user") or "").lower() != user.lower():
+                    continue
+                rows.append(
+                    {
+                        "chain": "hyperliquid",
+                        "block_number": bn,
+                        "block_timestamp": ts,
+                        "user": rec.get("user") or "",
+                        "coin": rec.get("coin") or "",
+                        "px": rec.get("px") or "",
+                        "sz": rec.get("sz") or "",
+                        "side": rec.get("side") or "",
+                        "direction": rec.get("dir") or "",
+                        "fee": rec.get("fee") or "",
+                        "ingested_at": datetime.now(UTC),
+                    }
+                )
+        rows.sort(key=lambda r: r["block_number"], reverse=True)
+        return rows[: max(1, int(limit))]
+
+
 # ── CLI ──────────────────────────────────────────────────────────────
 
 
@@ -399,6 +652,27 @@ def _cmd_token_balances(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_tron_transfers(args: argparse.Namespace) -> int:
+    src = SQDSource()
+    rows = src.tron_trc20_transfers(args.address, int(args.from_block, 0), int(args.to_block, 0), limit=args.limit)
+    print(json.dumps(rows, default=str, indent=2))  # noqa: T201
+    return 0
+
+
+def _cmd_tron_internal(args: argparse.Namespace) -> int:
+    src = SQDSource()
+    rows = src.tron_internal_transfers(args.address, int(args.from_block, 0), int(args.to_block, 0), limit=args.limit)
+    print(json.dumps(rows, default=str, indent=2))  # noqa: T201
+    return 0
+
+
+def _cmd_hl_fills(args: argparse.Namespace) -> int:
+    src = SQDSource()
+    rows = src.hyperliquid_owner_fills(args.user, int(args.from_block, 0), int(args.to_block, 0), limit=args.limit)
+    print(json.dumps(rows, default=str, indent=2))  # noqa: T201
+    return 0
+
+
 def _cli() -> int:
     parser = argparse.ArgumentParser(prog="sqd_source", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -434,6 +708,27 @@ def _cli() -> int:
     p_b.add_argument("--to-slot", required=True)
     p_b.add_argument("--limit", type=int, default=200)
     p_b.set_defaults(fn=_cmd_token_balances)
+
+    p_tt = sub.add_parser("tron-transfers", help="Tron TRC-20 wallet transfers")
+    p_tt.add_argument("address")
+    p_tt.add_argument("--from-block", required=True)
+    p_tt.add_argument("--to-block", required=True)
+    p_tt.add_argument("--limit", type=int, default=100)
+    p_tt.set_defaults(fn=_cmd_tron_transfers)
+
+    p_ti = sub.add_parser("tron-internal", help="Tron native internal transactions for a wallet")
+    p_ti.add_argument("address")
+    p_ti.add_argument("--from-block", required=True)
+    p_ti.add_argument("--to-block", required=True)
+    p_ti.add_argument("--limit", type=int, default=100)
+    p_ti.set_defaults(fn=_cmd_tron_internal)
+
+    p_hf = sub.add_parser("hl-fills", help="Hyperliquid fills for a user")
+    p_hf.add_argument("user")
+    p_hf.add_argument("--from-block", required=True)
+    p_hf.add_argument("--to-block", required=True)
+    p_hf.add_argument("--limit", type=int, default=100)
+    p_hf.set_defaults(fn=_cmd_hl_fills)
 
     args = parser.parse_args()
     return int(args.fn(args))

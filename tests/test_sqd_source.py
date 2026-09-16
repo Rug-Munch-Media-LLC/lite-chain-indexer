@@ -131,3 +131,71 @@ def test_token_balances_for_accounts() -> None:
     assert rows[0]["pre_amount"] == "1000"
     assert fake.calls[0]["payload"]["tokenBalances"] == [{"account": ["AcctA"]}]
     assert src.solana_token_balances_for_accounts([], 100, 100) == []
+
+
+TRON_WALLET_TOPIC = "000000000000000000000000c686c48436aec3a1dfce4ac5a4526c39366985ba"
+
+
+def test_tron_address_normalization_and_base58() -> None:
+    assert SQDSource._tron_hex40("0xC686C48436AEC3A1DFCE4AC5A4526C39366985BA") == "c686c48436aec3a1dfce4ac5a4526c39366985ba"
+    assert SQDSource._tron_hex40("41c686c48436aec3a1dfce4ac5a4526c39366985ba") == "c686c48436aec3a1dfce4ac5a4526c39366985ba"
+    assert SQDSource._tron_topic("c686c48436aec3a1dfce4ac5a4526c39366985ba") == TRON_WALLET_TOPIC
+    assert SQDSource._tron_base58("a614f803b6fd780986a42c78ec9c7f77e6ded13c") == "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    with pytest.raises(ValueError):
+        SQDSource._tron_hex40("not-an-address")
+
+
+def test_tron_trc20_transfers_mapping() -> None:
+    log = {
+        "transactionIndex": 9,
+        "address": "a614f803b6fd780986a42c78ec9c7f77e6ded13c",
+        "data": "000000000000000000000000000000000000000000000000000000028fa6ae00",
+        "topics": [
+            "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            TRON_WALLET_TOPIC,
+            "0000000000000000000000009353bbb1f69098da4a72457711e356585946574f",
+        ],
+    }
+    block = {"header": {"number": 86278000, "timestamp": 1789506147000}, "logs": [log]}
+    src, fake = _source([(200, _jl(block)), (200, _jl(block))])
+    rows = src.tron_trc20_transfers("c686c48436aec3a1dfce4ac5a4526c39366985ba", 86278000, 86278000)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["chain"] == "tron"
+    assert r["token_address"] == "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+    assert r["from_address"] == "0xc686c48436aec3a1dfce4ac5a4526c39366985ba"
+    assert r["value"] == str(int("28fa6ae00", 16))
+    assert r["block_timestamp"] is not None and r["block_timestamp"].year == 2026
+    assert fake.calls[0]["payload"]["logs"][0]["topic1"] == [TRON_WALLET_TOPIC]
+    assert fake.calls[1]["payload"]["logs"][0]["topic2"] == [TRON_WALLET_TOPIC]
+
+
+def test_tron_internal_transfers_mapping() -> None:
+    rec = {
+        "transactionIndex": 423,
+        "internalTransactionIndex": 0,
+        "callerAddress": "41a31d689a84244bc01be56e07aeafb7686f56bb89",
+        "transferToAddress": "41b50b027637ab9a7f2ba5b70a24f778f8438bb279",
+        "callValueInfo": [{"callValue": 1000000, "tokenId": None}],
+        "rejected": None,
+    }
+    block = {"header": {"number": 86278002, "timestamp": 1789506153000}, "internalTransactions": [rec]}
+    src, fake = _source([(200, _jl(block)), (200, _jl(block))])
+    rows = src.tron_internal_transfers("0xa31d689a84244bc01be56e07aeafb7686f56bb89", 86278002, 86278002)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["trace_address"] == "423.0"
+    assert r["value_wei"] == "1000000"
+    assert r["from_address"] == "0xa31d689a84244bc01be56e07aeafb7686f56bb89"
+    assert fake.calls[0]["payload"]["internalTransactions"][0]["transferTo"] == ["41a31d689a84244bc01be56e07aeafb7686f56bb89"]
+
+
+def test_hyperliquid_owner_fills_mapping() -> None:
+    fill = {"user": "0xAbC", "coin": "BTC", "px": "67234.5", "sz": "0.1", "side": "B", "dir": "Open Long", "fee": "6.72"}
+    block = {"header": {"number": 900000050, "timestamp": 1710000000000}, "fills": [fill, {**fill, "user": "0xother"}]}
+    src, fake = _source([(200, _jl(block))])
+    rows = src.hyperliquid_owner_fills("0xabc", 900000050, 900000050)
+    assert len(rows) == 1
+    assert rows[0]["coin"] == "BTC"
+    assert rows[0]["direction"] == "Open Long"
+    assert fake.calls[0]["payload"]["fills"][0] == {"user": ["0xabc"]}
