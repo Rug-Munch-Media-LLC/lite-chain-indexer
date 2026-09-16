@@ -123,6 +123,15 @@ pre-push:
     gitleaks-full:
       run: gitleaks detect --source . --no-git -v
 
+    # -- Structure gate (UNIVERSAL, no-op when absent) -------------------
+    # Anti-god-module + anti-monkeypatch ratchet (scripts/check-code-structure.py
+    # + scripts/structure-baseline.json). Shrink freely; growth fails the gate.
+    structure-gate:
+      run: |
+        if [ -f scripts/check-code-structure.py ]; then
+          python3 scripts/check-code-structure.py
+        fi
+
     # -- Python type check (PYTHON repos) ---------------------
     mypy:
       glob: "*.py"
