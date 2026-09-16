@@ -10,7 +10,7 @@ Goal: no single provider failure interrupts wallet history, tracing, or backfill
 | SQD Portal | Solana, Tron, Bitcoin, Hyperliquid, EVM | Solana instructions/token balances; TRC-20 + native internals; HL fills | HTTP POST JSONL (public endpoints) | ✅ integrated (`sqd_source`) |
 | **Indexed.xyz** | ethereum, base, gnosis, linea, optimism, zksync, zora, sui, pgn, arweave | raw blocks/txs/logs + **decoded** logs, CC0 | public R2 credentials (below), S3 API / DuckDB | ✅ **INTEGRATED** (f660fcc — router third path, minutes-fresh) |
 | solarchive.org | Solana | txs/accounts/tokens Parquet (CC-BY) | public HTTPS — data host currently 404 | 🟡 monitor |
-| **CryptoHouse** (crypto.clickhouse.com) | Solana, Ethereum, Base | free SQL console — blocks, transactions, token_transfers, rewards, accounts, tokens | web console (Cloudflare-fronted Next.js app; no public HTTP API confirmed) | 🟡 console-only |
+| **CryptoHouse** (crypto.clickhouse.com) | Solana (LIVE), Ethereum/Base (snapshot-era ≈24.99M blocks), Polymarket | blocks, transactions, token_transfers, **instructions**, accounts, rewards, **traces/logs** (eth/base), + MVs | ✅ **HTTP direct access verified** — `https://crypto-clickhouse.clickhouse.com`, user `crypto`, empty password (native 9440 TLS flaky from Talos) | ✅ verified 2026-09-16 |
 | **Bitquery cloud dumps** | Solana, Tron, BTC, Hyperliquid, Robinhood, BSC, XRP, EVM, Polymarket, PumpFun | Parquet by slot ranges `<chain>/<topic>/<start>_<end>.parquet` | **samples free** on `bitquery-blockchain-dataset.s3.us-east-1.amazonaws.com` (verified 513k-row read); full dataset licensed (sales@bitquery.io) | 🟡 samples only |
 | Goldsky explore (app.goldsky.com/explore) | Ethereum, Base, + | decoded ERC-20/721/1155 transfers, stablecoin transfers, beacon data (same ecosystem as Indexed.xyz) | `goldsky indexed` CLI / Indexed.xyz bucket | ✅ via indexed.xyz |
 | Pinax | Substreams SVM/Tron, token/perp APIs | streaming + APIs | api.pinax.network | 🟡 not integrated |
@@ -39,6 +39,18 @@ SET s3_access_key_id='...'; SET s3_secret_access_key='...';
 SELECT count(*) FROM read_parquet('s3://indexed-xyz-wnam/ethereum/raw/blocks/v2.0.0/dt=2026-09-15/*.parquet');
 ```
 
+### CryptoHouse (ClickHouse HTTP — the free Solana firehose)
+
+```bash
+curl -s -u 'crypto:' https://crypto-clickhouse.clickhouse.com \
+  --data-binary "SELECT count() FROM solana.token_transfers WHERE block_timestamp >= now() - INTERVAL 10 MINUTE"
+```
+
+**Query rules (learned the hard way):** the sort key is ``(block_timestamp, block_slot, id)`` —
+filter on **`block_timestamp` first** or you'll trip the 10-billion-row scan limit.
+Limits: 60 queries/hour/user · 60s timeout · 10B rows scanned. Solana is near-realtime
+(verified minutes-fresh); Ethereum/Base are snapshot-era (good depth, incl. traces).
+
 ### Bitquery cloud samples (public S3, no key)
 
 ```sql
@@ -54,9 +66,9 @@ Full datasets are licensed; the public layout (`<chain>/<topic>/<startSlot>_<end
 | Need | Independent paths |
 |---|---|
 | ETH wallet history | BigLake · Indexed.xyz · Envio · SQD |
-| ETH traces | BigLake · Envio `-traces` |
+| ETH traces | BigLake · Envio `-traces` · CryptoHouse (snapshot-era traces) |
 | Multi-chain EVM (base/opt/gnosis/linea/zksync) | Indexed.xyz · Envio · own indexer (hot+B2) |
-| Solana history | SQD · Envio (beta) · CryptoHouse console · Bitquery (licensed) · own indexer |
+| Solana history | SQD · Envio (beta) · **CryptoHouse (live SQL)** · Bitquery (licensed) · own indexer |
 | Tron | SQD · own indexer |
 | Hyperliquid fills | SQD (single source — watch) |
 | BTC | SQD · BigLake |
