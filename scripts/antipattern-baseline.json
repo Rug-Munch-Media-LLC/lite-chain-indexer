@@ -1,0 +1,12 @@
+{
+ "rules": {
+  "god-file": 43,
+  "monkeypatch": 508,
+  "too-many-params": 138,
+  "bare-except": 246,
+  "long-function": 76,
+  "wildcard-import": 5,
+  "fstring-logging": 1
+ },
+ "total": 1017
+}
