@@ -106,16 +106,30 @@ restart_if_cooldown_elapsed() {
 			return 0
 		fi
 		log "restart throttled: ${reason} — last restart ${elapsed}s ago (<${RESTART_COOLDOWN_MIN}min cooldown); skip ${streak}/${FORCE_RESTART_AFTER} before forced restart"
-		alert_json "LiteIndexer STILL stalled (restart throttled ${streak}/${FORCE_RESTART_AFTER})" \
-			"${reason}; last restart ${elapsed}s ago — forced restart at ${FORCE_RESTART_AFTER} consecutive throttles, or investigate RPC providers manually" \
-			"critical" || true
+		# Notify once per throttle streak (streak 1): repeating the same
+		# condition every 10 minutes is alert fatigue, not signal.
+		if [ "${streak}" -eq 1 ]; then
+			alert_json "LiteIndexer STILL stalled (restart throttled 1/${FORCE_RESTART_AFTER})" \
+				"${reason}; last restart ${elapsed}s ago — forced restart at ${FORCE_RESTART_AFTER} consecutive throttles, or investigate RPC providers manually" \
+				"critical" || true
+		fi
 		return 1
 	fi
 	log "restarting ${SERVICE}: ${reason}"
 	systemctl restart "${SERVICE}" 2>&1 | log || true
 	date +%s >"${RESTART_MARKER}" 2>/dev/null || true
 	echo 0 >"${THROTTLE_STREAK_FILE}" 2>/dev/null || true
-	alert_json "LiteIndexer restarted" "${reason}" "warning" || true
+	# Notify at most once per cooldown window — churny restarts during
+	# catch-up were flooding Telegram.
+	local notify_file notify_ts
+	notify_file="${NOTIFY_TS_FILE:-/var/data/chain-indexer/lite-indexer-restart-notify-ts}"
+	notify_ts=$(cat "${notify_file}" 2>/dev/null || echo 0)
+	if [ $((now - notify_ts)) -ge "${NOTIFY_COOLDOWN_S:-7200}" ]; then
+		echo "${now}" >"${notify_file}" 2>/dev/null || true
+		alert_json "LiteIndexer restarted" "${reason}" "warning" || true
+	else
+		log "restart notify suppressed (cooldown ${NOTIFY_COOLDOWN_S:-7200}s): ${reason}"
+	fi
 	return 0
 }
 
@@ -212,6 +226,62 @@ for c, info in data.items():
 print(" ".join(no_advance))
 ' "${STALL_AGE_S}")"
 
+# ── 2a2. FRESH-DATA EXEMPTION (2026-09-16) ───────────────────────────
+# Chains actively WRITING data (ClickHouse ingestion within
+# FRESH_WINDOW_MIN) are recovering/catching up — their state files lag
+# while windows complete. Restarts for these were looping and starving
+# the catch-up (and spamming Telegram). Exempt fresh-data chains from
+# the stale/no-advance restart paths.
+FRESH_WINDOW_MIN="${FRESH_WINDOW_MIN:-15}"
+FRESH_CHAINS="$(
+	timeout 30 "${PYTHON}" - <<'PYEOF'
+import os
+
+try:
+    import clickhouse_driver
+
+    win = int(os.getenv("FRESH_WINDOW_MIN", "15"))
+    c = clickhouse_driver.Client(
+        host=os.getenv("CLICKHOUSE_HOST", "127.0.0.1"),
+        user=os.getenv("CLICKHOUSE_USER", "rmi"),
+        password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+    )
+    rows = c.execute(
+        f"SELECT chain FROM wallet_memory.evm_transfers "
+        f"WHERE ingested_at >= now() - INTERVAL {win} MINUTE GROUP BY chain"
+    )
+    fresh = {str(r[0]) for r in rows}
+    try:
+        if c.execute(
+            f"SELECT 1 FROM wallet_memory.solana_transfers "
+            f"WHERE ingested_at >= now() - INTERVAL {win} MINUTE LIMIT 1"
+        ):
+            fresh.add("solana")
+    except Exception:
+        pass
+    print(" ".join(sorted(fresh)))
+except Exception:
+    print("")
+PYEOF
+)"
+if [ -n "${FRESH_CHAINS}" ]; then
+	STALE_CHAINS="$(
+		printf '%s' "${STALE_CHAINS}" | "${PYTHON}" -c '
+import sys
+fresh = set(sys.argv[1].split())
+print(" ".join(p for p in sys.stdin.read().split() if p.split(":", 1)[0] not in fresh))
+' "${FRESH_CHAINS}"
+	)"
+	NO_ADVANCE_CHAINS="$(
+		printf '%s' "${NO_ADVANCE_CHAINS}" | "${PYTHON}" -c '
+import sys
+fresh = set(sys.argv[1].split())
+print(" ".join(p for p in sys.stdin.read().split() if p.split(":", 1)[0] not in fresh))
+' "${FRESH_CHAINS}"
+	)"
+	log "fresh-data exemption: fresh=[${FRESH_CHAINS}] remaining stale=[${STALE_CHAINS}] no-advance=[${NO_ADVANCE_CHAINS}]"
+fi
+
 if [ -n "${STALE_CHAINS}" ]; then
 	if restart_if_cooldown_elapsed "stalled chain(s): ${STALE_CHAINS}"; then
 		exit 2
@@ -273,11 +343,9 @@ for chain in ("solana",):
     except Exception:
         continue
     gap = int(hw.get("last_block") or 0) - int(max_slot or 0)
-    # >50k slots behind the highwater with the daemon running = the
+    # State highwater more than 200k slots AHEAD of real data = the
     # extraction is silently producing nothing (2026-08-24 mode).
-    if int(hw.get("last_block") or 0) > 0 and int(max_slot or 0) > 0 and gap := (
-        int(hw["last_block"]) - int(max_slot)
-    ) > 200000:
+    if int(hw.get("last_block") or 0) > 0 and int(max_slot or 0) > 0 and gap > 200000:
         stale.append(f"{chain}:hw={hw['last_block']}:data={max_slot}")
 print(" ".join(stale))
 PYEOF
