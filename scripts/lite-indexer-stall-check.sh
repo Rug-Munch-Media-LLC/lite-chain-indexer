@@ -34,7 +34,7 @@
 #   4 — lag check itself failed (no restart; avoid restart storms)
 #
 # Env overrides: SERVICE, STALL_MINUTES, TIMEOUT_S, PYTHON,
-#                RESTART_COOLDOWN_MIN, RESTART_MARKER
+#                RESTART_COOLDOWN_MIN, RESTART_MARKER, FORCE_RESTART_AFTER
 #
 set -u
 
@@ -49,6 +49,11 @@ STALL_AGE_S=$((STALL_MINUTES * 60))
 # RESTART_MARKER so the cooldown survives timer re-fires.
 RESTART_COOLDOWN_MIN="${RESTART_COOLDOWN_MIN:-30}"
 RESTART_MARKER="${RESTART_MARKER:-/var/data/chain-indexer/lite-indexer-last-restart}"
+# Escalation: after this many CONSECUTIVE throttled stalls the cooldown is
+# bypassed — a wedge that survives multiple cooldowns needs the reset more
+# than the RPC circuits need the rest.
+FORCE_RESTART_AFTER="${FORCE_RESTART_AFTER:-3}"
+THROTTLE_STREAK_FILE="${THROTTLE_STREAK_FILE:-/var/data/chain-indexer/lite-indexer-throttle-streak}"
 
 # shellcheck disable=SC2317
 log() { echo "[$(date -Iseconds)] $*"; }
@@ -58,44 +63,60 @@ log() { echo "[$(date -Iseconds)] $*"; }
 # incident (ethereum 23h stale, bsc 357h) went unnoticed because every
 # watchdog action was log-only.
 alert_json() {
-    local title="$1" message="$2" severity="${3:-warning}"
-    local payload
-    payload=$(printf '{"title":"%s","message":"%s","severity":"%s","source":"%s","timestamp":"%s"}' \
-        "$title" "$message" "$severity" "lite-indexer@$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
-    curl -sSf -X POST "http://127.0.0.1:9099/alert" \
-        -H "Content-Type: application/json" -d "$payload" \
-        --connect-timeout 5 -m 15 >/dev/null 2>&1 && return 0
-    curl -sSf -X POST "http://127.0.0.1:5678/webhook/alert" \
-        -H "Content-Type: application/json" -d "$payload" \
-        --connect-timeout 5 -m 15 >/dev/null 2>&1 && return 0
-    if command -v redis-cli >/dev/null 2>&1; then
-        redis-cli LPUSH rag:telegram_queue "$payload" >/dev/null 2>&1 && return 0
-    fi
-    return 1
+	local title="$1" message="$2" severity="${3:-warning}"
+	local payload
+	payload=$(printf '{"title":"%s","message":"%s","severity":"%s","source":"%s","timestamp":"%s"}' \
+		"$title" "$message" "$severity" "lite-indexer@$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+	curl -sSf -X POST "http://127.0.0.1:9099/alert" \
+		-H "Content-Type: application/json" -d "$payload" \
+		--connect-timeout 5 -m 15 >/dev/null 2>&1 && return 0
+	curl -sSf -X POST "http://127.0.0.1:5678/webhook/alert" \
+		-H "Content-Type: application/json" -d "$payload" \
+		--connect-timeout 5 -m 15 >/dev/null 2>&1 && return 0
+	if command -v redis-cli >/dev/null 2>&1; then
+		redis-cli LPUSH rag:telegram_queue "$payload" >/dev/null 2>&1 && return 0
+	fi
+	log "ALERT DELIVERY FAILED (all rungs) — ${title}: ${message}"
+	return 1
 }
 
 # ── Restart helper with cooldown ──────────────────────────────────────
 # shellcheck disable=SC2317
 restart_if_cooldown_elapsed() {
-    # $1 — human-readable reason for the log line.
-    # Returns 0 if the service was restarted, 1 if throttled.
-    local reason="$1"
-    local now last_restart elapsed
-    now=$(date +%s)
-    last_restart=$(cat "${RESTART_MARKER}" 2>/dev/null || echo 0)
-    elapsed=$((now - last_restart))
-    if [ "${elapsed}" -lt $((RESTART_COOLDOWN_MIN * 60)) ]; then
-        log "restart throttled: ${reason} — last restart ${elapsed}s ago (<${RESTART_COOLDOWN_MIN}min cooldown); skipping to let RPC circuit breakers recover"
-        alert_json "LiteIndexer STILL stalled (restart throttled)" \
-            "${reason}; last restart ${elapsed}s ago — if this repeats, investigate RPC providers manually" \
-            "critical" || true
-        return 1
-    fi
-    log "restarting ${SERVICE}: ${reason}"
-    systemctl restart "${SERVICE}" 2>&1 | log || true
-    date +%s >"${RESTART_MARKER}" 2>/dev/null || true
-    alert_json "LiteIndexer restarted" "${reason}" "warning" || true
-    return 0
+	# $1 — human-readable reason for the log line.
+	# Returns 0 if the service was restarted, 1 if throttled.
+	local reason="$1"
+	local now last_restart elapsed
+	now=$(date +%s)
+	last_restart=$(cat "${RESTART_MARKER}" 2>/dev/null || echo 0)
+	elapsed=$((now - last_restart))
+	if [ "${elapsed}" -lt $((RESTART_COOLDOWN_MIN * 60)) ]; then
+		local streak
+		streak=$(cat "${THROTTLE_STREAK_FILE}" 2>/dev/null || echo 0)
+		streak=$((streak + 1))
+		echo "${streak}" >"${THROTTLE_STREAK_FILE}" 2>/dev/null || true
+		if [ "${streak}" -ge "${FORCE_RESTART_AFTER}" ]; then
+			log "restart throttled ${streak}x in a row — FORCING restart despite cooldown: ${reason}"
+			systemctl restart "${SERVICE}" 2>&1 | log || true
+			date +%s >"${RESTART_MARKER}" 2>/dev/null || true
+			echo 0 >"${THROTTLE_STREAK_FILE}" 2>/dev/null || true
+			alert_json "LiteIndexer FORCE-restarted (${streak} consecutive throttles)" \
+				"${reason}; cooldown bypassed automatically after ${streak} consecutive throttles — chains stuck across multiple cooldowns" \
+				"critical" || true
+			return 0
+		fi
+		log "restart throttled: ${reason} — last restart ${elapsed}s ago (<${RESTART_COOLDOWN_MIN}min cooldown); skip ${streak}/${FORCE_RESTART_AFTER} before forced restart"
+		alert_json "LiteIndexer STILL stalled (restart throttled ${streak}/${FORCE_RESTART_AFTER})" \
+			"${reason}; last restart ${elapsed}s ago — forced restart at ${FORCE_RESTART_AFTER} consecutive throttles, or investigate RPC providers manually" \
+			"critical" || true
+		return 1
+	fi
+	log "restarting ${SERVICE}: ${reason}"
+	systemctl restart "${SERVICE}" 2>&1 | log || true
+	date +%s >"${RESTART_MARKER}" 2>/dev/null || true
+	echo 0 >"${THROTTLE_STREAK_FILE}" 2>/dev/null || true
+	alert_json "LiteIndexer restarted" "${reason}" "warning" || true
+	return 0
 }
 
 # ── Migration guard ──────────────────────────────────────────────────
@@ -105,16 +126,16 @@ restart_if_cooldown_elapsed() {
 # the swap — the 2026-09-14 second-pass copy was corrupted exactly this way.
 # If a migration is in flight, do nothing.
 if [[ -f "${MIGRATION_LOCK:-/var/lib/lite-indexer/migration.lock}" ]] ||
-    pgrep -f "run-ch-migration.sh" >/dev/null 2>&1; then
-    log "migration in progress — watchdog skipping (indexer intentionally stopped)"
-    exit 0
+	pgrep -f "run-ch-migration.sh" >/dev/null 2>&1; then
+	log "migration in progress — watchdog skipping (indexer intentionally stopped)"
+	exit 0
 fi
 
 # ── 0. Is the service running at all? (process watchdog) ─────────────
 if ! systemctl is-active --quiet "${SERVICE}"; then
-    log "service ${SERVICE} not active — starting"
-    systemctl start "${SERVICE}" 2>&1 | log || true
-    exit 3
+	log "service ${SERVICE} not active — starting"
+	systemctl start "${SERVICE}" 2>&1 | log || true
+	exit 3
 fi
 
 # ── 1. Run the lag check (bounded by TIMEOUT_S) ─────────────────────
@@ -127,17 +148,17 @@ LAG_RC=$?
 #   >1  — real check error
 case ${LAG_RC} in
 0 | 1)
-    # Health module ran successfully — JSON is valid in LAG_OUT.
-    # Continue to parse stale/behind chains below.
-    ;;
+	# Health module ran successfully — JSON is valid in LAG_OUT.
+	# Continue to parse stale/behind chains below.
+	;;
 124)
-    log "lag check timed out after ${TIMEOUT_S}s — skipping restart"
-    exit 4
-    ;;
+	log "lag check timed out after ${TIMEOUT_S}s — skipping restart"
+	exit 4
+	;;
 *)
-    log "lag check failed (rc=${LAG_RC}) — skipping restart"
-    exit 4
-    ;;
+	log "lag check failed (rc=${LAG_RC}) — skipping restart"
+	exit 4
+	;;
 esac
 
 # ── 2. Parse the lag JSON. ────────────────────────────────────────────
@@ -192,17 +213,17 @@ print(" ".join(no_advance))
 ' "${STALL_AGE_S}")"
 
 if [ -n "${STALE_CHAINS}" ]; then
-    if restart_if_cooldown_elapsed "stalled chain(s): ${STALE_CHAINS}"; then
-        exit 2
-    fi
-    exit 1
+	if restart_if_cooldown_elapsed "stalled chain(s): ${STALE_CHAINS}"; then
+		exit 2
+	fi
+	exit 1
 fi
 
 if [ -n "${NO_ADVANCE_CHAINS}" ]; then
-    if restart_if_cooldown_elapsed "chain(s) not advanced for >${STALL_MINUTES}min: ${NO_ADVANCE_CHAINS}"; then
-        exit 2
-    fi
-    exit 1
+	if restart_if_cooldown_elapsed "chain(s) not advanced for >${STALL_MINUTES}min: ${NO_ADVANCE_CHAINS}"; then
+		exit 2
+	fi
+	exit 1
 fi
 
 # ── 2b. DATA-FRESHNESS check (2026-09-01 self-healing) ───────────────
@@ -216,7 +237,7 @@ fi
 # last slot that produced real data (from the table, not the state file)
 # and restart, so the fixed strategy re-extracts the gap.
 DATA_FRESH_CHAINS="$(
-    timeout 30 "${PYTHON}" - <<'PYEOF'
+	timeout 30 "${PYTHON}" - <<'PYEOF'
 import json, os, sys
 import clickhouse_driver
 
@@ -263,24 +284,24 @@ PYEOF
 )"
 
 if [ -n "${DATA_FRESH_CHAINS}" ]; then
-    # Reset the highwater to the last slot with REAL data so the fixed
-    # strategy re-extracts the gap instead of advancing past it.
-    for chain in solana; do
-        LAST_SLOT="$(timeout 20 "${PYTHON}" -c "
+	# Reset the highwater to the last slot with REAL data so the fixed
+	# strategy re-extracts the gap instead of advancing past it.
+	for chain in solana; do
+		LAST_SLOT="$(timeout 20 "${PYTHON}" -c "
 import clickhouse_driver, os
 c = clickhouse_driver.Client(host=os.getenv('CLICKHOUSE_HOST','127.0.0.1'), user=os.getenv('CLICKHOUSE_USER','rmi'), password=os.getenv('CLICKHOUSE_PASSWORD',''))
 print(c.execute('SELECT max(slot) FROM wallet_memory.solana_transfers')[0][0])
 " 2>/dev/null || echo 0)"
-        if [ "${LAST_SLOT:-0}" -gt 0 ] 2>/dev/null; then
-            printf '{"last_block": %s, "last_timestamp": "%s", "chain": "%s", "reset_by": "watchdog-data-freshness"}
+		if [ "${LAST_SLOT:-0}" -gt 0 ] 2>/dev/null; then
+			printf '{"last_block": %s, "last_timestamp": "%s", "chain": "%s", "reset_by": "watchdog-data-freshness"}
 ' "${LAST_SLOT}" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" "${chain}" >"/var/data/chain-indexer/state/highwater_${chain}.json"
-            log "highwater_${chain} reset to last real data slot ${LAST_SLOT} (silent extraction failure detected)"
-        fi
-    done
-    if restart_if_cooldown_elapsed "data-freshness failure: ${DATA_FRESH_CHAINS} (highwater reset to last real data)"; then
-        exit 2
-    fi
-    exit 1
+			log "highwater_${chain} reset to last real data slot ${LAST_SLOT} (silent extraction failure detected)"
+		fi
+	done
+	if restart_if_cooldown_elapsed "data-freshness failure: ${DATA_FRESH_CHAINS} (highwater reset to last real data)"; then
+		exit 2
+	fi
+	exit 1
 fi
 
 # ── 3. Chains behind but making progress — informational ────────────
@@ -304,8 +325,8 @@ print(" ".join(behind))
 ')"
 
 if [ -n "${BEHIND_CHAINS}" ]; then
-    log "chains behind (normal catch-up): ${BEHIND_CHAINS}"
-    exit 1
+	log "chains behind (normal catch-up): ${BEHIND_CHAINS}"
+	exit 1
 fi
 
 log "all chains healthy"
