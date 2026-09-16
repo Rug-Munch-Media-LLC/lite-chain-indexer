@@ -306,22 +306,27 @@ print(" ".join(p for p in sys.stdin.read().split() if p.split(":", 1)[0] not in 
 fi
 
 if [ -n "${STALE_CHAINS}" ]; then
-	# Restart ONLY when the chain is genuinely frozen (no-advance). A chain
-	# that is behind head but still advancing is catching up — restarting the
-	# whole daemon for it interrupts every other chain's ingestion (bsc/zksync
-	# 2026-09-16 thrash). Notify (throttled) instead.
+	# 2026-09-17 GLOBAL-PROGRESS GUARD: if ANY chain is writing data right now,
+	# the daemon is demonstrably working — chains waiting for their turn (or
+	# slow catch-up batches) are NOT stuck, and bouncing the daemon would
+	# interrupt every in-flight batch. Restart only when NOTHING is writing
+	# AND chains are frozen. (bsc/zksync/ethereum 2026-09-16 thrash: the
+	# watchdog interrupted 87k-row batches.)
+	if [ -n "${FRESH_CHAINS}" ]; then
+		CATCHUP_TS="$(cat "${CATCHUP_NOTIFY_FILE}" 2>/dev/null || echo 0)"
+		if [ "$(( $(date +%s) - CATCHUP_TS ))" -ge "${CATCHUP_NOTIFY_COOLDOWN_S}" ]; then
+			date +%s >"${CATCHUP_NOTIFY_FILE}" 2>/dev/null || true
+			alert_json "LiteIndexer catching up (no restart)" "daemon active (fresh: ${FRESH_CHAINS}); waiting/frozen: ${STALE_CHAINS}" "info" || true
+		fi
+		log "daemon active (fresh=[${FRESH_CHAINS}]) — no restart; lagging: ${STALE_CHAINS}"
+		exit 1
+	fi
 	if [ -n "${NO_ADVANCE_CHAINS}" ]; then
 		if restart_if_cooldown_elapsed "stalled chain(s): ${STALE_CHAINS} (no-advance: ${NO_ADVANCE_CHAINS})"; then
 			exit 2
 		fi
 		exit 1
 	fi
-	CATCHUP_TS="$(cat "${CATCHUP_NOTIFY_FILE}" 2>/dev/null || echo 0)"
-	if [ "$(( $(date +%s) - CATCHUP_TS ))" -ge "${CATCHUP_NOTIFY_COOLDOWN_S}" ]; then
-		date +%s >"${CATCHUP_NOTIFY_FILE}" 2>/dev/null || true
-		alert_json "LiteIndexer catching up (no restart)" "behind head but advancing: ${STALE_CHAINS}" "info" || true
-	fi
-	log "catching up (no restart): ${STALE_CHAINS}"
 	exit 1
 fi
 # ── 2b. DATA-FRESHNESS check (2026-09-01 self-healing) ───────────────
