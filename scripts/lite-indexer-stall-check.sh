@@ -276,7 +276,7 @@ try:
     fresh = {str(r[0]) for r in rows}
     try:
         if c.execute(
-            f"SELECT 1 FROM wallet_memory.solana_transfers "
+            f"SELECT 1 FROM wallet_memory.solana_spl_balance_changes "
             f"WHERE ingested_at >= now() - INTERVAL {win} MINUTE LIMIT 1"
         ):
             fresh.add("solana")
@@ -312,7 +312,7 @@ fi
 # file-only reset (observed 2026-09-17). So: only reset when a restart is
 # actually permitted; otherwise defer and say so.
 SOL_HW="$(python3 -c "import json; print(int(json.load(open('/var/data/chain-indexer/state/highwater_solana.json')).get('last_block') or 0))" 2>/dev/null || echo 0)"
-SOL_DATA="$(docker exec rmi-clickhouse clickhouse-client -q "SELECT max(slot) FROM wallet_memory.solana_transfers" 2>/dev/null || echo 0)"
+SOL_DATA="$(docker exec rmi-clickhouse clickhouse-client -q "SELECT max(slot) FROM wallet_memory.solana_spl_balance_changes" 2>/dev/null || echo 0)"
 if [ "${SOL_HW:-0}" -gt 0 ] && [ "${SOL_DATA:-0}" -gt 0 ] && [ "$((SOL_HW - SOL_DATA))" -gt 200000 ]; then
 	SINCE_RESTART=$(( $(date +%s) - $(cat "${RESTART_MARKER}" 2>/dev/null || echo 0) ))
 	if [ "${SINCE_RESTART}" -ge $((RESTART_COOLDOWN_MIN * 60)) ]; then
@@ -353,9 +353,10 @@ fi
 # Blind spot fixed: the checks above trust the STATE FILE. The 2026-08-24
 # solana incident: the strategy extracted 0 events for 8 days while the
 # highwater advanced normally — state file fresh, ZERO rows written. The
-# watchdog saw "advancing" and never fired. We now compare each chain's
-# actual last-written row (ClickHouse max(ingested_at)) against the state
-# file's last_timestamp. A chain whose data is >DATA_STALE_MIN behind its
+# watchdog saw "advancing" and never fired. We now compare the chain's
+# actual last-written row (ClickHouse max(slot) on its LIVE table — for
+# solana that is solana_spl_balance_changes; solana_transfers is dormant
+# since 2026-08-24 and produced a false extraction-failure alert on 09-17) A chain whose data is >DATA_STALE_MIN behind its
 # state file is silently failing extraction → reset the highwater to the
 # last slot that produced real data (from the table, not the state file)
 # and restart, so the fixed strategy re-extracts the gap.
@@ -375,7 +376,7 @@ try:
     )
     # Per-chain last real data slot from the tables themselves.
     rows = c.execute(
-        "SELECT chain, max(slot) FROM wallet_memory.solana_transfers GROUP BY chain"
+        "SELECT chain, max(slot) FROM wallet_memory.solana_spl_balance_changes GROUP BY chain"
     )
     ch_max = {r[0]: int(r[1] or 0) for r in rows}
 except Exception:
@@ -391,7 +392,7 @@ for chain in ("solana",):
         continue
     try:
         (max_slot,) = c.execute(
-            f"SELECT max(slot) FROM wallet_memory.{chain}_transfers"
+            f"SELECT max(slot) FROM wallet_memory.solana_spl_balance_changes"
         )[0]
     except Exception:
         continue
@@ -411,7 +412,7 @@ if [ -n "${DATA_FRESH_CHAINS}" ]; then
 		LAST_SLOT="$(timeout 20 "${PYTHON}" -c "
 import clickhouse_driver, os
 c = clickhouse_driver.Client(host=os.getenv('CLICKHOUSE_HOST','127.0.0.1'), user=os.getenv('CLICKHOUSE_USER','rmi'), password=os.getenv('CLICKHOUSE_PASSWORD',''))
-print(c.execute('SELECT max(slot) FROM wallet_memory.solana_transfers')[0][0])
+print(c.execute('SELECT max(slot) FROM wallet_memory.solana_spl_balance_changes')[0][0])
 " 2>/dev/null || echo 0)"
 		if [ "${LAST_SLOT:-0}" -gt 0 ] 2>/dev/null; then
 			printf '{"last_block": %s, "last_timestamp": "%s", "chain": "%s", "reset_by": "watchdog-data-freshness"}
