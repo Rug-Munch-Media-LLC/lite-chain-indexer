@@ -28,10 +28,11 @@ jobs:
 
       - name: Install package + dev deps
         run: |
-      - name: Antipattern gate (per-repo ratchet)
-        run: python3 scripts/check-antipatterns.py --repo .
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Antipattern gate (per-repo ratchet)
+        run: python3 scripts/check-antipatterns.py --repo .
 
       - name: Lint with ruff
         run: ruff check .

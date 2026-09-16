@@ -613,7 +613,7 @@ class ExternalFlatfileSource:
 
     def _stage_root(self) -> Path:
         """Per-source staging directory (deterministic, collision-free)."""
-        digest = hashlib.sha1(self.source.encode()).hexdigest()[:12]  # noqa: S324 — non-crypto path key
+        digest = hashlib.sha1(self.source.encode(), usedforsecurity=False).hexdigest()[:12]  # non-crypto path key
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", self.source)[-60:]
         return self.stage_dir / f"{safe}-{digest}"
 
