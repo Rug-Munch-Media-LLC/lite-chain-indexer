@@ -1,0 +1,12 @@
+#!/bin/bash
+# Test shim for systemctl. SHIM_SERVICE_ACTIVE controls is-active.
+echo "systemctl $*" >>"${SHIM_LOG:-/dev/null}"
+case "$1" in
+  is-active)
+    if [[ "$*" == *"--quiet"* ]]; then
+      [ "${SHIM_SERVICE_ACTIVE:-active}" = "active" ] && exit 0 || exit 3
+    fi
+    printf '%s\n' "${SHIM_SERVICE_ACTIVE:-active}"; exit 0 ;;
+  restart|start|stop) exit 0 ;;
+esac
+exit 0

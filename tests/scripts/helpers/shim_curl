@@ -1,0 +1,4 @@
+#!/bin/bash
+# Test shim for curl: no real alerts are ever sent from tests.
+echo "curl $*" >>"${SHIM_LOG:-/dev/null}"
+exit 0

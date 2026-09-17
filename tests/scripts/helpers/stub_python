@@ -1,0 +1,25 @@
+#!/bin/bash
+# Test stub for the $PYTHON used by the stall check.
+#  - `-m lite_indexer.health ...`  -> SHIM_HEALTH_JSON (rc SHIM_HEALTH_RC, default 1)
+#  - stdin heredocs using clickhouse_driver -> SHIM_FRESH_LINE / SHIM_DATA_FRESH
+#  - everything else (pure-stdlib extractors, json reads) -> real python3
+echo "python $*" >>"${SHIM_LOG:-/dev/null}"
+if [[ "$*" == *"-m lite_indexer.health"* ]]; then
+  printf '%s\n' "${SHIM_HEALTH_JSON:-\{\}}"
+  exit "${SHIM_HEALTH_RC:-1}"
+fi
+if [[ "$1" == "-" ]]; then
+  stdin_code="$(cat)"
+  if [[ "$stdin_code" == *clickhouse_driver* ]]; then
+    # DATA-freshness heredoc reads highwater_*.json; the FRESH check unions
+    # ingested_at across write tables. Discriminate on those unique markers.
+    if [[ "$stdin_code" == *"highwater_"* ]]; then
+      printf '%s\n' "${SHIM_DATA_FRESH:-}"
+    else
+      printf '%s\n' "${SHIM_FRESH_LINE:-}"
+    fi
+    exit 0
+  fi
+  printf '%s' "$stdin_code" | exec /usr/bin/python3 -
+fi
+exec /usr/bin/python3 "$@"

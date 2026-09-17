@@ -43,10 +43,11 @@ set -u
 # runs. 2026-09-17 incident: manual runs lacked CLICKHOUSE_PASSWORD, so the
 # fresh-data exemption silently no-op'd and the watchdog restarted healthy,
 # actively-writing chains (self-inflicted thrash).
-if [ -f /srv/secrets/lite-indexer.env ]; then
+ENV_FILE="${LITE_INDEXER_ENV_FILE:-/srv/secrets/lite-indexer.env}"
+if [ -f "$ENV_FILE" ]; then
 	# shellcheck disable=SC1091
 	set -a
-	. /srv/secrets/lite-indexer.env
+	. "$ENV_FILE"
 	set +a
 fi
 
@@ -311,12 +312,13 @@ fi
 # re-saves its in-memory highwater within ~15s and would overwrite a
 # file-only reset (observed 2026-09-17). So: only reset when a restart is
 # actually permitted; otherwise defer and say so.
-SOL_HW="$(python3 -c "import json; print(int(json.load(open('/var/data/chain-indexer/state/highwater_solana.json')).get('last_block') or 0))" 2>/dev/null || echo 0)"
+SOL_STATE_FILE="${SOL_STATE_FILE:-/var/data/chain-indexer/state/highwater_solana.json}"
+SOL_HW="$("${PYTHON}" -c "import json; print(int(json.load(open('${SOL_STATE_FILE}')).get('last_block') or 0))" 2>/dev/null || echo 0)"
 SOL_DATA="$(docker exec rmi-clickhouse clickhouse-client -q "SELECT max(slot) FROM wallet_memory.solana_spl_balance_changes" 2>/dev/null || echo 0)"
 if [ "${SOL_HW:-0}" -gt 0 ] && [ "${SOL_DATA:-0}" -gt 0 ] && [ "$((SOL_HW - SOL_DATA))" -gt 200000 ]; then
 	SINCE_RESTART=$(( $(date +%s) - $(cat "${RESTART_MARKER}" 2>/dev/null || echo 0) ))
 	if [ "${SINCE_RESTART}" -ge $((RESTART_COOLDOWN_MIN * 60)) ]; then
-		printf '{"last_block": %s, "last_timestamp": "%s", "chain": "solana", "reset_by": "watchdog-data-freshness"}\n' "${SOL_DATA}" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >/var/data/chain-indexer/state/highwater_solana.json
+		printf '{"last_block": %s, "last_timestamp": "%s", "chain": "solana", "reset_by": "watchdog-data-freshness"}\n' "${SOL_DATA}" "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" >"${SOL_STATE_FILE}"
 		if restart_if_cooldown_elapsed "data-freshness failure: solana:hw=${SOL_HW}:data=${SOL_DATA} (highwater reset to last real data)"; then
 			exit 2
 		fi

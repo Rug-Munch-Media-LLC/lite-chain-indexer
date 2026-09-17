@@ -1,0 +1,9 @@
+#!/bin/bash
+# Test shim for docker. Emulates `docker exec rmi-clickhouse clickhouse-client -q ...`.
+echo "docker $*" >>"${SHIM_LOG:-/dev/null}"
+args="$*"
+case "$args" in
+  *"max(slot)"*) printf '%s\n' "${SHIM_SOL_DATA:-0}" ;;
+  *) printf '\n' ;;
+esac
+exit 0
