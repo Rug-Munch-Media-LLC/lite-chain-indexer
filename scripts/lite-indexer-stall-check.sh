@@ -14,8 +14,9 @@
 #      interrupted all ingestion and fixed nothing). Restarts happen only on
 #      NO-ADVANCE (state genuinely frozen) or a dead service.
 #   3. NO-ADVANCE DETECTION — if any chain's state file has not been
-#      updated for more than STALL_MINUTES (default 30 minutes) the chain
-#      has not advanced and the service is restarted (auto-reset).
+#      updated for more than the env-configured STALL_MINUTES threshold
+#      (see below; default 30) the chain has not advanced and the service
+#      is restarted (auto-reset).
 #   4. RESTART COOLDOWN — stall/no-advance restarts are throttled to at
 #      most one per RESTART_COOLDOWN_MIN (default 30 minutes). The
 #      indexer's RPC pool keeps circuit-breaker state (403/429 hard bans,
@@ -35,7 +36,9 @@
 #   4 — lag check itself failed (no restart; avoid restart storms)
 #
 # Env overrides: SERVICE, STALL_MINUTES, TIMEOUT_S, PYTHON,
-#                RESTART_COOLDOWN_MIN, RESTART_MARKER, FORCE_RESTART_AFTER
+#                RESTART_COOLDOWN_MIN, RESTART_MARKER, FORCE_RESTART_AFTER,
+#                EVM_DATA_LAG_MIN, EVM_LAG_NOTIFY_FILE,
+#                EVM_LAG_NOTIFY_COOLDOWN_S
 #
 set -u
 
@@ -222,7 +225,7 @@ print(" ".join(stale))
 ')"
 
 # Chains whose state file has not advanced for more than STALL_MINUTES.
-# These are the >30-min no-advance cases the timer must auto-reset.
+# These are the >STALL_MINUTES no-advance cases the timer must auto-reset.
 NO_ADVANCE_CHAINS="$(printf '%s' "${LAG_OUT}" | "${PYTHON}" -c '
 import json, sys
 stall = float(sys.argv[1])
@@ -327,6 +330,93 @@ if [ "${SOL_HW:-0}" -gt 0 ] && [ "${SOL_DATA:-0}" -gt 0 ] && [ "$((SOL_HW - SOL_
 		exit 1
 	fi
 fi
+
+# ── 1c. EVM silent-indexing guard (2026-09-19) ───────────────────────
+# The Solana guard above was chain-specific, so polygon and other EVM chains
+# advanced their highwater state file while the rows actually landing in
+# ClickHouse carried hours-old block timestamps — ingestion "succeeded" yet
+# the chain head was frozen (polygon: highwater advancing, max
+# block_timestamp 5.7h behind). Generalise the highwater↔real-data check to
+# every CONFIGURED EVM chain (any highwater_*.json present in the state dir
+# and present in wallet_memory.evm_transfers, solana excluded) using block
+# TIMESTAMPS: alarm when the state file's wall-clock save time leads the
+# newest indexed block_timestamp by more than EVM_DATA_LAG_MIN minutes.
+# NOTIFY-ONLY by design: rewinding an EVM highwater to an hours-old block
+# would queue a multi-hundred-thousand-block backfill (out of scope), and
+# catch-up stays notify-only elsewhere — so no reset/restart here.
+EVM_DATA_LAG_MIN="${EVM_DATA_LAG_MIN:-30}"
+EVM_LAG_NOTIFY_FILE="${EVM_LAG_NOTIFY_FILE:-/var/data/chain-indexer/lite-indexer-evm-lag-notify-ts}"
+EVM_LAG_NOTIFY_COOLDOWN_S="${EVM_LAG_NOTIFY_COOLDOWN_S:-21600}"
+EVM_LAG_FOUND=0
+export EVM_DATA_LAG_MIN
+EVM_DATA_LAG_CHAINS="$(
+	timeout 30 "${PYTHON}" - <<'PYEOF'
+import datetime
+import glob
+import json
+import os
+
+try:
+    import clickhouse_driver
+
+    c = clickhouse_driver.Client(
+        host=os.getenv("CLICKHOUSE_HOST", "127.0.0.1"),
+        user=os.getenv("CLICKHOUSE_USER", "rmi"),
+        password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+    )
+    rows = c.execute(
+        "SELECT chain, max(block_timestamp) FROM wallet_memory.evm_transfers GROUP BY chain"
+    )
+    ch_max = {str(r[0]): r[1] for r in rows if r[0] is not None}
+except Exception:
+    raise SystemExit(0)
+
+threshold = float(os.getenv("EVM_DATA_LAG_MIN", "30"))
+state_dir = os.getenv("STATE_DIR", "/var/data/chain-indexer/state")
+out = []
+for path in sorted(glob.glob(state_dir + "/highwater_*.json")):
+    chain = os.path.basename(path)[len("highwater_"):-len(".json")]
+    if chain == "solana":
+        continue
+    if chain not in ch_max:
+        continue  # not configured / no rows for this chain
+    try:
+        hw = json.load(open(path))
+        hw_ts = datetime.datetime.fromisoformat(
+            str(hw.get("last_timestamp")).replace("Z", "+00:00")
+        )
+        if hw_ts.tzinfo is None:
+            hw_ts = hw_ts.replace(tzinfo=datetime.timezone.utc)
+        ch_ts = ch_max[chain]
+        if ch_ts.tzinfo is None:
+            ch_ts = ch_ts.replace(tzinfo=datetime.timezone.utc)
+    except Exception:
+        continue
+    lag_min = (hw_ts - ch_ts).total_seconds() / 60.0
+    if lag_min > threshold:
+        out.append(
+            "%s:hw=%s:ch=%s:lag=%.0fm"
+            % (
+                chain,
+                hw_ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                ch_ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                lag_min,
+            )
+        )
+print(" ".join(out))
+PYEOF
+)"
+if [ -n "${EVM_DATA_LAG_CHAINS}" ]; then
+	EVM_LAG_FOUND=1
+	EVM_LAG_TS="$(cat "${EVM_LAG_NOTIFY_FILE}" 2>/dev/null || echo 0)"
+	if [ "$(( $(date +%s) - EVM_LAG_TS ))" -ge "${EVM_LAG_NOTIFY_COOLDOWN_S}" ]; then
+		date +%s >"${EVM_LAG_NOTIFY_FILE}" 2>/dev/null || true
+		alert_json "LiteIndexer EVM chain head frozen (>${EVM_DATA_LAG_MIN}m)" \
+			"highwater advancing but indexed block_timestamp is stale (notify-only, no restart): ${EVM_DATA_LAG_CHAINS}" \
+			"critical" || true
+	fi
+	log "EVM data-freshness: ${EVM_DATA_LAG_CHAINS} (notify-only, no restart)"
+fi
 if [ -n "${STALE_CHAINS}" ]; then
 	# 2026-09-17 GLOBAL-PROGRESS GUARD: if ANY chain is writing data right now,
 	# the daemon is demonstrably working — chains waiting for their turn (or
@@ -344,7 +434,7 @@ if [ -n "${STALE_CHAINS}" ]; then
 		exit 1
 	fi
 	if [ -n "${NO_ADVANCE_CHAINS}" ]; then
-		if restart_if_cooldown_elapsed "stalled chain(s): ${STALE_CHAINS} (no-advance: ${NO_ADVANCE_CHAINS})"; then
+		if restart_if_cooldown_elapsed "stalled chain(s) >${STALL_MINUTES}m state age: ${STALE_CHAINS} (no-advance: ${NO_ADVANCE_CHAINS})"; then
 			exit 2
 		fi
 		exit 1
@@ -450,6 +540,11 @@ print(" ".join(behind))
 
 if [ -n "${BEHIND_CHAINS}" ]; then
 	log "chains behind (normal catch-up): ${BEHIND_CHAINS}"
+	exit 1
+fi
+
+if [ "${EVM_LAG_FOUND:-0}" -eq 1 ]; then
+	log "EVM data-freshness lag present — notify-only (see above)"
 	exit 1
 fi
 
