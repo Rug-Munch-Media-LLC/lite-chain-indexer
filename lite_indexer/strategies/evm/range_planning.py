@@ -137,9 +137,9 @@ def _prefer_wide_range(endpoints: list[str], chunk: int) -> list[str]:
     """Stable partition: endpoints that can serve ``chunk`` blocks first.
 
     Catch-up throughput: a pool mixing 10-range public RPCs with 100-range
-    keyed endpoints (celo infura/drpc) must dial the wide endpoints first,
-    otherwise every chunk is throttled down to the narrowest provider cap
-    and catch-up never converges.
+    keyed endpoints must dial the wide endpoints first, otherwise every
+    chunk is throttled down to the narrowest provider cap and catch-up
+    never converges.
     """
     wide: list[str] = []
     narrow: list[str] = []

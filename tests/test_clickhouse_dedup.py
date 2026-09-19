@@ -97,7 +97,12 @@ def test_migration_018_declares_dedup_key_contract() -> None:
     mig = Path(__file__).resolve().parents[1] / "migrations"
     text = (mig / "018_evm_transfers_dedup_key_v2.sql").read_text()
     assert "MODIFY ORDER BY (chain, block_number, log_index, tx_log_key)" in text
-    assert "ADD COLUMN IF NOT EXISTS tx_log_key String" in text
+    # CH 26.7 accepts a new key column only when it is ADDed in the same ALTER.
+    # The runtime fallback may pre-create tx_log_key, so the migration MUST
+    # DROP-then-ADD (a bare `ADD COLUMN IF NOT EXISTS` leaves it existing and
+    # the MODIFY ORDER BY then fails with Code 36 — the 017 failure mode).
+    assert "DROP COLUMN IF EXISTS tx_log_key" in text
+    assert "ADD COLUMN tx_log_key String" in text
     old = (mig / "017_evm_transfers_dedup_key.sql").read_text()
     assert "INVALID" in old and "SUPERSEDED" in old and "DO NOT APPLY" in old
 

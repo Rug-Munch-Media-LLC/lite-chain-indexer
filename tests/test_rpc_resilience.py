@@ -62,7 +62,6 @@ class _Clock:
 def clock(monkeypatch: pytest.MonkeyPatch):
     """Fake clock shared across pool + routing modules."""
     fake = _Clock()
-    import lite_indexer.rpc.ban_state as ban_state_mod
     import lite_indexer.rpc.pool as pool_mod
     import lite_indexer.rpc.routing as routing_mod
 

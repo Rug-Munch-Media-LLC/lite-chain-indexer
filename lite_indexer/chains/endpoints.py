@@ -361,13 +361,13 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 # Rejected candidates stay documented in the probe report, never silently.
 CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
     "ethereum": [
-        "https://eth.llamarpc.com",  # re-probe: 521 on 2026-08-05, provider since stabilized?
-        "https://1rpc.io/eth",  # re-probe: usage-limited 2026-08-05
+        # eth.llamarpc.com + 1rpc.io/eth promoted into the private runtime
+        # overlay (active on prod) — no longer candidates (2026-09-19).
         "https://eth.meowrpc.com",  # getLogs unsupported — blockNumber fallback only
         "https://cloudflare-eth.com",  # reported dead 2026-08-05 — confirm before cull
     ],
     "base": [
-        "https://base.llamarpc.com",
+        # base.llamarpc.com promoted into the private overlay (2026-09-19).
         "https://base-meow.rpc.thirdweb.com",
     ],
     "bsc": [

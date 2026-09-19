@@ -9,7 +9,6 @@ still has a shot at serving the range before the data-loss guard raises.
 from __future__ import annotations
 
 from dataclasses import dataclass
-
 from typing import Any
 
 import httpx
