@@ -149,7 +149,7 @@ class TestPoolWideOutage:
         with patch("lite_indexer.rpc.routing.is_circuit_open", lambda ep: ep in (a, b)):
             assert pool_fully_down([a, b]) is True
 
-    def test_rate_limited_pool_fetch_attempts_and_advances(_mp: pytest.MonkeyPatch, self, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
+    def test_rate_limited_pool_fetch_attempts_and_advances(self, _mp: pytest.MonkeyPatch, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
         """End-to-end: an all-soft-banned pool must NOT raise the
         "waiting for desperation probe" deadlock — it attempts the least-
         penalized endpoint and returns the (empty) log set."""
@@ -188,7 +188,7 @@ class TestPoolWideOutage:
 
         assert asyncio.run(_run()) == []
 
-    def test_rate_limited_rotation_spreads_across_calls(_mp: pytest.MonkeyPatch, self, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
+    def test_rate_limited_rotation_spreads_across_calls(self, _mp: pytest.MonkeyPatch, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
         """The crawl must rotate the starting endpoint so no soft-banned
         endpoint is pinned and re-banned every cycle."""
         from lite_indexer.strategies.evm import range_planning as rp
@@ -203,7 +203,7 @@ class TestPoolWideOutage:
         assert third == eps[2:] + eps[:2]
         assert {first[0], second[0], third[0]} == set(eps)  # progress, not pinning
 
-    def test_prefer_wide_range_orders_high_caps_first(_mp: pytest.MonkeyPatch, self, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
+    def test_prefer_wide_range_orders_high_caps_first(self, _mp: pytest.MonkeyPatch, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
         """Catch-up must dial the 100-range endpoints before the 10-range
         ones so chunks are not throttled to the narrowest provider cap."""
         from lite_indexer.strategies.evm import range_planning as rp
