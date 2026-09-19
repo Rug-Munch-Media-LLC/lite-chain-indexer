@@ -79,4 +79,59 @@ def build_evm_backfill_executor(host: EvmBackfillHost) -> BackfillExecutor:
     return _execute
 
 
-__all__ = ["EvmBackfillHost", "build_evm_backfill_executor"]
+# ── Non-EVM (TRON) executor ─────────────────────────────────────────────
+
+
+class NonEvmBackfillHost(Protocol):
+    """Surface the non-EVM backfill executor needs from a LiteIndexer.
+
+    TRON has no ``eth_getLogs``: its events are fetched through the chain
+    strategy (TronGrid ``/v1/contracts/{address}/events``), so the executor
+    delegates to ``strategy.fetch_transfers`` and ignores the freemium
+    endpoint the queue resolved for it.
+    """
+
+    chain: str
+
+    @property
+    def strategy(self) -> AbstractChainStrategy: ...
+
+    @property
+    def ch_writer(self) -> ClickHouseWriter: ...
+
+
+def build_tron_backfill_executor(host: NonEvmBackfillHost) -> BackfillExecutor:
+    """Build the concrete TRON backfill executor for ``host``.
+
+    Fetches the chunk's TRC20 transfers through the strategy (which owns the
+    TronGrid REST transport and its own endpoint failover) and writes them
+    through the existing ClickHouse path. Returns True only when the chunk
+    was fully handled (written, or confirmed empty); an RPC failure or an
+    exception returns False so the chunk is retried rather than advanced
+    past.
+
+    This is what lets ``backfill_queue_tron.json`` drain: the EVM executor
+    hard-fails on ``_is_evm()`` and TRON has no freemium ``get_logs``
+    endpoint, so without this the queue sat at ``attempts: 0`` forever.
+    """
+
+    async def _execute(chunk: BackfillChunk, endpoint: str) -> bool:
+        from lite_indexer.rpc import RpcFetchFailedError
+
+        try:
+            events = await host.strategy.fetch_transfers(chunk.from_block, chunk.to_block)
+        except RpcFetchFailedError:
+            return False
+        if not events:
+            return True
+        return bool(host.strategy.write_clickhouse(events, host.ch_writer))
+
+    return _execute
+
+
+__all__ = [
+    "EvmBackfillHost",
+    "NonEvmBackfillHost",
+    "build_evm_backfill_executor",
+    "build_tron_backfill_executor",
+]

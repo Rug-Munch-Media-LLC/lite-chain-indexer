@@ -593,8 +593,27 @@ async def drain_backfill_queue(
 
 
 def _default_endpoint_selector(chain: str) -> str | None:
-    """Freemium-only endpoint for ``chain`` (free pool never selected)."""
-    return select_freemium_endpoint_for_chain(chain)
+    """Backfill endpoint for ``chain`` (EVM: freemium-only; TRON: REST).
+
+    The free/keyless pool is reserved for the EVM live tip, so EVM chunks
+    resolve to a freemium (keyed) endpoint. TRON has no freemium
+    ``eth_getLogs`` pool at all — ``GET_LOGS_ENDPOINTS`` has no ``tron``
+    entry — which made every TRON chunk "skipped" (attempts stayed at 0)
+    before the queue could ever drain. TRON's transport is the public
+    TronGrid REST endpoint owned by the strategy, so return that so the
+    chunk is dispatched (the TRON executor ignores the endpoint value).
+    """
+    endpoint = select_freemium_endpoint_for_chain(chain)
+    if endpoint is not None:
+        return endpoint
+    if chain == "tron":
+        try:
+            from lite_indexer.chains.non_evm import TRON_ENDPOINTS
+
+            return TRON_ENDPOINTS[0] if TRON_ENDPOINTS else None
+        except Exception as exc:  # noqa: BLE001 — endpoint resolution is best-effort
+            logger.debug("backfill_tron_endpoint_failed", error=str(exc)[:100])
+    return None
 
 
 __all__ = [

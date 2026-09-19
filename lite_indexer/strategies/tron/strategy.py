@@ -34,7 +34,7 @@ from .launch import (
     detect_sunswap_pair,
 )
 from .models import TRC20_TOKENS, TRON_MAX_BLOCK_RANGE
-from .parsing import parse_tron_transfer_event
+from .parsing import ms_to_iso_utc, parse_tron_transfer_event
 from .rpc import tron_get, tron_get_with_range, tron_post
 
 logger = get_logger(__name__)
@@ -361,7 +361,10 @@ class TronStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
                                 "transactionHash": raw.get("transaction_id", ""),
                                 "blockNumber": raw.get("block_number", 0),
                                 "logIndex": raw.get("event_index", 0),
-                                "blockTimestamp": raw.get("block_timestamp", 0),
+                                # TronGrid timestamps are epoch ms — convert at
+                                # the parse boundary so launch rows keep the real
+                                # time (raw ms parsed as seconds → 1970/now).
+                                "blockTimestamp": ms_to_iso_utc(raw.get("block_timestamp")),
                             }
                         ]
                     }

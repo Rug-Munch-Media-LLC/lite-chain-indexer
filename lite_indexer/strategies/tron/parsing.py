@@ -82,6 +82,36 @@ def _normalize_tron_address(addr: Any) -> str:
     return cast(str, addr)
 
 
+def ms_to_iso_utc(ts_ms: Any, *, fallback: datetime | None = None) -> str:
+    """Convert TronGrid epoch **milliseconds** to an ISO-8601 UTC string.
+
+    TronGrid reports every timestamp (event ``block_timestamp``, block
+    header ``timestamp``) in milliseconds, while the durable store
+    (``evm_transfers.block_timestamp``, ``tron_launches.block_timestamp``)
+    holds ISO-8601 **seconds**. Parsing a ms value as seconds lands the row
+    at 1970-01-01, so the conversion must happen here, at the parse
+    boundary — never in the DB layer.
+
+    Args:
+        ts_ms: Epoch milliseconds (int or numeric string). ``0``/``None``
+            falls back to ``fallback`` (default: now UTC).
+        fallback: Timestamp to use when ``ts_ms`` is missing/unparseable.
+
+    Returns:
+        ``YYYY-MM-DDTHH:MM:SSZ`` string.
+    """
+    try:
+        value = int(ts_ms)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        return (fallback or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        return datetime.fromtimestamp(value / 1000.0, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, OSError, OverflowError):
+        return (fallback or datetime.now(UTC)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def parse_tron_transfer_event(
     raw: dict[str, Any],
     token: dict[str, Any],
@@ -144,16 +174,9 @@ def parse_tron_transfer_event(
         if isinstance(log_index, str):
             log_index = int(log_index)
 
-        # Parse timestamp from TronGrid (milliseconds since epoch)
-        ts_raw = raw.get("block_timestamp", 0)
-        if ts_raw:
-            try:
-                ts_sec = int(ts_raw) / 1000.0
-                ts = datetime.fromtimestamp(ts_sec, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            except (ValueError, TypeError, OSError):
-                ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        else:
-            ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Parse timestamp from TronGrid (milliseconds since epoch) via the
+        # single parse-boundary converter (never store raw ms as seconds).
+        ts = ms_to_iso_utc(raw.get("block_timestamp"))
 
         return {
             "type": "transfer",

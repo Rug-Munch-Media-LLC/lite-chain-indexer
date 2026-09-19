@@ -59,6 +59,13 @@ _DEPLOYER_RPC_CONCURRENCY = 8
 # rows that a transient best-endpoint failure would otherwise lose.
 _DEPLOYER_RPC_MAX_ENDPOINTS = 3
 
+# Idempotent-rewind dedup: a re-extracted range must not append duplicates.
+# Before inserting a transfer batch we look up the (block_number, tx_hash,
+# log_index) keys already present for the batch's block window and skip
+# them. The window is bounded so a pathological batch (whole-chain span)
+# falls back to in-batch dedup only instead of scanning the table.
+_DEDUP_MAX_BLOCK_SPAN = 50_000
+
 
 async def _resolve_deployer_eoas(chain: str, events: list[dict[str, Any]]) -> dict[str, str]:
     """Resolve the deployer EOA (tx `from`) for each unique tx hash.
@@ -128,6 +135,22 @@ async def _resolve_deployer_eoas(chain: str, events: list[dict[str, Any]]) -> di
         if isinstance(res, tuple) and res[1]:
             mapping[res[0]] = res[1]
     return mapping
+
+
+def _coerce_int(value: Any) -> int:
+    """Coerce a block/log index (decimal, hex string, int) to int (0 on failure)."""
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("0x", "0X")):
+            try:
+                return int(text, 16)
+            except ValueError:
+                return 0
+        value = text
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _serialize_raw_payload(event: dict[str, Any]) -> str:
@@ -240,6 +263,47 @@ class ClickHouseWriter(SchemaMixin):
         """
         return self._connect()
 
+    def _existing_transfer_keys(
+        self,
+        client: Any,
+        chain: str,
+        keys: list[tuple[int, str, int]],
+    ) -> set[tuple[int, str, int]]:
+        """Return the (block_number, tx_hash, log_index) keys already in CH.
+
+        Used by :meth:`write_transfers` to make a re-extracted range
+        idempotent: the ReplacingMergeTree only collapses duplicates at
+        merge time, so an explicit existence check is the immediate guard
+        against a reconciliation rewind compounding the row count.
+
+        Best-effort: any query failure returns an empty set (the insert
+        proceeds — availability beats dedup) and the block window is capped
+        at ``_DEDUP_MAX_BLOCK_SPAN`` so a pathological batch never triggers
+        a whole-chain scan.
+        """
+        if not keys:
+            return set()
+        lo = min(k[0] for k in keys)
+        hi = max(k[0] for k in keys)
+        if hi - lo > _DEDUP_MAX_BLOCK_SPAN:
+            logger.warning("clickhouse_dedup_span_skipped", chain=chain, span=hi - lo)
+            return set()
+        try:
+            rows = client.execute(
+                f"SELECT block_number, tx_hash, log_index FROM {CH_TABLE} "  # nosemgrep: formatted-sql-query — table is a module constant; values parameterized
+                "WHERE chain = %(chain)s AND block_number BETWEEN %(lo)s AND %(hi)s",
+                {"chain": chain, "lo": lo, "hi": hi},
+            )
+        except Exception as exc:  # noqa: BLE001 — dedup is best-effort
+            logger.debug("clickhouse_dedup_query_failed", chain=chain, error=str(exc)[:100])
+            return set()
+        existing: set[tuple[int, str, int]] = set()
+        for row in rows or []:
+            if not row or len(row) < 3:
+                continue
+            existing.add((_coerce_int(row[0]), str(row[1] or ""), _coerce_int(row[2])))
+        return existing
+
     def write_transfers(self, chain: str, events: list[dict[str, Any]]) -> int:
         """Insert transfer events into ClickHouse. Returns rows inserted.
 
@@ -279,9 +343,30 @@ class ClickHouseWriter(SchemaMixin):
             self.ensure_ttl_policies(client)
 
         now = datetime.now(UTC)
-        rows: list[tuple[Any, ...]] = []
 
+        # Idempotent rewind: dedup within the batch AND skip rows already
+        # durable in ClickHouse. `evm_transfers` is a ReplacingMergeTree, but
+        # replacement only happens at merge time, so without this an explicit
+        # re-extract (reconciliation rewind / backfill) appends duplicates and
+        # the row count compounds. Dedup key: (chain, block_number, tx_hash,
+        # log_index) — see migrations/017_evm_transfers_dedup_key.sql.
+        unique: dict[tuple[int, str, int], dict[str, Any]] = {}
         for event in events:
+            key = (
+                _coerce_int(event.get("blockNumber")),
+                str(event.get("txHash") or event.get("txID") or ""),
+                _coerce_int(event.get("logIndex")),
+            )
+            unique.setdefault(key, event)
+
+        existing = self._existing_transfer_keys(client, chain, list(unique))
+
+        rows: list[tuple[Any, ...]] = []
+        skipped = 0
+        for key, event in unique.items():
+            if key in existing:
+                skipped += 1
+                continue
             ts_str = event.get("blockTimestamp", "")
             if ts_str:
                 try:
@@ -306,6 +391,13 @@ class ClickHouseWriter(SchemaMixin):
                     _serialize_raw_payload(event),
                 )
             )
+
+        if skipped:
+            metrics_incr("clickhouse_dedup_skipped", float(skipped))
+            logger.info("clickhouse_dedup_skipped", chain=chain, skipped=skipped, kept=len(rows))
+
+        if not rows:
+            return 0
 
         try:
             client.execute(

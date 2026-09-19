@@ -220,9 +220,10 @@ class BackfillMixin(IndexerMixinBase):
 
     The queue is disk-persisted (idempotent, bounded) and the drain is
     memory-gated so the sidecar never pushes the daemon toward its hard
-    recycle ceiling. No executor is configured by default, so gaps are
-    collected but not dispatched until a host wires one
-    (:func:`lite_indexer.indexer.backfill_executor.build_evm_backfill_executor`).
+    recycle ceiling. The EVM executor is opt-in
+    (``BACKFILL_EXECUTOR_ENABLED``); TRON is always wired because it uses
+    the strategy's own REST transport (see
+    :func:`lite_indexer.indexer.backfill_executor.build_tron_backfill_executor`).
     """
 
     def _get_backfill_queue(self) -> BackfillQueue:

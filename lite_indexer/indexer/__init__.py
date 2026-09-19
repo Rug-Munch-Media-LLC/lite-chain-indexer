@@ -69,7 +69,11 @@ from lite_indexer.indexer._rpc_fetch import RpcFetchMixin
 from lite_indexer.indexer._sidecars import BackfillMixin, SidecarsMixin
 from lite_indexer.indexer._sync_loop import SyncLoopMixin
 from lite_indexer.indexer.backfill import BackfillExecutor, BackfillQueue
-from lite_indexer.indexer.backfill_executor import EvmBackfillHost, build_evm_backfill_executor
+from lite_indexer.indexer.backfill_executor import (
+    EvmBackfillHost,
+    build_evm_backfill_executor,
+    build_tron_backfill_executor,
+)
 from lite_indexer.logging import get_logger
 from lite_indexer.plugin import BasePlugin, PluginContext, PluginLoader
 from lite_indexer.rpc import RpcClient, RpcFetchFailedError
@@ -300,13 +304,19 @@ class LiteIndexer(
         self._ch_health = ClickHouseHealth()
 
         # Freemium backfill queue (lazy) + injected executor + gap signals.
-        # The queue is disk-persisted. The EVM executor is wired only when
-        # BACKFILL_EXECUTOR_ENABLED is set (opt-in): the queue collects gaps
-        # safely, and dispatch stays dormant until CH dedup is verified.
+        # The queue is disk-persisted. The EVM executor is opt-in via
+        # BACKFILL_EXECUTOR_ENABLED (dispatch stays dormant until CH dedup is
+        # verified). Non-EVM chains (TRON) are ALWAYS wired when backfill is
+        # enabled: they use their own strategy transport (no freemium
+        # eth_getLogs pool), and the EVM-only executor's `_is_evm()` guard was
+        # why backfill_queue_tron.json sat at attempts:0 forever.
         self._backfill_queue: BackfillQueue | None = None
         self._backfill_executor: BackfillExecutor | None = None
-        if BACKFILL_ENABLED and BACKFILL_EXECUTOR_ENABLED:
-            self._backfill_executor = build_evm_backfill_executor(cast(EvmBackfillHost, self))
+        if BACKFILL_ENABLED:
+            if self._chain_type == "tron":
+                self._backfill_executor = build_tron_backfill_executor(cast(EvmBackfillHost, self))
+            elif BACKFILL_EXECUTOR_ENABLED:
+                self._backfill_executor = build_evm_backfill_executor(cast(EvmBackfillHost, self))
         self._backfill_seen_block: int | None = None
         self._reconcile_rewinds: list[tuple[int, int]] = []
 
