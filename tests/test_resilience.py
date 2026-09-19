@@ -320,15 +320,15 @@ class TestEndpointBan:
         assert is_endpoint_banned(url) is False
 
     def test_ban_escalates_exponentially(self):
-        from lite_indexer.rpc import pool
+        from lite_indexer.rpc import ban_state, pool
 
         url = "https://example.invalid/rpc2"
         pool.unban_endpoint(url)
         with patch("lite_indexer.config.ENDPOINT_BAN_BASE_SECONDS", 60):
             pool.ban_endpoint(url, reason="http_403")
-            first_until = pool._endpoint_bans[url]
+            first_until = ban_state._endpoint_bans[url]
             pool.ban_endpoint(url, reason="http_403")
-            second_until = pool._endpoint_bans[url]
+            second_until = ban_state._endpoint_bans[url]
         # Second ban window is strictly longer (exponential).
         assert second_until > first_until
         pool.unban_endpoint(url)

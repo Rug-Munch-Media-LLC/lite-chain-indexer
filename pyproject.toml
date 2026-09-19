@@ -140,3 +140,6 @@ testpaths = ["tests"]
 markers = [
     "smoke: integration smoke tests requiring external services (CH_HOST/RPC_URL)",
 ]
+
+[tool.fleet-gates]
+scan-roots = ["lite_indexer"]

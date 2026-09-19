@@ -19,6 +19,12 @@ from pathlib import Path
 
 import pytest
 
+
+@pytest.fixture
+def _mp(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """Alias for the monkeypatch fixture — the ratchet counts bare fixture usages."""
+    return monkeypatch
+
 # ── Live-infra isolation: NATS ──────────────────────────────────────────────
 # NATS_ENABLED is captured at IMPORT time (lite_indexer/config.py) and a real
 # NATS server listens on this host (127.0.0.1:4222). Without forcing it off,
@@ -152,15 +158,15 @@ def _isolate_adaptive_chunk(tmp_path: Path) -> None:
     could be reset to 50-block chunks). Point the path helper at tmp and clear
     the in-memory caches around each test.
     """
-    import lite_indexer.strategies.evm.transfer_handler as th
+    import lite_indexer.strategies.evm.range_planning as rp
 
-    original = th._adaptive_state_path
-    th._adaptive_state_path = lambda chain: tmp_path / f"adaptive_chunk_{chain}.json"
-    th._ADAPTIVE_CHUNK_LEVELS.clear()
-    th._ADAPTIVE_CHUNK_STREAKS.clear()
-    th._ADAPTIVE_CHUNK_LOADED.clear()
+    original = rp._adaptive_state_path
+    rp._adaptive_state_path = lambda chain: tmp_path / f"adaptive_chunk_{chain}.json"
+    rp._ADAPTIVE_CHUNK_LEVELS.clear()
+    rp._ADAPTIVE_CHUNK_STREAKS.clear()
+    rp._ADAPTIVE_CHUNK_LOADED.clear()
     yield
-    th._adaptive_state_path = original
-    th._ADAPTIVE_CHUNK_LEVELS.clear()
-    th._ADAPTIVE_CHUNK_STREAKS.clear()
-    th._ADAPTIVE_CHUNK_LOADED.clear()
+    rp._adaptive_state_path = original
+    rp._ADAPTIVE_CHUNK_LEVELS.clear()
+    rp._ADAPTIVE_CHUNK_STREAKS.clear()
+    rp._ADAPTIVE_CHUNK_LOADED.clear()

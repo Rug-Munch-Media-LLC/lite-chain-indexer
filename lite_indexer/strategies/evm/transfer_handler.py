@@ -26,14 +26,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from typing import Any, cast
 
 import httpx
 
-from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range, last_resort_endpoints
+from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range
 from lite_indexer.chunks import CHUNK_PARALLELISM, chunk_range, merge_chunked_results
-from lite_indexer.config import BLOOM_ENABLED, CHUNK_SIZE_EVM, RPC_TIMEOUT, STATE_DIR, TRANSFER_EVENT_TOPIC
+from lite_indexer.config import BLOOM_ENABLED, CHUNK_SIZE_EVM, RPC_TIMEOUT, TRANSFER_EVENT_TOPIC
 from lite_indexer.dex import parse_transfer_logs
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
@@ -53,6 +52,7 @@ from lite_indexer.rpc.pool import (
     least_banned_endpoint,
     mark_desperation_probe,
     pool_fully_down,
+    pool_rate_limited,
     probe_eligible_endpoints,
 )
 from lite_indexer.rpc.provider_caps import account_key_for_endpoint
@@ -62,138 +62,22 @@ from lite_indexer.strategies.evm.bloom import (
     candidate_blocks_for_address,
     fetch_block_blooms,
 )
+from lite_indexer.strategies.evm.last_resort import LastResortAttempt, try_last_resort
+from lite_indexer.strategies.evm.range_planning import (
+    _adaptive_chunk_size,
+    _bump_adaptive_chunk,
+    _contiguous_ranges,
+    _prefer_wide_range,
+    _rate_limited_rotation,
+    _record_adaptive_success,
+)
 
 logger = get_logger(__name__)
 
 
-# ── Adaptive chunk-size reduction ─────────────────────────────────────
-# After repeated pool-wide failures (RpcFetchFailedError), the effective
-# chunk size is halved (floor ADAPTIVE_CHUNK_FLOOR) so restrictive free
-# RPCs with small range caps (blastapi=10, blockrazor=25) or small result
-# caps can serve the range. A success resets the reduction. This makes
-# catch-up degrade gracefully instead of failing the same 50-block chunk
-# forever when every endpoint caps below the default chunk size.
-_ADAPTIVE_CHUNK_LEVELS: dict[str, int] = {}
-_ADAPTIVE_CHUNK_STREAKS: dict[str, int] = {}
-_ADAPTIVE_CHUNK_LOADED: set[str] = set()
-ADAPTIVE_CHUNK_FLOOR: int = 5
-ADAPTIVE_CHUNK_MAX_HALVES: int = 4
-# Consecutive successful batches at the current reduced size before the
-# level decays ONE step back toward the base chunk size. Persisted so a
-# watchdog restart cannot reset the adaptation: base needs level 4 ==
-# 5-block chunks (public endpoints reject a 50-block eth_getLogs with
-# -32602 "block range extends beyond current"), and a process-local dict
-# was wiped every restart before it could converge (2026-09-19).
-ADAPTIVE_RECOVERY_SUCCESSES: int = 12
+logger = get_logger(__name__)
 
 
-def _adaptive_state_path(chain: str) -> Path:
-    """Persistent state file holding one chain's chunk adaptation."""
-    return Path(STATE_DIR) / f"adaptive_chunk_{chain}.json"
-
-
-def _load_adaptive_chunk(chain: str) -> None:
-    """Hydrate a chain's persisted adaptation once per process (best effort)."""
-    if chain in _ADAPTIVE_CHUNK_LOADED:
-        return
-    _ADAPTIVE_CHUNK_LOADED.add(chain)
-    try:
-        data = json.loads(_adaptive_state_path(chain).read_text())
-        level = min(int(data.get("level", 0) or 0), ADAPTIVE_CHUNK_MAX_HALVES)
-        if level > 0:
-            _ADAPTIVE_CHUNK_LEVELS[chain] = level
-        _ADAPTIVE_CHUNK_STREAKS[chain] = max(0, int(data.get("successes", 0) or 0))
-    except (OSError, ValueError, TypeError, AttributeError):
-        logger.debug("adaptive_chunk_state_unreadable", chain=chain)
-
-
-def _save_adaptive_chunk(chain: str) -> None:
-    """Persist the chain's adaptation; deleting the file once fully recovered."""
-    try:
-        path = _adaptive_state_path(chain)
-        level = _ADAPTIVE_CHUNK_LEVELS.get(chain, 0)
-        successes = _ADAPTIVE_CHUNK_STREAKS.get(chain, 0)
-        if level <= 0 and successes <= 0:
-            path.unlink(missing_ok=True)
-            return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"level": level, "successes": successes}))
-    except OSError:
-        # Persistence is an optimisation — never break event fetching.
-        logger.debug("adaptive_chunk_persist_failed", chain=chain)
-
-
-def _adaptive_chunk_size(chain: str, base_chunk: int) -> int:
-    """Return the effective chunk size for ``chain`` after repeated failures."""
-    _load_adaptive_chunk(chain)
-    halves: int = min(_ADAPTIVE_CHUNK_LEVELS.get(chain, 0), ADAPTIVE_CHUNK_MAX_HALVES)
-    divisor: int = 2**halves
-    return max(ADAPTIVE_CHUNK_FLOOR, base_chunk // divisor)
-
-
-def _bump_adaptive_chunk(chain: str) -> None:
-    """Record one pool-wide failure — next fetch uses a smaller chunk."""
-    _load_adaptive_chunk(chain)
-    _ADAPTIVE_CHUNK_LEVELS[chain] = min(_ADAPTIVE_CHUNK_LEVELS.get(chain, 0) + 1, ADAPTIVE_CHUNK_MAX_HALVES)
-    _ADAPTIVE_CHUNK_STREAKS[chain] = 0
-    _save_adaptive_chunk(chain)
-
-
-def _record_adaptive_success(chain: str) -> None:
-    """Record a successful batch; decay one level only after sustained success.
-
-    The old "reset to the base size on every success" behaviour re-armed a
-    50-block chunk after a single 5-block success, so a range-capped chain
-    like base could never settle (fail 50 -> 25 -> 12 -> 5 -> succeed ->
-    reset to 50 -> fail again). Decaying one level at a time, and only after
-    ``ADAPTIVE_RECOVERY_SUCCESSES`` clean batches, lets a genuinely healthy
-    provider be re-admitted without reintroducing the oscillation.
-    """
-    _load_adaptive_chunk(chain)
-    if _ADAPTIVE_CHUNK_LEVELS.get(chain, 0) <= 0:
-        return
-    streak = _ADAPTIVE_CHUNK_STREAKS.get(chain, 0) + 1
-    if streak < ADAPTIVE_RECOVERY_SUCCESSES:
-        _ADAPTIVE_CHUNK_STREAKS[chain] = streak
-    else:
-        _ADAPTIVE_CHUNK_LEVELS[chain] = max(0, _ADAPTIVE_CHUNK_LEVELS[chain] - 1)
-        _ADAPTIVE_CHUNK_STREAKS[chain] = 0
-    _save_adaptive_chunk(chain)
-
-
-def _reset_adaptive_chunk(chain: str) -> None:
-    """Reset the adaptive chunk size (tests / explicit recovery)."""
-    _load_adaptive_chunk(chain)
-    _ADAPTIVE_CHUNK_LEVELS.pop(chain, None)
-    _ADAPTIVE_CHUNK_STREAKS.pop(chain, None)
-    _save_adaptive_chunk(chain)
-
-
-def _contiguous_ranges(blocks: set[int]) -> list[tuple[int, int]]:
-    """Group a set of block numbers into minimal contiguous ranges.
-
-    Used to build the smallest set of ``eth_getLogs`` ranges covering
-    only blocks that passed the bloom pre-filter.
-
-    Args:
-        blocks: Block numbers.
-
-    Returns:
-        List of ``(start, end)`` inclusive ranges.
-    """
-    if not blocks:
-        return []
-    ordered = sorted(blocks)
-    ranges: list[tuple[int, int]] = []
-    start = prev = ordered[0]
-    for block in ordered[1:]:
-        if block == prev + 1:
-            prev = block
-            continue
-        ranges.append((start, prev))
-        start = prev = block
-    ranges.append((start, prev))
-    return ranges
 
 
 async def _fetch_range(
@@ -284,6 +168,25 @@ async def _fetch_range(
             # data-loss guard so the cycle retries on the next probe tick.
             raise RpcFetchFailedError(
                 f"pool fully down for {chain} range {from_block}-{to_block}: waiting for desperation probe"
+            )
+    elif pool_rate_limited(endpoints):
+        # Every endpoint is soft-banned (429 streak) — rate-limited, not
+        # down. Do NOT stop and wait for a probe (that is the base/celo
+        # catch-up deadlock): keep crawling by round-robining the eligible
+        # endpoints with the loop's bounded backoff, preferring the widest
+        # getLogs ranges so catch-up actually converges.
+        eligible = probe_eligible_endpoints(endpoints)
+        if eligible:
+            rotated = _prefer_wide_range(
+                _rate_limited_rotation(chain, eligible),
+                to_block - from_block + 1,
+            )
+            logger.warning(
+                "rpc_pool_rate_limited_crawl",
+                chain=chain,
+                eligible=len(eligible),
+                from_block=from_block,
+                to_block=to_block,
             )
 
     best_result: list[dict[str, Any]] | None = None
@@ -411,58 +314,18 @@ async def _fetch_range(
     # chain's known-good last-resort endpoints (official RPCs / gateway.org)
     # so a total pool wipe still has a shot at serving the range.
     if best_result is None:
-        last_resort = [ep for ep in last_resort_endpoints(chain) if ep not in rotated]
-        if last_resort:
-            logger.warning(
-                "last_resort_endpoints_tried",
+        best_result, last_error = await try_last_resort(
+            LastResortAttempt(
                 chain=chain,
-                count=len(last_resort),
+                body=body,
+                client=client,
+                rotated=rotated,
                 from_block=from_block,
                 to_block=to_block,
+                best_result=best_result,
+                last_error=last_error,
             )
-            for url in last_resort:
-                await apply_endpoint_backoff(url)
-                try:
-                    async with provider_slot(account_key_for_endpoint(url)):
-                        resp = await client.post(url, json=body, timeout=RPC_TIMEOUT)
-                    record_provider_response(url, resp.status_code, resp.headers)
-                    if resp.status_code == 200 and resp.text and len(resp.text) >= 10:
-                        data = resp.json()
-                        if isinstance(data, dict) and isinstance(data.get("result"), list):
-                            logs = data["result"]
-                            parsed = parse_transfer_logs(logs, chain, from_block, to_block)
-                            if best_result is None or len(parsed) > len(best_result):
-                                best_result = parsed
-                                if len(parsed) == len(logs):
-                                    break
-                        elif isinstance(data, dict) and data.get("result") is None:
-                            if best_result is None:
-                                best_result = []
-                            break
-                    elif resp.status_code == 429:
-                        await handle_rate_limit(url)
-                    elif resp.status_code == 403:
-                        record_endpoint_failure(url)
-                        ban_endpoint(url, reason="http_403")
-                except (
-                    httpx.HTTPError,
-                    ConnectionError,
-                    OSError,
-                    TimeoutError,
-                    ValueError,
-                    KeyError,
-                    TypeError,
-                ) as exc:
-                    last_error = f"{type(exc).__name__}: {str(exc)[:80]}"
-                    logger.warning(
-                        "last_resort_fetch_failed",
-                        chain=chain,
-                        endpoint=url[:50],
-                        error_type=type(exc).__name__,
-                        error=str(exc)[:60] or repr(exc)[:120],
-                    )
-                    record_endpoint_failure(url)
-                    continue
+        )
 
     if best_result is not None:
         return best_result

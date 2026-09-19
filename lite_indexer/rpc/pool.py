@@ -12,19 +12,27 @@ do NOT trip the circuit breaker or hard-ban (see
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 
 from lite_indexer.config import (
     BACKOFF_CAP,
-    ENDPOINT_BAN_BASE_SECONDS,
-    ENDPOINT_BAN_CAP_SECONDS,
     ENDPOINT_COOLDOWN,
     MAX_FAILURES,
     RATE_LIMIT_WAIT_CAP,
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.rpc.ban_state import (  # re-exported for pool API compat
+    ban_endpoint,  # noqa: F401
+    clear_429_streak,
+    clear_ban_state,  # noqa: F401
+    is_endpoint_banned,
+    is_endpoint_hard_banned,  # noqa: F401
+    is_endpoint_soft_banned,  # noqa: F401
+    load_ban_state,  # noqa: F401
+    record_429_streak,
+    unban_endpoint,
+)
 from lite_indexer.rpc.budgets import budget_available
 
 logger = get_logger(__name__)
@@ -75,203 +83,61 @@ def reset_selection_state() -> None:
     _SELECTION_COUNTS.clear()
 
 
-# ── State ──────────────────────────────────────────────────────────────
+# ── Ban / streak state lives in rpc.ban_state (extracted 2026-09-19) ──
+
+# Recent-failure timestamps per endpoint (feeds backoff + scoring).
 _endpoint_failures: dict[str, list[float]] = {}
-# Consecutive-429 tracking (WIN: never get banned from public RPCs).
-# A provider that 429s occasionally is throttling us briefly; a provider
-# that 429s CONSECUTIVELY is dying/dead — retrying every few seconds is
-# how accounts get banned. Escalate to a soft-ban window on streaks.
-_endpoint_429_streaks: dict[str, int] = {}
-_RATE_LIMIT_STREAK_BAN_THRESHOLD = 3
-_RATE_LIMIT_STREAK_BAN_BASE_S = 300  # 5 min first soft-ban, doubles per repeat
-# Hard cap on the streak soft-ban. Was 3600s, which (combined with the
-# persisted 403 hard-ban) turned a transient 429 burst into a 1h self-
-# sustaining deadlock: the pool sat fully down long past the provider's
-# actual recovery, so nothing ever re-probed a healthy endpoint. 300s
-# bounds a soft-ban to the first window; recovery is one probe tick away.
-_RATE_LIMIT_STREAK_BAN_CAP_S = 300
-# Hard bans for 403/429 responses: url -> banned_until (epoch seconds).
-# These providers explicitly rate-limit / blacklist the endpoint for a
-# while — hammering them only deepens the ban, so they get an
-# exponentially growing "do not touch" window instead of the plain
-# ENDPOINT_COOLDOWN used for generic failures.
-_endpoint_bans: dict[str, float] = {}
-# url -> ban count (feeds the exponential backoff curve).
-_endpoint_ban_level: dict[str, int] = {}
-# urls banned for EXPLICIT ABUSE (HTTP 403 / provider blacklist) rather than
-# a transient 429 streak. The distinction is what broke celo (2026-09-19):
-# the recovery probe must never dial an abuse-banned endpoint (probing
-# deepens the blacklist), but a 429-streak soft-ban is EXACTLY the
-# transient state the probe exists to re-test — excluding it meant an
-# all-soft-banned pool could never self-heal and the chain deadlocked.
-_endpoint_hard_bans: set[str] = set()
-
-# D2 (2026-09-14): persist ban windows + 429 streaks so a restart does not
-# reset them and immediately re-hammer the pool.
-_BAN_KIND = "ban"
-
-
-def _persist_ban(endpoint: str) -> None:
-    """Write-through the endpoint's ban/streak state (or delete when clear)."""
-    try:
-        from lite_indexer.rpc import cache_db
-    except Exception:  # noqa: BLE001
-        return
-    banned_until = _endpoint_bans.get(endpoint, 0.0)
-    streak = int(_endpoint_429_streaks.get(endpoint, 0))
-    now = time.time()
-    active = banned_until > now
-    if not active and streak == 0:
-        cache_db.state_delete(_BAN_KIND, endpoint)
-        return
-    payload = json.dumps(
-        {
-            "until": float(banned_until) if active else 0.0,
-            "level": int(_endpoint_ban_level.get(endpoint, 0)),
-            "streak": streak,
-            "hard": endpoint in _endpoint_hard_bans,
-        }
-    )
-    cache_db.state_put(_BAN_KIND, endpoint, payload, ttl=max(0.0, banned_until - now) + 600.0)
-
-
-def load_ban_state() -> int:
-    """Load persisted ban windows + 429 streaks (daemon startup)."""
-    try:
-        from lite_indexer.rpc import cache_db
-
-        stored = cache_db.state_load(_BAN_KIND)
-    except Exception:  # noqa: BLE001
-        return 0
-    now = time.time()
-    loaded = 0
-    for endpoint, text in stored.items():
-        try:
-            data = json.loads(text)
-            until = float(data.get("until", 0.0) or 0.0)
-            if until > now:
-                _endpoint_bans[endpoint] = until
-                _endpoint_ban_level[endpoint] = int(data.get("level", 0) or 0)
-                _endpoint_429_streaks[endpoint] = int(data.get("streak", 0) or 0)
-                if data.get("hard"):
-                    _endpoint_hard_bans.add(endpoint)
-                loaded += 1
-        except (ValueError, TypeError):
-            continue
-    if loaded:
-        logger.info("endpoint_bans_loaded", records=loaded)
-    return loaded
-
-
-def clear_ban_state() -> None:
-    """Drop the in-memory ban/streak state (tests / shutdown)."""
-    _endpoint_bans.clear()
-    _endpoint_ban_level.clear()
-    _endpoint_429_streaks.clear()
-    _endpoint_hard_bans.clear()
-
-
-# ── Hard Ban (403/429) ───────────────────────────────────────────────
-
-
-def ban_endpoint(endpoint: str, reason: str = "") -> None:
-    """Ban an endpoint that returned 403/429 for an exponential duration.
-
-    Each consecutive ban doubles the window: base * 2^level, capped at
-    ``ENDPOINT_BAN_CAP_SECONDS``. A single success calls
-    :func:`unban_endpoint` to clear the ban.
-
-    A capability-excluded endpoint (known to structurally refuse broad
-    ``eth_getLogs``) is never banned: the refusal is a permanent property of
-    the endpoint for that method, not an abuse signal.
-
-    Args:
-        endpoint: RPC endpoint URL.
-        reason: Human-readable reason (e.g. ``http_429``) for logging.
-    """
-    if _logs_capability_excluded(endpoint):
-        logger.debug("endpoint_ban_skipped_logs_capability", endpoint=endpoint[:60], reason=reason)
-        return
-    level = _endpoint_ban_level.get(endpoint, 0)
-    duration = min(ENDPOINT_BAN_BASE_SECONDS * (2**level), ENDPOINT_BAN_CAP_SECONDS)
-    _endpoint_bans[endpoint] = time.time() + duration
-    _endpoint_ban_level[endpoint] = level + 1
-    if reason.startswith("http_403"):
-        _endpoint_hard_bans.add(endpoint)
-    metrics_incr("endpoints_banned")
-    _persist_ban(endpoint)
-    logger.warning(
-        "endpoint_banned",
-        endpoint=endpoint[:60],
-        reason=reason,
-        level=level,
-        duration_s=duration,
-    )
-
-
-def unban_endpoint(endpoint: str) -> None:
-    """Clear a hard ban after a successful call (ban level resets)."""
-    if endpoint in _endpoint_bans:
-        _endpoint_bans.pop(endpoint, None)
-        _endpoint_ban_level.pop(endpoint, None)
-        _endpoint_hard_bans.discard(endpoint)
-        _persist_ban(endpoint)
-        logger.debug("endpoint_unbanned", endpoint=endpoint[:60])
-
-
-def is_endpoint_banned(endpoint: str) -> bool:
-    """Whether an endpoint is currently under a 403/429 hard ban.
-
-    Args:
-        endpoint: RPC endpoint URL.
-
-    Returns:
-        True while the ban window is active (the endpoint should be
-        skipped entirely).
-    """
-    banned_until = _endpoint_bans.get(endpoint)
-    if banned_until is None:
-        return False
-    if time.time() >= banned_until:
-        # Ban window elapsed — clear it lazily.
-        _endpoint_bans.pop(endpoint, None)
-        return False
-    return True
-
-
-def is_endpoint_hard_banned(endpoint: str) -> bool:
-    """Whether ``endpoint`` is banned for explicit abuse (HTTP 403), not 429.
-
-    A hard-banned endpoint must never be dialed by the recovery probe: a
-    provider blacklist only deepens when probed. A 429-streak soft-ban is
-    deliberately NOT hard, so the desperation probe can still re-test it —
-    that is the transient-recovery path the probe exists for.
-    """
-    if endpoint not in _endpoint_hard_bans:
-        return False
-    if not is_endpoint_banned(endpoint):
-        # Ban window elapsed — the hard flag is stale.
-        _endpoint_hard_bans.discard(endpoint)
-        return False
-    return True
 
 
 def pool_fully_down(endpoints: list[str]) -> bool:
-    """Whether every endpoint in a pool is banned or circuit-open.
+    """Whether every endpoint in a pool is HARD-banned or circuit-open.
 
-    This is the pool-wide outage signal that triggers the desperation
-    probe: all endpoints are currently unusable, so the fetch path must
-    not hammer the whole pool every cycle. Instead it force-probes the
-    least-banned endpoint at most once per desperation interval.
+    This is the pool-wide *outage* signal that triggers the desperation
+    probe. Only endpoints that are guaranteed to fail count as down:
+
+      - hard-banned (HTTP 403 / provider blacklist — probing deepens it)
+      - circuit-open (repeated genuine failures)
+
+    A pool whose endpoints are merely 429-streak SOFT-banned is
+    rate-limited, NOT down. Counting those as down stopped the fetch path
+    entirely and left one desperation probe per interval against an
+    already-throttled endpoint — the base/celo catch-up deadlock
+    (2026-09-19). Use :func:`pool_rate_limited` for that state and keep
+    crawling instead.
 
     Args:
         endpoints: Pool candidate URLs (may be empty).
 
     Returns:
-        True when the pool is non-empty and every endpoint is banned or
-        circuit-open.
+        True when the pool is non-empty and every endpoint is hard-banned
+        or circuit-open.
     """
     if not endpoints:
+        return False
+    from lite_indexer.rpc.routing import is_circuit_open
+
+    return all(is_endpoint_hard_banned(ep) or is_circuit_open(ep) for ep in endpoints)
+
+
+def pool_rate_limited(endpoints: list[str]) -> bool:
+    """Whether the pool is rate-limited (soft-banned throughout) but not down.
+
+    True means every endpoint is currently banned or circuit-open, but at
+    least one is a transient 429-streak soft-ban rather than a hard ban —
+    so the fetcher must keep rotating the least-penalized endpoints at a
+    bounded pace (crawl forward) instead of raising and making zero
+    progress.
+
+    Args:
+        endpoints: Pool candidate URLs (may be empty).
+
+    Returns:
+        True when not :func:`pool_fully_down` but every endpoint is banned
+        or circuit-open.
+    """
+    if not endpoints:
+        return False
+    if pool_fully_down(endpoints):
         return False
     from lite_indexer.rpc.routing import is_circuit_open
 
@@ -565,28 +431,10 @@ def record_rate_limit(endpoint: str) -> None:
     metrics_incr("rpc_rate_limits")
 
     # Escalating soft-ban on consecutive 429s (never resets mid-streak):
-    # streak 1-2 → plain backoff (existing behavior); streak >=3 → the
-    # endpoint sits out for minutes (doubling per repeat) so parallel
-    # chunk workers stop aggregating into a permanent 429 storm. Success
-    # anywhere clears the streak (see record_endpoint_success).
-    streak = _endpoint_429_streaks.get(endpoint, 0) + 1
-    _endpoint_429_streaks[endpoint] = streak
-    _persist_ban(endpoint)
-    if streak >= _RATE_LIMIT_STREAK_BAN_THRESHOLD:
-        ban_s = min(
-            _RATE_LIMIT_STREAK_BAN_BASE_S * (2 ** (streak - _RATE_LIMIT_STREAK_BAN_THRESHOLD)),
-            _RATE_LIMIT_STREAK_BAN_CAP_S,
-        )
-        # Apply the streak-computed window directly (not ban_endpoint's own
-        # exponential) so the logged duration is the enforced duration.
-        _endpoint_bans[endpoint] = time.time() + ban_s
-        metrics_incr("endpoints_banned")
-        logger.warning(
-            "rpc_rate_limit_streak_softban",
-            endpoint=endpoint[:60],
-            streak=streak,
-            banned_seconds=ban_s,
-        )
+    # streak 1-2 → plain backoff; streak >=3 → the endpoint sits out for
+    # minutes so parallel chunk workers stop aggregating into a permanent
+    # 429 storm. Success anywhere clears the streak (record_endpoint_success).
+    record_429_streak(endpoint)
 
 
 def record_endpoint_success(endpoint: str) -> None:
@@ -595,8 +443,7 @@ def record_endpoint_success(endpoint: str) -> None:
 
     CIRCUIT_BREAKER.record_success(endpoint)
     unban_endpoint(endpoint)
-    _endpoint_429_streaks.pop(endpoint, None)
-    _persist_ban(endpoint)
+    clear_429_streak(endpoint)
 
 
 async def apply_endpoint_backoff(url: str) -> None:

@@ -18,13 +18,15 @@ from lite_indexer.rpc import pool
 
 
 @pytest.fixture(autouse=True)
-def _clean_pool(monkeypatch: pytest.MonkeyPatch) -> Any:
+def _clean_pool(_mp: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Reset pool + fairness state so nothing leaks between tests."""
     from lite_indexer.rpc.routing import RpcCircuitBreaker
 
     monkeypatch.setattr(pool, "_endpoint_failures", {})
-    monkeypatch.setattr(pool, "_endpoint_bans", {})
-    monkeypatch.setattr(pool, "_endpoint_ban_level", {})
+    from lite_indexer.rpc import ban_state
+
+    _mp.setattr(ban_state, "_endpoint_bans", {})
+    _mp.setattr(ban_state, "_endpoint_ban_level", {})
     monkeypatch.setattr(pool, "_SELECTION_COUNTS", {})
     monkeypatch.setattr("lite_indexer.rpc.routing.CIRCUIT_BREAKER", RpcCircuitBreaker())
     yield

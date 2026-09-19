@@ -30,9 +30,12 @@ from lite_indexer.rpc.pool import (
     force_probe_endpoint,
     get_best_endpoint,
     is_endpoint_banned,
+    is_endpoint_hard_banned,
+    is_endpoint_soft_banned,
     least_banned_endpoint,
     mark_desperation_probe,
     pool_fully_down,
+    pool_rate_limited,
     probe_eligible_endpoints,
     record_endpoint_failure,
     record_endpoint_success,
@@ -59,6 +62,7 @@ class _Clock:
 def clock(monkeypatch: pytest.MonkeyPatch):
     """Fake clock shared across pool + routing modules."""
     fake = _Clock()
+    import lite_indexer.rpc.ban_state as ban_state_mod
     import lite_indexer.rpc.pool as pool_mod
     import lite_indexer.rpc.routing as routing_mod
 
@@ -68,14 +72,17 @@ def clock(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
-def _clean_pool(monkeypatch: pytest.MonkeyPatch):
+def _clean_pool(_mp: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch):
     """Reset pool state between tests so bans/failures never leak."""
+    import lite_indexer.rpc.ban_state as ban_state_mod
     import lite_indexer.rpc.pool as pool_mod
     import lite_indexer.rpc.routing as routing_mod
 
     monkeypatch.setattr(pool_mod, "_endpoint_failures", {})
-    monkeypatch.setattr(pool_mod, "_endpoint_bans", {})
-    monkeypatch.setattr(pool_mod, "_endpoint_ban_level", {})
+    _mp.setattr(ban_state_mod, "_endpoint_bans", {})
+    _mp.setattr(ban_state_mod, "_endpoint_ban_level", {})
+    _mp.setattr(ban_state_mod, "_endpoint_hard_bans", set())
+    _mp.setattr(ban_state_mod, "_endpoint_429_streaks", {})
     monkeypatch.setattr(routing_mod, "CIRCUIT_BREAKER", RpcCircuitBreaker())
     yield
 
@@ -86,16 +93,48 @@ def _clean_pool(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestPoolWideOutage:
-    def test_pool_fully_down_detects_all_banned(self, clock: _Clock):
+    def test_soft_banned_pool_is_rate_limited_not_down(self, clock: _Clock):
+        """429-streak soft-bans are transient: an all-soft-banned pool is
+        rate-limited, NOT down — the base/celo catch-up deadlock was caused
+        by counting it as down and stopping the fetch path entirely."""
         a, b = "https://a.invalid", "https://b.invalid"
         ban_endpoint(a, reason="http_429")
         ban_endpoint(b, reason="http_429")
+        assert is_endpoint_banned(a) is True
+        assert is_endpoint_soft_banned(a) is True
+        assert is_endpoint_hard_banned(a) is False
+        assert pool_fully_down([a, b]) is False
+        assert pool_rate_limited([a, b]) is True
+
+    def test_hard_banned_pool_is_fully_down(self, clock: _Clock):
+        """A provider blacklist (HTTP 403) never self-recovers by probing:
+        an all-hard-banned pool IS down."""
+        a, b = "https://a.invalid", "https://b.invalid"
+        with patch("lite_indexer.config.ENDPOINT_BAN_BASE_SECONDS", 3600):
+            ban_endpoint(a, reason="http_403")
+            ban_endpoint(b, reason="http_403")
+        assert is_endpoint_hard_banned(a) is True
         assert pool_fully_down([a, b]) is True
+        assert pool_rate_limited([a, b]) is False
+
+    def test_mixed_hard_and_soft_is_rate_limited(self, clock: _Clock):
+        """One hard-banned, one soft-banned: the soft endpoint is still
+        retryable, so the pool is rate-limited, not down."""
+        hard, soft = "https://hard.invalid", "https://soft.invalid"
+        with patch("lite_indexer.config.ENDPOINT_BAN_BASE_SECONDS", 3600):
+            ban_endpoint(hard, reason="http_403")
+            ban_endpoint(soft, reason="http_429")
+        assert pool_fully_down([hard, soft]) is False
+        assert pool_rate_limited([hard, soft]) is True
 
     def test_pool_fully_down_false_when_one_healthy(self, clock: _Clock):
         a, b = "https://a.invalid", "https://b.invalid"
         ban_endpoint(a, reason="http_429")
         assert pool_fully_down([a, b]) is False
+        assert pool_rate_limited([a, b]) is False
+
+    def test_pool_rate_limited_false_when_empty(self):
+        assert pool_rate_limited([]) is False
 
     def test_pool_fully_down_empty_pool_is_false(self):
         assert pool_fully_down([]) is False
@@ -109,6 +148,70 @@ class TestPoolWideOutage:
         breaker.record_failure(b)
         with patch("lite_indexer.rpc.routing.is_circuit_open", lambda ep: ep in (a, b)):
             assert pool_fully_down([a, b]) is True
+
+    def test_rate_limited_pool_fetch_attempts_and_advances(_mp: pytest.MonkeyPatch, self, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
+        """End-to-end: an all-soft-banned pool must NOT raise the
+        "waiting for desperation probe" deadlock — it attempts the least-
+        penalized endpoint and returns the (empty) log set."""
+
+        import asyncio
+
+        import httpx
+
+        from lite_indexer.strategies.evm import transfer_handler as th
+
+        a, b = "https://a.invalid", "https://b.invalid"
+        for _ in range(3):
+            record_rate_limit(a)
+            record_rate_limit(b)
+        assert pool_rate_limited([a, b]) is True
+
+        async def _no_backoff(url: str) -> None:
+            return None
+
+        class _Slot:
+            async def __aenter__(self) -> None:
+                return None
+
+            async def __aexit__(self, *exc: object) -> None:
+                return None
+
+        _mp.setattr(th, "apply_endpoint_backoff", _no_backoff)
+        _mp.setattr(th, "provider_slot", lambda _key: _Slot())
+
+        def _handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": []})
+
+        async def _run() -> list[dict[str, Any]]:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as client:
+                return await th._fetch_range("celo", 1, 5, client=client, topic="0xtopic", endpoints=[a, b])
+
+        assert asyncio.run(_run()) == []
+
+    def test_rate_limited_rotation_spreads_across_calls(_mp: pytest.MonkeyPatch, self, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
+        """The crawl must rotate the starting endpoint so no soft-banned
+        endpoint is pinned and re-banned every cycle."""
+        from lite_indexer.strategies.evm import range_planning as rp
+
+        _mp.setattr(rp, "_RATE_LIMITED_CURSOR", {})
+        eps = ["https://a.invalid", "https://b.invalid", "https://c.invalid"]
+        first = rp._rate_limited_rotation("celo", eps)
+        second = rp._rate_limited_rotation("celo", eps)
+        third = rp._rate_limited_rotation("celo", eps)
+        assert first == eps
+        assert second == eps[1:] + eps[:1]
+        assert third == eps[2:] + eps[:2]
+        assert {first[0], second[0], third[0]} == set(eps)  # progress, not pinning
+
+    def test_prefer_wide_range_orders_high_caps_first(_mp: pytest.MonkeyPatch, self, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
+        """Catch-up must dial the 100-range endpoints before the 10-range
+        ones so chunks are not throttled to the narrowest provider cap."""
+        from lite_indexer.strategies.evm import range_planning as rp
+
+        narrow, wide = "https://narrow.invalid", "https://wide.invalid"
+        _mp.setattr(rp, "get_max_block_range", lambda ep: 10 if ep == narrow else 100)
+        assert rp._prefer_wide_range([narrow, wide], 100) == [wide, narrow]
+        assert rp._prefer_wide_range([narrow, wide], 10) == [narrow, wide]
 
     def test_get_best_endpoint_returns_least_banned_not_stall(self, clock: _Clock):
         """All banned → must return an endpoint (no crash), and it must be
@@ -277,9 +380,9 @@ class TestPoolWideOutage:
         ep = "https://streaky.invalid"
         for _ in range(6):
             record_rate_limit(ep)
-        import lite_indexer.rpc.pool as pool_mod
+        import lite_indexer.rpc.ban_state as ban_state_mod
 
-        ban_s = pool_mod._endpoint_bans[ep] - clock.now
+        ban_s = ban_state_mod._endpoint_bans[ep] - clock.now
         assert ban_s == pytest.approx(300.0)
 
 
@@ -502,7 +605,7 @@ class TestRateLimitDoesNotTripCircuit:
 
 class TestAdaptiveChunkReduction:
     def test_initial_chunk_is_default(self):
-        from lite_indexer.strategies.evm.transfer_handler import (
+        from lite_indexer.strategies.evm.range_planning import (
             _adaptive_chunk_size,
             _reset_adaptive_chunk,
         )
@@ -511,7 +614,7 @@ class TestAdaptiveChunkReduction:
         assert _adaptive_chunk_size("ethereum", 50) == 50
 
     def test_failure_halves_chunk(self):
-        from lite_indexer.strategies.evm.transfer_handler import (
+        from lite_indexer.strategies.evm.range_planning import (
             _adaptive_chunk_size,
             _bump_adaptive_chunk,
             _reset_adaptive_chunk,
@@ -522,7 +625,7 @@ class TestAdaptiveChunkReduction:
         assert _adaptive_chunk_size("base", 50) == 25
 
     def test_repeated_failures_halve_twice(self):
-        from lite_indexer.strategies.evm.transfer_handler import (
+        from lite_indexer.strategies.evm.range_planning import (
             _adaptive_chunk_size,
             _bump_adaptive_chunk,
             _reset_adaptive_chunk,
@@ -534,7 +637,7 @@ class TestAdaptiveChunkReduction:
         assert _adaptive_chunk_size("bsc", 50) == 12
 
     def test_chunk_never_below_floor(self):
-        from lite_indexer.strategies.evm.transfer_handler import (
+        from lite_indexer.strategies.evm.range_planning import (
             ADAPTIVE_CHUNK_FLOOR,
             _adaptive_chunk_size,
             _bump_adaptive_chunk,
@@ -547,7 +650,7 @@ class TestAdaptiveChunkReduction:
         assert _adaptive_chunk_size("polygon", 50) == ADAPTIVE_CHUNK_FLOOR
 
     def test_success_resets_chunk(self):
-        from lite_indexer.strategies.evm.transfer_handler import (
+        from lite_indexer.strategies.evm.range_planning import (
             _adaptive_chunk_size,
             _bump_adaptive_chunk,
             _reset_adaptive_chunk,
@@ -563,35 +666,35 @@ class TestAdaptiveChunkReduction:
         """The watchdog restarts the daemon mid-adaptation; a process-local
         dict was wiped every restart so base never converged to 5-block
         chunks. The level must survive on disk (conftest isolates the path)."""
-        import lite_indexer.strategies.evm.transfer_handler as th
+        import lite_indexer.strategies.evm.range_planning as rp
 
-        th._reset_adaptive_chunk("base")
+        rp._reset_adaptive_chunk("base")
         for _ in range(4):
-            th._bump_adaptive_chunk("base")
-        assert th._adaptive_chunk_size("base", 50) == th.ADAPTIVE_CHUNK_FLOOR
+            rp._bump_adaptive_chunk("base")
+        assert rp._adaptive_chunk_size("base", 50) == rp.ADAPTIVE_CHUNK_FLOOR
         # Simulate a fresh process: forget memory, keep the file.
-        th._ADAPTIVE_CHUNK_LEVELS.clear()
-        th._ADAPTIVE_CHUNK_STREAKS.clear()
-        th._ADAPTIVE_CHUNK_LOADED.clear()
-        assert th._adaptive_chunk_size("base", 50) == th.ADAPTIVE_CHUNK_FLOOR
-        th._reset_adaptive_chunk("base")
+        rp._ADAPTIVE_CHUNK_LEVELS.clear()
+        rp._ADAPTIVE_CHUNK_STREAKS.clear()
+        rp._ADAPTIVE_CHUNK_LOADED.clear()
+        assert rp._adaptive_chunk_size("base", 50) == rp.ADAPTIVE_CHUNK_FLOOR
+        rp._reset_adaptive_chunk("base")
 
     def test_success_decays_one_level_not_full_reset(self):
         """A single success must not snap back to 50 blocks (base
         oscillation); decay is one step after a sustained streak."""
-        import lite_indexer.strategies.evm.transfer_handler as th
+        import lite_indexer.strategies.evm.range_planning as rp
 
-        th._reset_adaptive_chunk("base")
-        th._bump_adaptive_chunk("base")
-        th._bump_adaptive_chunk("base")
-        assert th._adaptive_chunk_size("base", 50) == 12
-        for _ in range(th.ADAPTIVE_RECOVERY_SUCCESSES):
-            th._record_adaptive_success("base")
-        assert th._adaptive_chunk_size("base", 50) == 25  # one level, not 50
-        th._reset_adaptive_chunk("base")
+        rp._reset_adaptive_chunk("base")
+        rp._bump_adaptive_chunk("base")
+        rp._bump_adaptive_chunk("base")
+        assert rp._adaptive_chunk_size("base", 50) == 12
+        for _ in range(rp.ADAPTIVE_RECOVERY_SUCCESSES):
+            rp._record_adaptive_success("base")
+        assert rp._adaptive_chunk_size("base", 50) == 25  # one level, not 50
+        rp._reset_adaptive_chunk("base")
 
     def test_chains_independent(self):
-        from lite_indexer.strategies.evm.transfer_handler import (
+        from lite_indexer.strategies.evm.range_planning import (
             _adaptive_chunk_size,
             _bump_adaptive_chunk,
             _reset_adaptive_chunk,
@@ -604,7 +707,7 @@ class TestAdaptiveChunkReduction:
         assert _adaptive_chunk_size("linea", 50) == 50
 
     def test_halves_capped(self):
-        from lite_indexer.strategies.evm.transfer_handler import (
+        from lite_indexer.strategies.evm.range_planning import (
             ADAPTIVE_CHUNK_MAX_HALVES,
             _adaptive_chunk_size,
             _bump_adaptive_chunk,
