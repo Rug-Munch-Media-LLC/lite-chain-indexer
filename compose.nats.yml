@@ -26,6 +26,9 @@ services:
     image: nats:2.10-alpine
     container_name: lite-chain-indexer-nats
     restart: unless-stopped
+    cpus: "0.50"
+    mem_limit: 512m
+    pids_limit: 512
     command: ["-js", "-c", "/etc/nats/nats-server.conf"]
     ports:
       - "127.0.0.1:4222:4222"
