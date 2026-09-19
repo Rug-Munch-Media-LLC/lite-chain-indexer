@@ -858,14 +858,14 @@ class RpcClient:
             List of raw log dicts, or None on failure.
         """
         # Quota-degrade gate for eth_getLogs: level 1 defers wide backfill
-        # scans only (range > 1000 blocks), level 2 defers all getLogs,
-        # level 3 (parked) defers everything. Empty list is the existing
-        # "no logs in range" shape, so callers skip gracefully without
-        # raising or breaking the result contract.
+        # scans, level 2 defers all, level 3 (parked) defers everything.
+        # RC-1 (2026-09-19): None is the failure shape — returning [] was
+        # read as "no logs" and callers advanced state over unfetched
+        # blocks (silent loss). Callers must treat None as FETCH_FAILED.
         reason = _defer_reason_for(endpoint, "eth_getLogs", range_blocks=to_block - from_block)
         if reason:
             _warn_deferred(endpoint, "eth_getLogs", reason)
-            return []
+            return None
 
         # Archive-class fail-closed gate: eth_getLogs is ARCHIVE-class — a
         # known non-archive endpoint silently returns wrong/empty logs, so

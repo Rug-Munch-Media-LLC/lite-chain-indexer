@@ -738,11 +738,11 @@ class HistoricalAccess:
 
     @staticmethod
     def _lit(value: Any) -> str:
-        """Render a Python scalar as a ClickHouse literal."""
+        """Render a Python scalar as a SQL literal (DuckDB quote-doubling — SEC-1)."""
         if isinstance(value, (datetime,)):
             return "'" + value.isoformat(sep=" ") + "'"
         if isinstance(value, str):
-            return "'" + value.replace("'", "\\'") + "'"
+            return "'" + value.replace("'", "''") + "'"
         if isinstance(value, bool):
             return "1" if value else "0"
         return str(value)

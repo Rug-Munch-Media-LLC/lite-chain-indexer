@@ -29,6 +29,7 @@ from lite_indexer.config import (
     STATE_REGRESSION_TOLERANCE_BLOCKS,
 )
 from lite_indexer.indexer._base import IndexerMixinBase
+from lite_indexer.indexer._phase_guard import PhaseTimeoutError, guarded_phase, phase_failed
 from lite_indexer.indexer._writers import (
     flush_solana_launch_bundles,
     flush_tron_launch,
@@ -56,6 +57,20 @@ class SyncLoopMixin(IndexerMixinBase):
     # the mixin works standalone in tests.
     _REORG_SENTINEL = "__CHAIN_REORG__"
 
+    def _zero_write_tracker(self) -> Any:
+        """Lazily build the per-chain zero-write stall tracker (RC-3)."""
+        from lite_indexer.indexer._zero_write import tracker_for
+
+        return tracker_for(self)
+
+    def _defer_stalled_range(
+        self, block_range: tuple[int, int], summary: dict[str, Any], start_time: float, phase: str
+    ) -> dict[str, Any]:
+        """RC-3 stall breaker: enqueue for backfill + advance state."""
+        from lite_indexer.indexer._phase_guard import defer_stalled_range
+
+        return defer_stalled_range(self, block_range, summary, start_time, phase)
+
     def _check_reorg(self, events: list[Any]) -> bool:
         """Check if the events list contains a chain reorg sentinel.
 
@@ -71,12 +86,9 @@ class SyncLoopMixin(IndexerMixinBase):
         return bool(events and len(events) == 1 and isinstance(events[0], str) and events[0] == self._REORG_SENTINEL)
 
     # ── EVM WebSocket head pool ────────────────────────────────────────
-    # Push the tip so the daemon can start a sync pass as soon as a new head
-    # lands, instead of waiting out the whole HTTP poll interval. HTTP
-    # polling remains the fallback/heartbeat: with no overlay WS endpoint
-    # (or after the pool exhausts every endpoint) this is a plain sleep.
-    # Every pass still goes through the daemon's memory gate + concurrency
-    # cap and the normal RPC throttles — the pool only shortens the wait.
+    # Push the tip so the daemon starts a sync pass on a new head instead of
+    # waiting out the HTTP poll interval; HTTP polling stays the fallback/
+    # heartbeat. Passes still go through the memory gate + RPC throttles.
 
     def _head_ws_endpoints(self) -> list[str]:
         """Overlay websocket head endpoints for this chain ([] = disabled)."""
@@ -189,11 +201,9 @@ class SyncLoopMixin(IndexerMixinBase):
                 return resume
             return None
 
-        # No high-water mark yet (first run with protection enabled): if
-        # ClickHouse already has data far ahead of the state file, that is
-        # also a regression (state file was clobbered before the mark was
-        # ever written). Only trust this when CH is actually ahead — a
-        # healthy genesis backfill has ch_max <= state anyway.
+        # No high-water mark yet: CH data far ahead of the state file is also
+        # a regression (cleared before the mark existed) — only trust it when
+        # CH is actually ahead (healthy genesis backfill has ch_max <= state).
         ch_max = self._fetch_ch_max_block()
         if ch_max is not None and from_block < ch_max - STATE_REGRESSION_TOLERANCE_BLOCKS:
             resume = ch_max + 1
@@ -237,13 +247,11 @@ class SyncLoopMixin(IndexerMixinBase):
         state = self.state.load()
         from_block = self._override_from if self._override_from is not None else state.get("last_block", 0) + 1
 
-        # Backward-state guard (STATE_BACKWARD_PROTECTION): a state file
-        # that regressed below the monotonic high-water mark (or below
-        # the ClickHouse max block) is corruption — a torn write, an OOM
-        # mid-write, or a companion writer clobbering last_block. Resume
-        # from the actual max block in ClickHouse instead of re-indexing
-        # from genesis (observed 08/03 + 08/04: ethereum state reset to
-        # block ~93K / 100 while the CH max was 25.6M).
+        # Backward-state guard (STATE_BACKWARD_PROTECTION): a state file that
+        # regressed below the high-water mark or the CH max block is
+        # corruption (torn write / OOM / clobber) — resume from the CH max
+        # instead of re-indexing from genesis (seen 08/03+08/04: eth reset
+        # to block ~93K while CH held 25.6M).
         if STATE_BACKWARD_PROTECTION and self._override_from is None:
             guarded = await self._guard_state_regression(state, from_block, summary)
             if guarded is not None:
@@ -304,10 +312,8 @@ class SyncLoopMixin(IndexerMixinBase):
         from_block, to_block = block_range
 
         # 2a. Graceful ClickHouse pause: probe CH BEFORE fetching events
-        # from RPC. When CH is unreachable the cycle aborts here with
-        # status "ch_unavailable" — no RPC budget burned on fetches that
-        # cannot be persisted, no state movement, no crash. The daemon
-        # treats this as a pause (retry next poll interval).
+        # from RPC. Unreachable CH aborts here with status "ch_unavailable"
+        # — no RPC budget burned, no state movement (retry next poll).
         if not self._ch_health.ok():
             summary["status"] = "ch_unavailable"
             summary["errors"].append("clickhouse unreachable — paused indexing")
@@ -325,10 +331,15 @@ class SyncLoopMixin(IndexerMixinBase):
         logger.info("sync_start", chain=self.chain, from_block=from_block, to_block=to_block)
 
         try:
-            # 2026-09-01: solana block-based catch-up needs more headroom (200 slots
-            # x getBlock at concurrency 10 ≈ 40-90s). 300s covers it.
-            events = await asyncio.wait_for(self.fetch_transfers(from_block, to_block), timeout=300.0)
-        except (TimeoutError, RpcFetchFailedError) as exc:
+            # Solana block catch-up needs headroom (200 slots × getBlock ≈ 40-90s).
+            events = await guarded_phase(
+                "transfers",
+                self.fetch_transfers(from_block, to_block),
+                chain=self.chain,
+                from_block=from_block,
+                to_block=to_block,
+            )
+        except (RpcFetchFailedError, PhaseTimeoutError) as exc:
             # Data-loss guard: all endpoints failed for this range. Do NOT
             # advance state — the range is retried on the next cycle.
             logger.error(
@@ -341,6 +352,15 @@ class SyncLoopMixin(IndexerMixinBase):
             summary["status"] = "fetch_failed"
             summary["errors"].append(f"all endpoints failed for range {from_block}-{to_block}")
             metrics.incr_labeled("lite_indexer_rpc_failures", chain=self.chain)
+            summary["duration_seconds"] = time.monotonic() - start_time
+            self._save_current_state()
+            return summary
+
+        if events is None:  # RC-1: deferred/failed fetch — never treat as "no logs"
+            logger.warning("rpc_logs_deferred", chain=self.chain, from_block=from_block, to_block=to_block)
+            metrics.incr_labeled("lite_indexer_rpc_failures", chain=self.chain)
+            summary["status"] = "fetch_failed"
+            summary["errors"].append(f"transfer fetch deferred for range {from_block}-{to_block}")
             summary["duration_seconds"] = time.monotonic() - start_time
             self._save_current_state()
             return summary
@@ -359,21 +379,15 @@ class SyncLoopMixin(IndexerMixinBase):
             return summary
 
         # 3b. Lazy indexing: apply top-chain defaults + scanner demand
-        # signals before deciding whether to fetch DEX/deployer events.
-        # Runs after transfers so demand files touched this cycle (by the
-        # rmi-backend scanner) are observed. Flags are sticky once enabled.
+        # signals before DEX/deployer decisions; flags are sticky.
         self._refresh_demand_enabled()
 
         # 4. Fetch DEX swap events (EVM only, if enabled)
         dex_events: list[dict[str, Any]] = []
         if self.dex_enabled and self.strategy.supports_dex():
-            # DEX_SKIP_TO_HEAD (env-gated, default off): when the sync
-            # window is deeply stale (older than DEX_SKIP_TO_HEAD_HOURS
-            # behind the chain head), skip the dex fetch for this cycle —
-            # the dex getLogs calls only serve old blocks no scanner will
-            # read, and dropping them frees RPC budget for the transfer
-            # catch-up. Dex resumes automatically once transfers reach
-            # fresh blocks. Old dex blocks stay a hole until backfilled.
+            # DEX_SKIP_TO_HEAD (env-gated): when the sync window is deeply
+            # stale, skip the dex fetch — frees RPC budget for catch-up; old
+            # dex blocks stay a hole until backfilled, dex resumes at head.
             if DEX_SKIP_TO_HEAD and self._dex_window_is_stale(from_block):
                 logger.info(
                     "dex_skip_stale_window",
@@ -383,7 +397,17 @@ class SyncLoopMixin(IndexerMixinBase):
                 )
                 summary["dex_events_skipped"] = 1
             else:
-                dex_events = await self.fetch_swap_events(from_block, to_block)
+                try:
+                    dex_events = await guarded_phase(
+                        "dex_events",
+                        self.fetch_swap_events(from_block, to_block),
+                        chain=self.chain,
+                        from_block=from_block,
+                        to_block=to_block,
+                    )
+                except PhaseTimeoutError as exc:
+                    logger.warning("sync_phase_failed", chain=self.chain, phase="dex_events", error=str(exc)[:120])
+                    return phase_failed(self, summary, start_time, exc)
                 if self._check_reorg(dex_events):
                     logger.warning("chain_reorg_during_dex_sync", chain=self.chain)
                     self.start_from_head = True
@@ -394,39 +418,42 @@ class SyncLoopMixin(IndexerMixinBase):
                     return summary
                 summary["dex_events_fetched"] = len(dex_events)
 
-        # 4a. Fetch pair created events for deployer tracking (EVM only).
-        # Runs even when DEX is enabled — dex_handler fetches pair-created
-        # events to build its token cache, but deployer events are only
-        # written from the strategy's _last_pair_events, which is populated
-        # here.
-        #
-        # FIXED (2026-08-02, commit 835a9ff): the guard previously read
-        #   `if self.deployers_enabled and not self.dex_enabled`
-        # which silently disabled deployer tracking whenever DEX indexing
-        # was on (production runs `--dex --deployers`). That caused a
-        # ~2.9-day deployer-event gap. The guard below is correct: deployer
-        # events must run whenever deployers are enabled, independent of the
-        # DEX flag. Do NOT re-add `and not self.dex_enabled`.
+        # 4a. Pair-created events for deployer tracking (EVM only). Runs
+        # whenever deployers are enabled, independent of the DEX flag —
+        # do NOT re-add `and not self.dex_enabled` (commit 835a9ff: that
+        # guard caused a ~2.9-day deployer-event gap in production).
         if self.deployers_enabled and self.strategy.supports_deployers():
             try:
-                await self._fetch_pair_created_events(from_block, to_block)
+                await guarded_phase(
+                    "pair_created",
+                    self._fetch_pair_created_events(from_block, to_block),
+                    chain=self.chain,
+                    from_block=from_block,
+                    to_block=to_block,
+                )
+            except PhaseTimeoutError as exc:
+                logger.warning("sync_phase_failed", chain=self.chain, phase="pair_created", error=str(exc)[:120])
+                return phase_failed(self, summary, start_time, exc)
             except Exception as exc:
                 logger.warning("deployer_pair_fetch_failed", chain=self.chain, error=str(exc)[:100])
 
-        # 4b. Internal-transfer traces (EVM only, optional). The #1
-        # analytical blind spot: WETH unwraps, bridge deposits, fee flows
-        # and SELFDESTRUCT payouts never emit ERC-20 Transfer logs. When
-        # traces_enabled, sweep the sync range via free trace_* RPCs.
-        # Best-effort + rate-limit-aware: a trace failure logs a warning
-        # and returns [] — it never blocks or aborts the transfer sync.
-        #
-        # Runs BEFORE the "no events" short-circuit below: a block can
-        # contain internal transfers without any ERC-20 Transfer logs, so
-        # trace collection must not be skipped just because transfers were
-        # empty.
+        # 4b. Internal-transfer traces (EVM only, optional): WETH unwraps,
+        # bridge deposits, fee flows and SELFDESTRUCT payouts never emit
+        # ERC-20 Transfer logs. Best-effort; runs BEFORE the "no events"
+        # short-circuit (a block can hold traces without Transfer logs).
         trace_events: list[dict[str, Any]] = []
         if self.traces_enabled:
-            trace_events = await self._collect_internal_transfers(from_block, to_block)
+            try:
+                trace_events = await guarded_phase(
+                    "internal_transfers",
+                    self._collect_internal_transfers(from_block, to_block),
+                    chain=self.chain,
+                    from_block=from_block,
+                    to_block=to_block,
+                )
+            except PhaseTimeoutError as exc:
+                logger.warning("sync_phase_failed", chain=self.chain, phase="internal_transfers", error=str(exc)[:120])
+                return phase_failed(self, summary, start_time, exc)
             if trace_events:
                 summary["trace_events_fetched"] = len(trace_events)
 
@@ -462,20 +489,17 @@ class SyncLoopMixin(IndexerMixinBase):
         if plugin_stats:
             summary.update(plugin_stats)
 
-        # 5b. Write deployer events (EVM + Solana)
-        # write_deployer_events resolves the real deployer EOA (tx `from`)
-        # via eth_getTransactionByHash before inserting, so the async await
-        # is required. Solana deployer events are captured structurally by
-        # the strategy (creation tx fee payer) and written as-is.
+        # 5b. Write deployer events: the EVM path resolves the deployer EOA
+        # via eth_getTransactionByHash (hence async); Solana events are
+        # captured structurally by the strategy (creation tx fee payer).
         deployer_written = 0
         deployer_candidates = 0
         evm_strategy = self.strategy if isinstance(self.strategy, EVMChainStrategy) else None
         solana_strategy = self.strategy if isinstance(self.strategy, SolanaStrategy) else None
         tron_strategy = self.strategy if isinstance(self.strategy, TronStrategy) else None
         if self.deployers_enabled:
-            # D6: how many deployer rows were pending this cycle — used to
-            # distinguish "nothing to write" from "write failed" so state
-            # does not advance over unwritten rows.
+            # D6 pending-row count: distinguishes "nothing to write" from
+            # "write failed" so state never advances over unwritten rows.
             if evm_strategy and evm_strategy._last_pair_events:
                 deployer_candidates = len(evm_strategy._last_pair_events)
             elif solana_strategy and solana_strategy._last_deployer_events:
@@ -491,10 +515,8 @@ class SyncLoopMixin(IndexerMixinBase):
             if deployer_written:
                 summary["deployer_events_written"] = deployer_written
 
-        # 5c. Write launch + Jito bundle events (Solana + Tron). Each write
-        # function persists to ClickHouse AND fans out to NATS, mirroring the
-        # deployer-event path. Best-effort: a write failure logs and keeps the
-        # event buffered for the next cycle. Buffers are drained below.
+        # 5c. Write launch + Jito bundle events (Solana + Tron): persist to
+        # ClickHouse + NATS, best-effort; buffers drain below.
         launch_candidates = 0
         if solana_strategy is not None:
             launch_candidates += len(getattr(solana_strategy, "_last_launch_events", None) or [])
@@ -509,10 +531,8 @@ class SyncLoopMixin(IndexerMixinBase):
         if launch_written:
             summary["launch_events_written"] = launch_written
 
-        # 6. Write NDJSON (gated by NDJSON_ENABLED — redundant with
-        # ClickHouse, which is the durable store). When disabled, recovery
-        # is restart-from-state: at most one sync cycle is lost on crash
-        # and re-fetched from RPC on the next cycle.
+        # 6. Write NDJSON (gated; redundant with ClickHouse — when disabled,
+        # recovery is restart-from-state: at most one cycle lost on crash).
         if self.ndjson_enabled and self._ndjson_writer is not None:
             # NDJSON write runs check_write_ok → check_disk_cap → a blocking
             # `du` subprocess; move it off the event loop so one chain's disk
@@ -520,10 +540,8 @@ class SyncLoopMixin(IndexerMixinBase):
             await asyncio.to_thread(write_ndjson, self._ndjson_writer, self.chain, events, dex_events, summary)
 
         # 7. Write ClickHouse via strategy
-        # ch_available tracks whether ClickHouse is confirmed writable for
-        # this cycle: transfers insert OK, or there were no transfers to
-        # write (then CH availability is only probed by the trace write
-        # itself, which degrades gracefully).
+        # ch_available: ClickHouse confirmed writable this cycle (transfers
+        # inserted OK, or nothing to write — the trace write probes then).
         ch_available = not events
         if events:
             # Offload the blocking ClickHouse insert + row serialization +
@@ -534,13 +552,13 @@ class SyncLoopMixin(IndexerMixinBase):
             summary["events_written_ch"] = ch_inserted
             ch_available = ch_inserted > 0
 
-            # Data-loss guard: if events were fetched but NOT written to
-            # ClickHouse (CH unavailable / insert failed), do NOT advance
-            # state — the range is retried on the next cycle. Previously
-            # the state advanced unconditionally, silently skipping blocks
-            # whenever CH hiccupped (observed 08/03: bsc +500 blocks and
-            # tron +35 blocks ahead of the ClickHouse max).
+            # Data-loss guard: events fetched but NOT written to ClickHouse
+            # → do NOT advance state (observed 08/03: bsc/tron ran ahead of
+            # the ClickHouse max when state advanced unconditionally).
             if ch_inserted == 0:
+                # RC-3: 3 consecutive zero-writes for the same range → defer to backfill + advance.
+                if self._zero_write_tracker().record_zero_write(from_block, to_block):
+                    return self._defer_stalled_range((from_block, to_block), summary, start_time, "transfers")
                 logger.error(
                     "sync_aborted_ch_write_failed",
                     chain=self.chain,
@@ -552,14 +570,11 @@ class SyncLoopMixin(IndexerMixinBase):
                 summary["duration_seconds"] = time.monotonic() - start_time
                 self._save_current_state()
                 return summary
+            self._zero_write_tracker().record_success(from_block)
 
-            # 7a. Wallet-access optimizations — address-first projections,
-            # token metadata reference table, incremental balance cache,
-            # and the auto-maintained holder-balances materialized view.
-            # Each is gated by its own config flag; only run after the
-            # transfer insert succeeded so the caches never diverge from
-            # evm_transfers. Stats land in the sync summary (e.g.
-            # token_meta_upserted / holder_balance_updates).
+            # 7a. Wallet-access optimizations (address-first projections,
+            # token metadata, balance cache, holder-balances MV) — only run
+            # after the transfer insert succeeded so caches never diverge.
             wallet_stats = await self.ch_writer.write_wallet_features(self.chain, events)
             if wallet_stats:
                 summary.update(wallet_stats)
@@ -580,14 +595,13 @@ class SyncLoopMixin(IndexerMixinBase):
             dex_ch_inserted = await run_ch_write(self.ch_writer.write_dex_events, self.chain, dex_events)
             summary["dex_events_written_ch"] = dex_ch_inserted
 
-            # Data-loss guard (mirrors the transfer guard at step 7): dex
-            # events were fetched but NONE landed in ClickHouse. Do NOT
-            # advance state — abort the cycle so the range is re-fetched on
-            # the next cycle instead of silently skipping blocks whose dex
-            # rows never persisted. Dex rows are the scanner's primary
-            # feed; a 0-row insert for a non-empty batch means the table
-            # write failed wholesale.
+            # Data-loss guard (mirrors step 7): dex rows are the scanner's
+            # primary feed; a 0-row insert for a non-empty batch means the
+            # table write failed wholesale — do NOT advance state.
             if dex_ch_inserted == 0:
+                # RC-3: same stall breaker as the transfers gate.
+                if self._zero_write_tracker().record_zero_write(from_block, to_block):
+                    return self._defer_stalled_range((from_block, to_block), summary, start_time, "dex_events")
                 logger.error(
                     "sync_aborted_dex_write_failed",
                     chain=self.chain,
@@ -599,17 +613,15 @@ class SyncLoopMixin(IndexerMixinBase):
                 summary["duration_seconds"] = time.monotonic() - start_time
                 self._save_current_state()
                 return summary
+            self._zero_write_tracker().record_success(from_block)
 
             if solana_swaps:
                 logger.info("solana_dex_clickhouse_inserted", rows=dex_ch_inserted)
 
-        # 7a2. Write internal-transfer traces (optional, best-effort).
-        # Unlike transfers, a trace write failure does NOT abort the sync:
-        # the trace table is enrichment (rate-limited free-tier RPCs may
-        # skip blocks) and the durable transfer record has already been
-        # written above. Rows are only written once the transfer insert
-        # succeeded, so evm_transfers and internal_transfers stay aligned
-        # on block ranges.
+        # 7a2. Internal-transfer traces (optional, best-effort): the trace
+        # table is enrichment — a write failure does NOT abort the sync.
+        # Rows are only written after the transfer insert succeeded, so
+        # evm_transfers and internal_transfers stay aligned on ranges.
         if trace_events and ch_available:
             trace_written = await self.ch_writer.write_internal_transfers(self.chain, trace_events)
             if trace_written:
@@ -617,13 +629,9 @@ class SyncLoopMixin(IndexerMixinBase):
         else:
             trace_written = 0
 
-        # 7b. Reorg staging (EVM + Solana, gated by REORG_PROTECTION_ENABLED):
-        # checkpoint the batch tip block hash/slot blockhash, then verify
-        # the block/slot at tip - depth against its checkpoint. On
-        # mismatch the chain reorganized underneath us: roll back
-        # evm_transfers/solana_spl_balance_changes + dex_events above the
-        # fork point and re-fetch from the fork on the next cycle (state
-        # is rewound to the fork).
+        # 7b. Reorg staging (EVM + Solana): checkpoint the batch tip, then
+        # verify tip - depth against it. On mismatch roll back rows above
+        # the fork point and re-fetch from the fork next cycle.
         if REORG_PROTECTION_ENABLED and isinstance(self.strategy, (EVMChainStrategy, SolanaStrategy)):
             try:
                 ch_client = self.ch_writer.client()
@@ -664,15 +672,10 @@ class SyncLoopMixin(IndexerMixinBase):
                     summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
                     return summary
 
-        # 7c. NATS JetStream real-time event publishing (best-effort).
-        # After the durable ClickHouse writes succeed, fan events out to
-        # NATS for real-time consumers (scanner alerts, dashboards, bots).
-        # NATS is never the durable store: failures are logged and
-        # swallowed, and the publisher's circuit breaker opens after
-        # repeated failures so a dead NATS server costs ~one attempt per
-        # cycle instead of one per event. Deployer events are read from
-        # the strategy's last-batch lists (already enriched with
-        # timestamps at 5b).
+        # 7c. NATS JetStream real-time publishing (best-effort, after the
+        # durable ClickHouse writes). NATS is never the durable store:
+        # failures are swallowed and its circuit breaker opens after
+        # repeated failures so a dead server costs ~one attempt per cycle.
         nats_deployer_events: list[dict[str, Any]] = []
         if self.deployers_enabled:
             if evm_strategy and evm_strategy._last_pair_events:
@@ -690,20 +693,15 @@ class SyncLoopMixin(IndexerMixinBase):
         if nats_published:
             summary["nats_events_published"] = nats_published
 
-        # 7d. Webhook delivery fan-out (best-effort, process-wide). The
-        # delivery service subscribes to the SAME NATS subjects the
-        # publisher writes to and POSTs matching events to registered
-        # webhooks (HMAC-signed, bounded retries). It is started lazily
-        # here — after the first NATS publish — and is idempotent, so in
-        # daemon mode the first chain to publish starts the single shared
-        # subscriber and later chains are no-ops.
+        # 7d. Webhook delivery fan-out (best-effort, process-wide): the
+        # delivery service subscribes to the same NATS subjects and POSTs
+        # HMAC-signed events to registered webhooks. Started lazily after
+        # the first NATS publish; idempotent across chains.
         await self._maybe_start_webhook_delivery()
 
-        # 7e. Writer completeness gate (D6, 2026-09-14). Best-effort writers
-        # (deployer/launch/trace) used to fail silently while state advanced
-        # to to_block, claiming coverage whose rows were never persisted. If
-        # an ENABLED writer had pending rows and wrote none, do NOT advance —
-        # the range is retried next cycle instead of being skipped.
+        # 7e. Writer completeness gate (D6): if an ENABLED best-effort
+        # writer (deployer/launch/trace) had pending rows and wrote none,
+        # do NOT advance — the range is retried next cycle.
         failed_writers: list[str] = []
         if self.deployers_enabled and deployer_candidates and deployer_written == 0:
             failed_writers.append("deployer")
@@ -714,6 +712,9 @@ class SyncLoopMixin(IndexerMixinBase):
         if failed_writers:
             for _kind in failed_writers:
                 metrics.incr_labeled("lite_indexer_writer_gap", chain=self.chain)
+            # RC-3: same stall breaker for the best-effort writers gate.
+            if self._zero_write_tracker().record_zero_write(from_block, to_block):
+                return self._defer_stalled_range((from_block, to_block), summary, start_time, ",".join(failed_writers))
             logger.error(
                 "sync_aborted_writer_incomplete",
                 chain=self.chain,
@@ -726,17 +727,16 @@ class SyncLoopMixin(IndexerMixinBase):
             summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
             self._save_current_state()
             return summary
+        if deployer_written or launch_written or trace_written:
+            self._zero_write_tracker().record_success(from_block)
 
         # 8. Save state
         total_events = len(events) + len(dex_events) + deployer_written + len(trace_events)
         self._clear_reorg_recovery()
         self.state.save(to_block, total_events, enabled_events=self._enabled_event_types())
 
-        # 8-attest. On-chain-verifiable attestation of this committed range:
-        # append a Merkle leaf over the range's block hashes + normalized row
-        # digest to the persisted accumulator. Best-effort and off-loop
-        # (hashing a batch is CPU work); a failure logs and continues — the
-        # write path is never blocked or aborted by attestation.
+        # 8-attest. Merkle-leaf attestation of the committed range
+        # (best-effort, off-loop; a failure logs and continues).
         if ATTESTATION_ENABLED and (events or dex_events):
             try:
                 from lite_indexer.attestation import collect_block_hashes, record_range_attestation
