@@ -50,6 +50,7 @@ from lite_indexer.rpc.pool import (
     least_banned_endpoint,
     mark_desperation_probe,
     pool_fully_down,
+    probe_eligible_endpoints,
 )
 from lite_indexer.strategies.evm._helpers import detect_reorg, enforce_block_range
 from lite_indexer.strategies.evm.bloom import (
@@ -174,14 +175,28 @@ async def _fetch_range(
     # endpoint at most once per desperation interval so the chain can
     # self-heal the moment any endpoint recovers.
     if pool_fully_down(endpoints):
+        # Never probe an endpoint guaranteed to fail: hard-banned (probing
+        # deepens the provider ban) or capability-excluded (cannot serve
+        # broad eth_getLogs at all). The old ``least_banned_endpoint`` scan
+        # scored but did NOT exclude these, so the probe kept dialing a
+        # blacklisted endpoint, failing, and extending its own ban — the
+        # self-sustaining deadlock. If nothing is probe-eligible, wait out
+        # the (now 300s-capped) ban instead of burning the pool.
+        eligible = probe_eligible_endpoints(endpoints)
+        if not eligible:
+            raise RpcFetchFailedError(
+                f"pool fully down for {chain} range {from_block}-{to_block}: "
+                "no probe-eligible endpoint (all hard-banned or logs-incapable)"
+            )
         if desperation_probe_due(endpoints):
             mark_desperation_probe(endpoints)
-            probe = least_banned_endpoint(endpoints)
+            probe = least_banned_endpoint(eligible)
             force_probe_endpoint(probe)
             logger.warning(
                 "rpc_desperation_probe",
                 chain=chain,
                 endpoint=probe[:60],
+                eligible=len(eligible),
                 from_block=from_block,
                 to_block=to_block,
             )
@@ -285,7 +300,11 @@ async def _fetch_range(
             record_endpoint_failure(url)
             continue
         except (httpx.ConnectError, httpx.ReadError, httpx.WriteError) as exc:
-            last_error = str(exc)[:60]
+            # Name the exception type: these transport errors frequently
+            # carry an EMPTY str() on the httpx/anyio path, which is how the
+            # production deadlock surfaced as ``error: ""``. The type alone
+            # distinguishes timeout vs transport vs client-pool exhaustion.
+            last_error = f"{type(exc).__name__}: {str(exc)[:60]}"
             record_endpoint_failure(url)
             continue
         except (httpx.RemoteProtocolError, httpx.LocalProtocolError) as exc:
@@ -293,8 +312,14 @@ async def _fetch_range(
             record_endpoint_failure(url)
             continue
         except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
-            last_error = str(exc)[:80]
-            logger.warning("transfer_fetch_unexpected", chain=chain, endpoint=url[:50], error=str(exc)[:80])
+            last_error = f"{type(exc).__name__}: {str(exc)[:80]}"
+            logger.warning(
+                "transfer_fetch_unexpected",
+                chain=chain,
+                endpoint=url[:50],
+                error_type=type(exc).__name__,
+                error=str(exc)[:80] or repr(exc)[:120],
+            )
             record_endpoint_failure(url)
             continue
 
@@ -343,12 +368,13 @@ async def _fetch_range(
                     KeyError,
                     TypeError,
                 ) as exc:
-                    last_error = str(exc)[:80]
+                    last_error = f"{type(exc).__name__}: {str(exc)[:80]}"
                     logger.warning(
                         "last_resort_fetch_failed",
                         chain=chain,
                         endpoint=url[:50],
-                        error=str(exc)[:60],
+                        error_type=type(exc).__name__,
+                        error=str(exc)[:60] or repr(exc)[:120],
                     )
                     record_endpoint_failure(url)
                     continue

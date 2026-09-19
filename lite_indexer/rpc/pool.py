@@ -72,6 +72,12 @@ _endpoint_failures: dict[str, list[float]] = {}
 _endpoint_429_streaks: dict[str, int] = {}
 _RATE_LIMIT_STREAK_BAN_THRESHOLD = 3
 _RATE_LIMIT_STREAK_BAN_BASE_S = 300  # 5 min first soft-ban, doubles per repeat
+# Hard cap on the streak soft-ban. Was 3600s, which (combined with the
+# persisted 403 hard-ban) turned a transient 429 burst into a 1h self-
+# sustaining deadlock: the pool sat fully down long past the provider's
+# actual recovery, so nothing ever re-probed a healthy endpoint. 300s
+# bounds a soft-ban to the first window; recovery is one probe tick away.
+_RATE_LIMIT_STREAK_BAN_CAP_S = 300
 # Hard bans for 403/429 responses: url -> banned_until (epoch seconds).
 # These providers explicitly rate-limit / blacklist the endpoint for a
 # while — hammering them only deepens the ban, so they get an
@@ -261,6 +267,25 @@ def least_banned_endpoint(endpoints: list[str]) -> str:
         scored.append((penalty, ep))
     scored.sort(key=lambda x: x[0])
     return scored[0][1]
+
+
+def probe_eligible_endpoints(endpoints: list[str]) -> list[str]:
+    """Endpoints the desperation probe is ALLOWED to dial.
+
+    The probe exists to detect recovery, so it must never pick an endpoint
+    that is guaranteed to fail: a hard-banned endpoint (provider blacklist,
+    probing deepens the ban) or a capability-excluded endpoint (structurally
+    cannot serve broad eth_getLogs). Circuit-open endpoints stay eligible —
+    that is exactly what ``force_probe`` overrides.
+
+    Args:
+        endpoints: Pool candidate URLs.
+
+    Returns:
+        Subset that is neither hard-banned nor logs-incapable (may be empty;
+        the caller must then wait out the ban instead of probing).
+    """
+    return [ep for ep in endpoints if not is_endpoint_banned(ep) and not _logs_capability_excluded(ep)]
 
 
 def force_probe_endpoint(endpoint: str) -> bool:
@@ -490,7 +515,7 @@ def record_rate_limit(endpoint: str) -> None:
     if streak >= _RATE_LIMIT_STREAK_BAN_THRESHOLD:
         ban_s = min(
             _RATE_LIMIT_STREAK_BAN_BASE_S * (2 ** (streak - _RATE_LIMIT_STREAK_BAN_THRESHOLD)),
-            3600,
+            _RATE_LIMIT_STREAK_BAN_CAP_S,
         )
         # Apply the streak-computed window directly (not ban_endpoint's own
         # exponential) so the logged duration is the enforced duration.

@@ -33,6 +33,7 @@ from lite_indexer.rpc.pool import (
     least_banned_endpoint,
     mark_desperation_probe,
     pool_fully_down,
+    probe_eligible_endpoints,
     record_endpoint_failure,
     record_endpoint_success,
     record_rate_limit,
@@ -161,6 +162,50 @@ class TestPoolWideOutage:
         breaker = RpcCircuitBreaker()
         with pytest.raises(ValueError):
             breaker.least_banned_endpoint([])
+
+    # ── 2026-09-19 deadlock fix: the probe must not dial doomed endpoints ──
+
+    def test_probe_eligible_excludes_hard_banned(self, clock: _Clock):
+        """A hard-banned endpoint is blacklisted by the provider; probing it
+        fails and extends its own ban (the self-sustaining deadlock)."""
+        banned = "https://banned.invalid"
+        open_ok = "https://open.invalid"
+        with patch("lite_indexer.config.ENDPOINT_BAN_BASE_SECONDS", 3600):
+            ban_endpoint(banned, reason="http_403")
+        with patch("lite_indexer.rpc.routing.is_circuit_open", lambda ep: ep == open_ok):
+            eligible = probe_eligible_endpoints([banned, open_ok])
+        assert eligible == [open_ok]
+
+    def test_probe_eligible_excludes_logs_incapable(self, clock: _Clock):
+        """A capability-excluded endpoint structurally cannot serve getLogs —
+        the probe must never pick it."""
+        incapable = "https://incapable.invalid"
+        good = "https://good.invalid"
+        with patch(
+            "lite_indexer.rpc.capabilities.is_logs_capability_excluded",
+            lambda ep: ep == incapable,
+        ):
+            assert probe_eligible_endpoints([incapable, good]) == [good]
+
+    def test_probe_eligible_all_doomed_is_empty(self, clock: _Clock):
+        """Every endpoint hard-banned → nothing to probe; caller waits out
+        the ban instead of deepening it."""
+        a, b = "https://a.invalid", "https://b.invalid"
+        with patch("lite_indexer.config.ENDPOINT_BAN_BASE_SECONDS", 3600):
+            ban_endpoint(a, reason="http_403")
+            ban_endpoint(b, reason="http_403")
+        assert probe_eligible_endpoints([a, b]) == []
+
+    def test_rate_limit_streak_softban_capped_at_300s(self, clock: _Clock):
+        """Was capped at 3600s → a transient 429 burst froze the chain for an
+        hour past provider recovery. Cap must be 300s at every streak."""
+        ep = "https://streaky.invalid"
+        for _ in range(6):
+            record_rate_limit(ep)
+        import lite_indexer.rpc.pool as pool_mod
+
+        ban_s = pool_mod._endpoint_bans[ep] - clock.now
+        assert ban_s == pytest.approx(300.0)
 
 
 # ═══════════════════════════════════════════════════════════════════════
