@@ -34,6 +34,12 @@ jobs:
       - name: Antipattern gate (per-repo ratchet)
         run: python3 scripts/check-antipatterns.py --repo .
 
+      - name: Monkeypatch gate (decrease-only ratchet)
+        run: python3 scripts/check-monkeypatch.py --repo .
+
+      - name: Gate self-test (prove gates catch violations)
+        run: bash scripts/ci-gate-selftest.sh
+
       - name: Lint with ruff
         run: ruff check .
 
@@ -373,10 +379,11 @@ jobs:
       - name: Run pip-audit (blocking on HIGH/CRITICAL)
         run: pip-audit --fail-on=high --desc
 
-  # ── Mutation testing (informational) ───────────────────────────
-  # Anti-god-module + anti-monkeypatch ratchet (baseline:
-  # scripts/structure-baseline.json). Shrink freely; growth or NEW
-  # offenders fail the build. Regenerate deliberately: --update-baseline.
+  # ── Structure gate (BLOCKING) ──────────────────────────────────
+  # Firm per-file size policy (≤200 lines; >500 hard fail) with a
+  # shrink-only allowlist (baseline: scripts/structure-baseline.json).
+  # Allowlisted files may never GROW; NEW >200-line files fail the build.
+  # Regenerate deliberately: --update-baseline.
   structure-gate:
     runs-on: docker-x64
     container:
@@ -384,7 +391,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Structure gate
-        run: python3 scripts/check-code-structure.py
+        run: python3 scripts/check-structure.py --repo . --scan-root lite_indexer
 
   mutation-test:
     runs-on: docker-x64

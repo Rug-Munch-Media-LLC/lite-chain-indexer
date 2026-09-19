@@ -1,12 +1,12 @@
 {
  "rules": {
-  "god-file": 43,
-  "monkeypatch": 508,
-  "too-many-params": 138,
-  "bare-except": 246,
+  "bare-except": 260,
+  "fstring-logging": 1,
+  "god-file": 44,
   "long-function": 76,
-  "wildcard-import": 5,
-  "fstring-logging": 1
+  "monkeypatch": 512,
+  "too-many-params": 146,
+  "wildcard-import": 5
  },
- "total": 1017
+ "total": 1044
 }
