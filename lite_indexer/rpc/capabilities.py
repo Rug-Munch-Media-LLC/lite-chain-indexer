@@ -269,6 +269,16 @@ _CAPABILITY_KIND = "capability"
 # importing the chains package into this low-level module).
 CAPABILITY_PERSIST_TTL = 3600.0
 
+# How long a ``logs_capable=False`` verdict may keep an endpoint out of the
+# desperation probe. A capability exclusion is a LOCALLY SYNTHESIZED verdict,
+# not a provider ban, so it must never permanently remove endpoint capacity:
+# a probe false-negative (e.g. a tip-range shape an endpoint only rejects for
+# that shape) would otherwise freeze a chain whose whole log pool is
+# capability-excluded. After this interval the verdict is treated as stale and
+# the endpoint becomes probe-eligible again, so a chain self-heals in bounded
+# time instead of waiting for the next hourly re-verification (or forever).
+CAPABILITY_REPROBE_INTERVAL = 300.0
+
 
 def _record_payload(record: CapabilityRecord) -> str:
     """JSON payload for one capability record (secret-free: URL + verdicts)."""
@@ -402,6 +412,30 @@ def is_logs_capability_excluded(endpoint: str) -> bool:
     """
     record = get_capability(endpoint)
     return record is not None and record.logs_capable is False
+
+
+def is_logs_capability_reprobe_due(endpoint: str, now: float | None = None) -> bool:
+    """Whether a ``logs_capable=False`` verdict is stale enough to re-test.
+
+    A capability exclusion is a local synthesized verdict, not a provider
+    ban. Once the record is older than :data:`CAPABILITY_REPROBE_INTERVAL`
+    the exclusion must stop blocking the desperation probe — otherwise a
+    chain whose entire log pool is capability-excluded can never probe its
+    way back and stays frozen until the next hourly re-verification.
+
+    Args:
+        endpoint: RPC endpoint URL.
+        now: Epoch time override (tests).
+
+    Returns:
+        True when the endpoint is capability-excluded but the verdict is
+        stale and the endpoint may be probed again.
+    """
+    record = get_capability(endpoint)
+    if record is None or record.logs_capable is not False:
+        return False
+    now = time.time() if now is None else now
+    return (now - record.probed_at) >= CAPABILITY_REPROBE_INTERVAL
 
 
 def logs_capable_endpoints(endpoints: list[str]) -> list[str]:
@@ -791,6 +825,7 @@ __all__ = [
     "is_archive_capable",
     "is_logs_capability_excluded",
     "is_logs_capability_failure",
+    "is_logs_capability_reprobe_due",
     "load_capabilities",
     "logs_capable_endpoints",
     "method_requires_archive",

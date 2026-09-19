@@ -206,6 +206,71 @@ class TestPoolWideOutage:
         assert is_endpoint_banned(ep) is True
         assert probe_eligible_endpoints([ep]) == [ep]
 
+    def test_probe_eligible_readmits_stale_capability_exclusion(self):
+        """A ``logs_capable=False`` verdict is local, not a provider ban: once
+        stale it MUST re-enter the probe set, else a chain whose whole log
+        pool is capability-excluded deadlocks forever."""
+        import time as _time
+
+        from lite_indexer.rpc import capabilities as caps
+
+        stale = "https://stale-incapable.invalid"
+        fresh = "https://fresh-incapable.invalid"
+        records = {
+            stale: caps.CapabilityRecord(
+                endpoint=stale,
+                chain="celo",
+                logs_capable=False,
+                probed_at=_time.time() - caps.CAPABILITY_REPROBE_INTERVAL - 1,
+            ),
+            fresh: caps.CapabilityRecord(
+                endpoint=fresh,
+                chain="celo",
+                logs_capable=False,
+                probed_at=_time.time(),
+            ),
+        }
+        with patch.dict(caps._CAPABILITY_RECORDS, records, clear=True):
+            assert probe_eligible_endpoints([stale, fresh]) == [stale]
+
+    def test_probe_eligible_all_stale_excluded_not_empty(self):
+        """Bounded-time recovery: an all-capability-excluded pool with stale
+        verdicts yields probe candidates instead of an empty set + hard raise."""
+        import time as _time
+
+        from lite_indexer.rpc import capabilities as caps
+
+        eps = ["https://s1.invalid", "https://s2.invalid"]
+        records = {
+            ep: caps.CapabilityRecord(
+                endpoint=ep,
+                chain="celo",
+                logs_capable=False,
+                probed_at=_time.time() - caps.CAPABILITY_REPROBE_INTERVAL - 1,
+            )
+            for ep in eps
+        }
+        with patch.dict(caps._CAPABILITY_RECORDS, records, clear=True):
+            assert probe_eligible_endpoints(eps) == eps
+
+    def test_probe_eligible_fresh_capability_exclusion_stays_out(self):
+        """A FRESH capability exclusion is still skipped (no wasted probes)."""
+        import time as _time
+
+        from lite_indexer.rpc import capabilities as caps
+
+        fresh = "https://fresh-incapable.invalid"
+        records = {
+            fresh: caps.CapabilityRecord(
+                endpoint=fresh,
+                chain="celo",
+                logs_capable=False,
+                probed_at=_time.time(),
+            )
+        }
+        with patch.dict(caps._CAPABILITY_RECORDS, records, clear=True):
+            assert probe_eligible_endpoints([fresh]) == []
+
     def test_rate_limit_streak_softban_capped_at_300s(self, clock: _Clock):
         """Was capped at 3600s → a transient 429 burst froze the chain for an
         hour past provider recovery. Cap must be 300s at every streak."""

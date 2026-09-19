@@ -53,6 +53,18 @@ def _logs_capability_excluded(endpoint: str) -> bool:
     return is_logs_capability_excluded(endpoint)
 
 
+def _logs_capability_reprobe_due(endpoint: str) -> bool:
+    """Whether a stale capability exclusion may be re-probed.
+
+    Keeps a locally synthesized ``logs_capable=False`` from permanently
+    removing endpoint capacity: once the verdict ages past
+    ``CAPABILITY_REPROBE_INTERVAL`` the endpoint re-enters the probe set.
+    """
+    from lite_indexer.rpc.capabilities import is_logs_capability_reprobe_due
+
+    return is_logs_capability_reprobe_due(endpoint)
+
+
 def selection_counts() -> dict[str, int]:
     """Copy of the per-endpoint selection counters (tests/telemetry)."""
     return dict(_SELECTION_COUNTS)
@@ -316,11 +328,24 @@ def probe_eligible_endpoints(endpoints: list[str]) -> list[str]:
     Args:
         endpoints: Pool candidate URLs.
 
+    Stale capability exclusions stay eligible: ``logs_capable=False`` is a
+    local verdict, so after ``CAPABILITY_REPROBE_INTERVAL`` the endpoint is
+    re-tested rather than removed forever. Without this a chain whose whole
+    log pool is capability-excluded deadlocks (no eligible probe) instead of
+    self-healing within a bounded time.
+
     Returns:
-        Subset that is neither abuse-banned nor logs-incapable (may be
-        empty; the caller must then wait out the ban instead of probing).
+        Subset that is neither abuse-banned nor freshly logs-incapable (may
+        be empty; the caller must then wait out the ban instead of probing).
     """
-    return [ep for ep in endpoints if not is_endpoint_hard_banned(ep) and not _logs_capability_excluded(ep)]
+    eligible: list[str] = []
+    for ep in endpoints:
+        if is_endpoint_hard_banned(ep):
+            continue
+        if _logs_capability_excluded(ep) and not _logs_capability_reprobe_due(ep):
+            continue
+        eligible.append(ep)
+    return eligible
 
 
 def force_probe_endpoint(endpoint: str) -> bool:
