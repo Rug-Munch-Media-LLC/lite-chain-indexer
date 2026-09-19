@@ -34,6 +34,7 @@ from lite_indexer.config import (
 )
 from lite_indexer.health import ChainStallTracker
 from lite_indexer.indexer import LiteIndexer
+from lite_indexer.indexer._memory_cap import cgroup_memory_max_mb, resolve_recycle_mb
 from lite_indexer.indexer._resource_guards import get_guarded_memory_mb
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics_server import start_metrics_server, stop_metrics_server
@@ -42,12 +43,16 @@ from lite_indexer.storage.clickhouse import ClickHouseWriter
 logger = get_logger(__name__)
 
 
-def memory_recycle_needed(mem_mb: int, threshold_mb: int = MEMORY_RECYCLE_MB) -> bool:
-    """Whether guarded memory has reached the hard self-recycle ceiling.
+def memory_recycle_needed(mem_mb: int, threshold_mb: int | None = None) -> bool:
+    """Whether guarded memory reached the hard self-recycle ceiling.
 
-    A ``threshold_mb`` of 0 disables recycling (unbounded mode).
+    ``threshold_mb=None`` resolves the effective ceiling via
+    :func:`resolve_recycle_mb` (declared MEMORY_RECYCLE_MB clamped below
+    the cgroup memory.max hard cap). An explicit ``threshold_mb`` still
+    wins for callers/tests; 0 disables recycling (unbounded mode).
     """
-    return threshold_mb > 0 and mem_mb >= threshold_mb
+    threshold = resolve_recycle_mb() if threshold_mb is None else threshold_mb
+    return threshold > 0 and mem_mb >= threshold
 
 
 async def recycle_if_over_budget(
@@ -57,17 +62,16 @@ async def recycle_if_over_budget(
 ) -> None:
     """Log and exit the process when guarded memory hits the ceiling.
 
-    Called AFTER a sync cycle completes (state is saved each cycle by
-    ``sync_loop``), so no in-flight work is lost. The clients are closed
-    best-effort before ``os._exit(0)``; systemd ``Restart=always`` then
-    restarts the daemon with a fresh heap, capping max RSS at roughly
-    ``MEMORY_RECYCLE_MB``. A no-op below the threshold.
+    Called AFTER a sync cycle completes (state already saved), so no
+    in-flight work is lost; systemd ``Restart=always`` then restarts the
+    daemon with a fresh heap capped at roughly the effective ceiling.
     """
-    if not memory_recycle_needed(mem_mb):
+    threshold = resolve_recycle_mb()
+    if not memory_recycle_needed(mem_mb, threshold):
         return
-    logger.warning("memory_recycle", chain=chain, rss_mb=mem_mb, recycle_mb=MEMORY_RECYCLE_MB)
+    logger.warning("memory_recycle", chain=chain, rss_mb=mem_mb, recycle_mb=threshold)
     await asyncio.gather(*(ix.aclose() for ix in indexers), return_exceptions=True)
-    logger.info("memory_recycle_exit", rss_mb=mem_mb, recycle_mb=MEMORY_RECYCLE_MB)
+    logger.info("memory_recycle_exit", rss_mb=mem_mb, recycle_mb=threshold)
     os._exit(0)
 
 
@@ -98,17 +102,17 @@ def _close_indexers_best_effort(indexers: Sequence[LiteIndexer]) -> None:
 def start_memory_watchdog(indexers: Sequence[LiteIndexer]) -> threading.Thread | None:
     """Start the continuous memory watchdog thread; returns it (or None).
 
-    2026-09-14 wedge post-mortem: the post-cycle ``recycle_if_over_budget``
-    check only runs AFTER a sync cycle completes, so a memory burst
-    mid-cycle throttled the task into uninterruptible sleep on
-    ``mem_cgroup_handle_over_high`` and the check never ran — 5h45m wedged,
-    0 writes, no logs. This thread is independent of the asyncio sync
-    loop: every :data:`MEMORY_WATCHDOG_INTERVAL_S` it reads the guarded
-    memory (cgroup-aware) and, at or above :data:`MEMORY_RECYCLE_MB`,
-    logs ``memory_recycle_watchdog``, closes clients best-effort and
-    ``os._exit(0)``s (idempotent via an event) so systemd ``Restart=always``
-    restarts the daemon with a fresh heap. At :data:`MEMORY_HIGH_MB` it
-    logs a pre-emergency ``memory_high_watchdog`` but does NOT exit.
+    2026-09-14 wedge post-mortem: the post-cycle recycle check only runs
+    AFTER a sync cycle completes, so a mid-cycle memory burst wedged the
+    task in D-state for 5h45m and the check never ran. This thread is
+    independent of the asyncio sync loop: every
+    :data:`MEMORY_WATCHDOG_INTERVAL_S` it reads guarded memory and, at or
+    above the effective recycle ceiling (:func:`resolve_recycle_mb`,
+    2026-09-19 OOM post-mortem), logs ``memory_recycle_watchdog``, closes
+    clients best-effort and ``os._exit(0)``s (idempotent via an event) so
+    systemd ``Restart=always`` restarts with a fresh heap. At
+    :data:`MEMORY_HIGH_MB` it logs ``memory_high_watchdog`` but does NOT
+    exit.
 
     Disabled (returns None) when ``MEMORY_WATCHDOG_ENABLED=0`` or
     ``MEMORY_RECYCLE_MB <= 0``.
@@ -116,23 +120,33 @@ def start_memory_watchdog(indexers: Sequence[LiteIndexer]) -> threading.Thread |
     if not MEMORY_WATCHDOG_ENABLED or MEMORY_RECYCLE_MB <= 0:
         return None
 
+    logger.info(
+        "memory_ladder",
+        high_mb=MEMORY_HIGH_MB,
+        recycle_declared_mb=MEMORY_RECYCLE_MB,
+        recycle_effective_mb=resolve_recycle_mb(),
+        cgroup_cap_mb=cgroup_memory_max_mb(),
+    )
+
     exit_once = threading.Event()
     stop = threading.Event()
 
     def _loop() -> None:
         while not stop.is_set():
             mem = get_guarded_memory_mb()
-            if memory_recycle_needed(mem):
+            # Re-resolve every tick: auto-adapts if the cgroup cap changes.
+            threshold = resolve_recycle_mb()
+            if memory_recycle_needed(mem, threshold):
                 logger.warning(
                     "memory_recycle_watchdog",
                     rss_mb=mem,
-                    recycle_mb=MEMORY_RECYCLE_MB,
+                    recycle_mb=threshold,
                     interval_s=MEMORY_WATCHDOG_INTERVAL_S,
                 )
                 _close_indexers_best_effort(indexers)
                 if not exit_once.is_set():
                     exit_once.set()
-                    logger.info("memory_recycle_watchdog_exit", rss_mb=mem, recycle_mb=MEMORY_RECYCLE_MB)
+                    logger.info("memory_recycle_watchdog_exit", rss_mb=mem, recycle_mb=threshold)
                     os._exit(0)
                 return
             if mem >= MEMORY_HIGH_MB:
@@ -140,7 +154,7 @@ def start_memory_watchdog(indexers: Sequence[LiteIndexer]) -> threading.Thread |
                     "memory_high_watchdog",
                     rss_mb=mem,
                     high_mb=MEMORY_HIGH_MB,
-                    recycle_mb=MEMORY_RECYCLE_MB,
+                    recycle_mb=threshold,
                 )
             _watchdog_sleep(MEMORY_WATCHDOG_INTERVAL_S)
 
@@ -153,8 +167,8 @@ def start_memory_watchdog(indexers: Sequence[LiteIndexer]) -> threading.Thread |
 def export_global_metrics() -> None:
     """Publish the process / quota / RPC-pool gauges the alert rules scrape.
 
-    Best-effort and synchronous: reads local RSS/cgroup files, the in-process
-    quota ledger, and the endpoint pool. Called periodically from
+    Best-effort and synchronous: reads local RSS/cgroup files, the quota
+    ledger, and the endpoint pool. Called periodically from
     ``_metrics_gauge_loop`` — never raises into the daemon.
     """
     from lite_indexer.chains import GET_LOGS_ENDPOINTS
@@ -219,21 +233,15 @@ async def main_daemon(
     PER-CHAIN independent polling intervals.
 
     Each chain gets its own LiteIndexer instance with independent state
-    tracking AND its own asyncio task polling at its own optimal interval.
-    This prevents fast chains (Base 2s, Mantle 2s) from being throttled
-    by slow chains (Ethereum 12s, Linea 12s).
+    tracking AND its own asyncio task polling at its own optimal interval,
+    so fast chains (Base 2s) are not throttled by slow ones (Ethereum 12s).
 
     Concurrency is capped at ``max_concurrent`` chains syncing at once
     (default 6, see ``MAX_CONCURRENT_CHAINS``): every chain task shares
-    one semaphore, so at most that many ``sync_loop`` calls run in
-    parallel. High-priority chains are scheduled first (tasks are created
-    in descending priority order); lower-priority chains rotate in as
-    slots free. This bounds peak RSS — 14 chains running simultaneously
-    caused repeated cgroup OOM kills on 2026-08-03.
-
-    Previously, ALL chains shared a single max_poll_interval which caused
-    65min lag on Base and 20min lag on Mantle when Ethereum backlogged.
-    Now each chain runs independently. Runs until SIGTERM/SIGINT.
+    one semaphore. High-priority chains are scheduled first; lower-priority
+    chains rotate in as slots free. This bounds peak RSS — 14 chains
+    running simultaneously caused repeated cgroup OOM kills on 2026-08-03.
+    Runs until SIGTERM/SIGINT.
     """
     logger.info(
         "daemon_start",
@@ -247,8 +255,8 @@ async def main_daemon(
 
     data_path = Path(data_dir) if data_dir else DATA_DIR
 
-    # Prometheus exporter: start once on a background thread. A busy port or
-    # missing library is a logged no-op — the daemon never blocks on metrics.
+    # Prometheus exporter: start once on a background thread; a busy port
+    # or missing library is a logged no-op, never blocking the daemon.
     start_metrics_server()
 
     shutdown_event = asyncio.Event()
@@ -269,14 +277,12 @@ async def main_daemon(
 
     # Shared concurrency cap: at most `max_concurrent` chains sync at once.
     concurrency_slot = asyncio.Semaphore(max_concurrent) if max_concurrent and max_concurrent > 0 else None
-
     # Live indexers, kept so shutdown can close their HTTP clients.
     indexers: list[LiteIndexer] = []
 
     # Continuous memory watchdog (2026-09-14 wedge fix): independent of the
-    # sync loop so a mid-cycle cgroup MemoryHigh throttle cannot prevent the
-    # recycle check from running. Secondary path: post-cycle
-    # recycle_if_over_budget in _chain_loop.
+    # sync loop so a mid-cycle cgroup throttle cannot prevent the recycle
+    # check. Secondary path: post-cycle recycle_if_over_budget.
     start_memory_watchdog(indexers)
 
     async def _chain_loop(chain: str) -> None:
@@ -289,13 +295,10 @@ async def main_daemon(
 
         The shared semaphore is acquired around each sync cycle, so at
         most ``max_concurrent`` chains hold event batches in memory at
-        once. When the semaphore is contended, lower-priority chains wait
-        for a free slot instead of piling up parallel fetches — this is
-        what prevents the cgroup OOM kills.
-
-        After each completed cycle (state already persisted by
-        ``sync_loop``) the loop checks guarded memory against the hard
-        ``MEMORY_RECYCLE_MB`` ceiling; at or above it the process exits
+        once; contended lower-priority chains wait for a free slot — this
+        is what prevents the cgroup OOM kills. After each completed cycle
+        (state already persisted) the loop checks guarded memory against
+        the effective recycle ceiling; at or above it the process exits
         cleanly for systemd to restart with a fresh heap.
         """
         nonlocal error_count
@@ -311,20 +314,18 @@ async def main_daemon(
         indexer.traces_enabled = traces_enabled
 
         # EVM WebSocket head pool: push the tip so the next sync pass starts
-        # as soon as a new head lands instead of waiting out the poll
-        # interval. Overlay-only; a no-op without WS endpoints, so HTTP
-        # polling remains the heartbeat/fallback.
+        # on a new head instead of waiting out the poll interval. Overlay-
+        # only; HTTP polling remains the heartbeat/fallback.
         await indexer.start_head_pool()
 
         base_interval = CHAIN_POLL_INTERVALS.get(chain, 15.0)
         poll_interval = effective_poll_interval(chain, base_interval)
         log_chain_resources(chain, poll_interval=base_interval)
 
-        # Chain-level health: track when the state last advanced. A chain
-        # whose state has not moved for CHAIN_STALL_DISABLE_SECONDS (2h)
-        # is auto-disabled and re-probed slowly, so one dead chain never
-        # burns RPC budget or holds concurrency slots while the others
-        # keep indexing.
+        # Chain-level health: a chain whose state has not moved for
+        # CHAIN_STALL_DISABLE_SECONDS (2h) is auto-disabled and re-probed
+        # slowly, so one dead chain never burns RPC budget or holds
+        # concurrency slots while the others keep indexing.
         stall_tracker = ChainStallTracker(stall_seconds=CHAIN_STALL_DISABLE_SECONDS)
 
         while not shutdown_event.is_set():
@@ -394,20 +395,19 @@ async def main_daemon(
                 except asyncio.CancelledError:
                     break
 
-    # Launch one independent task per chain, high-priority chains first so
-    # they claim concurrency slots before low-priority chains.
+    # Launch one task per chain, high-priority chains first so they claim
+    # concurrency slots before low-priority chains.
     ordered_chains = sorted(chains, key=lambda c: chain_priority(c), reverse=True)
 
     # ── Parallel startup endpoint verification ──────────────────────────
     # Verification used to run inside each chain's sync loop, serialized by
-    # MAX_CONCURRENT_CHAINS, so only the first few chains got a log pool and
-    # the rest sat at rpc_pool_logs_endpoints{chain}=0 for hours (observed
-    # base 15:20 -> polygon 15:27, ~7.5 min apart). This pass runs ALL chains
+    # MAX_CONCURRENT_CHAINS, so only the first few chains got a log pool
+    # (observed base 15:20 -> polygon 15:27). This pass runs ALL chains
     # concurrently (ENDPOINT_VERIFY_CONCURRENCY) as a background task; each
-    # chain loop waits only on ITS OWN result via wait_startup_result, so it
-    # starts as soon as its verification lands — no chain is blocked behind
-    # the whole pass. Fail-soft: any failure is logged and the loop still
-    # starts, falling back to the in-loop verification path.
+    # chain loop waits only on ITS OWN result via wait_startup_result, so
+    # it starts as soon as its verification lands. Fail-soft: any failure
+    # is logged and the loop still starts, falling back to the in-loop
+    # verification path.
     from lite_indexer.rpc.verify import verify_all_chains
 
     startup_verify_task = asyncio.create_task(

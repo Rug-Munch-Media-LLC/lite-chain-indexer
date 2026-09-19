@@ -94,24 +94,20 @@ CHAIN_DISABLED_RECHECK_SECONDS: int = int(os.environ.get("CHAIN_DISABLED_RECHECK
 # LiteIndexer.sync_loop (covers daemon AND single-chain mode).
 GC_EVERY_N_CYCLES: int = int(os.environ.get("GC_EVERY_N_CYCLES", "5"))
 # ── Memory Watchdog ──────────────────────────────────────────────────────
-# When the indexer's guarded memory exceeds MEMORY_HIGH_MB the daemon pauses
-# NEW chain ingestion (no new sync cycles) until it drops back under the
-# threshold. This is an in-process backstop on top of the systemd
-# MemoryHigh/MemoryMax cgroup limits: it avoids the OOM-kill churn that
-# 14 parallel chains caused on 2026-08-03 by backing off *before* the
-# cgroup reaper fires.
+# When guarded memory exceeds MEMORY_HIGH_MB the daemon pauses NEW chain
+# ingestion until it drops back under. In-process backstop above the cgroup
+# reaper (avoids the 2026-08-03 OOM churn from 14 parallel chains).
 #
-# METRIC (2026-09-13 post-mortem): the kernel cgroup OOM killer fires on
-# cgroup charge (memory.current = anon + file cache + kernel + sock charged
-# to the cgroup), NOT process RSS. On 2026-09-13 07:24:51 the daemon was
-# OOM-killed with anon-RSS at 5.34 GiB — below the old 6 GiB RSS gate —
-# while the cgroup crossed the 7 GiB MemoryMax. The gate now guards
-# max(process RSS, cgroup memory.current) so it closes on whichever metric
-# is higher. Default 4096 = 4 GiB: real headroom under the 6 GiB
-# MemoryHigh drop-in, since cgroup overhead (page cache, kernel, sock)
-# exceeds the ~0.9 GiB nominal gap the old 6144 default left. RSS is read
-# from /proc/self/statm; cgroup memory from /sys/fs/cgroup/<path>/
-# memory.current (auto-detected via /proc/self/cgroup, or CGROUP_MEMORY_PATH).
+# METRIC (2026-09-13 OOM): the kernel reaps on cgroup charge
+# (memory.current = anon+cache+kernel+sock), not RSS — the daemon died at
+# 5.34 GiB RSS against a 7 GiB MemoryMax. The gate guards
+# max(RSS, memory.current); RSS from /proc/self/statm, cgroup via
+# CGROUP_MEMORY_PATH or auto-detect. Default 4096 = 4 GiB headroom.
+#
+# INVARIANT (2026-09-19): recycle must sit below the cgroup memory.max cap;
+# resolve_recycle_mb() clamps + logs ``memory_recycle_clamped``. NEVER
+# reintroduce kernel memory.high (D-state wedge, removed 2026-09-14).
+# See indexer/_memory_cap.py.
 MEMORY_HIGH_MB: int = int(os.environ.get("MEMORY_HIGH_MB", "4096"))
 
 # Explicit path to a cgroup v2 memory.current file. Empty = auto-detect
@@ -137,8 +133,9 @@ MEMORY_PAUSE_SLEEP: int = int(os.environ.get("MEMORY_PAUSE_SLEEP", "30"))
 # a completed sync cycle (state already saved) the daemon checks its guarded
 # memory and, at or above this threshold, logs ``memory_recycle`` and exits
 # cleanly so systemd ``Restart=always`` restarts it with a fresh heap.
-# Default 3072 = 3 GiB caps max RSS at ~3.1 GiB, well under MEMORY_HIGH_MB.
-# Set MEMORY_RECYCLE_MB=0 to disable self-recycling.
+# Default 3072 = 3 GiB; production systemd declares 5800 under
+# MemoryMax=7G. Clamped below the cgroup cap by resolve_recycle_mb()
+# (see above); 0 disables self-recycling.
 MEMORY_RECYCLE_MB: int = int(os.environ.get("MEMORY_RECYCLE_MB", "3072"))
 
 # ── Continuous memory watchdog thread ────────────────────────────────────

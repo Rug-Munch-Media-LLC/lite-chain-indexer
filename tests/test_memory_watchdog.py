@@ -165,13 +165,9 @@ def test_watchdog_logs_pre_emergency_at_high(
     # Pin the high threshold so the test doesn't depend on the ambient env
     # value, and raise the recycle ceiling above it.
     monkeypatch.setattr(daemon_mod, "MEMORY_HIGH_MB", 4096)
-    # memory_recycle_needed binds MEMORY_RECYCLE_MB as a default arg at def
-    # time — patch the function itself to raise the ceiling.
-    monkeypatch.setattr(
-        daemon_mod,
-        "memory_recycle_needed",
-        lambda mem_mb, threshold_mb=8192: threshold_mb > 0 and mem_mb >= threshold_mb,
-    )
+    # The watchdog resolves the recycle ceiling per tick — seam
+    # resolve_recycle_mb to raise it above the high threshold.
+    monkeypatch.setattr(daemon_mod, "resolve_recycle_mb", lambda *a, **k: 8192)
     _run_one_iteration(mem_mb=4096, monkeypatch=monkeypatch, exits=exits)
     with patch(f"{MODULE}.logger") as log:
         thread = start_memory_watchdog(())

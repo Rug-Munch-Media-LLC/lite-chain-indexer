@@ -17,9 +17,9 @@ from lite_indexer.config import (
     BACKFILL_MAX_CONCURRENCY,
     BACKFILL_MAX_QUEUE_DEPTH,
     BACKFILL_WINDOW_AWARE,
-    MEMORY_RECYCLE_MB,
 )
 from lite_indexer.indexer._base import IndexerMixinBase
+from lite_indexer.indexer._memory_cap import resolve_recycle_mb
 from lite_indexer.indexer._writers import (
     build_nats_payloads,
     maybe_run_vector_ingestion,
@@ -307,12 +307,12 @@ class BackfillMixin(IndexerMixinBase):
             return {}
 
         mem_mb = self.guarded_memory_mb()
-        memory_ok = self.memory_gate_ok() and not (MEMORY_RECYCLE_MB > 0 and mem_mb >= MEMORY_RECYCLE_MB)
+        recycle_mb = resolve_recycle_mb()
+        memory_ok = self.memory_gate_ok() and not (recycle_mb > 0 and mem_mb >= recycle_mb)
 
         # Quota-window-aware scheduling: defer a chunk whose freemium account
-        # is near its window cap instead of dispatching into a 429, and let it
-        # fire just after the window resets. Providers with no ledger window
-        # are never deferred, so backfill cannot starve.
+        # is near its window cap instead of dispatching into a 429; fire it
+        # after the window resets. Ledger-less providers never defer.
         window_gate: Callable[[str, str], WindowDecision] | None = None
         if BACKFILL_WINDOW_AWARE:
 
