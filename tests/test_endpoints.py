@@ -171,6 +171,19 @@ class TestGetLogsEndpoints:
         assert 50 <= builtin_total <= 120
         assert builtin_total <= active_total <= 500
 
+    def test_structurally_dead_endpoints_culled_20260919(self):
+        """Live probe 2026-09-19: dead/lagging endpoints must not be in the pool.
+
+        - polygon-rpc.com: HTTP 401 "API key disabled" (structurally dead)
+        - polygon.blockscout.com/api/eth-rpc: eth_blockNumber result null
+          (tip-incapable)
+        - celo.blockscout.com/api/eth-rpc: tip ~69.7k blocks behind median
+          (stale tip freezes highwater)
+        """
+        assert "https://polygon-rpc.com" not in BUILTIN_ENDPOINTS["polygon"]
+        assert "https://polygon.blockscout.com/api/eth-rpc" not in BUILTIN_ENDPOINTS["polygon"]
+        assert "https://celo.blockscout.com/api/eth-rpc" not in BUILTIN_ENDPOINTS["celo"]
+
 
 class TestPublicModulesHaveNoFreemium:
     """The public chains package must not expose the curated provider stack."""
@@ -404,14 +417,18 @@ class TestPocketEndpoints:
 # <chain>.blockscout.com 301-redirects.
 BLOCKSCOUT_HOSTS: dict[str, str] = {
     "ethereum": "eth.blockscout.com",
-    "polygon": "polygon.blockscout.com",
     "arbitrum": "arbitrum.blockscout.com",
     "zksync": "zksync.blockscout.com",
-    "celo": "celo.blockscout.com",
     "optimism": "explorer.optimism.io",
     "scroll": "scrollscan.com",
     "gnosis": "gnosisscan.io",
 }
+# Chains whose Blockscout eth-rpc was culled on 2026-09-19 despite archive
+# getLogs support: polygon.blockscout.com returns a null eth_blockNumber
+# (tip-incapable) and celo.blockscout.com's tip lags the pool by ~69.7k
+# blocks. A tip-incapable / stale-tip endpoint freezes the chain highwater,
+# so it is not admitted to the active pool.
+BLOCKSCOUT_CULLED_STALE_TIP = ("polygon", "celo")
 # Chains with NO usable Blockscout eth-rpc host (base is rate-limited).
 BLOCKSCOUT_UNAVAILABLE = (
     "base",
@@ -447,7 +464,7 @@ class TestBlockscoutEndpoints:
             assert _resolved_endpoints([url]) == [url]
 
     def test_unavailable_chains_have_no_blockscout_entry(self):
-        for chain in BLOCKSCOUT_UNAVAILABLE:
+        for chain in (*BLOCKSCOUT_UNAVAILABLE, *BLOCKSCOUT_CULLED_STALE_TIP):
             assert not any(
                 "blockscout" in u or "scrollscan" in u or "gnosisscan" in u for u in BUILTIN_ENDPOINTS[chain]
             ), chain

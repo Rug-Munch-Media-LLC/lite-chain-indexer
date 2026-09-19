@@ -123,12 +123,13 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://polygon-mainnet.gateway.tatum.io",
         "https://polygon-bor-rpc.publicnode.com",  # T3 — probe-verified 2026-08-23 (fallback-only: no topic-only getLogs)
         "https://polygon.publicnode.com",  # T3 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
-        # rpc-mainnet.matic.network removed 2026-09-13 — DNS dead (Polygon
-        # with the real key: eth_chainId 0x89, 2026-09-13) so the
-        # rate-limit-critical polygon pool keeps its depth.
-        "https://polygon-rpc.com",  # T3 — re-added 2026-09-02 during rate-limit crisis (was 401 on 2026-08-05 — re-probe)
+        # 2026-09-19 live re-probe: polygon-rpc.com → HTTP 401 "API key
+        # disabled" (structurally dead, was re-added 2026-09-02 during the
+        # rate-limit crisis and never re-probed) and
+        # polygon.blockscout.com/api/eth-rpc → eth_blockNumber result null
+        # (tip-incapable; archive getLogs only). Both REMOVED from the
+        # active pool — a tip-incapable endpoint can hold the tip poll.
         "https://rpc-mainnet.matic.quiknode.pro",
-        "https://polygon.blockscout.com/api/eth-rpc",  # T2 — Blockscout public RPC — keyless, archive getLogs verified 2026-09-13; logs-only (no archive state)
         "https://gateway.tenderly.co/public/polygon",  # T2 — Tenderly public RPC gateway — keyless, archive getLogs verified 2026-09-13
     ],
     # ── Arbitrum (6 endpoints) ────────────────────────────────────────
@@ -237,7 +238,11 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://forno.celo.org",  # T1 — official forno (verified)
         "https://celo.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://celo.publicnode.com",  # T2 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
-        "https://celo.blockscout.com/api/eth-rpc",  # T2 — Blockscout public RPC — keyless, archive getLogs verified 2026-09-13; logs-only (no archive state)
+        # 2026-09-19 live re-probe: celo.blockscout.com/api/eth-rpc tip was
+        # 77,842,755 vs pool median 77,912,496 — ~69.7k blocks stale (it
+        # serves archive getLogs but its tip lags). REMOVED: a stale-tip
+        # endpoint returns "recent" ranges ~70k blocks old and freezes the
+        # chain's highwater.
         "https://gateway.tenderly.co/public/celo",  # T2 — Tenderly public RPC gateway — keyless, archive getLogs verified 2026-09-13
     ],
     # ── Blast (verified 2026-09-01) ──────────────────────────────────
@@ -311,10 +316,10 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 }
 
 # Summary of PUBLIC (free/keyless) EVM endpoints per chain:
-#   ethereum: 10  base: 7   bsc: 10   polygon: 9
+#   ethereum: 10  base: 7   bsc: 10   polygon: 7
 #   arbitrum: 8   optimism: 7   avalanche: 6   fantom: 3
 #   linea: 7   scroll: 6   zksync: 5   mantle: 6
-#   gnosis: 7   celo: 5   blast: 4   fraxtal: 3
+#   gnosis: 7   celo: 4   blast: 4   fraxtal: 3
 #   metis: 2   robinhood: 5   hyperliquid: 2
 # -------------------------------------------------------
 #   Total builtin public templates: 112 across 19 chains

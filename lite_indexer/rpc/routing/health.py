@@ -261,6 +261,13 @@ STALENESS_MAX_BLOCKS = RPC_STALE_TIP_BLOCKS
 # health-verification penalty (+10000) and sits below the circuit-open
 # (+20000) / hard-ban (+50000) penalties so the failure path still wins.
 STALE_ENDPOINT_PENALTY = 15000
+# Tip-failure demotion: an endpoint that cannot answer ``eth_blockNumber``
+# (null result / transport error) records no block height, so the staleness
+# gate above can never see it as lagging — it stays "fresh" forever and can
+# be picked for the tip poll, where it stalls the chain. Consecutive tip
+# failures demote it from tip rotation until it records a height.
+TIP_FAILURE_THRESHOLD = 2
+TIP_FAILURE_PENALTY = 15000
 
 
 @dataclass
@@ -278,6 +285,11 @@ class EndpointLatency:
     in_flight: int = 0
     last_block_height: int | None = None
     last_updated_at: float = 0.0
+    # Consecutive tip-observation failures since the last successful height
+    # record. Non-zero (>= TIP_FAILURE_THRESHOLD) means the endpoint cannot
+    # currently serve a fresh tip; it is demoted from tip rotation until it
+    # records a height.
+    tip_failures: int = 0
     # (timestamp, ok) pairs within ERROR_WINDOW_SECONDS; pruned on write.
     _outcomes: list[tuple[float, bool]] = field(default_factory=list, init=False, repr=False)
 
@@ -462,13 +474,51 @@ def record_endpoint_block_height(endpoint: str, height: int) -> None:
     catches up). Call this after every successful tip-observation call
     (``eth_blockNumber`` / ``getBlockHeight``).
 
+    The height is kept monotonic (``max``) so a historical/backfill read
+    that requests an old block number can never *lower* the endpoint's
+    recorded tip and wrongly mark a healthy endpoint stale. A successful
+    tip observation also clears the tip-failure counter.
+
     Args:
         endpoint: RPC endpoint URL.
         height: Latest block height observed from this endpoint.
     """
+    if height is None or height <= 0:
+        return
     stats = _stats(endpoint)
-    stats.last_block_height = height
+    stats.last_block_height = max(stats.last_block_height or 0, height)
+    stats.tip_failures = 0
     stats.last_updated_at = time.time()
+
+
+def record_endpoint_tip_failure(endpoint: str) -> int:
+    """Record a failed tip observation (null/error ``eth_blockNumber``).
+
+    An endpoint that fails to return a tip records no height, which would
+    otherwise leave it permanently exempt from the staleness gate ("no
+    data never penalizes"). Counting the failures lets the selector demote
+    a tip-incapable endpoint until it can actually serve a fresh tip.
+
+    Args:
+        endpoint: RPC endpoint URL.
+
+    Returns:
+        The endpoint's consecutive tip-failure count after this record.
+    """
+    stats = _stats(endpoint)
+    stats.tip_failures += 1
+    stats.last_updated_at = time.time()
+    return stats.tip_failures
+
+
+def is_endpoint_tip_failed(endpoint: str) -> bool:
+    """Whether ``endpoint`` is currently demoted for repeated tip failures."""
+    return _stats(endpoint).tip_failures >= TIP_FAILURE_THRESHOLD
+
+
+def tip_failed_endpoints(endpoints: list[str]) -> list[str]:
+    """All pool endpoints currently demoted for repeated tip failures."""
+    return [ep for ep in endpoints if is_endpoint_tip_failed(ep)]
 
 
 def endpoint_block_height(endpoint: str) -> int | None:

@@ -344,7 +344,9 @@ def get_best_endpoint(endpoints: list[str]) -> str:
 
     from lite_indexer.rpc.routing import (
         STALE_ENDPOINT_PENALTY,
+        TIP_FAILURE_PENALTY,
         is_circuit_open,
+        is_endpoint_tip_failed,
         stale_endpoints,
     )
 
@@ -374,6 +376,13 @@ def get_best_endpoint(endpoints: list[str]) -> str:
         # pool median).
         if ep in stale:
             penalty += STALE_ENDPOINT_PENALTY
+
+        # Tip-failure demotion: an endpoint that failed repeated
+        # eth_blockNumber observations records no height, so the stale gate
+        # cannot see it lag. Exclude it from tip rotation until it serves a
+        # fresh tip, or a dead tip-incapable endpoint keeps holding the tip.
+        if is_endpoint_tip_failed(ep):
+            penalty += TIP_FAILURE_PENALTY
 
         # Per-identity budget gate: an endpoint pre-emptively cooled at its
         # daily-budget threshold is skipped (before the provider 429s it).

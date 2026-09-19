@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import random
 
-from lite_indexer.rpc.routing.health import _stats, stale_endpoints
+from lite_indexer.rpc.routing.health import _stats, stale_endpoints, tip_failed_endpoints
 
 
 def select_p2c(endpoints: list[str]) -> str:
@@ -71,6 +71,11 @@ def select_p2c_healthy(endpoints: list[str]) -> str:
     from lite_indexer.rpc.pool import is_endpoint_banned
 
     stale = set(stale_endpoints(endpoints))
-    healthy = [ep for ep in endpoints if not is_endpoint_banned(ep) and not _rt.is_circuit_open(ep) and ep not in stale]
+    tip_failed = set(tip_failed_endpoints(endpoints))
+    healthy = [
+        ep
+        for ep in endpoints
+        if not is_endpoint_banned(ep) and not _rt.is_circuit_open(ep) and ep not in stale and ep not in tip_failed
+    ]
     candidates = healthy if len(healthy) >= 2 else endpoints
     return select_p2c(candidates)

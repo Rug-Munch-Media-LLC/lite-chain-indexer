@@ -240,6 +240,24 @@ class TestSingleEndpointFailure:
         for _ in range(20):
             assert get_best_endpoint([healthy, banned]) == healthy
 
+    def test_best_endpoint_skips_tip_failed_until_recovery(self, clock: _Clock):
+        """A tip-incapable endpoint must not hold the tip poll."""
+        from lite_indexer.rpc.routing import (
+            record_endpoint_block_height,
+            record_endpoint_tip_failure,
+        )
+
+        healthy = "https://healthy-tip.invalid"
+        stalled = "https://stalled-tip.invalid"
+        record_endpoint_block_height(healthy, 1000)
+        record_endpoint_tip_failure(stalled)
+        record_endpoint_tip_failure(stalled)  # threshold reached
+        for _ in range(20):
+            assert get_best_endpoint([healthy, stalled]) == healthy
+
+        record_endpoint_block_height(stalled, 1000)  # recovers
+        assert get_best_endpoint([healthy, stalled]) in {healthy, stalled}
+
     def test_best_endpoint_skips_single_circuit_open(self, clock: _Clock):
         healthy = "https://healthy.invalid"
         broken = "https://broken.invalid"

@@ -98,3 +98,42 @@ def test_selector_excludes_stale_endpoint(monkeypatch: pytest.MonkeyPatch) -> No
     assert captured, "select_p2c was not called"
     assert C not in captured[0]
     assert chosen in {A, B}
+
+
+def test_tip_failure_demotes_then_success_recovers() -> None:
+    """A tip-incapable endpoint must be demoted, not left permanently fresh."""
+    routing.record_endpoint_tip_failure(A)
+    assert routing.is_endpoint_tip_failed(A) is False  # below threshold
+
+    routing.record_endpoint_tip_failure(A)
+    assert routing.is_endpoint_tip_failed(A) is True
+    assert routing.tip_failed_endpoints([A, B, C]) == [A]
+
+    routing.record_endpoint_block_height(A, 1000)  # serves a fresh tip
+    assert routing.is_endpoint_tip_failed(A) is False
+    assert routing.tip_failed_endpoints([A, B, C]) == []
+
+
+def test_selector_excludes_tip_failed_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """select_p2c_healthy must not draw an endpoint stuck failing the tip poll."""
+    routing.record_endpoint_tip_failure(C)
+    routing.record_endpoint_tip_failure(C)
+    captured: list[list[str]] = []
+
+    def _capture(candidates: list[str]) -> str:
+        captured.append(list(candidates))
+        return candidates[0]
+
+    monkeypatch.setattr("lite_indexer.rpc.routing.balancer.select_p2c", _capture)
+    chosen = routing.select_p2c_healthy([A, B, C])
+
+    assert captured, "select_p2c was not called"
+    assert C not in captured[0]
+    assert chosen in {A, B}
+
+
+def test_historical_read_never_lowers_recorded_tip() -> None:
+    """A backfill read (old block number) must not mark a healthy tip stale."""
+    routing.record_endpoint_block_height(A, 1000)
+    routing.record_endpoint_block_height(A, 1)  # old requested block
+    assert routing.endpoint_block_height(A) == 1000

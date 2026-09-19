@@ -71,6 +71,7 @@ from lite_indexer.rpc.routing import (
     decr_in_flight,
     incr_in_flight,
     record_endpoint_block_height,
+    record_endpoint_tip_failure,
     record_rpc_latency,
     record_rpc_outcome,
 )
@@ -722,11 +723,13 @@ class RpcClient:
         """
         result = await self.call(endpoint, "eth_blockNumber")
         if not result or "result" not in result:
+            _safe_record(record_endpoint_tip_failure, endpoint)
             return None
         try:
             height = int(result["result"], 16)
         except (ValueError, TypeError) as exc:
             logger.debug("eth_block_number_non_hex", endpoint=endpoint[:50], error=str(exc)[:40])
+            _safe_record(record_endpoint_tip_failure, endpoint)
             return None
         _safe_record(record_endpoint_block_height, endpoint, height)
         return height
