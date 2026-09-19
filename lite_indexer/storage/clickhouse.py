@@ -153,6 +153,23 @@ def _coerce_int(value: Any) -> int:
         return 0
 
 
+def _transfer_dedup_key(block_number: Any, tx_hash: Any, log_index: Any) -> str:
+    """Storage dedup key for ``wallet_memory.evm_transfers`` rows.
+
+    Mirrors the application dedup key ``(block_number, tx_hash, log_index)``
+    and populates the appended ReplacingMergeTree sorting column
+    ``tx_log_key`` (migrations/018_evm_transfers_dedup_key_v2.sql), so a
+    re-extracted range produces a byte-identical key and the storage layer
+    collapses it at merge time.
+
+    The component ORDER MUST stay ``(block_number, tx_hash, log_index)`` to
+    match :meth:`ClickHouseWriter._existing_transfer_keys` — the unit test
+    ``test_tx_log_key_matches_app_dedup_key`` pins the two together so they
+    cannot drift.
+    """
+    return f"{_coerce_int(block_number)}:{tx_hash or ''}:{_coerce_int(log_index)}"
+
+
 def _serialize_raw_payload(event: dict[str, Any]) -> str:
     """Serialize the raw RPC dict carried on an event (best-effort).
 
@@ -339,6 +356,7 @@ class ClickHouseWriter(SchemaMixin):
         # ensure the column exists for any scanner that still reads it.
         self._ensure_source_column(client, CH_TABLE)
         self._ensure_raw_payload_column(client, CH_TABLE)
+        self._ensure_dedup_key_column(client, CH_TABLE)
         if CH_TTL_ENABLED:
             self.ensure_ttl_policies(client)
 
@@ -349,7 +367,9 @@ class ClickHouseWriter(SchemaMixin):
         # replacement only happens at merge time, so without this an explicit
         # re-extract (reconciliation rewind / backfill) appends duplicates and
         # the row count compounds. Dedup key: (chain, block_number, tx_hash,
-        # log_index) — see migrations/017_evm_transfers_dedup_key.sql.
+        # log_index) — mirrored by the appended tx_log_key sorting column in
+        # migrations/018_evm_transfers_dedup_key_v2.sql (018 supersedes the
+        # invalid 017).
         unique: dict[tuple[int, str, int], dict[str, Any]] = {}
         for event in events:
             key = (
@@ -389,6 +409,7 @@ class ClickHouseWriter(SchemaMixin):
                     event["logIndex"],
                     now,
                     _serialize_raw_payload(event),
+                    _transfer_dedup_key(key[0], key[1], key[2]),
                 )
             )
 
@@ -404,7 +425,7 @@ class ClickHouseWriter(SchemaMixin):
                 f"INSERT INTO {CH_TABLE} "
                 "(chain, block_number, tx_hash, from_address, to_address, "
                 "token_address, value, block_timestamp, log_index, "
-                "ingested_at, raw_payload) VALUES",
+                "ingested_at, raw_payload, tx_log_key) VALUES",
                 rows,
             )
             logger.info("clickhouse_inserted", chain=chain, rows=len(rows))

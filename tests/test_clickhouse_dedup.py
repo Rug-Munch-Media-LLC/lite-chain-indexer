@@ -62,6 +62,44 @@ def test_write_transfers_skips_rows_already_in_clickhouse(monkeypatch) -> None:
     assert rows[0][1] == 100  # block_number
     assert rows[0][2] == "0xbb"  # tx_hash
     assert rows[0][8] == 1  # log_index
+    assert rows[0][11] == "100:0xbb:1"  # tx_log_key (storage dedup key)
+
+
+def test_tx_log_key_matches_app_dedup_key(monkeypatch) -> None:
+    """The storage key must equal the app dedup key (block, tx_hash, log)."""
+    writer, client = _writer(monkeypatch)
+    writer.write_transfers("tron", [_event(100, "0xaa", 0)])
+
+    rows = client.inserts[0][1]
+    assert rows[0][11] == "100:0xaa:0"
+    # Ordering contract: block:tx_hash:log_index — same as _existing_transfer_keys.
+    assert rows[0][11].split(":") == ["100", "0xaa", "0"]
+
+
+def test_tx_log_key_distinguishes_same_log_index_different_tx(monkeypatch) -> None:
+    """Same (block, log_index) but different tx_hash => distinct dedup keys."""
+    writer, client = _writer(monkeypatch)
+    written = writer.write_transfers("tron", [_event(100, "0xaa", 0), _event(100, "0xbb", 0)])
+
+    assert written == 2
+    keys = {r[11] for r in client.inserts[0][1]}
+    assert keys == {"100:0xaa:0", "100:0xbb:0"}
+
+
+def test_migration_018_declares_dedup_key_contract() -> None:
+    """Schema contract: migration 018 appends tx_log_key to the sorting key.
+
+    Guards against a regression to migration 017's invalid form (appending the
+    EXISTING tx_hash column), which ClickHouse 26.7 rejects with Code 36.
+    """
+    from pathlib import Path
+
+    mig = Path(__file__).resolve().parents[1] / "migrations"
+    text = (mig / "018_evm_transfers_dedup_key_v2.sql").read_text()
+    assert "MODIFY ORDER BY (chain, block_number, log_index, tx_log_key)" in text
+    assert "ADD COLUMN IF NOT EXISTS tx_log_key String" in text
+    old = (mig / "017_evm_transfers_dedup_key.sql").read_text()
+    assert "INVALID" in old and "SUPERSEDED" in old and "DO NOT APPLY" in old
 
 
 def test_write_transfers_dedups_identical_events_in_batch(monkeypatch) -> None:

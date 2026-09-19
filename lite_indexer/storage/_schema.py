@@ -40,7 +40,9 @@ class SchemaMixin:
             )
             if result:
                 return
-            client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS source String DEFAULT ''")  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+            client.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS source String DEFAULT ''"
+            )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             logger.info("source_column_added", table=table)
         except Exception as exc:
             if "already exists" in str(exc) or "privileges" in str(exc).lower():
@@ -67,12 +69,47 @@ class SchemaMixin:
             )
             if result:
                 return
-            client.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS raw_payload String DEFAULT ''")  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+            client.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS raw_payload String DEFAULT ''"
+            )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             logger.info("raw_payload_column_added", table=table)
         except Exception as exc:
             if "already exists" in str(exc) or "privileges" in str(exc).lower():
                 return
             logger.debug("raw_payload_column_skip", error=str(exc)[:80])
+
+    def _ensure_dedup_key_column(self, client: Any, table: str) -> None:
+        """Ensure ``tx_log_key`` exists so writers can name it in INSERTs.
+
+        Added WITHOUT a default expression on purpose: ClickHouse 26.7 forbids
+        appending a newly added column that has a default expression to the
+        sorting key ("Newly added column ... has a default expression"), so
+        migrations/018_evm_transfers_dedup_key_v2.sql must bear the no-default
+        form. An older defaulted column would silently break that migration,
+        hence no ``DEFAULT ''`` here either. Pre-migration rows read as ``''``.
+
+        Runtime fallback only — the canonical key change is migration 018,
+        applied with the indexer stopped. Mirrors ``_ensure_source_column``.
+        """
+        try:
+            result = client.execute(
+                "SELECT name FROM system.columns "
+                "WHERE database = %(database)s AND table = %(table)s AND name = 'tx_log_key'",
+                {
+                    "database": table.split(".")[0] if "." in table else "wallet_memory",
+                    "table": table.split(".")[-1],
+                },
+            )
+            if result:
+                return
+            client.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS tx_log_key String"
+            )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+            logger.info("dedup_key_column_added", table=table)
+        except Exception as exc:
+            if "already exists" in str(exc) or "privileges" in str(exc).lower():
+                return
+            logger.debug("dedup_key_column_skip", error=str(exc)[:80])
 
     def _ensure_dex_usd_columns(self, client: Any) -> None:
         """Ensure dex_events has price_usd/volume_usd columns.
@@ -159,7 +196,9 @@ class SchemaMixin:
             )
             if result:
                 return
-            client.execute(f"ALTER TABLE {SOLANA_CH_TABLE} ADD COLUMN IF NOT EXISTS owner String DEFAULT '' AFTER mint")  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+            client.execute(
+                f"ALTER TABLE {SOLANA_CH_TABLE} ADD COLUMN IF NOT EXISTS owner String DEFAULT '' AFTER mint"
+            )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             logger.info("solana_owner_column_added", table=SOLANA_CH_TABLE)
         except Exception as exc:
             if "already exists" in str(exc) or "privileges" in str(exc).lower():

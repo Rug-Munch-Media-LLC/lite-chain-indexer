@@ -1,0 +1,59 @@
+-- 018_evm_transfers_dedup_key_v2.sql
+-- ---------------------------------------------------------------------------
+-- Idempotent rewind for wallet_memory.evm_transfers — CORRECTED migration.
+--
+-- Supersedes migrations/017_evm_transfers_dedup_key.sql, which is INVALID on
+-- ClickHouse 26.7 (see that file's header). 017 tried
+--     MODIFY ORDER BY (chain, block_number, log_index, tx_hash)
+-- and CH rejected it with Code 36: an EXISTING column (tx_hash) cannot be
+-- appended to the sorting key.
+--
+-- WHY A NEW COLUMN IS REQUIRED (CH 26.7 behaviour, verified on a scratch table
+-- with the exact same engine/projections on 2026-09-19):
+--   * `MODIFY ORDER BY` may only append columns/expressions that are NEWLY
+--     ADDED in the same ALTER statement, and those new columns must NOT have a
+--     default expression (MATERIALIZED/DEFAULT/ALIAS are all rejected with
+--     Code 36: "Newly added column ... has a default expression").
+--   * Therefore the preferred `MATERIALIZED concat(...)` form does NOT exist
+--     on CH 26.7. The only metadata-only path is a plain (no-default) new
+--     String column that the application populates explicitly on INSERT.
+--
+-- The new sorting/dedup key becomes
+--     (chain, block_number, log_index, tx_log_key)
+-- where
+--     tx_log_key = concat(toString(block_number), ':', tx_hash, ':', toString(log_index))
+-- i.e. exactly the application dedup key (block_number, tx_hash, log_index),
+-- so a re-extracted range produces a byte-identical key and the
+-- ReplacingMergeTree collapses it at merge time. The concurrent app-layer
+-- guard (ClickHouseWriter._existing_transfer_keys) still makes the rewind
+-- immediately idempotent; this migration makes the *storage* key agree.
+--
+-- Existing rows get tx_log_key = '' (String, no default). That is safe: the
+-- pre-existing key (chain, block_number, log_index) is already unique for EVM
+-- logs, so no historical rows collapse together. Overlap between an old ('')
+-- row and a newly re-extracted (populated) row is still absorbed by the
+-- application-layer existence check. Optional, off-peak backfill of historical
+-- keys (a full-column mutation over 1.73B rows, NOT required for correctness):
+--   ALTER TABLE wallet_memory.evm_transfers
+--     UPDATE tx_log_key = concat(toString(block_number), ':', tx_hash, ':',
+--                                toString(log_index)) WHERE chain = 'tron';
+--
+-- IDEMPOTENT: proven on a scratch clone — re-running this statement is a
+-- no-op (column exists via IF NOT EXISTS, key already matches). Tested 3x.
+--
+-- APPLY (indexer STOPPED; metadata-only, no data rewrite, no maintenance
+-- window required for the ALTER itself):
+--   clickhouse-client --multiquery < migrations/018_evm_transfers_dedup_key_v2.sql
+-- Then confirm:
+--   SELECT sorting_key FROM system.tables
+--   WHERE database='wallet_memory' AND name='evm_transfers';
+--   -- expect: chain, block_number, log_index, tx_log_key
+-- Restart the indexer; new writes populate tx_log_key (the runtime
+-- _ensure_dedup_key_column adds the column on pre-migration deployments).
+-- Collapse any duplicate backlog off-peak (scoped, one chain at a time):
+--   OPTIMIZE TABLE wallet_memory.evm_transfers FINAL WHERE chain = 'tron';
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE wallet_memory.evm_transfers
+    ADD COLUMN IF NOT EXISTS tx_log_key String,
+    MODIFY ORDER BY (chain, block_number, log_index, tx_log_key);

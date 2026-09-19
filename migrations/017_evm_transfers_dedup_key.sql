@@ -1,4 +1,15 @@
 -- 017_evm_transfers_dedup_key.sql
+-- ===========================================================================
+-- !!! INVALID / SUPERSEDED — DO NOT APPLY (kept for history only) !!!
+--
+-- ClickHouse 26.7 rejects this file with Code 36 (BAD_ARGUMENTS): `MODIFY
+-- ORDER BY` cannot append an EXISTING column (tx_hash) to the sorting key —
+-- only newly added columns with no default expression may be appended.
+-- Superseded by migrations/018_evm_transfers_dedup_key_v2.sql (adds a new
+-- no-default `tx_log_key String` column and appends THAT to the ORDER BY).
+-- Verified on CH 26.7.1.1315 on 2026-09-19; the failed ALTER aborted safely
+-- and is safe to have been attempted. Do NOT retry this file.
+-- ===========================================================================
 -- ---------------------------------------------------------------------------
 -- Idempotent rewind for wallet_memory.evm_transfers (the TRON/EVM transfer
 -- store). Reconciliation rewinds re-extract a [from_block, to_block] range;
