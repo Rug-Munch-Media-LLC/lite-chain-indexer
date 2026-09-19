@@ -140,3 +140,27 @@ def _isolate_attestation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     the production ``ATTESTATION_DIR``. Point it at the per-test tmp dir.
     """
     monkeypatch.setattr("lite_indexer.attestation.ATTESTATION_DIR", tmp_path / "attestations")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_adaptive_chunk(tmp_path: Path) -> None:
+    """Keep persistent getLogs chunk-adaptation files out of the live state dir.
+
+    ``_reset_adaptive_chunk`` now DELETES the on-disk adaptation file; without
+    isolation every test touching an adaptive chain would wipe the production
+    ``/var/data/chain-indexer/state/adaptive_chunk_*.json`` (and a live base
+    could be reset to 50-block chunks). Point the path helper at tmp and clear
+    the in-memory caches around each test.
+    """
+    import lite_indexer.strategies.evm.transfer_handler as th
+
+    original = th._adaptive_state_path
+    th._adaptive_state_path = lambda chain: tmp_path / f"adaptive_chunk_{chain}.json"
+    th._ADAPTIVE_CHUNK_LEVELS.clear()
+    th._ADAPTIVE_CHUNK_STREAKS.clear()
+    th._ADAPTIVE_CHUNK_LOADED.clear()
+    yield
+    th._adaptive_state_path = original
+    th._ADAPTIVE_CHUNK_LEVELS.clear()
+    th._ADAPTIVE_CHUNK_STREAKS.clear()
+    th._ADAPTIVE_CHUNK_LOADED.clear()

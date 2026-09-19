@@ -86,6 +86,13 @@ _RATE_LIMIT_STREAK_BAN_CAP_S = 300
 _endpoint_bans: dict[str, float] = {}
 # url -> ban count (feeds the exponential backoff curve).
 _endpoint_ban_level: dict[str, int] = {}
+# urls banned for EXPLICIT ABUSE (HTTP 403 / provider blacklist) rather than
+# a transient 429 streak. The distinction is what broke celo (2026-09-19):
+# the recovery probe must never dial an abuse-banned endpoint (probing
+# deepens the blacklist), but a 429-streak soft-ban is EXACTLY the
+# transient state the probe exists to re-test — excluding it meant an
+# all-soft-banned pool could never self-heal and the chain deadlocked.
+_endpoint_hard_bans: set[str] = set()
 
 # D2 (2026-09-14): persist ban windows + 429 streaks so a restart does not
 # reset them and immediately re-hammer the pool.
@@ -110,6 +117,7 @@ def _persist_ban(endpoint: str) -> None:
             "until": float(banned_until) if active else 0.0,
             "level": int(_endpoint_ban_level.get(endpoint, 0)),
             "streak": streak,
+            "hard": endpoint in _endpoint_hard_bans,
         }
     )
     cache_db.state_put(_BAN_KIND, endpoint, payload, ttl=max(0.0, banned_until - now) + 600.0)
@@ -133,6 +141,8 @@ def load_ban_state() -> int:
                 _endpoint_bans[endpoint] = until
                 _endpoint_ban_level[endpoint] = int(data.get("level", 0) or 0)
                 _endpoint_429_streaks[endpoint] = int(data.get("streak", 0) or 0)
+                if data.get("hard"):
+                    _endpoint_hard_bans.add(endpoint)
                 loaded += 1
         except (ValueError, TypeError):
             continue
@@ -146,6 +156,7 @@ def clear_ban_state() -> None:
     _endpoint_bans.clear()
     _endpoint_ban_level.clear()
     _endpoint_429_streaks.clear()
+    _endpoint_hard_bans.clear()
 
 
 # ── Hard Ban (403/429) ───────────────────────────────────────────────
@@ -173,6 +184,8 @@ def ban_endpoint(endpoint: str, reason: str = "") -> None:
     duration = min(ENDPOINT_BAN_BASE_SECONDS * (2**level), ENDPOINT_BAN_CAP_SECONDS)
     _endpoint_bans[endpoint] = time.time() + duration
     _endpoint_ban_level[endpoint] = level + 1
+    if reason.startswith("http_403"):
+        _endpoint_hard_bans.add(endpoint)
     metrics_incr("endpoints_banned")
     _persist_ban(endpoint)
     logger.warning(
@@ -189,6 +202,7 @@ def unban_endpoint(endpoint: str) -> None:
     if endpoint in _endpoint_bans:
         _endpoint_bans.pop(endpoint, None)
         _endpoint_ban_level.pop(endpoint, None)
+        _endpoint_hard_bans.discard(endpoint)
         _persist_ban(endpoint)
         logger.debug("endpoint_unbanned", endpoint=endpoint[:60])
 
@@ -209,6 +223,23 @@ def is_endpoint_banned(endpoint: str) -> bool:
     if time.time() >= banned_until:
         # Ban window elapsed — clear it lazily.
         _endpoint_bans.pop(endpoint, None)
+        return False
+    return True
+
+
+def is_endpoint_hard_banned(endpoint: str) -> bool:
+    """Whether ``endpoint`` is banned for explicit abuse (HTTP 403), not 429.
+
+    A hard-banned endpoint must never be dialed by the recovery probe: a
+    provider blacklist only deepens when probed. A 429-streak soft-ban is
+    deliberately NOT hard, so the desperation probe can still re-test it —
+    that is the transient-recovery path the probe exists for.
+    """
+    if endpoint not in _endpoint_hard_bans:
+        return False
+    if not is_endpoint_banned(endpoint):
+        # Ban window elapsed — the hard flag is stale.
+        _endpoint_hard_bans.discard(endpoint)
         return False
     return True
 
@@ -273,19 +304,23 @@ def probe_eligible_endpoints(endpoints: list[str]) -> list[str]:
     """Endpoints the desperation probe is ALLOWED to dial.
 
     The probe exists to detect recovery, so it must never pick an endpoint
-    that is guaranteed to fail: a hard-banned endpoint (provider blacklist,
-    probing deepens the ban) or a capability-excluded endpoint (structurally
-    cannot serve broad eth_getLogs). Circuit-open endpoints stay eligible —
-    that is exactly what ``force_probe`` overrides.
+    that is guaranteed to fail: an abuse-banned endpoint (HTTP 403 /
+    provider blacklist, where probing deepens the ban) or a
+    capability-excluded endpoint (structurally cannot serve broad
+    eth_getLogs). Circuit-open endpoints stay eligible — that is exactly
+    what ``force_probe`` overrides, and so do 429-streak SOFT-BANNED
+    endpoints: their ban is transient by definition, and re-testing them is
+    the whole point of the probe. Excluding soft-bans made an all-banned
+    celo pool permanently unable to recover (2026-09-19).
 
     Args:
         endpoints: Pool candidate URLs.
 
     Returns:
-        Subset that is neither hard-banned nor logs-incapable (may be empty;
-        the caller must then wait out the ban instead of probing).
+        Subset that is neither abuse-banned nor logs-incapable (may be
+        empty; the caller must then wait out the ban instead of probing).
     """
-    return [ep for ep in endpoints if not is_endpoint_banned(ep) and not _logs_capability_excluded(ep)]
+    return [ep for ep in endpoints if not is_endpoint_hard_banned(ep) and not _logs_capability_excluded(ep)]
 
 
 def force_probe_endpoint(endpoint: str) -> bool:

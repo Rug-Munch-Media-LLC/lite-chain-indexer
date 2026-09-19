@@ -196,6 +196,16 @@ class TestPoolWideOutage:
             ban_endpoint(b, reason="http_403")
         assert probe_eligible_endpoints([a, b]) == []
 
+    def test_probe_eligible_includes_rate_limit_softban(self, clock: _Clock):
+        """A 429-streak soft-ban is transient: the probe MUST be allowed to
+        re-test it, else an all-soft-banned pool (celo, 2026-09-19) can never
+        self-recover."""
+        ep = "https://softbanned.invalid"
+        for _ in range(3):  # streak >= threshold arms the soft-ban
+            record_rate_limit(ep)
+        assert is_endpoint_banned(ep) is True
+        assert probe_eligible_endpoints([ep]) == [ep]
+
     def test_rate_limit_streak_softban_capped_at_300s(self, clock: _Clock):
         """Was capped at 3600s → a transient 429 burst froze the chain for an
         hour past provider recovery. Cap must be 300s at every streak."""
@@ -483,6 +493,37 @@ class TestAdaptiveChunkReduction:
         assert _adaptive_chunk_size("arbitrum", 50) == 25
         _reset_adaptive_chunk("arbitrum")
         assert _adaptive_chunk_size("arbitrum", 50) == 50
+
+    def test_adaptive_level_persists_across_restart(self):
+        """The watchdog restarts the daemon mid-adaptation; a process-local
+        dict was wiped every restart so base never converged to 5-block
+        chunks. The level must survive on disk (conftest isolates the path)."""
+        import lite_indexer.strategies.evm.transfer_handler as th
+
+        th._reset_adaptive_chunk("base")
+        for _ in range(4):
+            th._bump_adaptive_chunk("base")
+        assert th._adaptive_chunk_size("base", 50) == th.ADAPTIVE_CHUNK_FLOOR
+        # Simulate a fresh process: forget memory, keep the file.
+        th._ADAPTIVE_CHUNK_LEVELS.clear()
+        th._ADAPTIVE_CHUNK_STREAKS.clear()
+        th._ADAPTIVE_CHUNK_LOADED.clear()
+        assert th._adaptive_chunk_size("base", 50) == th.ADAPTIVE_CHUNK_FLOOR
+        th._reset_adaptive_chunk("base")
+
+    def test_success_decays_one_level_not_full_reset(self):
+        """A single success must not snap back to 50 blocks (base
+        oscillation); decay is one step after a sustained streak."""
+        import lite_indexer.strategies.evm.transfer_handler as th
+
+        th._reset_adaptive_chunk("base")
+        th._bump_adaptive_chunk("base")
+        th._bump_adaptive_chunk("base")
+        assert th._adaptive_chunk_size("base", 50) == 12
+        for _ in range(th.ADAPTIVE_RECOVERY_SUCCESSES):
+            th._record_adaptive_success("base")
+        assert th._adaptive_chunk_size("base", 50) == 25  # one level, not 50
+        th._reset_adaptive_chunk("base")
 
     def test_chains_independent(self):
         from lite_indexer.strategies.evm.transfer_handler import (
