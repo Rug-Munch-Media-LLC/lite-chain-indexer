@@ -24,7 +24,7 @@ from lite_indexer.config import (
     RATE_LIMIT_WAIT_CAP,
     RPC_BATCH_ENABLED,
     RPC_BATCH_MAX,
-    RPC_CALL_CLIENTS_MAX,
+    RPC_CALL_CLIENTS_MAX,  # noqa: F401  (re-exported; rpc.client_pool reads it at runtime)
     RPC_CALL_TIMEOUT,
     RPC_RETRY_ATTEMPTS,
     RPC_RETRY_BASE_DELAY_S,
@@ -43,6 +43,13 @@ from lite_indexer.rpc.budgets import (
     record_budget_dispatch,
     record_budget_response,
     record_budget_success,
+)
+from lite_indexer.rpc.client_pool import (
+    _call_clients,  # noqa: F401  (re-export for import stability)
+    _drop_call_client,
+    _get_call_client,
+    _is_closed_client_error,
+    aclose_call_clients,  # noqa: F401  (re-export for import stability)
 )
 from lite_indexer.rpc.jsonparse import decode_response_async
 from lite_indexer.rpc.ledger import (
@@ -185,79 +192,6 @@ def _warn_deferred(endpoint: str, method: str, reason: str) -> None:
         method=method,
         reason=reason,
     )
-
-
-# ── Pooled HTTP Clients ────────────────────────────────────────────────
-# Reuse a small set of AsyncClients across all RpcClient instances, keyed
-# by timeout (and proxy) so callers don't fight over one value. Creation
-# is synchronous — no await between lookup and assignment.
-#
-# BOUNDED (2026-09-13): capped at RPC_CALL_CLIENTS_MAX with LRU eviction;
-# an evicted client is closed. A client closed under an in-flight request
-# self-heals via _is_closed_client_error → drop + recreate + retry.
-_call_clients: OrderedDict[tuple[float, str | None], httpx.AsyncClient] = OrderedDict()
-
-
-def _is_closed_client_error(exc: BaseException) -> bool:
-    """Whether ``exc`` means the pooled client/transport was closed under us.
-
-    Covers httpx's "client has been closed" RuntimeError, anyio's
-    ClosedResourceError (proxy TLS teardown) and httpx transport closes.
-    """
-    if isinstance(exc, httpx.TransportError):
-        return True
-    name = type(exc).__name__
-    if name in ("ClosedResourceError", "BrokenResourceError"):
-        return True
-    return isinstance(exc, RuntimeError) and "client has been closed" in str(exc).lower()
-
-
-def _drop_call_client(timeout: float, proxy: rpc_proxy.ProxySpec | None) -> None:
-    """Evict a (possibly closed/broken) pooled client so the next call recreates it."""
-    with contextlib.suppress(KeyError):
-        del _call_clients[(timeout, proxy.url if proxy is not None else None)]
-
-
-async def _get_call_client(timeout: float, proxy: rpc_proxy.ProxySpec | None = None) -> httpx.AsyncClient:
-    """Get a pooled module-level httpx client for the given timeout/proxy.
-
-    Capped at :data:`RPC_CALL_CLIENTS_MAX` with LRU eviction (evicted
-    clients are closed). Explicit connection limits keep sockets bounded.
-    A proxy whose optional dependency is missing degrades to a direct
-    client (logged) rather than failing the call.
-    """
-    key = (timeout, proxy.url if proxy is not None else None)
-    client = _call_clients.get(key)
-    if client is not None and not client.is_closed:
-        _call_clients.move_to_end(key)
-        return client
-    kwargs: dict[str, Any] = {"timeout": httpx.Timeout(timeout), "limits": http_limits()}
-    if proxy is not None:
-        kwargs["proxy"] = proxy.url
-    try:
-        client = httpx.AsyncClient(**kwargs)
-    except (ImportError, ValueError) as exc:
-        # e.g. a socks5 proxy without the optional socks transport installed.
-        logger.warning("rpc_proxy_client_unavailable", proxy=proxy.label if proxy else "", error=str(exc)[:80])
-        kwargs.pop("proxy", None)
-        client = httpx.AsyncClient(**kwargs)
-    _call_clients[key] = client
-    _call_clients.move_to_end(key)
-    while len(_call_clients) > RPC_CALL_CLIENTS_MAX:
-        _, evicted = _call_clients.popitem(last=False)
-        with contextlib.suppress(Exception):
-            await evicted.aclose()
-    return client
-
-
-async def aclose_call_clients() -> None:
-    """Close and clear every pooled call client (shutdown / tests)."""
-    clients = list(_call_clients.values())
-    _call_clients.clear()
-    for client in clients:
-        if not client.is_closed:
-            with contextlib.suppress(Exception):
-                await client.aclose()
 
 
 async def _budget_before(endpoint: str) -> None:

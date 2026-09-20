@@ -45,7 +45,7 @@
   "lite_indexer/rpc/budgets.py": 487,
   "lite_indexer/rpc/cache_db.py": 503,
   "lite_indexer/rpc/capabilities.py": 806,
-  "lite_indexer/rpc/client.py": 1364,
+  "lite_indexer/rpc/client.py": 1298,
   "lite_indexer/rpc/consensus.py": 582,
   "lite_indexer/rpc/discovery.py": 325,
   "lite_indexer/rpc/head_pool.py": 215,
