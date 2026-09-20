@@ -9,7 +9,7 @@ Only connection-level failures raise; a live server rejecting the query
 (``ServerException``) still returns 0, and a dedup-only batch (all rows
 already durable) is a legitimate zero and returns 0 normally.
 
-Hermetic: DI fakes / subclass seams, no network, no monkeypatch.
+Hermetic: DI fakes / subclass seams, no network, no monkeypatch fixture.
 """
 
 from __future__ import annotations

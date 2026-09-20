@@ -38,7 +38,7 @@ _UNSET = object()
 
 
 def _setattr(target, name_or_value, value=_UNSET) -> None:
-    """Set an attribute without pytest monkeypatch.
+    """Set an attribute without the pytest monkeypatch fixture.
 
     Two forms: ``_setattr("module.attr", value)`` (dotted path) and
     ``_setattr(obj, "attr", value)`` (live object).
