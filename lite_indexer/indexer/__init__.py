@@ -480,6 +480,7 @@ class LiteIndexer(
 
         return CH_TABLE, "block_number"
 
+
     def _fetch_ch_max_block(self) -> int | None:
         """Query ClickHouse for the actual max indexed block for this chain.
 
@@ -509,73 +510,6 @@ class LiteIndexer(
         except Exception as exc:  # noqa: BLE001 — guard is best-effort
             logger.debug("ch_max_block_query_failed", chain=self.chain, error=str(exc)[:80])
             return None
-
-    async def _guard_state_regression(
-        self,
-        state: dict[str, Any],
-        from_block: int,
-        summary: dict[str, Any],
-    ) -> int | None:
-        """Detect + recover from a state-file regression.
-
-        A regression is when the state file's resume block is more than
-        ``STATE_REGRESSION_TOLERANCE_BLOCKS`` below the monotonic
-        high-water mark for this chain. Reorg rollbacks rewind state by a
-        few blocks (within tolerance) and are left alone.
-
-        Recovery: query ClickHouse for the actual max block and resume
-        from ``max(ch_max, highwater)`` — never from genesis. If both the
-        CH query and the high-water mark are unavailable the state file
-        is trusted as-is.
-
-        Args:
-            state: The loaded state dict (may be ``{}``).
-            from_block: The resume block derived from the state file.
-            summary: Sync summary dict; recovery is recorded on it.
-
-        Returns:
-            A corrected resume block, or None when no correction applies.
-        """
-        highwater = self._highwater.load()
-        if highwater is not None and from_block < highwater - STATE_REGRESSION_TOLERANCE_BLOCKS:
-            ch_max = self._fetch_ch_max_block()
-            resume = max(highwater, ch_max or 0) + 1
-            if resume > from_block:
-                logger.warning(
-                    "state_regression_recovered",
-                    chain=self.chain,
-                    state_last_block=state.get("last_block", 0),
-                    highwater=highwater,
-                    ch_max=ch_max,
-                    resume_block=resume,
-                )
-                summary["state_regression"] = True
-                summary["state_regression_recovered_to"] = resume
-                self._highwater.update(resume - 1)
-                return resume
-            return None
-
-        # No high-water mark yet (first run with protection enabled): if
-        # ClickHouse already has data far ahead of the state file, that is
-        # also a regression (state file was clobbered before the mark was
-        # ever written). Only trust this when CH is actually ahead — a
-        # healthy genesis backfill has ch_max <= state anyway.
-        ch_max = self._fetch_ch_max_block()
-        if ch_max is not None and from_block < ch_max - STATE_REGRESSION_TOLERANCE_BLOCKS:
-            resume = ch_max + 1
-            logger.warning(
-                "state_regression_recovered_ch",
-                chain=self.chain,
-                state_last_block=state.get("last_block", 0),
-                ch_max=ch_max,
-                resume_block=resume,
-            )
-            summary["state_regression"] = True
-            summary["state_regression_recovered_to"] = resume
-            self._highwater.update(resume - 1)
-            return resume
-
-        return None
 
     # ── Main Sync Loop ─────────────────────────────────────────────
 

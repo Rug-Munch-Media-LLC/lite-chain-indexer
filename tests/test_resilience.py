@@ -153,6 +153,19 @@ class TestStateRegressionGuard:
         recovered = await indexer._guard_state_regression({"last_block": 42}, 43, summary)
         assert recovered is None
 
+    @pytest.mark.asyncio
+    async def test_regression_increments_metric(self, indexer: LiteIndexer, tmp_path: Path):
+        from lite_indexer import metrics
+
+        counter = metrics._ALERT_COUNTERS["lite_indexer_state_regression_detected"]  # noqa: SLF001
+        before = float(counter.labels(chain="ethereum")._value.get())  # noqa: SLF001
+        indexer._highwater.update(25_674_059)
+        indexer._ch_writer = FakeWriter(FakeCH(max_rows=[(25_674_000,)]))
+        summary: dict[str, Any] = {"errors": []}
+        await indexer._guard_state_regression({"last_block": 93_193}, 93_194, summary)
+        after = float(counter.labels(chain="ethereum")._value.get())  # noqa: SLF001
+        assert after == before + 1.0
+
 
 # ── 3. Memory watchdog ─────────────────────────────────────────────────
 
