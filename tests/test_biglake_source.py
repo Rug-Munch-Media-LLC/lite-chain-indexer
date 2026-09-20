@@ -122,7 +122,10 @@ def test_address_filter_is_case_insensitive_or() -> None:
     src.query("evm_transfers", address="0xAbC", dates=["2026-09-12"])
     sql, params = fake.calls[-1]
     assert "from_address" in sql and "OR" in sql
-    assert "0xabc" in params
+    # AWS stores addresses 32-byte left-padded; the filter compares the
+    # trailing 20 bytes and passes the un-prefixed 40-hex form.
+    assert "right(from_address, 40)" in sql
+    assert "abc" in params
 
 
 def test_block_range_params() -> None:
