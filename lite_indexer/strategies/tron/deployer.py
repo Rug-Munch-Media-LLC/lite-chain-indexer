@@ -44,6 +44,7 @@ def _parse_ts(value: str, now: datetime) -> datetime:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else now
     except (ValueError, TypeError):
+        logger.debug("tron_ts_parse_failed", value=str(value)[:40])
         return now
 
 

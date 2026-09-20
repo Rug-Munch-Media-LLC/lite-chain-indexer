@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 
 from lite_indexer.query.sqd_source import SQDSource
 
@@ -92,7 +93,7 @@ def _silence_console_logs() -> None:
 
         _loguru.remove()
     except ImportError:
-        pass
+        logging.getLogger(__name__).debug("loguru_absent_default_logger_kept")
 
 
 def _cli() -> int:
