@@ -35,6 +35,7 @@ from lite_indexer.indexer._checkpoint import (
     record_slice_checkpoint,
     slice_size,
 )
+from lite_indexer.indexer._dex_phase import note_dex_timeout, resolve_dex_events
 from lite_indexer.indexer._phase_guard import PhaseTimeoutError, guarded_phase
 from lite_indexer.indexer._writers import (
     flush_solana_launch_bundles,
@@ -426,10 +427,9 @@ class SyncLoopMixin(IndexerMixinBase):
                         to_block=to_block,
                     )
                 except PhaseTimeoutError as exc:
-                    # Non-fatal: the transfers leg checkpointed this slice —
-                    # a secondary-phase timeout must not discard that progress.
-                    logger.warning("sync_phase_failed", chain=self.chain, phase="dex_events", error=str(exc)[:120])
-                    summary.setdefault("phase_failures", []).append("dex_events")
+                    # Non-fatal: the transfers leg checkpointed this slice.
+                    note_dex_timeout(summary, chain=self.chain, exc=exc)
+                dex_events = resolve_dex_events(dex_events, summary, chain=self.chain, from_block=from_block, to_block=to_block)
                 if self._check_reorg(dex_events):
                     logger.warning("chain_reorg_during_dex_sync", chain=self.chain)
                     self.start_from_head = True

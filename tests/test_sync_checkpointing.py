@@ -248,3 +248,62 @@ async def test_secondary_phase_failure_after_transfers_completes():
     assert host._highwater.marks == [49]
     assert "dex_events" in result.get("phase_failures", [])
     assert result["status"] != "fetch_failed"
+
+
+# ── Dex leg degrade is visible (dex_deferred) ───────────────────────────
+
+
+async def _run_sync_with_dex(host: _RangeHost) -> dict[str, Any]:
+    async def _fake_ch_write(fn: Any, *args: Any, **kwargs: Any) -> int:
+        return 1
+
+    overrides = {
+        "run_ch_write": _fake_ch_write,
+        "ATTESTATION_ENABLED": False,
+        "BACKFILL_ENABLED": False,
+        "REORG_PROTECTION_ENABLED": False,
+        "DEX_SKIP_TO_HEAD": False,
+    }
+    originals = {name: getattr(sync_loop_mod, name) for name in overrides}
+    for name, value in overrides.items():
+        setattr(sync_loop_mod, name, value)
+    try:
+        summary: dict[str, Any] = {"status": "running", "errors": []}
+        body = SyncLoopMixin._sync_range_body.__get__(host, _RangeHost)
+        return await body(0, 49, summary, 0.0)
+    finally:
+        for name, value in originals.items():
+            setattr(sync_loop_mod, name, value)
+
+
+def _dex_deferred_value() -> float:
+    from prometheus_client import REGISTRY
+
+    return REGISTRY.get_sample_value("lite_indexer_dex_deferred_total", {"chain": "base"}) or 0.0
+
+
+@pytest.mark.asyncio
+async def test_dex_total_failure_records_dex_deferred():
+    """fetch_swap_events returning None (total failure) → dex_deferred flag + metric."""
+    host = _RangeHost()
+    host.fetch_swap_events = AsyncMock(return_value=None)
+    before = _dex_deferred_value()
+    result = await _run_sync_with_dex(host)
+
+    assert result.get("dex_deferred") is True
+    assert result["dex_events_fetched"] == 0
+    assert result["status"] != "fetch_failed"
+    assert _dex_deferred_value() == before + 1.0
+
+
+@pytest.mark.asyncio
+async def test_dex_no_swaps_does_not_flag_dex_deferred():
+    """fetch_swap_events returning [] (genuine no swaps) → no dex_deferred flag."""
+    host = _RangeHost()
+    host.fetch_swap_events = AsyncMock(return_value=[])
+    before = _dex_deferred_value()
+    result = await _run_sync_with_dex(host)
+
+    assert "dex_deferred" not in result
+    assert result["dex_events_fetched"] == 0
+    assert _dex_deferred_value() == before
