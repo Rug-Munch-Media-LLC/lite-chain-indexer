@@ -2,8 +2,9 @@
 
 The sonarx lake cannot see an intra-day hole (the day still has rows) and AWS
 sonarx lags ~1 week; portal.sqd.dev is near-live, full-history EVM. Reuses the
-portal client and ClickHouse writer (both injected, never modified). Log records
-carry no txHash (as with the tron/trace mappers); logIndex is unique per block.
+portal client and ClickHouse writer (both injected, never modified). The
+``transactions`` selector supplies real tx hashes, joined per block by
+transactionIndex (2026-09-20).
 """
 
 from __future__ import annotations
@@ -22,9 +23,10 @@ WINDOW = 10_000  #: portal block window per ``stream`` call
 MAX_BATCHES = 32  #: portal-side pagination budget per window call
 LOG_FIELDS: dict[str, Any] = {  # only Transfer logs leave the portal (topic0 filter)
     "block": {"number": True, "timestamp": True},
+    "transaction": {"hash": True, "transactionIndex": True},
     "log": {"address": True, "topics": True, "data": True, "transactionIndex": True, "logIndex": True},
 }
-LOG_SELECTORS: dict[str, Any] = {"logs": [{"topic0": [ERC20_TRANSFER_TOPIC]}]}
+LOG_SELECTORS: dict[str, Any] = {"logs": [{"topic0": [ERC20_TRANSFER_TOPIC]}], "transactions": [{}]}
 
 
 def _topic_address(topic: Any) -> str:
@@ -42,15 +44,25 @@ def _value_str(data: Any) -> str:
     return str(int(raw, 16))
 
 
-def map_sqd_transfer(chain: str, block: dict[str, Any], log: dict[str, Any]) -> dict[str, Any] | None:
-    """Map one portal log to an ``evm_transfers`` dict (None if not an ERC-20 Transfer)."""
+def map_sqd_transfer(
+    chain: str,
+    block: dict[str, Any],
+    log: dict[str, Any],
+    tx_hashes: dict[int, str] | None = None,
+) -> dict[str, Any] | None:
+    """Map one portal log to an ``evm_transfers`` dict (None if not an ERC-20 Transfer).
+
+    ``tx_hashes`` maps transactionIndex → hash for the block (from the
+    ``transactions`` selector); missing entries fall back to "".
+    """
     topics = log.get("topics") or []
     if len(topics) != 3 or str(topics[0]).lower() != ERC20_TRANSFER_TOPIC:
         return None
     header = block.get("header") or {}
+    tx_index = int(log.get("transactionIndex") or 0)
     return {
         "blockNumber": int(header.get("number") or 0),
-        "txHash": "",
+        "txHash": str((tx_hashes or {}).get(tx_index) or ""),
         "from": _topic_address(topics[1]),
         "to": _topic_address(topics[2]),
         "tokenAddress": str(log.get("address") or "").lower(),
@@ -93,8 +105,13 @@ class SqdIngestSource:
             reached = cursor - 1
             for block in blocks:
                 reached = max(reached, int((block.get("header") or {}).get("number") or 0))
+                tx_hashes = {
+                    int(tx.get("transactionIndex") or 0): str(tx.get("hash") or "")
+                    for tx in block.get("transactions") or []
+                    if isinstance(tx, dict)
+                }
                 for log in block.get("logs") or []:
-                    row = map_sqd_transfer(chain, block, log)
+                    row = map_sqd_transfer(chain, block, log, tx_hashes)
                     if row is not None:
                         yield row
             if reached < cursor:  # defensive: no forward progress

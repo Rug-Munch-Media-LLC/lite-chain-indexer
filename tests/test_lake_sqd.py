@@ -158,3 +158,19 @@ def test_unsupported_chain_and_range_raise() -> None:
         fill_chain_from_sqd(SqdFillRequest("solana", 1, 10), source=FakeSource(), writer=FakeWriter())
     with pytest.raises(ValueError, match="to_block is before"):
         fill_chain_from_sqd(SqdFillRequest("base", 10, 1), source=FakeSource(), writer=FakeWriter())
+
+
+def test_map_sqd_transfer_joins_real_tx_hash() -> None:
+    """The transactions selector supplies hashes; joined by transactionIndex."""
+    block = _block(51381241, [_log()])
+    block["transactions"] = [
+        {"hash": "0xabc123", "transactionIndex": 0},
+        {"hash": "0xdef456", "transactionIndex": 1},
+    ]
+    row = map_sqd_transfer("base", block, _log(), {0: "0xabc123", 1: "0xdef456"})
+    assert row is not None and row["txHash"] == "0xdef456"
+
+
+def test_map_sqd_transfer_missing_tx_hash_falls_back_empty() -> None:
+    row = map_sqd_transfer("base", _block(1, [_log()]), _log(), {})
+    assert row is not None and row["txHash"] == ""
