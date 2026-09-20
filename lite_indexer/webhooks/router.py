@@ -24,15 +24,18 @@ from __future__ import annotations
 import re
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from lite_indexer.config import WEBHOOK_MAX_PER_IP
+from lite_indexer.webhooks.auth import require_webhook_api_key
 from lite_indexer.webhooks.delivery import WebhookDelivery
 from lite_indexer.webhooks.models import DeliveryAttempt, WebhookSubscription
+from lite_indexer.webhooks.ssrf import is_safe_webhook_url
 from lite_indexer.webhooks.storage import WebhookStore
 
 router = APIRouter(tags=["webhooks"])
+
 
 # NATS subject: dot-separated tokens of word chars, '-', '_', plus the
 # wildcard tokens * / > (each wildcard occupies a full token).
@@ -57,6 +60,10 @@ class WebhookRegisterRequest(BaseModel):
         parsed = urlparse(value)
         if parsed.scheme != "https" or not parsed.netloc:
             raise ValueError("webhook URL must be https")
+        # SSRF protection (audit SEC-3a): reject private/loopback/link-local
+        # targets and non-standard ports. Re-checked at send time too.
+        if not is_safe_webhook_url(value):
+            raise ValueError("webhook URL host is not allowed")
         return value
 
     @field_validator("subjects")
@@ -143,7 +150,7 @@ async def register_webhook(request: Request, body: WebhookRegisterRequest) -> We
     status_code=204,
     summary="Unregister a webhook",
 )
-async def unregister_webhook(subscription_id: str) -> None:
+async def unregister_webhook(subscription_id: str, _: None = Depends(require_webhook_api_key)) -> None:
     """Remove a webhook subscription and stop delivering to it."""
     removed = await get_delivery().unsubscribe(subscription_id)
     if not removed:
@@ -169,6 +176,7 @@ async def list_webhooks() -> list[WebhookOut]:
 async def webhook_logs(
     subscription_id: str,
     limit: int = Query(default=100, ge=1, le=1000, description="Max log entries"),
+    _: None = Depends(require_webhook_api_key),
 ) -> list[DeliveryAttempt]:
     """Return the most recent delivery attempts for a subscription."""
     delivery = get_delivery()

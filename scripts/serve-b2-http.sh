@@ -33,9 +33,15 @@ set -euo pipefail
 PORT="${THA_HTTP_PORT:-8090}"
 REMOTE="${THA_B2_REMOTE:-b2-crypt:chain-data}"
 
-echo "==> rclone serve http ${REMOTE} on :${PORT} (read-only, no auth)"
+# SEC-2 (2026-09-19 audit): the archive server is unauthenticated, so it
+# must NOT bind all interfaces. Default is loopback-only; set
+# B2_HTTP_BIND=100.104.130.92 (Tailscale IP) to deliberately expose it to
+# the tailnet. Never set 0.0.0.0.
+BIND="${B2_HTTP_BIND:-127.0.0.1}"
+
+echo "==> rclone serve http ${REMOTE} on ${BIND}:${PORT} (read-only, no auth)"
 
 exec rclone serve http "${REMOTE}" \
-    --addr ":${PORT}" \
+    --addr "${BIND}:${PORT}" \
     --read-only \
     --no-auth

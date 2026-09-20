@@ -22,6 +22,7 @@ from lite_indexer.webhooks.models import (
     DeliveryAttempt,
     WebhookSubscription,
 )
+from lite_indexer.webhooks.ssrf import is_safe_webhook_url
 
 from ._base import DeliveryMixinBase
 from .helpers import (
@@ -136,6 +137,11 @@ class SenderMixin(DeliveryMixinBase):
             "X-LCI-Chain": chain,
             "Content-Type": "application/json",
         }
+        # SSRF re-check at send time (audit SEC-3a): the host may have been
+        # rebinding since registration — re-resolve and re-check now.
+        if not is_safe_webhook_url(sub.url):
+            logger.warning("webhook_ssrf_blocked", subscription_id=sub.id, url=sub.url)
+            return False, None, 0, "webhook target host is not allowed"
         start = self._clock()
         try:
             resp = await self._http().post(sub.url, content=payload, headers=headers, timeout=self.timeout_seconds)
