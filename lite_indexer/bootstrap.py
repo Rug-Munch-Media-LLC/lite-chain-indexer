@@ -100,21 +100,21 @@ ORDER BY (chain, block_number, log_index)
     "deployer_events": """
 CREATE TABLE IF NOT EXISTS {db}.deployer_events (
     deployer String,
-    deployer_eoa String,
+    deployer_eoa String DEFAULT '',
     token_address String,
-    token0 String,
-    token1 String,
-    pair_address String,
+    token0 String DEFAULT '',
+    token1 String DEFAULT '',
+    pair_address String DEFAULT '',
     chain LowCardinality(String),
     block_number UInt64,
     block_timestamp DateTime,
     tx_hash String,
     type String,
-    factory String,
+    factory Nullable(String),
     ingested_at DateTime,
-    source String
+    source LowCardinality(String) DEFAULT 'subsquid'
 ) ENGINE = MergeTree()
-ORDER BY (chain, block_number, log_index)
+ORDER BY (chain, block_number)
 """,
     "solana_spl_balance_changes": """
 CREATE TABLE IF NOT EXISTS {db}.solana_spl_balance_changes (
