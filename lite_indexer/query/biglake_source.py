@@ -71,6 +71,12 @@ def _num_str(value: Any) -> str:
     return str(int(fvalue)) if fvalue.is_integer() else str(fvalue)
 
 
+def _norm_addr(value: Any) -> str:
+    """Normalize AWS hex addresses (32-byte left-padded) to canonical 0x+40."""
+    t = str(value or "").lower()
+    t = t[2:] if t.startswith("0x") else t
+    return "0x" + t[-40:] if t else ""
+
 class BigLakeSource:
     """DuckDB-backed reader over the AWS public blockchain dataset.
 
@@ -208,8 +214,11 @@ class BigLakeSource:
             params.append(int(to_block))
         if address:
             addr = str(address).strip().lower()
-            where.append("(lower(from_address) = ? OR lower(to_address) = ?)")
-            params.extend([addr, addr])
+            addr40 = addr[2:] if addr.startswith("0x") else addr
+            # AWS v1.0 stores from/to as 32-byte left-padded hex (log topics);
+            # compare the trailing 20-byte address only.
+            where.append("(lower(right(from_address, 40)) = ? OR lower(right(to_address, 40)) = ?)")
+            params.extend([addr40, addr40])
 
         paths = self._paths(biglake_table, dates)
         path_literals = "[" + ", ".join(f"'{p}'" for p in paths) + "]"
@@ -241,9 +250,9 @@ class BigLakeSource:
                 "chain": "ethereum",
                 "block_number": int(raw.get("block_number") or 0),
                 "tx_hash": raw.get("transaction_hash") or "",
-                "from_address": str(raw.get("from_address") or "").lower(),
-                "to_address": str(raw.get("to_address") or "").lower(),
-                "token_address": str(raw.get("token_address") or "").lower(),
+                "from_address": _norm_addr(raw.get("from_address")),
+                "to_address": _norm_addr(raw.get("to_address")),
+                "token_address": _norm_addr(raw.get("token_address")),
                 "value": _num_str(raw.get("value")),
                 "block_timestamp": raw.get("block_timestamp"),
                 "log_index": int(raw.get("log_index") or 0),
@@ -262,8 +271,8 @@ class BigLakeSource:
             "block_timestamp": raw.get("block_timestamp"),
             "tx_hash": raw.get("transaction_hash") or "",
             "trace_address": trace_str,
-            "from_address": str(raw.get("from_address") or "").lower(),
-            "to_address": str(raw.get("to_address") or "").lower(),
+            "from_address": _norm_addr(raw.get("from_address")),
+            "to_address": _norm_addr(raw.get("to_address")),
             "value_wei": _num_str(raw.get("value")),
             "call_type": raw.get("call_type") or "",
             "gas_used": int(raw.get("gas_used") or 0),
