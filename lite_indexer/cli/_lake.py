@@ -12,9 +12,45 @@ logger = get_logger(__name__)
 
 
 def add_lake_parsers(sub: argparse._SubParsersAction) -> None:
-    """Register the lake family subparsers (lake-backfill, lake-gaps)."""
+    """Register the lake family subparsers (lake-backfill, lake-gaps, sqd-fill)."""
     _add_backfill_parser(sub)
     _add_gaps_parser(sub)
+    _add_sqd_parser(sub)
+
+
+def _add_sqd_parser(sub: argparse._SubParsersAction) -> None:
+    """Register sqd-fill — near-live block-range hole fill from the SQD portal."""
+    sqd = sub.add_parser(
+        "sqd-fill",
+        help="Fill an exact block-range hole from the near-live SQD portal",
+        description="Stream ERC-20 transfers for an exact block range from portal.sqd.dev into ClickHouse.",
+    )
+    sqd.add_argument("--chain", default="base", choices=["base", "ethereum", "arbitrum"])
+    sqd.add_argument("--from-block", type=int, required=True, help="Inclusive start block")
+    sqd.add_argument("--to-block", type=int, required=True, help="Inclusive end block")
+    sqd.add_argument("--batch-rows", type=int, default=5000, help="Rows per write batch (default: 5000)")
+    sqd.add_argument("--dry-run", action="store_true", help="Count matched rows without writing")
+
+
+def run_sqd_fill(args: argparse.Namespace) -> int:
+    """Run sqd-fill — stream a block range from the portal into ClickHouse."""
+    from lite_indexer.ingest.lake_sqd import SqdFillRequest, fill_chain_from_sqd
+
+    req = SqdFillRequest(
+        chain=args.chain,
+        from_block=args.from_block,
+        to_block=args.to_block,
+        dry_run=args.dry_run,
+        batch_rows=args.batch_rows,
+    )
+    try:
+        counts = fill_chain_from_sqd(req)
+    except ValueError as exc:
+        logger.warning("sqd_fill_bad_request", error=str(exc)[:120])
+        print(f"error: {exc}", file=sys.stderr)  # noqa: T201
+        return 2
+    print(json.dumps({"chain": args.chain, "dry_run": args.dry_run, "counts": counts}, indent=2))  # noqa: T201
+    return 0
 
 
 def _add_backfill_parser(sub: argparse._SubParsersAction) -> None:
@@ -55,6 +91,8 @@ def _add_gaps_parser(sub: argparse._SubParsersAction) -> None:
 
 def run_lake_command(args: argparse.Namespace) -> int:
     """Dispatch the lake family subcommands."""
+    if args.command == "sqd-fill":
+        return run_sqd_fill(args)
     if args.command == "lake-gaps":
         return run_lake_gaps(args)
     return run_lake_backfill(args)
