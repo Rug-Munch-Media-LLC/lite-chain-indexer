@@ -1,4 +1,4 @@
-"""lake-backfill subcommand handler — sonarx lake → ClickHouse."""
+"""Lake family subcommands — sonarx lake → ClickHouse (backfill + gap scan)."""
 
 from __future__ import annotations
 
@@ -11,10 +11,14 @@ from lite_indexer.logging import get_logger
 logger = get_logger(__name__)
 
 
-def add_lake_parser(sub: argparse._SubParsersAction) -> None:
-    """Register the lake-backfill subparser (bulk history from the free
-    sonarx lake — base/arbitrum transfers + traces, never RPC; --dry-run
-    counts rows per partition without writing)."""
+def add_lake_parsers(sub: argparse._SubParsersAction) -> None:
+    """Register the lake family subparsers (lake-backfill, lake-gaps)."""
+    _add_backfill_parser(sub)
+    _add_gaps_parser(sub)
+
+
+def _add_backfill_parser(sub: argparse._SubParsersAction) -> None:
+    """Register lake-backfill — bulk history from the free sonarx lake, never RPC."""
     lake_parser = sub.add_parser(
         "lake-backfill",
         help="Backfill base/arbitrum history from the AWS v1.1 sonarx lake",
@@ -31,6 +35,29 @@ def add_lake_parser(sub: argparse._SubParsersAction) -> None:
     lake_parser.add_argument("--to-date", required=True, help="Inclusive end date YYYY-MM-DD")
     lake_parser.add_argument("--tables", default="transfers,traces", help="Comma-separated: transfers,traces")
     lake_parser.add_argument("--dry-run", action="store_true", help="Count rows per partition without writing")
+
+
+def _add_gaps_parser(sub: argparse._SubParsersAction) -> None:
+    """Register lake-gaps — auto-detect (chain, date) partitions missing in CH."""
+    gaps = sub.add_parser(
+        "lake-gaps",
+        help="Find (chain,date) partitions present in the lake but missing in ClickHouse",
+        description=(
+            "Scan a lookback window for dates the lake can serve but ClickHouse "
+            "has zero rows for; --fill backfills them through the router-aware "
+            "lake backfill. No RPC."
+        ),
+    )
+    gaps.add_argument("--chains", default="base", help="Comma-separated sonarx chains (default: base)")
+    gaps.add_argument("--days", type=int, default=30, help="Lookback window in days (default: 30)")
+    gaps.add_argument("--fill", action="store_true", help="Backfill the detected gaps from the lake")
+
+
+def run_lake_command(args: argparse.Namespace) -> int:
+    """Dispatch the lake family subcommands."""
+    if args.command == "lake-gaps":
+        return run_lake_gaps(args)
+    return run_lake_backfill(args)
 
 
 def run_lake_backfill(args: argparse.Namespace) -> int:
@@ -63,4 +90,18 @@ def run_lake_backfill(args: argparse.Namespace) -> int:
         LakeBackfillRequest(chain=args.chain, dates=dates, tables=tables, dry_run=args.dry_run)
     )
     print(json.dumps({"chain": args.chain, "dry_run": args.dry_run, "counts": counts}, indent=2))  # noqa: T201
+    return 0
+
+
+def run_lake_gaps(args: argparse.Namespace) -> int:
+    """Run the lake-gaps subcommand (scan, optionally fill). No RPC."""
+    from lite_indexer.ingest.lake_gaps import main as scan_chain
+
+    chains = [c.strip() for c in args.chains.split(",") if c.strip()]
+    bad = [c for c in chains if c not in ("base", "arbitrum")]
+    if bad:
+        print(f"error: unsupported chain(s): {','.join(bad)}", file=sys.stderr)  # noqa: T201
+        return 2
+    results = [scan_chain(c, args.days, fill=args.fill) for c in chains]
+    print(json.dumps(results, indent=2))  # noqa: T201
     return 0

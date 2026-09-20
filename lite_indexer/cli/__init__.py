@@ -26,7 +26,7 @@ from lite_indexer.cli._bootstrap import run_bootstrap_cli
 from lite_indexer.cli._daemon import main_daemon
 from lite_indexer.cli._export import run_export_parquet
 from lite_indexer.cli._integrity import run_integrity_check_cli, run_reconcile_cli, run_recover_cli
-from lite_indexer.cli._lake import add_lake_parser, run_lake_backfill
+from lite_indexer.cli._lake import add_lake_parsers, run_lake_command
 from lite_indexer.cli._query import run_query_cli
 from lite_indexer.config import (
     BATCH_SIZE,
@@ -52,7 +52,7 @@ __all__ = [
     "run_bootstrap_cli",
     "run_export_parquet",
     "run_integrity_check_cli",
-    "run_lake_backfill",
+    "run_lake_command",
     "run_query_cli",
     "run_reconcile_cli",
     "run_recover_cli",
@@ -570,7 +570,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Disable the on-demand RPC fallback (indexed data only)",
     )
-    add_lake_parser(sub)
+    add_lake_parsers(sub)
     return parser.parse_args(argv)
 
 
@@ -585,8 +585,8 @@ async def async_main(args: argparse.Namespace) -> int:
     if args.command == "export-parquet":
         return run_export_parquet(args)
 
-    if args.command == "lake-backfill":
-        return run_lake_backfill(args)
+    if args.command.startswith("lake-"):
+        return run_lake_command(args)
 
     # ── integrity-check subcommand ───────────────────────────────────
     if args.command == "integrity-check":
