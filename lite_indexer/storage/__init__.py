@@ -36,7 +36,7 @@ from lite_indexer.storage.balance_cache import (
     update_holder_balance,
     update_holder_balances_bulk,
 )
-from lite_indexer.storage.clickhouse import ClickHouseWriter
+from lite_indexer.storage.clickhouse import ClickHouseUnavailable, ClickHouseWriter
 from lite_indexer.storage.disk import (
     check_disk_cap,
     check_disk_cap_async,
@@ -65,6 +65,7 @@ from lite_indexer.storage.trace_store import (
 
 __all__ = [
     "ClickHouseWriter",
+    "ClickHouseUnavailable",
     "NDJSONWriter",
     "ParquetExporter",
     "ExportSummary",

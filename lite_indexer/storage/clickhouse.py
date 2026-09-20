@@ -43,6 +43,7 @@ from lite_indexer.storage.balance_cache import (
     ensure_holder_balances_mv,
     update_holder_balances_bulk,
 )
+from lite_indexer.storage.ch_errors import ClickHouseUnavailable, is_unavailable_error, require_client
 from lite_indexer.storage.projections import ensure_wallet_projection
 from lite_indexer.storage.token_meta import ensure_token_meta_table, upsert_token_meta
 
@@ -346,10 +347,10 @@ class ClickHouseWriter(SchemaMixin):
         if not events:
             return 0
 
-        client = self._connect()
-        if not client:
-            logger.warning("clickhouse_skipped", chain=chain)
-            return 0
+        # Fail CLOSED: an outage aborts the cycle, never returns 0 (0 was read
+        # as "nothing to insert" and checkpointed as progress → the 2026-09-20
+        # 80-min fleet-wide hole).
+        client = require_client(self._connect(), chain)
 
         # Backward compatibility: older deployments may lack the `source`
         # column. The INSERT no longer names it (so it defaults to ''), but
@@ -434,6 +435,8 @@ class ClickHouseWriter(SchemaMixin):
         except Exception as exc:
             metrics_incr("clickhouse_errors")
             logger.error("clickhouse_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
+            if is_unavailable_error(exc):
+                raise ClickHouseUnavailable(f"ClickHouse unreachable during transfer insert (chain={chain})") from exc
             return 0
 
     def _dex_amounts_numeric(self, client: Any) -> bool:
@@ -483,10 +486,7 @@ class ClickHouseWriter(SchemaMixin):
         if not events:
             return 0
 
-        client = self._connect()
-        if not client:
-            logger.warning("dex_clickhouse_skipped", chain=chain)
-            return 0
+        client = require_client(self._connect(), chain)
 
         self._ensure_source_column(client, CH_DEX_TABLE)
         self._ensure_dex_usd_columns(client)
@@ -576,6 +576,8 @@ class ClickHouseWriter(SchemaMixin):
         except Exception as exc:
             metrics_incr("clickhouse_errors")
             logger.error("dex_clickhouse_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
+            if is_unavailable_error(exc):
+                raise ClickHouseUnavailable(f"ClickHouse unreachable during dex insert (chain={chain})") from exc
             return 0
 
     async def write_deployer_events(self, chain: str, events: list[dict[str, Any]]) -> int:
@@ -598,10 +600,7 @@ class ClickHouseWriter(SchemaMixin):
         if not events:
             return 0
 
-        client = self._connect()
-        if not client:
-            logger.warning("deployer_clickhouse_skipped", chain=chain)
-            return 0
+        client = require_client(self._connect(), chain)
 
         self._ensure_source_column(client, CH_DEPLOYER_TABLE)
         self._ensure_deployer_columns(client)
@@ -673,6 +672,8 @@ class ClickHouseWriter(SchemaMixin):
         except Exception as exc:
             metrics_incr("clickhouse_errors")
             logger.error("deployer_events_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
+            if is_unavailable_error(exc):
+                raise ClickHouseUnavailable(f"ClickHouse unreachable during deployer insert (chain={chain})") from exc
             return 0
 
     async def write_solana_deployer_events(self, chain: str, events: list[dict[str, Any]]) -> int:
@@ -694,10 +695,7 @@ class ClickHouseWriter(SchemaMixin):
         if not events:
             return 0
 
-        client = self._connect()
-        if not client:
-            logger.warning("deployer_clickhouse_skipped", chain=chain)
-            return 0
+        client = require_client(self._connect(), chain)
 
         self._ensure_source_column(client, CH_DEPLOYER_TABLE)
         self._ensure_deployer_columns(client)
@@ -750,6 +748,10 @@ class ClickHouseWriter(SchemaMixin):
         except Exception as exc:
             metrics_incr("clickhouse_errors")
             logger.error("solana_deployer_events_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
+            if is_unavailable_error(exc):
+                raise ClickHouseUnavailable(
+                    f"ClickHouse unreachable during solana deployer insert (chain={chain})"
+                ) from exc
             return 0
 
     # ── Internal-Transfer Traces (wallet-memory blind spot) ─────────────
@@ -777,10 +779,7 @@ class ClickHouseWriter(SchemaMixin):
         """
         if not rows:
             return 0
-        client = self._connect()
-        if not client:
-            logger.warning("trace_clickhouse_skipped", chain=chain)
-            return 0
+        client = require_client(self._connect(), chain)
 
         from lite_indexer.storage.trace_store import (
             ensure_internal_transfers_table,

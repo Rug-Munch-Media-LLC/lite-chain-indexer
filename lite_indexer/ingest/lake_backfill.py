@@ -19,6 +19,7 @@ from typing import Any
 from lite_indexer.ingest.lake_sonarx import CHAINS, TABLES, SonarxLakeSource
 from lite_indexer.lakes.router import LakeProviderRouter
 from lite_indexer.logging import get_logger
+from lite_indexer.storage.clickhouse import ClickHouseUnavailable
 
 logger = get_logger(__name__)
 
@@ -40,7 +41,7 @@ def _write_batch(writer: Any, chain: str, table: str, batch: list[dict[str, Any]
         return int(writer.write_transfers(chain, batch))
     client = writer.client()
     if client is None:
-        return 0
+        raise ClickHouseUnavailable(f"ClickHouse unreachable (chain={chain})")
     from lite_indexer.storage.trace_store import write_internal_transfers
 
     return int(write_internal_transfers(client, chain, batch))
@@ -123,6 +124,11 @@ def backfill_chain_from_lake(
                 # bytes: parquet metadata size would cost an extra HTTP round-trip
                 # per partition — not cheap, so 0 until a metadata probe is wired.
                 rt.report_success(prov.name, bytes_read=0)
+            except ClickHouseUnavailable:
+                # Fail CLOSED: ClickHouse down is NOT a "bad date" — abort the
+                # whole run instead of skipping every remaining partition.
+                logger.error("lake_fill_aborted_clickhouse_unavailable", chain=req.chain, date=d, table=table)
+                raise
             except Exception as exc:  # noqa: BLE001 — one bad date must not abort the run
                 rt.report_failure(f"aws-sonarx-{req.chain}", error=str(exc))
                 logger.warning(

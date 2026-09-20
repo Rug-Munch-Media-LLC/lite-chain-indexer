@@ -16,6 +16,7 @@ from typing import Any
 from lite_indexer.ingest.lake_sonarx import _iso_from_unix
 from lite_indexer.logging import get_logger
 from lite_indexer.query.sqd_source import ERC20_TRANSFER_TOPIC, SQDSource
+from lite_indexer.storage.clickhouse import ClickHouseUnavailable
 
 logger = get_logger(__name__)
 
@@ -149,13 +150,19 @@ def fill_chain_from_sqd(req: SqdFillRequest, *, source: Any | None = None, write
         return {"rows": rows}
     wh = writer if writer is not None else _default_writer()
     total, batch = 0, []
-    for row in src.read_transfers(req.chain, req.from_block, req.to_block):
-        batch.append(row)
-        if len(batch) >= max(1, int(req.batch_rows)):
+    try:
+        for row in src.read_transfers(req.chain, req.from_block, req.to_block):
+            batch.append(row)
+            if len(batch) >= max(1, int(req.batch_rows)):
+                total += int(wh.write_transfers(req.chain, batch))
+                batch = []
+        if batch:
             total += int(wh.write_transfers(req.chain, batch))
-            batch = []
-    if batch:
-        total += int(wh.write_transfers(req.chain, batch))
+    except ClickHouseUnavailable:
+        # Fail CLOSED: a single unavailable batch aborts the whole fill —
+        # never log-and-continue (that silently drops the rest of the range).
+        logger.error("lake_fill_aborted_clickhouse_unavailable", chain=req.chain, rows_written=total)
+        raise
     logger.info("sqd_fill_written", chain=req.chain, rows=total)
     return {"rows": total}
 
