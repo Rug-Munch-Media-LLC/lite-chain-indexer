@@ -122,7 +122,7 @@ class RpcFetchMixin(IndexerMixinBase):
         self,
         from_block: int,
         to_block: int,
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, Any]] | None:
         """Fetch DEX Swap events (V2 + V3) via the EVM strategy.
 
         Only works for EVM chains. Delegates to EVMChainStrategy which

@@ -1,0 +1,190 @@
+"""EVM dex topic fetching (split from dex_handler for size policy).
+
+Extracted 2026-09-21: chunked eth_getLogs topic fetch + its response helper.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+import httpx
+
+from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range
+from lite_indexer.chunks import CHUNK_PARALLELISM, chunk_range, merge_chunked_results
+from lite_indexer.config import CHUNK_SIZE_EVM, RPC_TIMEOUT
+from lite_indexer.dex import parse_swap_logs
+from lite_indexer.logging import get_logger
+from lite_indexer.rpc import (
+    apply_endpoint_backoff,
+    ban_endpoint,
+    get_best_endpoint,
+    handle_rate_limit,
+    record_endpoint_failure,
+)
+from lite_indexer.state import PairCache
+
+logger = get_logger(__name__)
+
+
+def _read_response_text(response: httpx.Response) -> str:
+    """Read ``response.text`` off-thread, bounded by the caller's deadline."""
+    return response.text
+
+
+async def fetch_topic(
+    topic: str,
+    label: str,
+    chain: str,
+    from_block: int,
+    to_block: int,
+    *,
+    client: httpx.AsyncClient,
+    pair_cache: PairCache,
+    chunk_size: int = CHUNK_SIZE_EVM,
+) -> list[dict[str, Any]] | None:
+    """Fetch logs for a single event topic across all endpoints.
+
+    Splits the range into ``chunk_size``-wide chunks and fetches each
+    with one ``eth_getLogs`` call, up to :data:`CHUNK_PARALLELISM` at a
+    time, then merges and de-duplicates the results.
+
+    Args:
+        topic: Event topic hash.
+        label: Human label for logging ("v2" or "v3").
+        chain: Chain name.
+        from_block: Start block (inclusive).
+        to_block: End block (inclusive).
+        client: Shared HTTP client.
+        pair_cache: Pair cache for token resolution.
+        chunk_size: Max blocks per eth_getLogs chunk.
+
+    Returns:
+        List of parsed swap event dicts, or ``None`` on total leg failure.
+    """
+    endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
+    if not endpoints:
+        return []
+
+    # Only query endpoints that can serve this block range (provider limits).
+    endpoints = get_endpoints_for_range(endpoints, to_block - from_block)
+
+    async def _fetch_one_range(range_start: int, range_end: int) -> list[dict[str, Any]] | None:
+        filter_params = {
+            "fromBlock": hex(range_start),
+            "toBlock": hex(range_end),
+            "topics": [topic],
+        }
+        body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "eth_getLogs",
+            "params": [filter_params],
+        }
+
+        start_idx = endpoints.index(get_best_endpoint(endpoints))
+        rotated = endpoints[start_idx:] + endpoints[:start_idx]
+
+        best_result: list[dict[str, Any]] | None = None
+        # Hard deadline per endpoint attempt (incident 2026-08-24): a
+        # trickling getLogs response body defeated httpx's per-read
+        # timeout and wedged the ethereum dex pipeline for ~20h inside
+        # resp.text streaming. wait_for makes the ENTIRE attempt —
+        # connect + headers + full body read — bounded, no exceptions.
+        attempt_deadline = RPC_TIMEOUT * 2 + 10
+        for url in rotated:
+            await apply_endpoint_backoff(url)
+            try:
+                resp = await asyncio.wait_for(
+                    client.post(url, json=body, timeout=RPC_TIMEOUT),
+                    timeout=attempt_deadline,
+                )
+                if resp.status_code == 200:
+                    # Body read under the same hard deadline — this is
+                    # exactly where the wedge lived.
+                    resp_text = await asyncio.wait_for(
+                        asyncio.to_thread(_read_response_text, resp), timeout=attempt_deadline
+                    )
+                    if not resp_text or len(resp_text) < 10:
+                        record_endpoint_failure(url)
+                        continue
+
+                    try:
+                        data = json.loads(resp_text)
+                    except (json.JSONDecodeError, ValueError):
+                        record_endpoint_failure(url)
+                        continue
+
+                    if isinstance(data, dict) and "result" in data:
+                        logs = data["result"]
+                        if isinstance(logs, list):
+                            parsed = parse_swap_logs(
+                                logs,
+                                chain,
+                                range_start,
+                                range_end,
+                                topic,
+                                pair_cache.all,
+                            )
+                            if best_result is None or len(parsed) > len(best_result):
+                                best_result = parsed
+                            # A 200 with a result list means this endpoint
+                            # served the range in full; all endpoints serve
+                            # identical chain data. The old guard
+                            # ``len(parsed) == len(logs)`` was unreachable
+                            # because parse_swap_logs filters non-Swap logs,
+                            # so every chunk queried ALL endpoints (5×
+                            # RPC cost, 5× latency on busy chains).
+                            break
+                elif resp.status_code == 429:
+                    await handle_rate_limit(url)
+                    continue
+                else:
+                    record_endpoint_failure(url)
+                    continue
+            except TimeoutError:
+                # Hard deadline blown: wedged/slow-loris endpoint. Ban it so
+                # no other chunk task lands here again this cycle.
+                ban_endpoint(url, reason="wedged_response_deadline")
+                logger.warning("dex_fetch_wedged_endpoint_banned", endpoint=url[:60], deadline_s=attempt_deadline)
+                continue
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError):
+                record_endpoint_failure(url)
+                continue
+            except (httpx.RemoteProtocolError, httpx.LocalProtocolError):
+                record_endpoint_failure(url)
+                continue
+            except (httpx.HTTPError, ConnectionError, OSError, ValueError, KeyError, TypeError) as exc:
+                logger.warning("dex_fetch_unexpected", chain=chain, endpoint=url[:50], error=str(exc)[:80])
+                record_endpoint_failure(url)
+                continue
+
+        # None = every endpoint failed for this range (total failure);
+        # [] would be indistinguishable from "no swaps in range".
+        return best_result
+
+    effective_chunk = min(chunk_size, max(1, to_block - from_block + 1))
+    semaphore = asyncio.Semaphore(CHUNK_PARALLELISM)
+
+    async def _fetch_chunk(chunk_start: int, chunk_end: int) -> list[dict[str, Any]] | None:
+        async with semaphore:
+            return await _fetch_one_range(chunk_start, chunk_end)
+
+    tasks: list[asyncio.Task[list[dict[str, Any]] | None]] = []
+    for chunk_start, chunk_end in chunk_range(from_block, to_block, effective_chunk):
+        tasks.append(asyncio.ensure_future(_fetch_chunk(chunk_start, chunk_end)))
+
+    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+
+    chunk_results: list[list[dict[str, Any]]] = []
+    for outcome in outcomes:
+        if isinstance(outcome, list):
+            chunk_results.append(outcome)
+        else:
+            # A failed chunk (all endpoints down, or raised) makes the
+            # topic leg incomplete: report total failure so the caller
+            # defers instead of silently advancing.
+            return None
+
+    return merge_chunked_results(chunk_results)

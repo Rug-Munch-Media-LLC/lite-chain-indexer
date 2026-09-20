@@ -343,11 +343,8 @@ class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
         self,
         from_block: int,
         to_block: int,
-    ) -> list[dict[str, Any]]:
-        """Fetch DEX Swap events (V2 + V3) via eth_getLogs.
-
-        Delegates to :func:`dex_handler.fetch_swap_events`.
-        """
+    ) -> list[dict[str, Any]] | None:
+        """Fetch DEX Swap events (V2 + V3); None = total dex-leg failure."""
         client = await self._get_client()
         events = await _fetch_swap_events(
             self.chain,
@@ -366,7 +363,8 @@ class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
         # parser also accepts ``involvedAccounts``/``addresses`` so the
         # internal-transfer trace path can feed log/internal-call addresses
         # in a follow-up. Best-effort.
-        self._ingest_address_activity_events(events)
+        if events is not None:
+            self._ingest_address_activity_events(events)
         return events
 
     # ── PairCreated Fetch (delegates to deployer_handler) ────────────

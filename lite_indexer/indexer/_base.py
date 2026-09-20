@@ -126,7 +126,7 @@ class IndexerMixinBase:
     async def fetch_transfers(self, from_block: int, to_block: int) -> list[dict[str, Any]]:
         raise NotImplementedError
 
-    async def fetch_swap_events(self, from_block: int, to_block: int) -> list[dict[str, Any]]:
+    async def fetch_swap_events(self, from_block: int, to_block: int) -> list[dict[str, Any]] | None:
         raise NotImplementedError
 
     async def _fetch_pair_created_events(self, from_block: int, to_block: int) -> None:
