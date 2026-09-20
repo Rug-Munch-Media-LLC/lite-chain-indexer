@@ -138,9 +138,9 @@ class TestQueryParquet:
         # Fake rclone: `rclone cat <path>` writes the mirrored local file to
         # stdout; missing hour dirs return nonzero (like the real binary).
         def fake_rclone(cmd, **kwargs):
-            # cmd == ["rclone", "cat", "b2-crypt:chain-data/parquet/ethereum/2026/07/31/12/..."]
+            # cmd == ["rclone", "cat", "b2-crypt-v2:chain-data/parquet/ethereum/2026/07/31/12/..."]
             remote = cmd[2]
-            rel = remote.removeprefix("b2-crypt:chain-data/parquet/")
+            rel = remote.removeprefix("b2-crypt-v2:chain-data/parquet/")
             src = parquet_tree / rel
             out = kwargs["stdout"]
             if not src.is_file():

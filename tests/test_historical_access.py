@@ -135,7 +135,7 @@ def parquet_tree(tmp_path: Path) -> Path:
 @pytest.fixture()
 def cold_store(parquet_tree: Path) -> ColdStore:
     """ColdStore reading the temp parquet archive (mount mode)."""
-    return ColdStore(remote="b2-crypt:chain-data/parquet", mount_dir=parquet_tree)
+    return ColdStore(remote="b2-crypt-v2:chain-data/parquet", mount_dir=parquet_tree)
 
 
 def _hot_row(block: int = 200, tx: str = "0xhot", ts: str = "2026-08-01 00:00:00") -> dict[str, Any]:
@@ -157,7 +157,7 @@ def _hot_row(block: int = 200, tx: str = "0xhot", ts: str = "2026-08-01 00:00:00
 def _make_ha(fake_ch: FakeCH, cold_store: ColdStore, hot_ttl_days: int = 30) -> HistoricalAccess:
     return HistoricalAccess(
         ch_client=fake_ch,
-        b2_bucket="b2-crypt:chain-data/parquet",
+        b2_bucket="b2-crypt-v2:chain-data/parquet",
         cold_store=cold_store,
         hot_ttl_days=hot_ttl_days,
     )
@@ -242,7 +242,7 @@ class TestColdStore:
 
     def test_fetch_mode_uses_rclone_cat(self, parquet_tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         store = ColdStore(
-            remote="b2-crypt:chain-data/parquet",
+            remote="b2-crypt-v2:chain-data/parquet",
             fetch=True,
             cache_dir=tmp_path / "cache",
             rclone_bin="rclone",
@@ -250,7 +250,7 @@ class TestColdStore:
 
         def fake_rclone(cmd, **kwargs):
             remote = cmd[2]
-            rel = remote.removeprefix("b2-crypt:chain-data/parquet/")
+            rel = remote.removeprefix("b2-crypt-v2:chain-data/parquet/")
             src = parquet_tree / rel
             out = kwargs["stdout"]
             if not src.is_file():
