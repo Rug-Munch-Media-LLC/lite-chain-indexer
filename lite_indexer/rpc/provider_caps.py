@@ -51,6 +51,9 @@ from lite_indexer.rpc.throttle import extract_rate_limit
 
 logger = get_logger(__name__)
 
+# Bounded slot wait: fail fast on an orphaned slot, never hang (2026-09-20).
+_SLOT_WAIT_CAP_S = 300.0
+
 
 def account_key_for_endpoint(endpoint: str) -> str:
     """Account identity for cap keying: ``provider_id`` + optional ``key_id``.
@@ -126,8 +129,7 @@ class ProviderRateLimiter:
     def _semaphore(self, provider_id: str) -> asyncio.Semaphore:
         sem = self._semaphores.get(provider_id)
         if sem is None:
-            # A zero/negative cap means "unlimited" — asyncio.Semaphore(0)
-            # would deadlock, so use a large sentinel instead.
+            # Zero/negative cap = "unlimited" (Semaphore(0) would deadlock).
             limit = self._max_concurrency if self._max_concurrency > 0 else 1_000_000
             sem = asyncio.Semaphore(limit)
             self._semaphores[provider_id] = sem
@@ -266,10 +268,13 @@ class ProviderRateLimiter:
         Concurrency-only: waits for a free in-flight slot. Rate pacing and
         account backoff are handled by :meth:`wait_seconds_for` /
         :func:`provider_throttle_before` so retries inside a call do not
-        re-pace against the provider budget.
+        re-pace against the provider budget. Bounded: orphaned slots fail fast.
         """
-        sem = self._semaphore(provider_id)
-        await sem.acquire()
+        try:
+            await asyncio.wait_for(self._semaphore(provider_id).acquire(), timeout=_SLOT_WAIT_CAP_S)
+        except TimeoutError:
+            logger.warning("rpc_slot_wait_timeout", provider=provider_id, cap_s=_SLOT_WAIT_CAP_S)
+            raise
         state = self._state(provider_id)
         state.in_flight += 1
         state.max_in_flight = max(state.max_in_flight, state.in_flight)
@@ -285,19 +290,14 @@ class ProviderRateLimiter:
     async def acquire(self, provider_id: str) -> None:
         """Acquire a slot AND honor provider rate/backoff (full gate).
 
-        Waits for a concurrency slot, then honors any account-level backoff
-        / requests/sec pacing before recording the dispatch. On cancellation
-        the slot is released so a cancelled caller cannot leak it.
+        On cancellation the slot is released so a cancelled caller cannot
+        leak it.
         """
         await self.acquire_slot(provider_id)
         try:
             wait = self.wait_seconds_for(provider_id)
             if wait > 0:
-                logger.debug(
-                    "provider_rate_wait",
-                    provider=provider_id,
-                    wait_s=round(wait, 2),
-                )
+                logger.debug("provider_rate_wait", provider=provider_id, wait_s=round(wait, 2))
                 await asyncio.sleep(wait)
             self.mark_sent(provider_id)
         except BaseException:

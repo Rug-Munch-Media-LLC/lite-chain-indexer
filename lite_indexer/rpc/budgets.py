@@ -8,11 +8,9 @@ after it happens. This layer attaches an *identity-specific* budget
 identity at ``preemptive_pct`` of its daily budget — i.e. BEFORE the
 provider's own 429/softban arrives.
 
-Why: log fetches for 21 chains were dying because selection kept favouring
-the lowest-latency free endpoint, so a handful of endpoints absorbed the
-load and blew their per-IP caps while 30+ other endpoints sat idle. A
-per-identity budget plus a pre-emptive cool-down turns that into a load
-problem the selector can route around (see ``rpc/pool.get_best_endpoint``).
+Why: selection favoured the lowest-latency endpoint, so a few endpoints
+absorbed load and blew their per-IP caps while 30+ sat idle; per-identity
+budgets + pre-emptive cool-down make that routable (rpc/pool).
 
 Enforcement is **explicit-only**: the generic keyless default
 (``explicit=False``) is a no-op here so OSS behaviour is unchanged and the
@@ -20,9 +18,8 @@ existing provider caps remain the single pacer. An identity is enforced
 when an operator supplies it via ``RPC_PROVIDER_BUDGETS`` /
 ``RPC_ENDPOINT_BUDGETS`` (or sets a daily budget for it).
 
-State is in-process and safe under asyncio (single-threaded event loop, no
-locks). Cool-down recovers on a success (level decays) and resets
-completely at the UTC day rollover.
+State is in-process (single-threaded event loop, no locks); cool-down
+recovers on success and resets at the UTC day rollover.
 """
 
 from __future__ import annotations
@@ -53,8 +50,10 @@ from lite_indexer.rpc.ledger import account_id_for_endpoint, key_id_for_endpoint
 
 logger = get_logger(__name__)
 
-# Rolling-window request timestamps are pruned to this horizon so the
-# per-endpoint deque stays bounded even for keyless identities.
+# Bounded slot wait: an orphaned slot must fail fast, not hang (2026-09-20).
+_SLOT_WAIT_CAP_S = 300.0
+
+# Rolling-window timestamps pruned to this horizon (bounded deques).
 _TIMESTAMP_HORIZON_S = 60.0
 
 
@@ -99,8 +98,7 @@ class _BudgetState:
     cooldown_level: int = 0
     preemptive_cools: int = 0
     last_status: int = 200
-    # One-shot flags so the approaching/exhausted quota events log exactly
-    # once per identity per UTC day instead of on every dispatch.
+    # One-shot flags: quota events log once per identity per UTC day.
     approach_logged: bool = False
     exhausted_logged: bool = False
 
@@ -141,10 +139,8 @@ class ProviderBudgetTracker:
         self._time = time_fn
         self._states: dict[str, _BudgetState] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
-        # Daily request counter keyed by ACCOUNT quota identity → (UTC day,
-        # count). Keying by account (not key) makes a provider-level
-        # daily_budget a HARD cap shared by EVERY key/endpoint of that
-        # account, so extra keys never multiply the budget.
+        # Daily counter keyed by ACCOUNT identity → (UTC day, count): a
+        # provider daily_budget is a HARD cap shared by all its keys.
         self._daily_used: dict[str, tuple[int, int]] = {}
 
     # ── Identity / budget resolution ──────────────────────────────────
@@ -373,8 +369,12 @@ class ProviderBudgetTracker:
     # ── Concurrency slot ──────────────────────────────────────────────
 
     async def acquire_slot(self, endpoint: str) -> None:
-        """Acquire a concurrency slot for the identity (queues, never drops)."""
-        await self._semaphore(endpoint).acquire()
+        """Acquire a concurrency slot for the identity (bounded wait, never drops)."""
+        try:
+            await asyncio.wait_for(self._semaphore(endpoint).acquire(), timeout=_SLOT_WAIT_CAP_S)
+        except TimeoutError:
+            logger.warning("rpc_slot_wait_timeout", endpoint=endpoint[:50], cap_s=_SLOT_WAIT_CAP_S)
+            raise
         state = self._state(endpoint)
         state.in_flight += 1
         state.max_in_flight = max(state.max_in_flight, state.in_flight)

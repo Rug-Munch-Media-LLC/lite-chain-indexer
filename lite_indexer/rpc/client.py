@@ -188,28 +188,42 @@ def _warn_deferred(endpoint: str, method: str, reason: str) -> None:
 
 
 # ── Pooled HTTP Clients ────────────────────────────────────────────────
-# Reuse a small set of AsyncClients across all RpcClient instances instead
-# of creating a brand-new httpx client per call. Clients are keyed by
-# timeout so callers with different timeouts don't fight over one value.
-# Safe under asyncio: creation is synchronous, so there is no await point
-# between the lookup and the assignment.
+# Reuse a small set of AsyncClients across all RpcClient instances, keyed
+# by timeout (and proxy) so callers don't fight over one value. Creation
+# is synchronous — no await between lookup and assignment.
 #
-# BOUNDED (2026-09-13): this map previously grew one client per distinct
-# timeout, never evicted and never closed — the primary socket leak (the
-# live process held 150 open sockets). It is now capped at
-# RPC_CALL_CLIENTS_MAX with LRU eviction, and an evicted client is closed.
+# BOUNDED (2026-09-13): capped at RPC_CALL_CLIENTS_MAX with LRU eviction;
+# an evicted client is closed. A client closed under an in-flight request
+# self-heals via _is_closed_client_error → drop + recreate + retry.
 _call_clients: OrderedDict[tuple[float, str | None], httpx.AsyncClient] = OrderedDict()
+
+
+def _is_closed_client_error(exc: BaseException) -> bool:
+    """Whether ``exc`` means the pooled client/transport was closed under us.
+
+    Covers httpx's "client has been closed" RuntimeError, anyio's
+    ClosedResourceError (proxy TLS teardown) and httpx transport closes.
+    """
+    if isinstance(exc, httpx.TransportError):
+        return True
+    name = type(exc).__name__
+    if name in ("ClosedResourceError", "BrokenResourceError"):
+        return True
+    return isinstance(exc, RuntimeError) and "client has been closed" in str(exc).lower()
+
+
+def _drop_call_client(timeout: float, proxy: rpc_proxy.ProxySpec | None) -> None:
+    """Evict a (possibly closed/broken) pooled client so the next call recreates it."""
+    with contextlib.suppress(KeyError):
+        del _call_clients[(timeout, proxy.url if proxy is not None else None)]
 
 
 async def _get_call_client(timeout: float, proxy: rpc_proxy.ProxySpec | None = None) -> httpx.AsyncClient:
     """Get a pooled module-level httpx client for the given timeout/proxy.
 
-    The pool is capped at :data:`RPC_CALL_CLIENTS_MAX`; the least-recently
-    used client is evicted and closed when the cap is exceeded. Every
-    client gets explicit connection limits so sockets stay bounded.
-
-    When ``proxy`` is supplied the client routes through it; a proxy whose
-    scheme needs an optional dependency that is missing degrades to a direct
+    Capped at :data:`RPC_CALL_CLIENTS_MAX` with LRU eviction (evicted
+    clients are closed). Explicit connection limits keep sockets bounded.
+    A proxy whose optional dependency is missing degrades to a direct
     client (logged) rather than failing the call.
     """
     key = (timeout, proxy.url if proxy is not None else None)
@@ -264,8 +278,7 @@ async def _post_direct(
     """POST directly, retrying ONCE via a proxy after a transport failure.
 
     Only active in ``RPC_PROXY_FALLBACK_ONLY`` mode (``fallback_proxy_for``
-    returns None otherwise), so the default direct behaviour is unchanged.
-    The passed client already carries its configured timeout.
+    returns None otherwise). The passed client carries its timeout.
     """
     try:
         return await client.post(endpoint, json=payload)
@@ -282,6 +295,15 @@ async def _post_direct(
         metrics_incr("rpc_proxy_fallback_used")
         proxy_client = await _get_call_client(timeout, proxy=fallback)
         return await proxy_client.post(endpoint, json=payload)
+    except RuntimeError as exc:
+        if not _is_closed_client_error(exc):
+            raise
+        # Self-heal: the pooled client was closed under us (LRU eviction /
+        # shutdown race). Drop it, recreate once, retry the same request.
+        logger.warning("rpc_client_recreated", endpoint=endpoint[:50])
+        metrics_incr("rpc_client_recreated")
+        _drop_call_client(timeout, None)
+        return await (await _get_call_client(timeout)).post(endpoint, json=payload)
 
 
 async def _post_json(
@@ -293,14 +315,10 @@ async def _post_json(
 ) -> httpx.Response:
     """POST a JSON body, routing through the residency proxy when enabled.
 
-    Two directions are supported, selected by ``RPC_PROXY_FALLBACK_ONLY``:
-
-    * proxy-primary (default) — proxy first, ONE direct retry on a proxy
-      transport failure (``rpc_proxy_fallback_direct``).
-    * direct-primary / fallback-only — direct first, ONE proxy retry on a
-      direct transport failure (``rpc_proxy_fallback_used``). This keeps
-      the proxy pool's per-IP budget untouched until a direct IP is
-      blocked, which is the quota-safe default for the scheduler.
+    Selected by ``RPC_PROXY_FALLBACK_ONLY``: proxy-primary (default, ONE
+    direct retry on proxy failure — ``rpc_proxy_fallback_direct``) or
+    direct-primary / fallback-only (ONE proxy retry —
+    ``rpc_proxy_fallback_used``), the quota-safe default for the scheduler.
     """
     spec = proxy if proxy is not None else rpc_proxy.proxy_for_endpoint(endpoint)
     if spec is None:
@@ -308,14 +326,24 @@ async def _post_json(
     try:
         client = await _get_call_client(timeout, proxy=spec)
         return await client.post(endpoint, json=payload)
-    except httpx.ProxyError as exc:
-        logger.warning(
-            "rpc_proxy_fallback_direct",
-            endpoint=endpoint[:50],
-            proxy=spec.label,
-            error=str(exc)[:80],
-        )
-        rpc_proxy.mark_proxy_failed(endpoint, spec)
+    except (httpx.ProxyError, RuntimeError, httpx.TransportError) as exc:
+        if isinstance(exc, httpx.ProxyError):
+            logger.warning(
+                "rpc_proxy_fallback_direct",
+                endpoint=endpoint[:50],
+                proxy=spec.label,
+                error=str(exc)[:80],
+            )
+            rpc_proxy.mark_proxy_failed(endpoint, spec)
+        elif _is_closed_client_error(exc):
+            # Self-heal: pooled proxy client closed under us (LRU eviction /
+            # TLS teardown). Drop it, recreate once, retry the same request.
+            logger.warning("rpc_client_recreated", endpoint=endpoint[:50], proxy=spec.label)
+            metrics_incr("rpc_client_recreated")
+            _drop_call_client(timeout, spec)
+            return await (await _get_call_client(timeout, proxy=spec)).post(endpoint, json=payload)
+        else:
+            raise
         client = await _get_call_client(timeout)
         return await client.post(endpoint, json=payload)
 
@@ -377,12 +405,11 @@ class RpcClient:
         from lite_indexer.rpc.routing import record_rpc_usage
         from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
 
-        # Quota-degrade gate: before dispatching, ask the ledger whether
-        # this call should be deferred (level 3 parks everything, level 2
-        # blocks heavy methods). Guarded — a ledger error never blocks RPC.
-        # Returns None (the existing failure shape) so callers skip
-        # gracefully; a deferred call is never dispatched and records no
-        # quota consumption.
+        # Quota-degrade gate: ask the ledger whether this call should be
+        # deferred (level 3 parks everything, level 2 blocks heavy methods).
+        # Guarded — a ledger error never blocks RPC. Returns None (the
+        # existing failure shape); a deferred call is never dispatched and
+        # records no quota consumption.
         reason = _defer_reason_for(endpoint, method)
         if reason:
             _warn_deferred(endpoint, method, reason)
@@ -402,9 +429,9 @@ class RpcClient:
             )
             return None
 
-        # Circuit breaker gate: an endpoint that tripped (5 consecutive
-        # transient failures) is skipped for the open-TTL window; after
-        # expiry one probe passes (half-open) and success resets it.
+        # Circuit breaker gate: a tripped endpoint (5 consecutive transient
+        # failures) is skipped for the open-TTL window; after expiry one
+        # probe passes (half-open) and success resets it.
         if await circuit_open(endpoint):
             logger.debug("rpc_circuit_skip", endpoint=endpoint[:50], method=method)
             return None
@@ -419,36 +446,27 @@ class RpcClient:
         # requests-per-second budget is exhausted, and honor the account-level
         # Retry-After window — providers ban the ACCOUNT, not one URL.
         account_key = account_key_for_endpoint(endpoint)
-        # Intelligent throttle: honor Retry-After / advertised budget /
-        # per-method rate BEFORE spending another request on this endpoint.
+        # Throttles: intelligent per-method pacing, provider (account) gate
+        # ONCE before the retry loop (retries don't re-pace), auto-tune soft
+        # spacing, then the per-identity budget.
         await throttle_before(endpoint, method)
-        # Provider (account) gate: honor the account-level Retry-After /
-        # requests-per-second budget ONCE before the retry loop. Concurrency
-        # is enforced per dispatch below; pacing once avoids re-pacing the
-        # provider budget on every transient retry.
         await provider_throttle_before(endpoint)
-        # Auto-tune soft spacing: a straining endpoint gets progressively
-        # wider gaps instead of a hard ban (NodeCore-style adaptation).
         await autotune_wait(endpoint)
-        # Per-identity budget: pace to the rps budget and record the dispatch
-        # (may pre-emptively cool the identity at its daily-budget threshold).
         await _budget_before(endpoint)
         started = time.perf_counter()
 
         # Exponential backoff retry for TRANSIENT failures only (timeouts,
         # connection errors, 5xx, empty responses): 0.1s → 0.2s → 0.4s,
-        # max RPC_RETRY_ATTEMPTS attempts. Non-transient outcomes (429,
-        # 403, malformed JSON, JSON-RPC errors) return immediately. When
-        # all attempts fail, we return None — the existing failure shape —
-        # and the hedging layer above keeps doing its job.
+        # max RPC_RETRY_ATTEMPTS attempts. Non-transient outcomes return
+        # immediately. All attempts failing returns None — the existing
+        # failure shape — and hedging keeps doing its job above.
         max_attempts = RPC_RETRY_ATTEMPTS
         for attempt in range(1, max_attempts + 1):
             transient = False
             try:
-                # Ledger + in-flight telemetry around the actual request.
+                # Ledger + in-flight telemetry around the request (best-effort:
                 # record_endpoint_call feeds the quota ledger; incr/decr
-                # in-flight is the guarded equivalent of track_in_flight() so
-                # the P2C damped score sees concurrent load. All best-effort.
+                # in-flight feeds the P2C damped score).
                 _safe_record(record_endpoint_call, endpoint, method)
                 _safe_record(incr_in_flight, endpoint)
                 try:
@@ -489,14 +507,18 @@ class RpcClient:
                         _safe_record(record_rpc_outcome, endpoint, ok=False)
                         return None
 
+                    if not isinstance(data, dict):
+                        # Some RPCs return a bare JSON string/array — treat as
+                        # invalid instead of crashing on data.get(...) (2026-09-20).
+                        logger.warning("rpc_malformed_response", endpoint=endpoint[:50], method=method)
+                        record_rpc_usage(endpoint, method, ok=False, error="malformed_response")
+                        _safe_record(record_rpc_outcome, endpoint, ok=False)
+                        return None
+
                     ok = bool("error" not in data or data.get("error") is None)
                     _safe_record(autotune_record, endpoint, ok=ok)
                     if ok:
                         record_rpc_usage(endpoint, method, ok=True, bytes_received=bytes_received)
-                        # Actual successful response — close the circuit breaker for
-                        # this endpoint so it doesn't stay open forever (it only ever
-                        # opens via record_endpoint_failure; without this it would
-                        # oscillate open↔half-open via cooldown and never re-close).
                         record_endpoint_success(endpoint)
                         record_budget_success(endpoint)
                         await record_circuit_success(endpoint)
@@ -525,9 +547,7 @@ class RpcClient:
                 status = exc.response.status_code
                 logger.debug("rpc_http_error", endpoint=endpoint[:50], method=method, status=status)
                 record_rpc_usage(endpoint, method, ok=False, error=f"http_{status}")
-                # 429 = provider rate-limit: backoff only (recent-failure
-                # penalty + exponential sleep) — do NOT trip the circuit
-                # breaker or hard-ban, the throttle lifts in seconds.
+                # 429 = rate-limit: backoff only, no circuit trip/hard-ban.
                 if status == 429:
                     record_rate_limit(endpoint)
                 # 403 = provider blacklist: hard-ban the endpoint for an
@@ -549,8 +569,7 @@ class RpcClient:
                     from lite_indexer.rpc.backoff import exponential_backoff
 
                     # AWS full jitter: uniform(0, min(cap, base*2**attempt)).
-                    # Explicit Retry-After windows (429) are handled before
-                    # this path and stay exact.
+                    # Explicit Retry-After windows (429) stay exact above.
                     delay = exponential_backoff(
                         attempt - 1,
                         base=RPC_RETRY_BASE_DELAY_S,
@@ -576,31 +595,25 @@ class RpcClient:
     ) -> list[dict[str, Any] | None]:
         """Send N same-shape calls as ONE JSON-RPC array POST.
 
-        Free RPCs rate-limit per REQUEST, so collapsing independent calls
-        into a batch multiplies throughput without extra requests. A batch
-        counts as ONE HTTP request against the per-endpoint / per-account
-        request caps (paced once); ledger cost is still recorded per element
-        (weight-aware). Elements are returned in input order.
-
-        Fallback: when ``fallback`` is True (default), any batch-level failure
-        (transport, 429, non-array response, unusable body) transparently
-        re-issues the unresolved elements as individual :meth:`call`
-        invocations — never lose data. Callers that CANNOT afford a
-        per-element fallback storm (e.g. the non-critical timestamp phase,
-        which interpolates instead) pass ``fallback=False``: the unresolved
-        slots come back as None and the caller decides. Per-element JSON-RPC
+        Collapsing independent calls into a batch multiplies throughput: a
+        batch counts as ONE HTTP request against the caps (paced once);
+        ledger cost is still recorded per element. Elements return in
+        input order. With ``fallback`` True (default), any batch-level
+        failure transparently re-issues unresolved elements as individual
+        :meth:`call` invocations — never lose data. Callers that cannot
+        afford a per-element fallback storm (non-critical timestamp phase)
+        pass ``fallback=False`` and get None slots. Per-element JSON-RPC
         errors are always returned verbatim in their slot.
 
         Args:
             endpoint: RPC endpoint URL.
             calls: ``(method, params)`` pairs, max ``RPC_BATCH_MAX`` per POST.
             timeout: Per-request timeout in seconds.
-            fallback: When False, a failed batch yields None slots instead of
-                being re-issued element-by-element.
+            fallback: When False, a failed batch yields None slots.
 
         Returns:
-            One raw JSON-RPC response dict (``result`` or ``error``) per
-            input call, or None for an element that could not be resolved.
+            One raw JSON-RPC response dict per input call, or None for an
+            element that could not be resolved.
         """
         if not calls:
             return []
@@ -620,7 +633,7 @@ class RpcClient:
         batch_max = max(1, RPC_BATCH_MAX)
         for start in range(0, len(calls), batch_max):
             chunk = calls[start : start + batch_max]
-            # Guards are per element: deferred / non-archive elements stay None.
+            # Guards are per element: deferred / non-archive items stay None.
             sendable: list[tuple[int, str, list[Any] | None]] = []
             for offset, (method, params) in enumerate(chunk):
                 idx = start + offset
@@ -705,7 +718,7 @@ class RpcClient:
         """Re-issue unresolved batch elements as individual calls.
 
         Elements already resolved in ``existing`` are left untouched, so a
-        partial batch still only pays for the missing elements.
+        partial batch only pays for the missing elements.
         """
         out: list[dict[str, Any] | None] = list(existing) if existing is not None else [None] * len(calls)
         for i, (method, params) in enumerate(calls):
@@ -714,13 +727,8 @@ class RpcClient:
         return out
 
     async def eth_block_number(self, endpoint: str) -> int | None:
-        """Get latest block number.
-
-        Handles:
-        - Empty/malformed responses (returns None)
-        - Connection errors (returns None)
-        - Non-hex results (returns None)
-        """
+        """Get latest block number. Handles empty/malformed responses,
+        connection errors and non-hex results (all return None)."""
         result = await self.call(endpoint, "eth_blockNumber")
         if not result or "result" not in result:
             _safe_record(record_endpoint_tip_failure, endpoint)
@@ -859,9 +867,8 @@ class RpcClient:
         """
         # Quota-degrade gate for eth_getLogs: level 1 defers wide backfill
         # scans, level 2 defers all, level 3 (parked) defers everything.
-        # RC-1 (2026-09-19): None is the failure shape — returning [] was
-        # read as "no logs" and callers advanced state over unfetched
-        # blocks (silent loss). Callers must treat None as FETCH_FAILED.
+        # RC-1 (2026-09-19): None is the failure shape — [] was read as
+        # "no logs" and callers advanced state over unfetched blocks.
         reason = _defer_reason_for(endpoint, "eth_getLogs", range_blocks=to_block - from_block)
         if reason:
             _warn_deferred(endpoint, "eth_getLogs", reason)
@@ -869,7 +876,7 @@ class RpcClient:
 
         # Archive-class fail-closed gate: eth_getLogs is ARCHIVE-class — a
         # known non-archive endpoint silently returns wrong/empty logs, so
-        # fail closed (None = failure shape) rather than query it.
+        # fail closed (None = failure shape).
         from lite_indexer.rpc.capabilities import archive_guard_reason
 
         archive_reason = archive_guard_reason(endpoint, "eth_getLogs")
@@ -885,7 +892,6 @@ class RpcClient:
 
         # Persistent response cache: immutable historical ranges (confirmed
         # past RPC_CACHE_CONFIRMATIONS) are served from L1/L2 without a dial.
-        # Volatile/unconfirmed ranges fall through untouched.
         from lite_indexer.rpc import respcache
 
         cache_params = [self._logs_filter(from_block, to_block, topic, address)]
@@ -929,10 +935,8 @@ class RpcClient:
         logs = await fetch_logs_split(_once, from_block, to_block, fetch_many=_many)
 
         # Sampled cross-provider consensus: a critical getLogs range result
-        # is only trusted once a quorum of DISTINCT provider accounts returns
-        # the same content hash. Sampling keeps the extra requests off the
-        # normal path; a mismatch FAILS the read (None) so callers retry or
-        # escalate instead of committing one provider's answer.
+        # is trusted only once a quorum of DISTINCT provider accounts returns
+        # the same content hash; a mismatch FAILS the read (None).
         from lite_indexer.rpc.consensus import should_sample, verify_across_providers
 
         if logs is None or not chain or not should_sample():
@@ -1022,12 +1026,10 @@ class RpcClient:
     ) -> tuple[str, list[dict[str, Any]] | None]:
         """Fetch ONE ``eth_getLogs`` range and classify the outcome.
 
-        Returns:
-            ``("ok", logs)`` for a list/null result, ``("range", None)``
-            when the provider rejected the range/size/result limit (the
-            caller splits and retries in-line), and ``("error", None)`` for
-            every other failure (timeout/429/auth/malformed) so those keep
-            the normal retry/throttle path.
+        Returns ``("ok", logs)`` for a list/null result, ``("range", None)``
+        when the provider rejected the range/size/result limit (the caller
+        splits and retries in-line), and ``("error", None)`` for every
+        other failure (timeout/429/auth/malformed).
         """
         payload = {
             "jsonrpc": "2.0",
@@ -1077,10 +1079,8 @@ class RpcClient:
 
                 if resp.status_code == 429:
                     # Respect an explicit Retry-After EXACTLY; otherwise use
-                    # full-jitter exponential backoff (thundering-herd guard).
-                    # Rate limits trigger backoff ONLY — they must not trip
-                    # the circuit breaker or hard-ban the endpoint (the
-                    # throttle lifts in seconds).
+                    # full-jitter exponential backoff. Rate limits trigger
+                    # backoff ONLY — never the circuit breaker or a hard ban.
                     from lite_indexer.rpc.backoff import exponential_backoff
                     from lite_indexer.rpc.throttle import RATE_TRACKER, extract_rate_limit
 
