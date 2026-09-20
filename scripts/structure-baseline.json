@@ -37,7 +37,7 @@
   "lite_indexer/query/indexed_source.py": 333,
   "lite_indexer/query/router.py": 1050,
   "lite_indexer/query/rpc_fetcher.py": 751,
-  "lite_indexer/query/sqd_source.py": 902,
+  "lite_indexer/query/sqd_source.py": 336,
   "lite_indexer/query/trace_wallet.py": 279,
   "lite_indexer/recovery.py": 364,
   "lite_indexer/retention.py": 234,
