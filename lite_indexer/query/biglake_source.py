@@ -41,6 +41,8 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from lite_indexer.query.lake_row_utils import _norm_addr, _num_str  # re-exported for tests
+
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
@@ -55,27 +57,9 @@ def _env_flag(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _num_str(value: Any) -> str:
-    """Normalize a numeric lake value to a decimal string.
-
-    NOTE: the lake stores value columns as DOUBLE, so very large integers
-    can lose precision beyond 2**53. Acceptable for v1 (display/filtering
-    use); do not use for exact accounting.
-    """
-    if value is None:
-        return "0"
-    try:
-        fvalue = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    return str(int(fvalue)) if fvalue.is_integer() else str(fvalue)
 
 
-def _norm_addr(value: Any) -> str:
-    """Normalize AWS hex addresses (32-byte left-padded) to canonical 0x+40."""
-    t = str(value or "").lower()
-    t = t[2:] if t.startswith("0x") else t
-    return "0x" + t[-40:] if t else ""
+
 
 class BigLakeSource:
     """DuckDB-backed reader over the AWS public blockchain dataset.
