@@ -33,6 +33,7 @@ from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrate
 from lite_indexer.strategies.evm.launch import write_launch as write_evm_launch
 from lite_indexer.strategies.solana.bundles import write_bundle
 from lite_indexer.strategies.solana.launch import write_launch as write_solana_launch
+from lite_indexer.strategies.tron.deployer import write_tron_deployer_events
 from lite_indexer.strategies.tron.launch import PairEvent as TronPairEvent
 from lite_indexer.strategies.tron.launch import write_launch as write_tron_launch
 from lite_indexer.strategies.tron.launch import write_pair as write_tron_pair
@@ -187,13 +188,17 @@ async def flush_tron_launch(
     strategy: TronStrategy,
     ch_writer: ClickHouseWriter,
     nats_publisher: NATSPublisher | None,
-) -> int:
+) -> tuple[int, int]:
     """Drain + persist the Tron launch / pair buffers.
 
     Pair events go through :func:`write_tron_pair`, everything else
-    through :func:`write_tron_launch`. Best-effort: a per-event failure
-    logs and the buffer is cleared regardless (matching the sync loop's
-    flush semantics).
+    through :func:`write_tron_launch`. The same drained events are
+    mirrored into ``wallet_memory.deployer_events`` (scanner-contract
+    table) via :func:`tron.deployer.write_tron_deployer_events` — the
+    batch-1 audit gap: tron previously wrote only ``tron_launches``.
+
+    Best-effort: a per-event failure logs and the buffer is cleared
+    regardless (matching the sync loop's flush semantics).
 
     Args:
         strategy: Tron strategy whose ``_last_launch_events`` buffer is
@@ -202,11 +207,12 @@ async def flush_tron_launch(
         nats_publisher: Optional NATS publisher for real-time fan-out.
 
     Returns:
-        Number of events written.
+        Tuple of (launch events written, deployer rows written).
     """
     launch_written = 0
     tron_launch_events = strategy._last_launch_events
     strategy._last_launch_events = []
+    deployer_written = await write_tron_deployer_events(strategy.chain, tron_launch_events, ch_writer)
     for evt in tron_launch_events:
         try:
             if isinstance(evt, TronPairEvent):
@@ -216,7 +222,7 @@ async def flush_tron_launch(
             launch_written += 1
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning("tron_launch_write_failed", error=str(exc)[:100])
-    return launch_written
+    return launch_written, deployer_written
 
 
 def write_ndjson(

@@ -522,6 +522,10 @@ class SyncLoopMixin(IndexerMixinBase):
                 deployer_candidates = len(evm_strategy._last_pair_events)
             elif solana_strategy and solana_strategy._last_deployer_events:
                 deployer_candidates = len(solana_strategy._last_deployer_events)
+            elif tron_strategy and tron_strategy._last_launch_events:
+                # Tron deployer rows mirror the drained launch/pair buffer
+                # (batch-1 audit gap) — same pending-row semantics as EVM/Solana.
+                deployer_candidates = len(tron_strategy._last_launch_events)
             deployer_written = await write_deployer_events(
                 self.chain,
                 evm_strategy,
@@ -545,7 +549,14 @@ class SyncLoopMixin(IndexerMixinBase):
         if solana_strategy is not None:
             launch_written += await flush_solana_launch_bundles(solana_strategy, self.ch_writer, self.nats_publisher)
         if tron_strategy is not None:
-            launch_written += await flush_tron_launch(tron_strategy, self.ch_writer, self.nats_publisher)
+            tron_launch_written, tron_deployer_written = await flush_tron_launch(
+                tron_strategy, self.ch_writer, self.nats_publisher
+            )
+            launch_written += tron_launch_written
+            # Tron deployer rows are written by the same flush (mirrored
+            # from the drained launch/pair buffer) — fold into the count
+            # so the D6 pending-row check covers tron too.
+            deployer_written += tron_deployer_written
         if launch_written:
             summary["launch_events_written"] = launch_written
 
