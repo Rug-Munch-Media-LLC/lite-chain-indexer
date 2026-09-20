@@ -11,6 +11,7 @@ Progress is logged per (chain, date, table) under ``lake_backfill_progress``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date as _date
 from datetime import timedelta
 from typing import Any
@@ -44,8 +45,20 @@ def _write_batch(writer: Any, chain: str, table: str, batch: list[dict[str, Any]
     return int(write_internal_transfers(client, chain, batch))
 
 
-def _write_partition(src: Any, wh: Any, chain: str, d: str, table: str, batch_rows: int) -> int:
-    """Stream one partition from the lake and write it in batches."""
+@dataclass
+class LakeBackfillRequest:
+    """One lake backfill run: chain, dates, tables, batching."""
+
+    chain: str
+    dates: list[str]
+    tables: tuple[str, ...] = TABLES
+    dry_run: bool = False
+    batch_rows: int = 5000
+
+
+def _write_partition(src: Any, wh: Any, chain: str, partition: tuple[str, str], batch_rows: int) -> int:
+    """Stream one ``(date, table)`` partition from the lake and write it in batches."""
+    d, table = partition
     reader = getattr(src, _READERS[table])
     total = 0
     batch: list[dict[str, Any]] = []
@@ -60,55 +73,44 @@ def _write_partition(src: Any, wh: Any, chain: str, d: str, table: str, batch_ro
 
 
 def backfill_chain_from_lake(
-    chain: str,
-    dates: list[str],
-    tables: tuple[str, ...] = TABLES,
-    dry_run: bool = False,
-    batch_rows: int = 5000,
+    req: LakeBackfillRequest,
     *,
     source: Any | None = None,
     writer: Any | None = None,
 ) -> dict[str, int]:
-    """Backfill (chain, dates, tables) from the sonarx lake into ClickHouse.
+    """Backfill ``req`` (chain, dates, tables) from the sonarx lake into ClickHouse.
 
-    Args:
-        chain: ``base`` or ``arbitrum``.
-        dates: ``YYYY-MM-DD`` partitions to ingest.
-        tables: Subset of ``("transfers", "traces")``.
-        dry_run: Count rows without writing.
-        batch_rows: Rows per writer batch.
-        source: DI seam — a SonarxLakeSource-like object (tests).
-        writer: DI seam — a ClickHouseWriter-like object (tests).
+    ``source`` / ``writer`` are DI seams (tests); defaults are live objects.
 
     Returns:
         Mapping ``"<chain>/<date>/<table>" → row count`` for every
         partition attempted (missing/failed partitions count 0).
     """
-    if chain not in CHAINS:
-        raise ValueError(f"unsupported sonarx chain: {chain!r} (expected one of {CHAINS})")
+    if req.chain not in CHAINS:
+        raise ValueError(f"unsupported sonarx chain: {req.chain!r} (expected one of {CHAINS})")
     src = source if source is not None else SonarxLakeSource()
     if not src.available():
-        logger.warning("lake_backfill_unavailable", chain=chain)
+        logger.warning("lake_backfill_unavailable", chain=req.chain)
         return {}
     wh = writer if writer is not None else _default_writer()
 
     counts: dict[str, int] = {}
-    for d in dates:
-        for table in tables:
-            key = f"{chain}/{d}/{table}"
+    for d in req.dates:
+        for table in req.tables:
+            key = f"{req.chain}/{d}/{table}"
             if _READERS.get(table) is None:
-                logger.warning("lake_backfill_bad_table", chain=chain, table=table)
+                logger.warning("lake_backfill_bad_table", chain=req.chain, table=table)
                 counts[key] = 0
                 continue
             try:
-                if dry_run:
-                    total = int(src.count(chain, table, d))
+                if req.dry_run:
+                    total = int(src.count(req.chain, table, d))
                 else:
-                    total = _write_partition(src, wh, chain, d, table, batch_rows)
+                    total = _write_partition(src, wh, req.chain, (d, table), req.batch_rows)
             except Exception as exc:  # noqa: BLE001 — one bad date must not abort the run
                 logger.warning(
                     "lake_backfill_partition_failed",
-                    chain=chain,
+                    chain=req.chain,
                     date=d,
                     table=table,
                     error=str(exc)[:120],
@@ -116,7 +118,7 @@ def backfill_chain_from_lake(
                 counts[key] = 0
                 continue
             counts[key] = total
-            logger.info("lake_backfill_progress", chain=chain, date=d, table=table, rows=total, dry_run=dry_run)
+            logger.info("lake_backfill_progress", chain=req.chain, date=d, table=table, rows=total, dry_run=req.dry_run)
     return counts
 
 

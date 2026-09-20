@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
 
-from lite_indexer.ingest.lake_backfill import backfill_chain_from_lake, expand_dates
+from lite_indexer.ingest.lake_backfill import (
+    LakeBackfillRequest,
+    backfill_chain_from_lake,
+    expand_dates,
+)
 from lite_indexer.ingest.lake_sonarx import map_trace_row, map_transfer_row
 
 # ── Mapping tests (fixture dicts, no network) ─────────────────────────
@@ -140,14 +145,18 @@ class FakeWriter:
 
 def test_dry_run_counts_without_writing() -> None:
     src, wh = FakeSource(), FakeWriter()
-    counts = backfill_chain_from_lake("base", ["2026-09-08"], dry_run=True, source=src, writer=wh)
+    counts = backfill_chain_from_lake(
+        LakeBackfillRequest("base", ["2026-09-08"], dry_run=True), source=src, writer=wh
+    )
     assert counts == {"base/2026-09-08/transfers": 3, "base/2026-09-08/traces": 2}
     assert not wh.transfers and not wh.internal
 
 
 def test_real_run_writes_batches() -> None:
     src, wh = FakeSource(), FakeWriter()
-    counts = backfill_chain_from_lake("base", ["2026-09-08"], dry_run=False, batch_rows=2, source=src, writer=wh)
+    counts = backfill_chain_from_lake(
+        LakeBackfillRequest("base", ["2026-09-08"], batch_rows=2), source=src, writer=wh
+    )
     assert counts == {"base/2026-09-08/transfers": 3, "base/2026-09-08/traces": 2}
     # 3 rows at batch_rows=2 → 2 write calls for transfers.
     assert sum(len(ev) for _, ev in wh.transfers) == 3
@@ -157,14 +166,16 @@ def test_real_run_writes_batches() -> None:
 
 def test_missing_partition_tolerated() -> None:
     src, wh = FakeSource(fail_dates={"2026-09-09"}), FakeWriter()
-    counts = backfill_chain_from_lake("base", ["2026-09-08", "2026-09-09"], dry_run=False, source=src, writer=wh)
+    counts = backfill_chain_from_lake(
+        LakeBackfillRequest("base", ["2026-09-08", "2026-09-09"]), source=src, writer=wh
+    )
     assert counts["base/2026-09-09/transfers"] == 0
     assert counts["base/2026-09-08/transfers"] == 3  # good date unaffected
 
 
 def test_unsupported_chain_raises() -> None:
     with pytest.raises(ValueError, match="unsupported sonarx chain"):
-        backfill_chain_from_lake("ethereum", ["2026-09-08"], source=FakeSource(), writer=FakeWriter())
+        backfill_chain_from_lake(LakeBackfillRequest("ethereum", ["2026-09-08"]), source=FakeSource(), writer=FakeWriter())
 
 
 def test_unavailable_source_returns_empty() -> None:
@@ -172,7 +183,7 @@ def test_unavailable_source_returns_empty() -> None:
         def available(self) -> bool:
             return False
 
-    assert backfill_chain_from_lake("base", ["2026-09-08"], source=Dead(), writer=FakeWriter()) == {}
+    assert backfill_chain_from_lake(LakeBackfillRequest("base", ["2026-09-08"]), source=Dead(), writer=FakeWriter()) == {}
 
 
 # ── Network-optional live schema probe (skips cleanly on failure) ─────
@@ -188,6 +199,7 @@ def test_sonarx_base_transfers_describe() -> None:
             r[0] for r in con.execute(f"DESCRIBE SELECT * FROM read_parquet('{path}')").fetchall()
         ]  # nosemgrep: formatted-sql-query — constant path
     except Exception:  # noqa: BLE001 — network/extension failures skip cleanly
+        logging.getLogger(__name__).warning("sonarx lake unreachable; skipping")
         pytest.skip("sonarx lake unreachable")
     assert "TRANSACTION_HASH" in cols
     assert "TOKEN_ADDRESS" in cols

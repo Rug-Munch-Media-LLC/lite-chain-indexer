@@ -41,6 +41,7 @@ def _iso_from_unix(ts: Any) -> str:
     try:
         return datetime.fromtimestamp(int(ts), UTC).isoformat()
     except (TypeError, ValueError, OSError, OverflowError):
+        logger.debug("lake_timestamp_invalid", value=str(ts)[:40])
         return ""
 
 
@@ -51,6 +52,7 @@ def _num_str(value: Any) -> str:
     try:
         fvalue = float(value)
     except (TypeError, ValueError):
+        logger.debug("lake_number_invalid", value=str(value)[:40])
         return str(value)
     return str(int(fvalue)) if fvalue.is_integer() else str(fvalue)
 
