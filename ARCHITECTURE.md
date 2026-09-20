@@ -4,6 +4,10 @@
 
 ---
 
+## House Standard
+
+Module <=200 lines hard (new), one primary function per module, zero monkeypatch in production, shrink-only ratchets — all CI-enforced. See **[docs/STANDARDS.md](docs/STANDARDS.md)**.
+
 ## Data-Flow Boundary (added 2026-08-24)
 
 The indexer is a STANDALONE data producer with one-way flow:

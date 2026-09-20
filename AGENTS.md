@@ -2,6 +2,10 @@
 
 > Lightweight multi-chain blockchain indexer using only free RPCs.
 
+## House Standard
+
+Module <=200 lines hard (new), one primary function per module, zero monkeypatch in production, shrink-only ratchets — all CI-enforced. See **[docs/STANDARDS.md](docs/STANDARDS.md)**.
+
 ## What This Repo Is
 
 Lite Chain Indexer indexes ERC-20 Transfer events, DEX Swap events (V2+V3),

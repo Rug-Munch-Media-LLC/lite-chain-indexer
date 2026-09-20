@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ from pathlib import Path
 ADVISORY_THRESHOLD = 150
 FAIL_THRESHOLD = 200
 GOD_THRESHOLD = 500
+FN_DENSITY_TARGET = 4
 DEFAULT_BASELINE = "scripts/structure-baseline.json"
 
 _SKIP = ".git .hg .svn node_modules __pycache__ .venv venv dist build .mypy_cache .ruff_cache .pytest_cache site-packages mutants .tox .nox htmlcov .next coverage .openhands"
@@ -35,9 +37,19 @@ def count_lines(path: Path) -> int:
         return 0
 
 
-def scan(root: Path, scan_roots: tuple[str, ...]) -> dict[str, int]:
-    """Map posix path -> line count for every scanned *.py > ADVISORY."""
+def count_top_level_defs(path: Path) -> int:
+    """Count top-level function/class defs (0 when unparseable)."""
+    try:
+        tree = ast.parse(path.read_text(errors="ignore"))
+    except (OSError, SyntaxError, ValueError):
+        return 0
+    return sum(1 for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
+
+
+def scan(root: Path, scan_roots: tuple[str, ...]) -> tuple[dict[str, int], dict[str, int]]:
+    """Map posix path -> line count (>ADVISORY) and -> top-level def count (all)."""
     sizes: dict[str, int] = {}
+    defs: dict[str, int] = {}
     for rel in scan_roots:
         base = root / rel
         if not base.is_dir():
@@ -48,10 +60,14 @@ def scan(root: Path, scan_roots: tuple[str, ...]) -> dict[str, int]:
             # Gate toolkit (check-*.py / ci-gate-*) is tooling, not product code.
             if p.name.startswith(("check-", "ci-gate")):
                 continue
+            relpath = p.relative_to(root).as_posix()
             n = count_lines(p)
             if n > ADVISORY_THRESHOLD:
-                sizes[p.relative_to(root).as_posix()] = n
-    return sizes
+                sizes[relpath] = n
+            d = count_top_level_defs(p)
+            if d > FN_DENSITY_TARGET:
+                defs[relpath] = d
+    return sizes, defs
 
 
 def resolve_scan_roots(root: Path, explicit: tuple[str, ...]) -> tuple[str, ...]:
@@ -74,9 +90,7 @@ def resolve_scan_roots(root: Path, explicit: tuple[str, ...]) -> tuple[str, ...]
         subs = sorted(
             d.name
             for d in src.iterdir()
-            if d.is_dir()
-            and not d.name.startswith(".")
-            and not d.name.endswith(".egg-info")
+            if d.is_dir() and not d.name.startswith(".") and not d.name.endswith(".egg-info")
         )
         return tuple(f"src/{s}" for s in subs) or ("src",)
     top = tuple(
@@ -119,9 +133,12 @@ def write_baseline(path: Path, sizes: dict[str, int]) -> None:
 
 
 def evaluate(
-    sizes: dict[str, int], base: dict[str, int]
+    sizes: dict[str, int],
+    base: dict[str, int],
+    defs: dict[str, int] | None = None,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Classify every scanned file: (failures, reports, shrinks, removals)."""
+    defs = defs or {}
     failures: list[str] = []
     reports: list[str] = []
     shrinks: list[str] = []
@@ -130,29 +147,34 @@ def evaluate(
         if path in base:
             recorded = base[path]
             if n > recorded:
-                failures.append(
-                    f"{path}: {recorded} -> {n} lines (allowlisted file grew)"
-                )
+                failures.append(f"{path}: {recorded} -> {n} lines (allowlisted file grew)")
             elif n < recorded:
                 shrinks.append(f"{path}: {recorded} -> {n} (run --update-baseline)")
             if n <= FAIL_THRESHOLD:
-                removals.append(
-                    f"{path}: {n} lines (<= {FAIL_THRESHOLD} — remove from allowlist)"
-                )
+                removals.append(f"{path}: {n} lines (<= {FAIL_THRESHOLD} — remove from allowlist)")
         elif n > GOD_THRESHOLD:
             failures.append(f"{path}: {n} lines (NEW file >{GOD_THRESHOLD} — split it)")
         elif n > FAIL_THRESHOLD:
-            failures.append(
-                f"{path}: {n} lines (NEW file >{FAIL_THRESHOLD} — split it)"
-            )
+            failures.append(f"{path}: {n} lines (NEW file >{FAIL_THRESHOLD} — split it)")
         else:
             reports.append(f"{path}: {n} lines (advisory > {ADVISORY_THRESHOLD})")
+    for path, d in sorted(defs.items()):
+        if path not in sizes and path not in base and d > FN_DENSITY_TARGET:
+            reports.append(
+                f"{path}: {d} top-level defs (new file fn-density "
+                f"> {FN_DENSITY_TARGET} — one primary function per module)"
+            )
     for path, recorded in sorted(base.items()):
         if path not in sizes:
-            removals.append(
-                f"{path}: recorded {recorded} — gone or <= {ADVISORY_THRESHOLD} (remove)"
-            )
+            removals.append(f"{path}: recorded {recorded} — gone or <= {ADVISORY_THRESHOLD} (remove)")
     return failures, reports, shrinks, removals
+
+
+def debt_report(base: dict[str, int]) -> None:
+    """Print the shrink-only ledger: every allowlisted file's deficit to 200."""
+    print(f"\ndebt ledger ({len(base)} allowlisted files, deficit to {FAIL_THRESHOLD}):")
+    for path, recorded in sorted(base.items(), key=lambda x: -x[1]):
+        print(f"  {FAIL_THRESHOLD - recorded:>5}  {path}: {recorded}")
 
 
 def update_baseline(sizes: dict[str, int], old: dict[str, int], path: Path) -> int:
@@ -170,11 +192,7 @@ def update_baseline(sizes: dict[str, int], old: dict[str, int], path: Path) -> i
         for k in sorted(new_over):
             print(f"  {k}: {sizes[k]}")
         return 1
-    kept = {
-        k: min(old[k], sizes[k])
-        for k in old
-        if k in sizes and sizes[k] > FAIL_THRESHOLD
-    }
+    kept = {k: min(old[k], sizes[k]) for k in old if k in sizes and sizes[k] > FAIL_THRESHOLD}
     if bootstrap:
         kept.update({k: v for k, v in sizes.items() if v > FAIL_THRESHOLD})
     write_baseline(path, kept)
@@ -189,20 +207,23 @@ def main() -> int:
     ap.add_argument("--baseline", default=DEFAULT_BASELINE)
     ap.add_argument("--scan-root", action="append", dest="scan_roots")
     ap.add_argument("--update-baseline", action="store_true")
+    ap.add_argument("--debt", action="store_true", help="print the shrink-only debt ledger")
     args = ap.parse_args()
 
     root = Path(args.repo).resolve()
     scan_roots = resolve_scan_roots(root, tuple(args.scan_roots or ()))
     print(f"structure gate: scan roots = {', '.join(scan_roots)}")
-    sizes = scan(root, scan_roots)
+    sizes, all_defs = scan(root, scan_roots)
     baseline_path = root / args.baseline
     old = load_baseline(baseline_path)
     if args.update_baseline:
         return update_baseline(sizes, old, baseline_path)
-    failures, reports, shrinks, removals = evaluate(sizes, old)
-    print(
-        f"structure gate: {len(sizes)} files > {ADVISORY_THRESHOLD} lines (allowlisted: {len(old)})"
-    )
+    if args.debt:
+        debt_report(old)
+        return 0
+    defs = {p: n for p, n in all_defs.items() if p not in old}
+    failures, reports, shrinks, removals = evaluate(sizes, old, defs)
+    print(f"structure gate: {len(sizes)} files > {ADVISORY_THRESHOLD} lines (allowlisted: {len(old)})")
     for line in reports:
         print(f"  [report] {line}")
     for line in shrinks:

@@ -11,6 +11,10 @@ Index transfers, DEX swaps, deployer activity, and internal-transfer traces acro
 [![20+ chains](https://img.shields.io/badge/chains-20-success.svg)](#chains-covered)
 [![1,100+ tests](https://img.shields.io/badge/tests-1%2C100%2B-success.svg)](#testing)
 
+## House Standard
+
+Module <=200 lines hard (new), one primary function per module, zero monkeypatch in production, shrink-only ratchets — all CI-enforced. See **[docs/STANDARDS.md](docs/STANDARDS.md)**.
+
 ---
 
 ## Why Lite Chain Indexer

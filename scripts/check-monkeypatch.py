@@ -25,6 +25,8 @@ from pathlib import Path
 
 DEFAULT_BASELINE = "scripts/monkeypatch-baseline.json"
 MONKEY_RE = re.compile(r"monkeypatch\.|mock\.patch|@patch\(|patch\.object|del sys\.modules")
+PROD_RE = re.compile(r"monkeypatch\.")
+PROD_ROOTS = ("lite_indexer", "src")
 
 SKIP_DIRS = {
     ".git",
@@ -64,6 +66,26 @@ def scan(root: Path) -> tuple[int, dict[str, int]]:
     return total, per_file
 
 
+def scan_production(root: Path) -> dict[str, int]:
+    """Count ``monkeypatch.`` occurrences in production code (hard-zero rule)."""
+    per_file: dict[str, int] = {}
+    for name in PROD_ROOTS:
+        base = root / name
+        if not base.is_dir():
+            continue
+        for p in base.rglob("*.py"):
+            if any(part in SKIP_DIRS for part in p.parts):
+                continue
+            try:
+                lines = p.read_text(errors="ignore").splitlines()
+            except OSError:
+                continue
+            n = sum(1 for ln in lines if PROD_RE.search(ln))
+            if n:
+                per_file[p.relative_to(root).as_posix()] = n
+    return per_file
+
+
 def load_baseline(path: Path) -> int:
     if not path.exists():
         return 0
@@ -84,21 +106,26 @@ def main() -> int:
     total, per_file = scan(root)
     baseline_path = root / args.baseline
     base = load_baseline(baseline_path)
+    prod = scan_production(root)
 
     if args.update_baseline:
         bootstrap = not baseline_path.exists()
         if total > base and not bootstrap:
             print(f"REFUSING to raise the monkeypatch baseline: {base} -> {total}")
             return 1
-        baseline_path.write_text(
-            json.dumps({"total": total, "files": dict(sorted(per_file.items()))}, indent=1) + "\n"
-        )
+        baseline_path.write_text(json.dumps({"total": total, "files": dict(sorted(per_file.items()))}, indent=1) + "\n")
         print(f"monkeypatch baseline updated: {baseline_path} (total {total})")
         return 0
 
     print(f"monkeypatch gate: {total} occurrences (baseline {base})")
     for rel, n in sorted(per_file.items(), key=lambda x: -x[1])[:10]:
         print(f"  {n:>4}  {rel}")
+    if prod:
+        print("\nFAIL (zero monkeypatch in production):")
+        for rel, n in sorted(prod.items()):
+            print(f"  - {rel}: {n} (replace with a DI seam)")
+        return 1
+    print(f"monkeypatch gate: production clean (0); test debt: {total} occurrences in tests (shrink-only)")
     if total > base:
         print(f"\nFAIL (monkeypatch ratchet): {base} -> {total} — decrease-only, fix don't add")
         return 1

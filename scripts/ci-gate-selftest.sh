@@ -21,7 +21,7 @@ MONKEY="$REPO_ROOT/scripts/check-monkeypatch.py"
 
 PY="${PYTHON:-python3}"
 if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
-  PY="$REPO_ROOT/.venv/bin/python"
+    PY="$REPO_ROOT/.venv/bin/python"
 fi
 
 FIXTURE="$(mktemp -d)"
@@ -30,41 +30,41 @@ trap 'rm -rf "$FIXTURE"' EXIT
 fails=0
 pass() { printf '  ok    %s\n' "$1"; }
 fail() {
-  printf '  FAIL  %s (rc=%s)\n' "$1" "${2:-?}"
-  fails=$((fails + 1))
+    printf '  FAIL  %s (rc=%s)\n' "$1" "${2:-?}"
+    fails=$((fails + 1))
 }
 
 reset_fixture() {
-  rm -rf "$FIXTURE"
-  mkdir -p "$FIXTURE/src/rugbrain" "$FIXTURE/scripts"
-  printf 'x = 1\n' >"$FIXTURE/src/rugbrain/small.py"
+    rm -rf "$FIXTURE"
+    mkdir -p "$FIXTURE/src/rugbrain" "$FIXTURE/scripts"
+    printf 'x = 1\n' >"$FIXTURE/src/rugbrain/small.py"
 }
 
 # gen <n> <file> — write exactly n lines.
 gen() {
-  local n="$1" f="$2" i=0
-  : >"$f"
-  while [ "$i" -lt "$n" ]; do
-    printf '# line\n' >>"$f"
-    i=$((i + 1))
-  done
+    local n="$1" f="$2" i=0
+    : >"$f"
+    while [ "$i" -lt "$n" ]; do
+        printf '# line\n' >>"$f"
+        i=$((i + 1))
+    done
 }
 
 struct_rc() {
-  "$PY" "$STRUCT" --repo "$FIXTURE" "$@" >/dev/null 2>&1
-  echo $?
+    "$PY" "$STRUCT" --repo "$FIXTURE" "$@" >/dev/null 2>&1
+    echo $?
 }
 monkey_rc() {
-  "$PY" "$MONKEY" --repo "$FIXTURE" >/dev/null 2>&1
-  echo $?
+    "$PY" "$MONKEY" --repo "$FIXTURE" >/dev/null 2>&1
+    echo $?
 }
 
 expect_rc() { # expect_rc <want> <actual> <label>
-  if [ "$2" -eq "$1" ]; then
-    pass "$3"
-  else
-    fail "$3" "$2"
-  fi
+    if [ "$2" -eq "$1" ]; then
+        pass "$3"
+    else
+        fail "$3" "$2"
+    fi
 }
 
 echo "gate-selftest: clean fixture must PASS (exit 0)"
@@ -89,12 +89,31 @@ expect_rc 1 "$(struct_rc)" "allowlist growth -> exit 1"
 reset_fixture
 printf '{"total": 0, "files": {}}' >"$FIXTURE/scripts/monkeypatch-baseline.json"
 printf "import monkeypatch as monkeypatch\nmonkeypatch.setattr(x, 'y', z)\n" \
-  >"$FIXTURE/src/rugbrain/mp.py"
+    >"$FIXTURE/src/rugbrain/mp.py"
 expect_rc 1 "$(monkey_rc)" "+1 monkeypatch -> exit 1"
 
+echo "gate-selftest: new-behavior assertions"
+reset_fixture
+gen 201 "$FIXTURE/src/rugbrain/over.py"
+printf '{"files": {"src/rugbrain/over.py": 201}}' >"$FIXTURE/scripts/structure-baseline.json"
+expect_rc 0 "$(struct_rc)" "allowlisted 201-line file passes (shrink-only)"
+"$PY" "$STRUCT" --repo "$FIXTURE" --debt | grep -q "src/rugbrain/over.py: 201" &&
+    pass "--debt ledger lists allowlisted file" || fail "--debt ledger" "?"
+
+reset_fixture
+for i in 1 2 3 4 5; do printf "def f$i():\n    pass\n\n" >>"$FIXTURE/src/rugbrain/dense.py"; done
+out="$("$PY" "$STRUCT" --repo "$FIXTURE" 2>&1)"
+echo "$out" | grep -q "new file fn-density" && pass "fn-density advisory reported" || fail "fn-density advisory" "?"
+expect_rc 0 "$(struct_rc)" "fn-density is advisory (exit 0)"
+
+reset_fixture
+printf '{"total": 0, "files": {}}' >"$FIXTURE/scripts/monkeypatch-baseline.json"
+printf "x = monkeypatch.getattr(m, 'n')\n" >"$FIXTURE/src/rugbrain/prod_mp.py"
+expect_rc 1 "$(monkey_rc)" "monkeypatch in production -> exit 1 (hard zero)"
+
 if [ "$fails" -ne 0 ]; then
-  echo "gate-selftest: FAIL ($fails assertion(s) did not match)"
-  exit 1
+    echo "gate-selftest: FAIL ($fails assertion(s) did not match)"
+    exit 1
 fi
 echo "gate-selftest: PASS — every gate catches its violation class"
 exit 0
