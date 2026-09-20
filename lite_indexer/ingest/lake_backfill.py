@@ -17,6 +17,7 @@ from datetime import timedelta
 from typing import Any
 
 from lite_indexer.ingest.lake_sonarx import CHAINS, TABLES, SonarxLakeSource
+from lite_indexer.lakes.router import LakeProviderRouter
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
@@ -77,14 +78,13 @@ def backfill_chain_from_lake(
     *,
     source: Any | None = None,
     writer: Any | None = None,
+    router: LakeProviderRouter | None = None,
 ) -> dict[str, int]:
     """Backfill ``req`` (chain, dates, tables) from the sonarx lake into ClickHouse.
 
-    ``source`` / ``writer`` are DI seams (tests); defaults are live objects.
-
-    Returns:
-        Mapping ``"<chain>/<date>/<table>" → row count`` for every
-        partition attempted (missing/failed partitions count 0).
+    ``source`` / ``writer`` / ``router`` are DI seams (tests); defaults are
+    live objects. The router gates every partition: no available provider →
+    the partition is skipped with a log (quota/health aware).
     """
     if req.chain not in CHAINS:
         raise ValueError(f"unsupported sonarx chain: {req.chain!r} (expected one of {CHAINS})")
@@ -93,6 +93,7 @@ def backfill_chain_from_lake(
         logger.warning("lake_backfill_unavailable", chain=req.chain)
         return {}
     wh = writer if writer is not None else _default_writer()
+    rt = router if router is not None else LakeProviderRouter()
 
     counts: dict[str, int] = {}
     for d in req.dates:
@@ -103,11 +104,27 @@ def backfill_chain_from_lake(
                 counts[key] = 0
                 continue
             try:
+                prov = rt.select(req.chain, table)
+                if prov is None:
+                    logger.warning("lake_backfill_no_provider", chain=req.chain, date=d, table=table)
+                    counts[key] = 0
+                    continue
+                if prov.name != f"aws-sonarx-{req.chain}":
+                    # Rotation picked a fallback provider; no reader wired for it yet.
+                    logger.warning(
+                        "lake_backfill_provider_unreadable", provider=prov.name, chain=req.chain, table=table
+                    )
+                    counts[key] = 0
+                    continue
                 if req.dry_run:
                     total = int(src.count(req.chain, table, d))
                 else:
                     total = _write_partition(src, wh, req.chain, (d, table), req.batch_rows)
+                # bytes: parquet metadata size would cost an extra HTTP round-trip
+                # per partition — not cheap, so 0 until a metadata probe is wired.
+                rt.report_success(prov.name, bytes_read=0)
             except Exception as exc:  # noqa: BLE001 — one bad date must not abort the run
+                rt.report_failure(f"aws-sonarx-{req.chain}", error=str(exc))
                 logger.warning(
                     "lake_backfill_partition_failed",
                     chain=req.chain,

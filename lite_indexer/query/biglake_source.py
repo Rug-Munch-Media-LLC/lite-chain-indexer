@@ -187,6 +187,14 @@ class BigLakeSource:
             return []
         if not self.available():
             return []
+        # TODO(lake-router): full rotation wiring pending; advisory gate only.
+        from lite_indexer.lakes.router import LakeProviderRouter
+
+        router = LakeProviderRouter()
+        prov = router.select("eth", self.TABLE_MAP[table])
+        if prov is None:
+            logger.warning("biglake_router_refused", table=table)
+            return []
         dates = self._validate_dates(dates)
         biglake_table = self.TABLE_MAP[table]
 
@@ -218,8 +226,10 @@ class BigLakeSource:
             cols = [d[0] for d in cur.description]
             raw_rows = cur.fetchall()
         except Exception as exc:  # noqa: BLE001 - tier failures must not break routing
+            router.report_failure(prov.name, error=str(exc))
             logger.warning("biglake_query_failed", error=str(exc)[:120])
             return []
+        router.report_success(prov.name)
         return [self._map_row(table, dict(zip(cols, row, strict=False))) for row in raw_rows]
 
     # ── Row mapping ──────────────────────────────────────────────────
@@ -258,9 +268,7 @@ class BigLakeSource:
             "call_type": raw.get("call_type") or "",
             "gas_used": int(raw.get("gas_used") or 0),
             "error": "" if not error else str(error)[:200],
-            "input_method_id": input_data[:10]
-            if isinstance(input_data, str) and input_data.startswith("0x")
-            else "",
+            "input_method_id": input_data[:10] if isinstance(input_data, str) and input_data.startswith("0x") else "",
             "ingested_at": now,
         }
 
@@ -358,17 +366,11 @@ def _cli() -> int:
     parser = argparse.ArgumentParser(prog="biglake_source", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_tr = sub.add_parser(
-        "transfers", help="wallet token transfers (+ optional traces) from the lake"
-    )
+    p_tr = sub.add_parser("transfers", help="wallet token transfers (+ optional traces) from the lake")
     p_tr.add_argument("address")
-    p_tr.add_argument(
-        "--dates", nargs="*", default=None, help="YYYY-MM-DD partitions (default: scope month)"
-    )
+    p_tr.add_argument("--dates", nargs="*", default=None, help="YYYY-MM-DD partitions (default: scope month)")
     p_tr.add_argument("--limit", type=int, default=100)
-    p_tr.add_argument(
-        "--traces", action="store_true", help="also query internal_transfers (traces)"
-    )
+    p_tr.add_argument("--traces", action="store_true", help="also query internal_transfers (traces)")
     p_tr.set_defaults(fn=_cmd_transfers)
 
     p_bf = sub.add_parser("backfill", help="export partitions to Parquet (+ optional B2 mirror)")
@@ -378,9 +380,7 @@ def _cli() -> int:
         help="evm_transfers|internal_transfers (raw: token_transfers|traces), comma-separated",
     )
     p_bf.add_argument("--dates", nargs="*", required=True)
-    p_bf.add_argument(
-        "--to-b2", action="store_true", help="mirror to b2-crypt:chain-data/biglake/..."
-    )
+    p_bf.add_argument("--to-b2", action="store_true", help="mirror to b2-crypt:chain-data/biglake/...")
     p_bf.set_defaults(fn=_cmd_backfill)
 
     args = parser.parse_args()

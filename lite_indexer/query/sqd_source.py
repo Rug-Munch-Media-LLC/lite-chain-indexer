@@ -157,8 +157,7 @@ class SQDSource:
 
         headers = {
             "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/128.0 Safari/537.36"
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"
             ),
             # httpx's gzip decoder can trip over the portal's compressed
             # JSONL streams ("decompressobj multiple times") — ask for
@@ -181,9 +180,7 @@ class SQDSource:
         for attempt in range(attempts):
             self._throttle()
             try:
-                status, text = (self._transport or self._default_transport)(
-                    method, url, payload, timeout
-                )
+                status, text = (self._transport or self._default_transport)(method, url, payload, timeout)
             except Exception as exc:  # noqa: BLE001 — transport errors are retried below
                 if attempt == attempts - 1:
                     raise SQDPortalError(f"transport failed: {exc}") from exc
@@ -191,9 +188,7 @@ class SQDSource:
                 continue
             if status in (429, 529):
                 if attempt == attempts - 1:
-                    raise SQDPortalError(
-                        f"portal overloaded (HTTP {status}) after {attempts} attempts"
-                    )
+                    raise SQDPortalError(f"portal overloaded (HTTP {status}) after {attempts} attempts")
                 time.sleep(self._backoffs[attempt])
                 continue
             return status, text
@@ -228,6 +223,13 @@ class SQDSource:
         type_value = self.DATASET_TYPES.get(name)
         if type_value is None:
             raise ValueError(f"unknown SQD dataset: {dataset}")
+        # TODO(lake-router): full rotation wiring pending; advisory gate only.
+        from lite_indexer.lakes.router import LakeProviderRouter
+
+        router = LakeProviderRouter()
+        prov = router.select(dataset, "sqd")
+        if prov is None:
+            raise SQDPortalError(f"lake router: no provider available for {dataset} (quota/health)")
         blocks: list[dict[str, Any]] = []
         cursor = int(from_block)
         for _ in range(max(1, int(max_batches))):
@@ -236,12 +238,11 @@ class SQDSource:
                 body["toBlock"] = int(to_block)
             if selectors:
                 body.update(selectors)
-            status, text = self._request(
-                "POST", f"{self.PORTAL}/datasets/{name}/stream", body, timeout=timeout
-            )
+            status, text = self._request("POST", f"{self.PORTAL}/datasets/{name}/stream", body, timeout=timeout)
             if status == 204:  # above dataset height — done
                 break
             if status != 200:
+                router.report_failure(prov.name, error=f"HTTP {status}")
                 raise SQDPortalError(f"portal stream error HTTP {status}: {text[:160]}")
             batch = [json.loads(line) for line in text.splitlines() if line.strip()]
             if not batch:
@@ -251,6 +252,7 @@ class SQDSource:
             if to_block is not None and last >= int(to_block):
                 break
             cursor = last + 1
+        router.report_success(prov.name)
         return blocks
 
     # ── Solana: per-owner token balance changes ──────────────────────
@@ -394,7 +396,6 @@ class SQDSource:
                 )
         rows.sort(key=lambda r: (r["slot"], str(r.get("token_account"))), reverse=True)
         return rows[: max(1, int(limit))]
-
 
     # ── Tron: TRC-20 transfers + internal transactions ───────────────
 
@@ -637,7 +638,6 @@ class SQDSource:
                 )
         rows.sort(key=lambda r: r["block_number"], reverse=True)
         return rows[: max(1, int(limit))]
-
 
     # ── EVM: full-history execution traces ───────────────────────────
 
