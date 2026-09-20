@@ -4,7 +4,7 @@
 → ``autotune_wait`` → ``_budget_before`` before dispatching. Side paths
 (last-resort fallback, rate-limited crawl, capability/discovery probes)
 POST directly and previously bypassed those gates — hammering shared
-provider accounts (onfinality, uniblock, tenderly) into 429 streaks.
+shared provider accounts into 429 streaks.
 
 :func:`provider_gates` is the single reusable gate chain; every path that
 POSTs to a provider calls it first. Imports are lazy to avoid import
