@@ -52,7 +52,6 @@ __all__ = ["ERC20_TRANSFER_TOPIC", "SQDPortalError", "SQDSource"]
 
 logger = get_logger(__name__)
 
-
 class SQDPortalError(RuntimeError):
     """Raised when the Portal returns a non-retryable error."""
 
@@ -132,6 +131,7 @@ class SQDSource:
         min_interval: float | None = None,
         retry_backoffs: tuple[float, ...] = (2.0, 5.0, 10.0),
         transport: Any | None = None,
+        router: Any | None = None,
     ) -> None:
         self._key = (api_key if api_key is not None else os.getenv("SQD_API_KEY", "")).strip()
         if min_interval is None:
@@ -143,6 +143,18 @@ class SQDSource:
         self._backoffs = tuple(retry_backoffs)
         self._transport = transport
         self._last_call = 0.0
+        self._router_impl = router
+        self._router_obj: Any | None = None
+
+    def _router(self) -> Any:
+        """Injected router (tests) or a lazily-built default LakeProviderRouter."""
+        if self._router_impl is not None:
+            return self._router_impl
+        if self._router_obj is None:
+            from lite_indexer.lakes.router import LakeProviderRouter
+
+            self._router_obj = LakeProviderRouter()
+        return self._router_obj
 
     # ── Availability / transport ─────────────────────────────────────
 
@@ -236,37 +248,20 @@ class SQDSource:
         type_value = self.DATASET_TYPES.get(name)
         if type_value is None:
             raise ValueError(f"unknown SQD dataset: {dataset}")
-        # TODO(lake-router): full rotation wiring pending; advisory gate only.
-        from lite_indexer.lakes.router import LakeProviderRouter
+        from lite_indexer.query.sqd_rotation import stream_with_rotation
 
-        router = LakeProviderRouter()
-        prov = router.select(dataset, "sqd")
-        if prov is None:
-            raise SQDPortalError(f"lake router: no provider available for {dataset} (quota/health)")
-        blocks: list[dict[str, Any]] = []
-        cursor = int(from_block)
-        for _ in range(max(1, int(max_batches))):
-            body: dict[str, Any] = {"type": type_value, "fromBlock": cursor, "fields": fields}
-            if to_block is not None:
-                body["toBlock"] = int(to_block)
-            if selectors:
-                body.update(selectors)
-            status, text = self._request("POST", f"{self.PORTAL}/datasets/{name}/stream", body, timeout=timeout)
-            if status == 204:  # above dataset height — done
-                break
-            if status != 200:
-                router.report_failure(prov.name, error=f"HTTP {status}")
-                raise SQDPortalError(f"portal stream error HTTP {status}: {text[:160]}")
-            batch = [json.loads(line) for line in text.splitlines() if line.strip()]
-            if not batch:
-                break
-            blocks.extend(batch)
-            last = max(int(b.get("header", {}).get("number", cursor)) for b in batch)
-            if to_block is not None and last >= int(to_block):
-                break
-            cursor = last + 1
-        router.report_success(prov.name)
-        return blocks
+        return stream_with_rotation(
+            self,
+            dataset=dataset,
+            name=name,
+            type_value=type_value,
+            from_block=from_block,
+            to_block=to_block,
+            fields=fields,
+            selectors=selectors,
+            max_batches=max_batches,
+            timeout=timeout,
+        )
 
     # ── Per-chain readers ────────────────────────────────────────────
     # Implemented in sibling modules and bound here as methods so the
@@ -329,6 +324,7 @@ class SQDSource:
                 )
         rows.sort(key=lambda r: r["block_number"], reverse=True)
         return rows[: max(1, int(limit))]
+
 
 if __name__ == "__main__":
     from lite_indexer.query.sqd_cli import cli

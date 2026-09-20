@@ -41,9 +41,8 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from lite_indexer.query.lake_row_utils import _norm_addr, _num_str  # re-exported for tests
-
 from lite_indexer.logging import get_logger
+from lite_indexer.query.lake_row_utils import _norm_addr, _num_str  # re-exported for tests
 
 logger = get_logger(__name__)
 
@@ -55,10 +54,6 @@ def _env_flag(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
-
-
-
-
 
 
 class BigLakeSource:
@@ -85,12 +80,25 @@ class BigLakeSource:
         enabled: bool | None = None,
         scope: str | None = None,
         connect: Callable[[], Any] | None = None,
+        router: Any | None = None,
     ) -> None:
         self._enabled = _env_flag("BIGLAKE_ENABLED", True) if enabled is None else enabled
         self._scope = scope or os.getenv("BIGLAKE_SCOPE") or f"{datetime.now(UTC):%Y-%m}-*"
         self._connect_impl = connect
         self._con: Any | None = None
         self._duckdb_missing = False
+        self._router_impl = router
+        self._router_obj: Any | None = None
+
+    def _router(self) -> Any:
+        """Injected router (tests) or a lazily-built default LakeProviderRouter."""
+        if self._router_impl is not None:
+            return self._router_impl
+        if self._router_obj is None:
+            from lite_indexer.lakes.router import LakeProviderRouter
+
+            self._router_obj = LakeProviderRouter()
+        return self._router_obj
 
     # ── Availability ─────────────────────────────────────────────────
 
@@ -177,14 +185,6 @@ class BigLakeSource:
             return []
         if not self.available():
             return []
-        # TODO(lake-router): full rotation wiring pending; advisory gate only.
-        from lite_indexer.lakes.router import LakeProviderRouter
-
-        router = LakeProviderRouter()
-        prov = router.select("eth", self.TABLE_MAP[table])
-        if prov is None:
-            logger.warning("biglake_router_refused", table=table)
-            return []
         dates = self._validate_dates(dates)
         biglake_table = self.TABLE_MAP[table]
 
@@ -213,17 +213,16 @@ class BigLakeSource:
         )
         params.append(max(1, min(int(limit), 1000)))
 
-        try:
-            con = self._connection()
-            cur = con.execute(sql, params)
-            cols = [d[0] for d in cur.description]
-            raw_rows = cur.fetchall()
-        except Exception as exc:  # noqa: BLE001 - tier failures must not break routing
-            router.report_failure(prov.name, error=str(exc))
-            logger.warning("biglake_query_failed", error=str(exc)[:120])
-            return []
-        router.report_success(prov.name)
-        return [self._map_row(table, dict(zip(cols, row, strict=False))) for row in raw_rows]
+        from lite_indexer.query.biglake_rotation import read_with_rotation
+
+        return read_with_rotation(self, sql=sql, params=params, table=table, biglake_table=biglake_table)
+
+    def _read_raw(self, sql: str, params: list[Any]) -> tuple[list[str], list[tuple[Any, ...]]]:
+        """Execute the lake SQL and return (columns, raw rows)."""
+        con = self._connection()
+        cur = con.execute(sql, params)
+        cols = [d[0] for d in cur.description]
+        return cols, cur.fetchall()
 
     # ── Row mapping ──────────────────────────────────────────────────
 

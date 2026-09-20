@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from lite_indexer.lakes.registry import LakeProvider
+from lite_indexer.lakes.router import LakeProviderRouter
 from lite_indexer.query.sqd_source import SQDPortalError, SQDSource
 
 OWNER = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
@@ -19,9 +21,7 @@ class FakePortal:
         self.script = list(script)
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(
-        self, method: str, url: str, payload: dict[str, Any] | None, timeout: float
-    ) -> tuple[int, str]:
+    def __call__(self, method: str, url: str, payload: dict[str, Any] | None, timeout: float) -> tuple[int, str]:
         self.calls.append({"method": method, "url": url, "payload": payload})
         if not self.script:
             raise AssertionError("no more scripted responses")
@@ -32,9 +32,7 @@ def _jl(*blocks: dict[str, Any]) -> str:
     return "\n".join(json.dumps(b) for b in blocks)
 
 
-def _block(
-    number: int, token_balances: list[dict[str, Any]] | None = None, ts: int = 1788377894
-) -> dict[str, Any]:
+def _block(number: int, token_balances: list[dict[str, Any]] | None = None, ts: int = 1788377894) -> dict[str, Any]:
     return {"header": {"number": number, "timestamp": ts}, "tokenBalances": token_balances or []}
 
 
@@ -121,9 +119,7 @@ def test_token_balances_for_accounts() -> None:
         "postOwner": "P",
     }
     dup = dict(rec)
-    src, fake = _source(
-        [(200, _jl({"header": {"number": 100, "timestamp": 1788377894}, "tokenBalances": [rec, dup]}))]
-    )
+    src, fake = _source([(200, _jl({"header": {"number": 100, "timestamp": 1788377894}, "tokenBalances": [rec, dup]}))])
     rows = src.solana_token_balances_for_accounts(["AcctA"], 100, 100)
     assert len(rows) == 1  # deduped
     assert rows[0]["delta"] == "-400"
@@ -137,8 +133,14 @@ TRON_WALLET_TOPIC = "000000000000000000000000c686c48436aec3a1dfce4ac5a4526c39366
 
 
 def test_tron_address_normalization_and_base58() -> None:
-    assert SQDSource._tron_hex40("0xC686C48436AEC3A1DFCE4AC5A4526C39366985BA") == "c686c48436aec3a1dfce4ac5a4526c39366985ba"
-    assert SQDSource._tron_hex40("41c686c48436aec3a1dfce4ac5a4526c39366985ba") == "c686c48436aec3a1dfce4ac5a4526c39366985ba"
+    assert (
+        SQDSource._tron_hex40("0xC686C48436AEC3A1DFCE4AC5A4526C39366985BA")
+        == "c686c48436aec3a1dfce4ac5a4526c39366985ba"
+    )
+    assert (
+        SQDSource._tron_hex40("41c686c48436aec3a1dfce4ac5a4526c39366985ba")
+        == "c686c48436aec3a1dfce4ac5a4526c39366985ba"
+    )
     assert SQDSource._tron_topic("c686c48436aec3a1dfce4ac5a4526c39366985ba") == TRON_WALLET_TOPIC
     assert SQDSource._tron_base58("a614f803b6fd780986a42c78ec9c7f77e6ded13c") == "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
     with pytest.raises(ValueError):
@@ -187,11 +189,21 @@ def test_tron_internal_transfers_mapping() -> None:
     assert r["trace_address"] == "423.0"
     assert r["value_wei"] == "1000000"
     assert r["from_address"] == "0xa31d689a84244bc01be56e07aeafb7686f56bb89"
-    assert fake.calls[0]["payload"]["internalTransactions"][0]["transferTo"] == ["41a31d689a84244bc01be56e07aeafb7686f56bb89"]
+    assert fake.calls[0]["payload"]["internalTransactions"][0]["transferTo"] == [
+        "41a31d689a84244bc01be56e07aeafb7686f56bb89"
+    ]
 
 
 def test_hyperliquid_owner_fills_mapping() -> None:
-    fill = {"user": "0xAbC", "coin": "BTC", "px": "67234.5", "sz": "0.1", "side": "B", "dir": "Open Long", "fee": "6.72"}
+    fill = {
+        "user": "0xAbC",
+        "coin": "BTC",
+        "px": "67234.5",
+        "sz": "0.1",
+        "side": "B",
+        "dir": "Open Long",
+        "fee": "6.72",
+    }
     block = {"header": {"number": 900000050, "timestamp": 1710000000000}, "fills": [fill, {**fill, "user": "0xother"}]}
     src, fake = _source([(200, _jl(block))])
     rows = src.hyperliquid_owner_fills("0xabc", 900000050, 900000050)
@@ -248,3 +260,88 @@ def test_evm_traces_unknown_chain_gated() -> None:
     src, fake = _source([])
     assert src.evm_traces("bsc", 1, 2) == []
     assert fake.calls == []
+
+
+# ── Lake provider rotation ───────────────────────────────────────────
+
+
+class RecordingRouter(LakeProviderRouter):
+    """Router that records selections and reports for assertions."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.selected: list[str] = []
+        self.successes: list[str] = []
+        self.failures: list[str] = []
+
+    def select(self, chain: str, table: str, *, exclude: frozenset[str] | set[str] = frozenset()) -> Any:
+        prov = super().select(chain, table, exclude=exclude)
+        if prov is not None:
+            self.selected.append(prov.name)
+        return prov
+
+    def report_success(self, provider: str, *, bytes_read: int = 0) -> None:
+        self.successes.append(provider)
+        super().report_success(provider, bytes_read=bytes_read)
+
+    def report_failure(self, provider: str, *, error: str) -> None:
+        self.failures.append(provider)
+        super().report_failure(provider, error=error)
+
+
+def _two_sqd_providers() -> dict[str, LakeProvider]:
+    serves = frozenset({("*", "sqd")})
+    return {
+        "p1": LakeProvider(name="p1", kind="http/api", serves=serves),
+        "p2": LakeProvider(name="p2", kind="http/api", serves=serves),
+    }
+
+
+def test_rotation_falls_through_on_http_error(tmp_path: Any) -> None:
+    router = RecordingRouter(registry=_two_sqd_providers(), usage_path=tmp_path / "u.json")
+    src, fake = _source([(500, "err"), (200, _jl(_block(5)))], router=router)
+    blocks = src.stream("solana", 5, 5, fields={"block": {"number": True}})
+    assert [b["header"]["number"] for b in blocks] == [5]
+    assert router.selected == ["p1", "p2"]
+    assert router.failures == ["p1"]
+    assert router.successes == ["p2"]
+    assert fake.calls[0]["url"] == fake.calls[1]["url"]
+
+
+def test_no_provider_raises(tmp_path: Any) -> None:
+    p1 = LakeProvider(name="p1", kind="http/api", serves=frozenset({("*", "sqd")}))
+    router = RecordingRouter(registry={"p1": p1}, usage_path=tmp_path / "u.json")
+    router.report_failure("p1", error="warmup")  # cooldown → select returns None
+    src, fake = _source([], router=router)
+    with pytest.raises(SQDPortalError, match="no provider available"):
+        src.stream("solana", 5, 5, fields={"block": {"number": True}})
+    assert fake.calls == []
+
+
+def test_quota_refused_provider_raises(tmp_path: Any) -> None:
+    p1 = LakeProvider(name="p1", kind="http/api", serves=frozenset({("*", "sqd")}), daily_requests=0)
+    router = RecordingRouter(registry={"p1": p1}, usage_path=tmp_path / "u.json")
+    src, fake = _source([], router=router)
+    with pytest.raises(SQDPortalError, match="no provider available"):
+        src.stream("solana", 5, 5, fields={"block": {"number": True}})
+    assert fake.calls == []
+
+
+def test_empty_stream_falls_through_then_returns_empty(tmp_path: Any) -> None:
+    router = RecordingRouter(registry=_two_sqd_providers(), usage_path=tmp_path / "u.json")
+    src, fake = _source([(204, ""), (204, "")], router=router)
+    assert src.stream("solana", 5, 5, fields={"block": {"number": True}}) == []
+    assert router.selected == ["p1", "p2"]
+    assert router.successes == ["p1", "p2"]
+    assert router.failures == []
+
+
+def test_success_reporting_updates_usage(tmp_path: Any) -> None:
+    p1 = LakeProvider(name="p1", kind="http/api", serves=frozenset({("*", "sqd")}))
+    router = RecordingRouter(registry={"p1": p1}, usage_path=tmp_path / "u.json")
+    src, _ = _source([(200, _jl(_block(5)))], router=router)
+    blocks = src.stream("solana", 5, 5, fields={"block": {"number": True}})
+    assert len(blocks) == 1
+    assert router.successes == ["p1"]
+    assert router.failures == []
+    assert router._state["p1"].usage["requests"] == 1
