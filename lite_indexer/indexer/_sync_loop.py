@@ -1,9 +1,8 @@
 """LiteIndexer mixin — sync loop body.
 
-Extracted from the former god-file (indexer/__init__.py) to bring the core
-class under 500 lines. Holds the main sync cycle: block range determination,
-event fetching, persistence, state save, and all the error/reorg guards.
-Mixed into LiteIndexer.
+Extracted from the former god-file (indexer/__init__.py). Holds the main
+sync cycle: range determination, per-slice checkpointing, event fetching,
+persistence, state save, and the error/reorg guards. Mixed into LiteIndexer.
 
 REORG_SENTINEL lives in the parent module (indexer/__init__.py) and is
 referenced here as a bare name so the mixin works standalone in tests.
@@ -29,7 +28,14 @@ from lite_indexer.config import (
     STATE_REGRESSION_TOLERANCE_BLOCKS,
 )
 from lite_indexer.indexer._base import IndexerMixinBase
-from lite_indexer.indexer._phase_guard import PhaseTimeoutError, guarded_phase, phase_failed
+from lite_indexer.indexer._checkpoint import (
+    HARD_ABORT_STATUSES,
+    SOFT_ABORT_STATUSES,
+    iter_slices,
+    record_slice_checkpoint,
+    slice_size,
+)
+from lite_indexer.indexer._phase_guard import PhaseTimeoutError, guarded_phase
 from lite_indexer.indexer._writers import (
     flush_solana_launch_bundles,
     flush_tron_launch,
@@ -72,23 +78,11 @@ class SyncLoopMixin(IndexerMixinBase):
         return defer_stalled_range(self, block_range, summary, start_time, phase)
 
     def _check_reorg(self, events: list[Any]) -> bool:
-        """Check if the events list contains a chain reorg sentinel.
-
-        Strategies return ["__CHAIN_REORG__"] when from_block > to_block,
-        indicating the chain experienced a reorganization.
-
-        Args:
-            events: Events list returned by a strategy method.
-
-        Returns:
-            True if a reorg was detected.
-        """
+        """True when the strategy returned the reorg sentinel."""
         return bool(events and len(events) == 1 and isinstance(events[0], str) and events[0] == self._REORG_SENTINEL)
 
-    # ── EVM WebSocket head pool ────────────────────────────────────────
-    # Push the tip so the daemon starts a sync pass on a new head instead of
-    # waiting out the HTTP poll interval; HTTP polling stays the fallback/
-    # heartbeat. Passes still go through the memory gate + RPC throttles.
+    # EVM WebSocket head pool: push the tip so the daemon starts a sync pass
+    # on a new head early; HTTP polling stays the fallback/heartbeat.
 
     def _head_ws_endpoints(self) -> list[str]:
         """Overlay websocket head endpoints for this chain ([] = disabled)."""
@@ -201,9 +195,7 @@ class SyncLoopMixin(IndexerMixinBase):
                 return resume
             return None
 
-        # No high-water mark yet: CH data far ahead of the state file is also
-        # a regression (cleared before the mark existed) — only trust it when
-        # CH is actually ahead (healthy genesis backfill has ch_max <= state).
+        # No high-water mark: only trust CH when it is actually AHEAD.
         ch_max = self._fetch_ch_max_block()
         if ch_max is not None and from_block < ch_max - STATE_REGRESSION_TOLERANCE_BLOCKS:
             resume = ch_max + 1
@@ -247,11 +239,8 @@ class SyncLoopMixin(IndexerMixinBase):
         state = self.state.load()
         from_block = self._override_from if self._override_from is not None else state.get("last_block", 0) + 1
 
-        # Backward-state guard (STATE_BACKWARD_PROTECTION): a state file that
-        # regressed below the high-water mark or the CH max block is
-        # corruption (torn write / OOM / clobber) — resume from the CH max
-        # instead of re-indexing from genesis (seen 08/03+08/04: eth reset
-        # to block ~93K while CH held 25.6M).
+        # Backward-state guard: a state file regressed below the high-water
+        # mark or CH max is corruption — resume from CH max, not genesis.
         if STATE_BACKWARD_PROTECTION and self._override_from is None:
             guarded = await self._guard_state_regression(state, from_block, summary)
             if guarded is not None:
@@ -303,14 +292,45 @@ class SyncLoopMixin(IndexerMixinBase):
         summary: dict[str, Any],
         start_time: float,
     ) -> dict[str, Any]:
-        """Shared body of the inner sync loop (restore handled in finally)."""
-        # 2. Determine block range
+        """Process the cycle's block range as checkpointed sub-slices.
+
+        Each sub-slice persists state + high-water on completion inside
+        ``_sync_range_body``, so a later phase timeout keeps every earlier
+        slice instead of discarding the whole cycle's fetch.
+        """
         block_range = await self._determine_block_range(summary)
         if block_range is None:
             self._save_current_state()
             return summary
         from_block, to_block = block_range
+        slices_done = 0
+        last_from, last_to = from_block, from_block - 1
+        for slice_from, slice_to in iter_slices(from_block, to_block, slice_size()):
+            result = await self._sync_range_body(slice_from, slice_to, summary, start_time)
+            status = result.get("status")
+            if status in HARD_ABORT_STATUSES:
+                return result
+            if status in SOFT_ABORT_STATUSES:
+                # First slice failed → no advance (fail-closed). A later one
+                # failed → earlier checkpoints are durable; stop here.
+                if slices_done == 0:
+                    return result
+                record_slice_checkpoint(self, last_from, last_to, slices_done)
+                result["status"] = "slice_partial"
+                return result
+            slices_done += 1
+            last_from, last_to = slice_from, slice_to
+        record_slice_checkpoint(self, last_from, last_to, slices_done)
+        return summary
 
+    async def _sync_range_body(
+        self,
+        from_block: int,
+        to_block: int,
+        summary: dict[str, Any],
+        start_time: float,
+    ) -> dict[str, Any]:
+        """Sync one sub-slice (restore handled in finally)."""
         # 2a. Graceful ClickHouse pause: probe CH BEFORE fetching events
         # from RPC. Unreachable CH aborts here with status "ch_unavailable"
         # — no RPC budget burned, no state movement (retry next poll).
@@ -406,8 +426,10 @@ class SyncLoopMixin(IndexerMixinBase):
                         to_block=to_block,
                     )
                 except PhaseTimeoutError as exc:
+                    # Non-fatal: the transfers leg checkpointed this slice —
+                    # a secondary-phase timeout must not discard that progress.
                     logger.warning("sync_phase_failed", chain=self.chain, phase="dex_events", error=str(exc)[:120])
-                    return phase_failed(self, summary, start_time, exc)
+                    summary.setdefault("phase_failures", []).append("dex_events")
                 if self._check_reorg(dex_events):
                     logger.warning("chain_reorg_during_dex_sync", chain=self.chain)
                     self.start_from_head = True
@@ -418,10 +440,8 @@ class SyncLoopMixin(IndexerMixinBase):
                     return summary
                 summary["dex_events_fetched"] = len(dex_events)
 
-        # 4a. Pair-created events for deployer tracking (EVM only). Runs
-        # whenever deployers are enabled, independent of the DEX flag —
-        # do NOT re-add `and not self.dex_enabled` (commit 835a9ff: that
-        # guard caused a ~2.9-day deployer-event gap in production).
+        # 4a. Pair-created events (EVM). Independent of the DEX flag — do NOT
+        # re-add `and not self.dex_enabled` (caused a 2.9-day prod gap).
         if self.deployers_enabled and self.strategy.supports_deployers():
             try:
                 await guarded_phase(
@@ -432,15 +452,14 @@ class SyncLoopMixin(IndexerMixinBase):
                     to_block=to_block,
                 )
             except PhaseTimeoutError as exc:
+                # Non-fatal: transfers already checkpointed this slice.
                 logger.warning("sync_phase_failed", chain=self.chain, phase="pair_created", error=str(exc)[:120])
-                return phase_failed(self, summary, start_time, exc)
+                summary.setdefault("phase_failures", []).append("pair_created")
             except Exception as exc:
                 logger.warning("deployer_pair_fetch_failed", chain=self.chain, error=str(exc)[:100])
 
-        # 4b. Internal-transfer traces (EVM only, optional): WETH unwraps,
-        # bridge deposits, fee flows and SELFDESTRUCT payouts never emit
-        # ERC-20 Transfer logs. Best-effort; runs BEFORE the "no events"
-        # short-circuit (a block can hold traces without Transfer logs).
+        # 4b. Internal-transfer traces (EVM, optional): best-effort, runs
+        # BEFORE the "no events" short-circuit (blocks can hold trace-only).
         trace_events: list[dict[str, Any]] = []
         if self.traces_enabled:
             try:
@@ -452,8 +471,9 @@ class SyncLoopMixin(IndexerMixinBase):
                     to_block=to_block,
                 )
             except PhaseTimeoutError as exc:
+                # Non-fatal: transfers already checkpointed this slice.
                 logger.warning("sync_phase_failed", chain=self.chain, phase="internal_transfers", error=str(exc)[:120])
-                return phase_failed(self, summary, start_time, exc)
+                summary.setdefault("phase_failures", []).append("internal_transfers")
             if trace_events:
                 summary["trace_events_fetched"] = len(trace_events)
 
@@ -481,10 +501,8 @@ class SyncLoopMixin(IndexerMixinBase):
         if dex_events and not self._check_reorg(dex_events):
             dex_events = await self._enrich_timestamps(dex_events)
 
-        # 5a. Plugin dispatch — registered plugins receive decoded events
-        # for their declared contracts (EVM only, best-effort). Runs after
-        # timestamp enrichment so plugin handlers observe the same block
-        # context as the core pipeline. Failures are contained per plugin.
+        # 5a. Plugin dispatch (EVM, best-effort) — after timestamp enrichment,
+        # failures contained per plugin.
         plugin_stats = await self._dispatch_plugin_events(from_block, to_block)
         if plugin_stats:
             summary.update(plugin_stats)
@@ -544,10 +562,8 @@ class SyncLoopMixin(IndexerMixinBase):
         # inserted OK, or nothing to write — the trace write probes then).
         ch_available = not events
         if events:
-            # Offload the blocking ClickHouse insert + row serialization +
-            # address-activity row-building to the bounded write pool: a
-            # chain's insert must not stall the other chains' event loop
-            # (2026-09-13 profile: ~53% of GIL samples here).
+            # Offload the blocking ClickHouse insert to the bounded write pool
+            # so one chain's insert never stalls the others' event loop.
             ch_inserted = await run_ch_write(self.strategy.write_clickhouse, events, self.ch_writer)
             summary["events_written_ch"] = ch_inserted
             ch_available = ch_inserted > 0
@@ -618,10 +634,8 @@ class SyncLoopMixin(IndexerMixinBase):
             if solana_swaps:
                 logger.info("solana_dex_clickhouse_inserted", rows=dex_ch_inserted)
 
-        # 7a2. Internal-transfer traces (optional, best-effort): the trace
-        # table is enrichment — a write failure does NOT abort the sync.
-        # Rows are only written after the transfer insert succeeded, so
-        # evm_transfers and internal_transfers stay aligned on ranges.
+        # 7a2. Internal-transfer traces (best-effort enrichment — a write
+        # failure never aborts; only after the transfer insert succeeded).
         if trace_events and ch_available:
             trace_written = await self.ch_writer.write_internal_transfers(self.chain, trace_events)
             if trace_written:
@@ -642,11 +656,7 @@ class SyncLoopMixin(IndexerMixinBase):
             if ch_client is not None:
                 outcome = await self.strategy.reorg_stage(from_block, to_block, ch_client)
                 if outcome.status is ReorgStatus.UNKNOWN:
-                    # Fail CLOSED: we could not verify the range (checkpoint
-                    # lookup / RPC / rollback failure). Do NOT advance state
-                    # past it — the next cycle re-fetches the same range and
-                    # re-checks instead of persisting orphaned-chain data as
-                    # canonical.
+                    # Fail CLOSED: unverified range → do NOT advance state.
                     logger.error(
                         "reorg_status_unknown",
                         chain=self.chain,
@@ -672,10 +682,8 @@ class SyncLoopMixin(IndexerMixinBase):
                     summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
                     return summary
 
-        # 7c. NATS JetStream real-time publishing (best-effort, after the
-        # durable ClickHouse writes). NATS is never the durable store:
-        # failures are swallowed and its circuit breaker opens after
-        # repeated failures so a dead server costs ~one attempt per cycle.
+        # 7c. NATS publishing (best-effort, after durable CH writes; failures
+        # swallowed, circuit breaker opens so a dead server costs ~1 attempt).
         nats_deployer_events: list[dict[str, Any]] = []
         if self.deployers_enabled:
             if evm_strategy and evm_strategy._last_pair_events:
@@ -693,10 +701,7 @@ class SyncLoopMixin(IndexerMixinBase):
         if nats_published:
             summary["nats_events_published"] = nats_published
 
-        # 7d. Webhook delivery fan-out (best-effort, process-wide): the
-        # delivery service subscribes to the same NATS subjects and POSTs
-        # HMAC-signed events to registered webhooks. Started lazily after
-        # the first NATS publish; idempotent across chains.
+        # 7d. Webhook fan-out (best-effort, process-wide, lazy, idempotent).
         await self._maybe_start_webhook_delivery()
 
         # 7e. Writer completeness gate (D6): if an ENABLED best-effort
@@ -760,30 +765,20 @@ class SyncLoopMixin(IndexerMixinBase):
         # backward-state guard on the next load.
         self._highwater.update(to_block)
 
-        # 8b. Periodic data reconciliation: every N cycles compare the
-        # ClickHouse row count for this range against the events fetched
-        # from RPC; a >5% shortfall rewinds state so the next cycle
-        # backfills the range. Best-effort — never blocks or aborts.
+        # 8b. Periodic reconciliation: a >5% CH/RPC row shortfall rewinds
+        # state so the next cycle backfills. Best-effort, never aborts.
         self._maybe_reconcile_range(from_block, to_block, len(events), summary)
 
-        # 8b2. Freemium backfill sidecar: enqueue ranges we did not index
-        # ourselves (stalled-chain backlog, reconciliation rewinds), then
-        # drain a bounded number of chunks through keyed/freemium
-        # endpoints only. Memory-gated; never blocks the sync cycle.
+        # 8b2. Backfill sidecar: enqueue missed ranges, drain a bounded
+        # number through keyed endpoints. Memory-gated; never blocks.
         if BACKFILL_ENABLED:
             self._enqueue_backfill_gaps(self._last_tip)
             backfill_stats = await self._run_backfill_sidecar()
             if backfill_stats and backfill_stats.get("dispatched"):
                 summary["backfill"] = backfill_stats
 
-        # 8a. Vector ingestion (optional, LanceDB). Reads the freshly synced
-        # block range from ClickHouse, generates text representations for
-        # wallets/contracts, embeds them via Qwen3-Embedding-4B, and
-        # stores them in LanceDB collections. Gated by
-        # VECTOR_INGESTION_ENABLED (default off) and the block interval
-        # VECTOR_INGESTION_INTERVAL_BLOCKS. Exception-guarded: a vector
-        # ingestion failure logs a warning and never blocks or aborts the
-        # sync cycle — the durable store is ClickHouse, not LanceDB.
+        # 8a. Vector ingestion (optional LanceDB, gated + interval-limited;
+        # exception-guarded — CH is the durable store, never blocked).
         await self._run_vector_ingestion_guarded(from_block, to_block, summary)
 
         summary["duration_seconds"] = round(time.monotonic() - start_time, 2)

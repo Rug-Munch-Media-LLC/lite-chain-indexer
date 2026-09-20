@@ -626,7 +626,9 @@ class TestIndexerTraceIntegration:
 
         assert summary["trace_events_fetched"] == 1
         assert summary["traces_written_ch"] == 1
-        ch.write_internal_transfers.assert_awaited_once_with("ethereum", trace_rows)
+        # Per-slice checkpointing writes traces once per sub-slice.
+        assert ch.write_internal_transfers.await_count >= 1
+        ch.write_internal_transfers.assert_awaited_with("ethereum", trace_rows)
 
     @pytest.mark.asyncio
     async def test_traces_disabled_skips_collection(self, tmp_path, monkeypatch):

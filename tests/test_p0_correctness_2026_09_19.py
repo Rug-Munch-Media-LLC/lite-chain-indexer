@@ -140,8 +140,13 @@ def test_defer_stalled_range_enqueues_and_advances():
 
 
 @pytest.mark.asyncio
-async def test_dex_phase_timeout_aborts_without_advance():
-    """RC-2: a hung dex fetch aborts the cycle with fetch_failed, no advance."""
+async def test_dex_phase_timeout_is_nonfatal_after_transfers():
+    """RC-2 + checkpointing: a hung dex fetch no longer aborts the cycle.
+
+    The transfers leg already checkpointed the slice, so a secondary-phase
+    timeout is logged and the cycle completes (advancing state) instead of
+    discarding fetched progress.
+    """
     import tempfile
     from pathlib import Path
 
@@ -169,12 +174,14 @@ async def test_dex_phase_timeout_aborts_without_advance():
             indexer.fetch_block_timestamps = AsyncMock(return_value={})
             monkey_ch = Mock()
             monkey_ch.write_wallet_features = AsyncMock(return_value={})
+            # No real CH client → reorg staging is skipped (best-effort).
+            monkey_ch.client = Mock(return_value=None)
             indexer._ch_writer = monkey_ch
             indexer._ch_health = type("_H", (), {"ok": lambda self: True})()
 
             summary = await indexer._sync_loop_inner({"status": "ok", "errors": []}, time.monotonic())
-            assert summary["status"] == "fetch_failed"
-            assert indexer.state.load()["last_block"] == 99
+            assert summary["status"] != "fetch_failed"
+            assert indexer.state.load()["last_block"] >= 100
         finally:
             state_mod.STATE_DIR = orig_state_dir
 

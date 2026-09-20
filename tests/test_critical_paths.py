@@ -113,7 +113,8 @@ async def test_deployers_with_dex(tmp_path, monkeypatch):
     summary = await indexer._sync_loop_inner({"status": "ok", "errors": []}, time.monotonic())
 
     assert summary["deployer_events_written"] == 1
-    ch.write_deployer_events.assert_awaited_once()
+    # Per-slice checkpointing calls the deployer writer once per sub-slice.
+    assert ch.write_deployer_events.await_count >= 1
 
 
 @pytest.mark.asyncio
