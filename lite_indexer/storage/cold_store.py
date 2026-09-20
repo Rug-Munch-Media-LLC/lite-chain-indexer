@@ -47,6 +47,14 @@ except ImportError:  # pragma: no cover — optional dependency
 from lite_indexer.config import COLD_LIST_CACHE_MAX, HISTORICAL_PARQUET_REMOTE
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.storage.cold_parquet import (
+    CHAINLESS_TABLES,
+    TABLE_COLUMNS,
+    TABLE_KINDS,
+    TABLE_ORDER,
+    align_remote,
+)
+from lite_indexer.storage.cold_rows import decode_row, files_for_table
 from lite_indexer.storage.duckdb_query import (
     _collect_rclone_cat_files,
     _date_range,
@@ -57,148 +65,9 @@ from lite_indexer.util.bounded import BoundedDict
 
 logger = get_logger(__name__)
 
-# Table → parquet file-kind. The daily export writes transfers and dex
-# files today (``{chain}_{YYYY-MM-DD}.parquet`` and
-# ``{chain}_dex_{YYYY-MM-DD}.parquet``); deployer/internal/solana
-# mappings are reserved so the engine is ready when the export pipeline
-# grows — cold queries for those tables return empty until the files
-# exist.
-TABLE_KINDS: dict[str, str] = {
-    "evm_transfers": "transfers",
-    "dex_events": "dex",
-    "deployer_events": "deployer",
-    "internal_transfers": "internal",
-    "solana_transfers": "solana",
-}
-
-# Canonical column list per table. The cold path normalizes every parquet
-# row to exactly these columns (missing columns fill with type defaults)
-# so the merged hot+cold result has a stable shape. Keep in sync with the
-# ClickHouse writer schemas (lite_indexer.storage.clickhouse /
-# lite_indexer.storage.trace_store / strategies.solana).
-TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
-    "evm_transfers": (
-        "chain",
-        "block_number",
-        "tx_hash",
-        "from_address",
-        "to_address",
-        "token_address",
-        "value",
-        "block_timestamp",
-        "log_index",
-        "ingested_at",
-    ),
-    "dex_events": (
-        "type",
-        "chain",
-        "block_number",
-        "block_timestamp",
-        "tx_hash",
-        "log_index",
-        "contract_address",
-        "dex",
-        "version",
-        "token0",
-        "token1",
-        "sender",
-        "recipient",
-        "amount0_in",
-        "amount1_in",
-        "amount0_out",
-        "amount1_out",
-        "amount0",
-        "amount1",
-        "whale",
-        "price_usd",
-        "volume_usd",
-        "ingested_at",
-        "source",
-    ),
-    "deployer_events": (
-        "deployer",
-        "deployer_eoa",
-        "token_address",
-        "token0",
-        "token1",
-        "pair_address",
-        "chain",
-        "block_number",
-        "block_timestamp",
-        "tx_hash",
-        "type",
-        "factory",
-        "ingested_at",
-        "source",
-    ),
-    "internal_transfers": (
-        "chain",
-        "block_number",
-        "block_timestamp",
-        "tx_hash",
-        "trace_address",
-        "from_address",
-        "to_address",
-        "value_wei",
-        "call_type",
-        "gas_used",
-        "error",
-        "input_method_id",
-        "ingested_at",
-    ),
-    "solana_transfers": (
-        "chain",
-        "slot",
-        "block_timestamp",
-        "tx_hash",
-        "token_account",
-        "mint",
-        "owner",
-        "pre_amount",
-        "post_amount",
-        "delta",
-        "decimals",
-        "token_symbol",
-        "token_name",
-        "ingested_at",
-    ),
-}
-
-# Canonical ORDER BY for event reads (descending, newest first). Matches
-# the columns that actually exist per table — deployer_events and
-# internal_transfers have no log_index, solana is slot-ordered.
-TABLE_ORDER: dict[str, str] = {
-    "evm_transfers": "block_timestamp DESC, block_number DESC, log_index DESC",
-    "dex_events": "block_timestamp DESC, block_number DESC, log_index DESC",
-    "deployer_events": "block_timestamp DESC, block_number DESC",
-    "internal_transfers": "block_timestamp DESC, block_number DESC, tx_hash DESC",
-    "solana_transfers": "block_timestamp DESC, slot DESC",
-}
-
-# Type defaults for canonical columns absent from older parquet files
-# (schema drift: e.g. ``source`` was added after the first exports).
-_COLUMN_DEFAULTS: dict[str, Any] = {
-    "chain": "",
-    "block_number": 0,
-    "slot": 0,
-    "log_index": 0,
-    "tx_hash": "",
-    "token_address": "",
-    "from_address": "",
-    "to_address": "",
-    "owner": "",
-    "mint": "",
-    "token_account": "",
-    "value": "",
-    "value_wei": "",
-    "amount": "",
-    "pre_amount": "",
-    "post_amount": "",
-    "delta": "",
-    "source": "",
-    "error": "",
-    "input_method_id": "",
-}
+# Producer↔consumer parity (layout, kinds, canonical columns, row decoding)
+# lives in lite_indexer.storage.cold_parquet — single source of truth shared
+# with the export leg; imported above with the other storage-layer imports.
 
 # Hard cap on parquet files scanned by one unbounded (no time-bounds) cold
 # query — bounds memory + latency when the archive has grown large.
@@ -242,7 +111,8 @@ class ColdStore:
     Args:
         remote: rclone remote root of the parquet archive
             (defaults to ``HISTORICAL_PARQUET_REMOTE``, i.e.
-            ``b2-crypt:chain-data/parquet``).
+            ``b2-crypt-v2:chain-data/parquet``; the retired v1 remote is
+            mapped to it by ``cold_parquet.align_remote``).
         rclone_bin: Path to the rclone binary.
         mount_dir: Local directory where the B2 remote is mounted
             (used when ``fetch`` is False).
@@ -265,7 +135,7 @@ class ColdStore:
         httpfs: bool = False,
         max_files: int = MAX_FILES_PER_QUERY,
     ) -> None:
-        self.remote = remote.rstrip("/")
+        self.remote = align_remote(remote).rstrip("/")
         self.rclone_bin = rclone_bin
         self.mount_dir = Path(mount_dir)
         self.fetch = fetch
@@ -447,36 +317,6 @@ class ColdStore:
                         files["transfers"].append(s3)
         return files
 
-    @staticmethod
-    def _files_for_table(files: dict[str, list[Path]], table: str, chain: str) -> list[Path]:
-        """Filter a collected file set down to the table's kind."""
-        kind = TABLE_KINDS[table]
-        all_files = files.get("dex", []) + files.get("transfers", []) + files.get("spl_balance_changes", [])
-        out: list[Path] = []
-        for p in sorted(all_files, key=lambda f: os.path.basename(str(f))):
-            name = os.path.basename(str(p))
-            if (
-                kind == "dex"
-                and "_dex_" in name
-                or kind == "deployer"
-                and "_deployer_" in name
-                or kind == "internal"
-                and "_internal_" in name
-                or (
-                    kind == "solana"
-                    and chain == "solana"
-                    and "_dex_" not in name
-                    and "_deployer_" not in name
-                    and "_internal_" not in name
-                )
-                or kind == "transfers"
-                and "_dex_" not in name
-                and "_deployer_" not in name
-                and "_internal_" not in name
-            ):
-                out.append(p)
-        return out
-
     # ── Query ────────────────────────────────────────────────────────
 
     def query(
@@ -503,11 +343,7 @@ class ColdStore:
         """
         if table not in TABLE_KINDS:
             raise ValueError(f"unknown table for cold store: {table}")
-        files = self._files_for_table(
-            self._collect_files(chain, from_time, to_time),
-            table,
-            chain,
-        )
+        files = files_for_table(self._collect_files(chain, from_time, to_time), table)
         if not files:
             metrics_incr("tha_cold_queries")
             metrics_incr("tha_cold_empty")
@@ -526,7 +362,9 @@ class ColdStore:
 
             clauses: list[str] = []
             block_col = _BLOCK_COL[table]
-            if chain:
+            # Solana's export has no chain column (chain lives in the path):
+            # filtering on it would fail the whole read — decode_row injects it.
+            if chain and table not in CHAINLESS_TABLES:
                 clauses.append(f"chain = {_lit(chain)}")
             if from_block is not None:
                 clauses.append(f"{block_col} >= {from_block}")
@@ -543,7 +381,8 @@ class ColdStore:
             order = TABLE_ORDER.get(table, "block_timestamp DESC, block_number DESC, log_index DESC")
             # SELECT * (not the canonical columns) so older parquet files
             # missing later-added columns (e.g. `source`) still read;
-            # _normalize fills the canonical shape with type defaults.
+            # decode_row fills the canonical shape (hexing any binary
+            # FixedString values to 0x strings).
             sql = f"SELECT * FROM {view} WHERE {where_sql} ORDER BY {order} LIMIT {int(limit)}"
             try:
                 rows = con.execute(
@@ -555,23 +394,7 @@ class ColdStore:
                 logger.warning("tha_cold_query_failed", table=table, files=len(files), error=str(exc)[:150])
                 return []
 
-        return [self._normalize(table, dict(zip(raw_cols, row, strict=False))) for row in rows]
-
-    @staticmethod
-    def _normalize(table: str, row: dict[str, Any]) -> dict[str, Any]:
-        """Fill any missing canonical column with its type default.
-
-        Parquet files written from ``SELECT *`` may predate columns added
-        later (e.g. ``source``); the unified merge expects every row to
-        carry the canonical shape. Unknown extra columns are dropped.
-        """
-        out: dict[str, Any] = {}
-        for col in TABLE_COLUMNS[table]:
-            value = row.get(col)
-            if value is None:
-                value = _COLUMN_DEFAULTS.get(col, "")
-            out[col] = value
-        return out
+        return [decode_row(table, dict(zip(raw_cols, row, strict=False)), chain) for row in rows]
 
 
 __all__ = [
