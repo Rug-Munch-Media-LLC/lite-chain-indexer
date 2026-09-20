@@ -46,6 +46,7 @@ from lite_indexer.rpc import (
     record_endpoint_failure,
     record_provider_response,
 )
+from lite_indexer.rpc.gates import provider_gates
 from lite_indexer.rpc.pool import (
     desperation_probe_due,
     force_probe_endpoint,
@@ -76,8 +77,6 @@ logger = get_logger(__name__)
 
 
 logger = get_logger(__name__)
-
-
 
 
 async def _fetch_range(
@@ -194,6 +193,10 @@ async def _fetch_range(
 
     for url in rotated:
         await apply_endpoint_backoff(url)
+        # Same gate chain as RpcClient.call — the rate-limited crawl must
+        # pace per-method/per-account and honor the identity budget, or it
+        # hammers cooled providers into hard bans.
+        await provider_gates(url, "eth_getLogs")
 
         try:
             # Route getLogs through the shared provider limiter so this path

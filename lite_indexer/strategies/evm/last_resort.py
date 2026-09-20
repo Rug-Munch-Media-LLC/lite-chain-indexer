@@ -25,6 +25,7 @@ from lite_indexer.rpc import (
     record_endpoint_failure,
     record_provider_response,
 )
+from lite_indexer.rpc.gates import provider_gates
 from lite_indexer.rpc.pool import apply_endpoint_backoff as _noop  # noqa: F401  (placeholder removed below)
 from lite_indexer.rpc.provider_caps import account_key_for_endpoint
 
@@ -67,6 +68,9 @@ async def try_last_resort(attempt: LastResortAttempt) -> tuple[list[dict[str, An
     )
     for url in last_resort:
         await apply_endpoint_backoff(url)
+        # Same gate chain as RpcClient.call — last-resort endpoints are
+        # shared provider accounts too; bypassing the gates 429-bans them.
+        await provider_gates(url, "eth_getLogs")
         try:
             async with provider_slot(account_key_for_endpoint(url)):
                 resp = await client.post(url, json=body, timeout=RPC_TIMEOUT)

@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from lite_indexer.logging import get_logger
+from lite_indexer.rpc.gates import provider_gates
 
 logger = get_logger(__name__)
 
@@ -40,15 +41,12 @@ async def discover_chain_rpcs(
     Args:
         chain_id: EVM chain ID.
         timeout: Request timeout.
-
     Returns:
         List of discovered free RPC URLs.
     """
     registry = await _fetch_registry(timeout=timeout)
     candidates = _extract_candidates(chain_id, registry)
     return candidates
-
-
 async def _fetch_registry(
     url: str = "https://chainid.network/chains.json",
     timeout: float = 15.0,
@@ -118,7 +116,8 @@ async def validate_endpoint(
     """
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-            # Gate 1: eth_blockNumber
+            # Gate 1: eth_blockNumber (provider gates first).
+            await provider_gates(url, "eth_blockNumber")
             resp = await client.post(
                 url,
                 json={"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},
@@ -136,6 +135,7 @@ async def validate_endpoint(
             except (TypeError, ValueError):
                 return False
             from_block = hex(max(0, tip - 2))
+            await provider_gates(url, "eth_getLogs")
             gl = await client.post(
                 url,
                 json={

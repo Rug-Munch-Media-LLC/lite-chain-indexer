@@ -31,6 +31,7 @@ import httpx
 
 from lite_indexer.config import ENDPOINT_VERIFY_TIMEOUT
 from lite_indexer.logging import get_logger
+from lite_indexer.rpc.gates import provider_gates
 
 logger = get_logger(__name__)
 
@@ -57,13 +58,10 @@ _CHAIN_IDS: dict[str, int] = {
     "robinhood": 4663,  # 0x1237 — old spec 78600 was Vanguard (VANRY)
     "hyperliquid": 999,  # 0x3e7 — HyperEVM
 }
-
 # URL markers that indicate an endpoint is NOT free/public.
 _NON_FREE_MARKERS = ("${", "api-key", "api_key", "apikey", "key=", "token=")
-
 # Default request timeout for the registry fetch.
 _REGISTRY_TIMEOUT = 15.0
-
 # Registry cache: chains.json is a multi-MB download and is identical for
 # every chain, so cache it per-URL for an hour instead of re-fetching it
 # once per chain per discovery cycle (up to 14 downloads per cycle).
@@ -219,7 +217,8 @@ async def validate_rpc_candidates(
         async with semaphore:
             try:
                 async with _httpx.AsyncClient(timeout=_httpx.Timeout(timeout)) as client:
-                    # Gate 1: liveness.
+                    # Gate 1: liveness (provider gates first).
+                    await provider_gates(url, "eth_blockNumber")
                     resp = await client.post(
                         url,
                         json={"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},
@@ -240,6 +239,7 @@ async def validate_rpc_candidates(
                     except (TypeError, ValueError):
                         return False
                     from_block = hex(max(0, tip - 2))
+                    await provider_gates(url, "eth_getLogs")
                     gl = await client.post(
                         url,
                         json={

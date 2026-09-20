@@ -67,6 +67,7 @@ from lite_indexer.rpc.capability_classify import (
 from lite_indexer.rpc.capability_classify import (
     is_logs_capability_failure as is_logs_capability_failure,
 )
+from lite_indexer.rpc.gates import provider_gates
 
 if TYPE_CHECKING:  # pragma: no cover — annotation-only, avoids import cycle
     from lite_indexer.rpc.client import RpcClient
@@ -118,7 +119,6 @@ SEEDED_CU_TARIFF: dict[str, float] = {
     "eth_getLogs": 75.0,
     "eth_getBlockReceipts": 50.0,
 }
-
 
 
 @dataclass
@@ -374,6 +374,9 @@ async def _probe_getlogs_once(
         ],
     }
     try:
+        # Startup-probe burst gate: probes POST to real provider accounts,
+        # so they honor the same throttle/budget chain as RpcClient.call.
+        await provider_gates(endpoint, "eth_getLogs")
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             resp = await client.post(endpoint, json=payload)
             if resp.status_code in CAPABILITY_HTTP_STATUSES:
@@ -445,6 +448,8 @@ async def probe_logs_capability(
     }
     status_code: int | None = None
     try:
+        # Startup-probe burst gate (same chain as RpcClient.call).
+        await provider_gates(endpoint, "eth_getLogs")
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             resp = await client.post(endpoint, json=payload)
             status_code = resp.status_code
