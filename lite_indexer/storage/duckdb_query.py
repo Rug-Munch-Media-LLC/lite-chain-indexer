@@ -75,7 +75,7 @@ except ImportError:  # pragma: no cover - optional dependency
 # and {chain}_dex_{YYYY-MM-DD}.parquet for DEX events. The filename is
 # date-based; the hour lives in the directory component so each hour's
 # export lands in its own folder (produced by lite-indexer-parquet-daily.sh).
-_REMOTE_BASE = "b2-crypt:chain-data/parquet"
+_REMOTE_BASE = "b2-crypt-v2:chain-data/parquet"  # v2 = live producer (2026-09-21)
 
 _VIEWS = ("transfers", "dex", "spl_balance_changes")
 

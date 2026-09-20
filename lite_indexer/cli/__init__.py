@@ -301,7 +301,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--remote",
         type=str,
         default=None,
-        help="rclone remote root (default: PARQUET_REMOTE env or b2-crypt:chain-data/parquet)",
+        help="rclone remote root (default: PARQUET_REMOTE env or b2-crypt-v2:chain-data/parquet)",
     )
     export_parser.add_argument(
         "--publish-snapshot",
