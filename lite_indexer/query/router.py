@@ -18,103 +18,40 @@ range even if the indexer never indexed it. RPC results are cached
 (:class:`~lite_indexer.query.cache.QueryCache`) and the fetcher enforces a
 consecutive-call budget so free-tier rate limits are never hammered.
 
-The router mirrors the canonical column lists / table refs from the
-storage layer so rows returned from any tier have the same shape.
+This module is the FACADE + core dispatch (``_route_query``) + the public
+query API. The leg implementations live in sibling modules
+(:mod:`legs_clickhouse`, :mod:`legs_address`, :mod:`legs_cold`,
+:mod:`legs_lake`, :mod:`legs_portals`, :mod:`legs_rpc`) and are bound as
+``QueryRouter`` methods so the public surface is unchanged. Shared table
+maps / pure helpers live in :mod:`legs_common`.
 """
 
 from __future__ import annotations
 
-import asyncio
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from lite_indexer.config import (
-    CH_ADDRESS_ACTIVITY_TABLE,
-    CH_DEPLOYER_TABLE,
-    CH_DEX_TABLE,
-    CH_SOLANA_TABLE,
-    CH_TABLE,
-    CH_TRACE_TABLE,
-    ON_DEMAND_RPC_ENABLED,
-    ON_DEMAND_RPC_MAX_BLOCK_RANGE,
-)
+from lite_indexer.config import ON_DEMAND_RPC_ENABLED, ON_DEMAND_RPC_MAX_BLOCK_RANGE
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
-from lite_indexer.query.address_backfill import AddressBackfill, BackfillResult
+from lite_indexer.query import (
+    legs_address,
+    legs_clickhouse,
+    legs_cold,
+    legs_lake,
+    legs_portals,
+    legs_rpc,
+)
+from lite_indexer.query.address_backfill import AddressBackfill
 from lite_indexer.query.biglake_source import BigLakeSource
 from lite_indexer.query.cache import QueryCache
 from lite_indexer.query.envio_source import EnvioSource
 from lite_indexer.query.indexed_source import IndexedXyzSource
+from lite_indexer.query.legs_common import ROW_KEYS, SORT_COLS, sort_value
 from lite_indexer.query.rpc_fetcher import RPCFetcher
 from lite_indexer.query.sqd_source import SQDSource
-from lite_indexer.storage.cold_store import TABLE_COLUMNS, TABLE_KINDS, TABLE_ORDER, ColdStore
+from lite_indexer.storage.cold_store import ColdStore
 
 logger = get_logger(__name__)
-
-# Logical event table → ClickHouse table reference. Mirrors
-# lite_indexer.storage.historical._TABLE_REF (kept local so the query
-# package is self-contained).
-_CH_TABLE_REF: dict[str, str] = {
-    "evm_transfers": CH_TABLE,
-    "dex_events": CH_DEX_TABLE,
-    "deployer_events": CH_DEPLOYER_TABLE,
-    "internal_transfers": CH_TRACE_TABLE,
-    "solana_transfers": CH_SOLANA_TABLE,
-}
-
-# Row identity per table (hot/cold/RPC dedupe). Mirrors the THA merge.
-_ROW_KEYS: dict[str, tuple[str, ...]] = {
-    "evm_transfers": ("chain", "block_number", "tx_hash", "log_index"),
-    "dex_events": ("chain", "block_number", "tx_hash", "log_index"),
-    "deployer_events": ("chain", "block_number", "tx_hash", "token_address", "pair_address"),
-    "internal_transfers": ("chain", "block_number", "tx_hash", "trace_address"),
-    "solana_transfers": ("chain", "slot", "tx_hash", "mint", "token_account", "owner"),
-}
-
-# Sort columns per table (newest first). Mirrors the THA merge.
-_SORT_COLS: dict[str, tuple[str, ...]] = {
-    "evm_transfers": ("block_timestamp", "block_number", "log_index"),
-    "dex_events": ("block_timestamp", "block_number", "log_index"),
-    "deployer_events": ("block_timestamp", "block_number"),
-    "internal_transfers": ("block_timestamp", "block_number", "tx_hash"),
-    "solana_transfers": ("block_timestamp", "slot"),
-}
-
-
-def _block_col(table: str) -> str:
-    """Return the block-ordering column for a table (slot for Solana)."""
-    return "slot" if table == "solana_transfers" else "block_number"
-
-
-def _cold_lit(value: Any) -> str:
-    """Render a scalar as a DuckDB/parquet literal for cold-store WHERE."""
-    if isinstance(value, str):
-        return "'" + value.replace("'", "''") + "'"
-    if isinstance(value, bool):
-        return "1" if value else "0"
-    if value is None:
-        return "NULL"
-    return str(value)
-
-
-def _sort_value(row: dict[str, Any], col: str) -> tuple[int, Any]:
-    """Comparable sort key for a row/column (mixed types never raise).
-
-    Missing values sort first (bucket 0), numerics/datetimes in bucket 1,
-    strings in bucket 2.
-    """
-    value = row.get(col)
-    if value is None or value == "":
-        return (0, 0)
-    if isinstance(value, bool):
-        return (1, int(value))
-    if isinstance(value, (int, float)):
-        return (1, float(value))
-    if isinstance(value, datetime):
-        return (1, value.timestamp())
-    if isinstance(value, (list, tuple)):
-        return (1, 0)
-    return (2, str(value))
 
 
 class QueryRouter:
@@ -182,224 +119,26 @@ class QueryRouter:
         self.max_block_range = int(max_block_range)
         self.limit_default = int(limit_default)
 
-    # ── Client resolution ────────────────────────────────────────────
+    # ── Legs (implemented in sibling query/legs_* modules) ───────────
 
-    def _ch_client(self) -> Any | None:
-        """Resolve the ClickHouse client (lazily via ``client_factory``)."""
-        if self.ch is None and self._client_factory is not None:
-            try:
-                self.ch = self._client_factory()
-            except Exception as exc:  # noqa: BLE001 — lazy connect is best-effort
-                logger.warning("ondemand_ch_resolve_failed", error=str(exc)[:100])
-        return self.ch
-
-    def _check_table(self, table: str) -> str:
-        """Validate a logical table name against the routable set."""
-        if table not in _CH_TABLE_REF or table not in TABLE_KINDS:
-            raise ValueError(f"unknown table for on-demand routing: {table}")
-        return table
-
-    # ── Address-activity lazy backfill ───────────────────────────────
-
-    def _get_backfill(self) -> AddressBackfill:
-        """Return the shared :class:`AddressBackfill` (lazily constructed)."""
-        if self._backfill is None:
-            self._backfill = AddressBackfill(ch_client_factory=self._ch_client)
-        return self._backfill
-
-    async def backfill_address(
-        self,
-        chain: str,
-        address: str,
-        *,
-        force: bool = False,
-        max_tx: int | None = None,
-    ) -> BackfillResult:
-        """Backfill one address's history into ``address_activity`` (guarded).
-
-        Delegates to :class:`AddressBackfill`; the never-re-fetch guard makes
-        repeated calls a no-op once the address is indexed. Best-effort —
-        never raises.
-        """
-        try:
-            return await self._get_backfill().backfill_address(
-                address, chain=chain, force=force, max_tx=max_tx
-            )
-        except Exception as exc:  # noqa: BLE001 — backfill is best-effort
-            logger.warning(
-                "ondemand_backfill_failed",
-                chain=chain,
-                address=str(address)[:12],
-                error=str(exc)[:120],
-            )
-            return BackfillResult(
-                address=str(address or ""), chain=chain, skipped=True, reason="error"
-            )
-
-    async def get_address_activity(
-        self,
-        chain: str,
-        address: str,
-        *,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """Serve a wallet's transaction history, backfilling on first touch.
-
-        Lazy backfill: on a cache miss the address is fetched once from the
-        free RPC pool and written to ``wallet_memory.address_activity``, then
-        re-read from ClickHouse. Every later call is a local read. Gated by
-        ``on_demand_enabled`` and the backfill's own guard.
-        """
-        addr = str(address or "").strip()
-        if not addr:
-            return []
-        capped = max(1, min(int(limit or self.limit_default), 1000))
-        rows = await asyncio.to_thread(self._query_address_activity, chain, addr, capped)
-        if rows or not self.on_demand_enabled:
-            return rows
-        try:
-            await self.backfill_address(chain, addr)
-        except Exception as exc:  # noqa: BLE001 — lazy backfill must not break reads
-            logger.warning("ondemand_lazy_backfill_failed", chain=chain, error=str(exc)[:120])
-            return rows
-        return await asyncio.to_thread(self._query_address_activity, chain, addr, capped)
-
-    def _query_address_activity(self, chain: str, address: str, limit: int) -> list[dict[str, Any]]:
-        """Read one address's rows from the keystone table ([] on failure)."""
-        client = self._ch_client()
-        if client is None:
-            return []
-        sql = (
-            "SELECT address, tx_signature, chain, slot, block_time, involved_accounts, program_ids, is_signer "
-            f"FROM {CH_ADDRESS_ACTIVITY_TABLE} FINAL "
-            "WHERE address = %(address)s AND chain = %(chain)s "
-            "ORDER BY block_time DESC, slot DESC "
-            f"LIMIT {int(limit)}"
-        )
-        try:
-            rows, column_types = client.execute(
-                sql, {"address": address, "chain": chain}, with_column_types=True
-            )
-        except Exception as exc:  # noqa: BLE001 — reads are best-effort
-            metrics_incr("ondemand_ch_errors")
-            logger.debug("ondemand_address_activity_failed", error=str(exc)[:100])
-            return []
-        names = [name for name, _ in column_types]
-        return [dict(zip(names, row, strict=False)) for row in rows]
-
-    # ── Hot / cold reads ─────────────────────────────────────────────
-
-    def _query_ch(
-        self,
-        table: str,
-        chain: str,
-        *,
-        from_block: int | None = None,
-        to_block: int | None = None,
-        filters: dict[str, Any] | list[dict[str, Any]] | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """Query ClickHouse directly. Returns [] when unavailable/failing."""
-        client = self._ch_client()
-        if client is None:
-            return []
-        clauses = ["chain = %(chain)s"]
-        params: dict[str, Any] = {"chain": chain}
-        block_col = _block_col(table)
-        if from_block is not None:
-            clauses.append(f"{block_col} >= %(from_block)s")
-            params["from_block"] = from_block
-        if to_block is not None:
-            clauses.append(f"{block_col} <= %(to_block)s")
-            params["to_block"] = to_block
-        self._append_ch_filters(clauses, params, filters)
-
-        cols = ", ".join(TABLE_COLUMNS[table])
-        order = TABLE_ORDER.get(table, "block_timestamp DESC, block_number DESC, log_index DESC")
-        sql = (
-            f"SELECT {cols} FROM {_CH_TABLE_REF[table]} "
-            f"WHERE {' AND '.join(clauses)} ORDER BY {order} LIMIT {int(limit)}"
-        )
-        try:
-            rows, column_types = client.execute(sql, params, with_column_types=True)
-        except Exception as exc:  # noqa: BLE001 — hot reads are best-effort
-            metrics_incr("ondemand_ch_errors")
-            logger.debug("ondemand_ch_query_failed", table=table, error=str(exc)[:100])
-            return []
-        names = [name for name, _ in column_types]
-        return [dict(zip(names, row, strict=False)) for row in rows]
-
-    @staticmethod
-    def _append_ch_filters(
-        clauses: list[str],
-        params: dict[str, Any],
-        filters: dict[str, Any] | list[dict[str, Any]] | None,
-    ) -> None:
-        """Append AND/OR filter clauses to a ClickHouse SELECT.
-
-        ``dict`` → AND equality on each (col → value). ``list`` of
-        ``{"col": ..., "value": ...}`` → OR equality over the entries
-        (used for "from_address = X OR to_address = X" address queries).
-        """
-        if not filters:
-            return
-        if isinstance(filters, dict):
-            for col, value in filters.items():
-                pname = f"f_{col}"
-                clauses.append(f"{col} = %({pname})s")
-                params[pname] = value
-            return
-        or_clauses: list[str] = []
-        for i, item in enumerate(filters):
-            col = str(item.get("col", ""))
-            if not col:
-                continue
-            pname = f"f_{col}_{i}"
-            or_clauses.append(f"{col} = %({pname})s")
-            params[pname] = item.get("value")
-        if or_clauses:
-            clauses.append("(" + " OR ".join(or_clauses) + ")")
-
-    def _query_cold(
-        self,
-        table: str,
-        chain: str,
-        *,
-        from_block: int | None = None,
-        to_block: int | None = None,
-        filters: dict[str, Any] | list[dict[str, Any]] | None = None,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """Query the B2 parquet cold store. Returns [] when unavailable."""
-        if self.cold is None:
-            return []
-        where = self._build_cold_where(filters)
-        try:
-            return self.cold.query(
-                table,
-                chain,
-                from_block=from_block,
-                to_block=to_block,
-                where=where,
-                limit=limit,
-            )
-        except Exception as exc:  # noqa: BLE001 — cold reads are best-effort
-            metrics_incr("ondemand_cold_errors")
-            logger.debug("ondemand_cold_query_failed", table=table, error=str(exc)[:100])
-            return []
-
-    @staticmethod
-    def _build_cold_where(filters: dict[str, Any] | list[dict[str, Any]] | None) -> str:
-        """Render filters as a DuckDB-compatible WHERE fragment."""
-        if not filters:
-            return ""
-        if isinstance(filters, dict):
-            return " AND ".join(f"{col} = {_cold_lit(value)}" for col, value in filters.items())
-        return (
-            "("
-            + " OR ".join(f"{item['col']} = {_cold_lit(item['value'])}" for item in filters)
-            + ")"
-        )
+    _ch_client = legs_clickhouse.ch_client
+    _check_table = staticmethod(legs_clickhouse.check_table)
+    _query_ch = legs_clickhouse.query_ch
+    _append_ch_filters = staticmethod(legs_clickhouse.append_ch_filters)
+    _get_backfill = legs_address.get_backfill
+    _query_address_activity = legs_address.query_address_activity
+    backfill_address = legs_address.backfill_address
+    get_address_activity = legs_address.get_address_activity
+    _query_cold = legs_cold.query_cold
+    _build_cold_where = staticmethod(legs_cold.build_cold_where)
+    _filter_rows = staticmethod(legs_lake.filter_rows)
+    _lake_dates = legs_lake.lake_dates
+    _biglake_route = legs_lake.biglake_route
+    _envio_route = legs_portals.envio_route
+    _indexed_route = legs_portals.indexed_route
+    _sqd_traces_route = legs_portals.sqd_traces_route
+    _rpc_cache_key = staticmethod(legs_rpc.rpc_cache_key)
+    _rpc_route = legs_rpc.rpc_route
 
     # ── Merge ────────────────────────────────────────────────────────
 
@@ -417,15 +156,15 @@ class QueryRouter:
                 if key not in merged:
                     merged[key] = row
         rows = list(merged.values())
-        sort_cols = _SORT_COLS[table]
-        rows.sort(key=lambda r: tuple(_sort_value(r, c) for c in sort_cols), reverse=True)
+        sort_cols = SORT_COLS[table]
+        rows.sort(key=lambda r: tuple(sort_value(r, c) for c in sort_cols), reverse=True)
         return rows[:limit]
 
     @staticmethod
     def _row_key(table: str, row: dict[str, Any]) -> tuple[Any, ...]:
         """Return the dedupe identity for a row."""
         key: list[Any] = []
-        for col in _ROW_KEYS[table]:
+        for col in ROW_KEYS[table]:
             value = row.get(col)
             if isinstance(value, (list, tuple)):
                 value = str(value)
@@ -458,237 +197,7 @@ class QueryRouter:
             return False
         return False
 
-    # ── BigLake leg (AWS public Ethereum archive) ────────────────────
-
-    @staticmethod
-    def _filter_rows(
-        table: str,  # noqa: ARG004 — kept for future per-table filter semantics
-        rows: list[dict[str, Any]],
-        filters: dict[str, Any] | list[dict[str, Any]] | None,
-    ) -> list[dict[str, Any]]:
-        """Apply router filter semantics (dict=AND eq, list=OR eq) to rows."""
-        if not filters:
-            return rows
-
-        def _matches(row: dict[str, Any], cond: dict[str, Any]) -> bool:
-            return all(
-                str(row.get(col, "")).lower() == str(val).lower() for col, val in cond.items()
-            )
-
-        if isinstance(filters, dict):
-            return [r for r in rows if _matches(r, filters)]
-        return [r for r in rows if any(_matches(r, item) for item in filters)]
-
-    async def _lake_dates(
-        self, chain: str, from_block: int | None, to_block: int | None
-    ) -> list[str] | None:
-        """Derive date partitions (``date=`` / ``dt=``) for a block range.
-
-        The external lakes are date-partitioned and carry no block→date
-        index, so deep queries need the calendar span of the block range.
-        Resolves it with two Envio block lookups and caps the window at
-        31 days.
-
-        Returns:
-            ``YYYY-MM-DD`` list, or None when it cannot be derived (callers
-            then fall back to their own defaults).
-        """
-        if from_block is None or to_block is None:
-            return None
-        if not self.envio.available():
-            return None
-        try:
-            lo = await asyncio.to_thread(
-                self.envio.call, chain, "eth_getBlockByNumber", [hex(int(from_block)), False]
-            )
-            hi = await asyncio.to_thread(
-                self.envio.call, chain, "eth_getBlockByNumber", [hex(int(to_block)), False]
-            )
-            if not lo or not hi or "timestamp" not in lo or "timestamp" not in hi:
-                return None
-            start = datetime.fromtimestamp(int(lo["timestamp"], 16), tz=UTC).date()
-            end = datetime.fromtimestamp(int(hi["timestamp"], 16), tz=UTC).date()
-            if end < start:
-                start, end = end, start
-            if (end - start).days > 31:
-                start = end - timedelta(days=31)
-            return [
-                (start + timedelta(days=offset)).isoformat()
-                for offset in range((end - start).days + 1)
-            ]
-        except Exception as exc:  # noqa: BLE001 — falls back to the default scope
-            logger.warning("biglake_dates_failed", error=str(exc)[:100])
-            return None
-
-    async def _biglake_route(
-        self,
-        table: str,
-        chain: str,
-        *,
-        from_block: int | None,
-        to_block: int | None,
-        filters: dict[str, Any] | list[dict[str, Any]] | None,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Try the AWS public lake for ranges the indexed tiers could not serve.
-
-        Derives date partitions for deep block ranges so historical queries
-        hit the right files (the lake has no block→date index of its own).
-        Best-effort: any failure returns an empty list so routing falls
-        through to the RPC leg as before.
-        """
-        if not self.biglake.available():
-            return []
-        address = self._address_from_filters(filters) or self._single_address(filters)
-        dates = await self._lake_dates(chain, from_block, to_block)
-        try:
-            rows = await asyncio.to_thread(
-                self.biglake.query,
-                table,
-                chain,
-                from_block=from_block,
-                to_block=to_block,
-                address=address,
-                dates=dates,
-                limit=limit,
-            )
-        except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
-            logger.warning("biglake_route_failed", error=str(exc)[:120])
-            return []
-        filtered = self._filter_rows(table, rows, filters)
-        if filtered:
-            metrics_incr("biglake_routes")
-        return filtered
-
-    async def _envio_route(
-        self,
-        table: str,
-        chain: str,
-        *,
-        from_block: int | None,
-        to_block: int | None,
-        filters: dict[str, Any] | list[dict[str, Any]] | None,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Try Envio HyperRPC for bounded wallet queries the indexed tiers missed.
-
-        Only serves ``evm_transfers`` address queries with an explicit
-        block window; anything else falls through to the RPC leg.
-        """
-        if table != "evm_transfers" or from_block is None or to_block is None:
-            return []
-        if not self.envio.available() or chain not in EnvioSource.CHAIN_IDS:
-            return []
-        address = self._address_from_filters(filters) or self._single_address(filters)
-        if not address:
-            return []
-        try:
-            rows = await asyncio.to_thread(
-                self.envio.address_transfers, chain, address, from_block, to_block, limit=limit
-            )
-        except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
-            logger.warning("envio_route_failed", error=str(exc)[:120])
-            return []
-        filtered = self._filter_rows(table, rows, filters)
-        if filtered:
-            metrics_incr("envio_routes")
-        return filtered
-
-    async def _indexed_route(
-        self,
-        table: str,
-        chain: str,
-        *,
-        from_block: int | None,
-        to_block: int | None,
-        filters: dict[str, Any] | list[dict[str, Any]] | None,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Try the Indexed.xyz R2 lake for bounded wallet queries.
-
-        Independent third path for EVM chains (ethereum/base/gnosis/linea/
-        optimism/zksync/zora). Date partitions are derived from the block
-        range via :meth:`_lake_dates`. Best-effort: failures return an
-        empty list so routing falls through to the RPC leg.
-        """
-        if table != "evm_transfers" or from_block is None or to_block is None:
-            return []
-        if not self.indexed.available() or chain not in self.indexed.CHAINS:
-            return []
-        address = self._address_from_filters(filters) or self._single_address(filters)
-        if not address:
-            return []
-        dates = await self._lake_dates(chain, from_block, to_block)
-        try:
-            rows = await asyncio.to_thread(
-                self.indexed.query,
-                table,
-                chain,
-                from_block=from_block,
-                to_block=to_block,
-                address=address,
-                dates=dates,
-                limit=limit,
-            )
-        except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
-            logger.warning("indexed_route_failed", error=str(exc)[:120])
-            return []
-        filtered = self._filter_rows(table, rows, filters)
-        if filtered:
-            metrics_incr("indexed_routes")
-        return filtered
-
-    async def _sqd_traces_route(
-        self,
-        table: str,
-        chain: str,
-        *,
-        from_block: int | None,
-        to_block: int | None,
-        filters: dict[str, Any] | list[dict[str, Any]] | None,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Try the SQD portal traces dataset for full-history EVM internals.
-
-        Serves ``internal_transfers`` for ~13 EVM chains with ``callFrom`` /
-        ``callTo`` server-side filtering. Best-effort: failures return [].
-        """
-        if table != "internal_transfers" or from_block is None or to_block is None:
-            return []
-        if not self.sqd.available() or chain not in SQDSource.EVM_DATASETS:
-            return []
-        address = self._address_from_filters(filters) or self._single_address(filters)
-        try:
-            rows = await asyncio.to_thread(
-                self.sqd.evm_traces, chain, from_block, to_block, address=address, limit=limit
-            )
-        except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
-            logger.warning("sqd_traces_route_failed", error=str(exc)[:120])
-            return []
-        filtered = self._filter_rows(table, rows, filters)
-        if filtered:
-            metrics_incr("sqd_traces_routes")
-        return filtered
-
-    # ── RPC leg ──────────────────────────────────────────────────────
-
-    def _rpc_cache_key(
-        self,
-        table: str,
-        chain: str,
-        from_block: int | None,
-        to_block: int | None,
-        filters: dict[str, Any] | list[dict[str, Any]] | None,
-        limit: int,
-    ) -> tuple[Any, ...]:
-        """Stable cache key for a range query (filters normalized to tuples)."""
-        if isinstance(filters, dict):
-            fkey: Any = tuple(sorted(filters.items()))
-        elif isinstance(filters, list):
-            fkey = tuple(tuple(sorted(item.items())) for item in filters)
-        else:
-            fkey = ()
-        return (chain, table, from_block, to_block, fkey, int(limit))
+    # ── Filter helpers ───────────────────────────────────────────────
 
     @staticmethod
     def _address_from_filters(filters: dict[str, Any] | list[dict[str, Any]] | None) -> str | None:
@@ -712,47 +221,6 @@ class QueryRouter:
             if len(vals) == 1:
                 return next(iter(vals))
         return None
-
-    async def _rpc_route(
-        self,
-        table: str,
-        chain: str,
-        from_block: int | None,
-        to_block: int | None,
-        filters: dict[str, Any] | list[dict[str, Any]] | None,
-        limit: int,
-    ) -> list[dict[str, Any]]:
-        """Route a query to the on-demand RPC fetcher, cached."""
-        cache_key = self._rpc_cache_key(table, chain, from_block, to_block, filters, limit)
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            return list(cached)
-
-        rows: list[dict[str, Any]] = []
-        try:
-            if table == "evm_transfers":
-                if isinstance(filters, dict) and filters.get("tx_hash"):
-                    row = await self.rpc.fetch_transfer(chain, str(filters["tx_hash"]))
-                    rows = [row] if row else []
-                else:
-                    addr = self._address_from_filters(filters)
-                    if addr is not None:
-                        rows = await self.rpc.fetch_address_transfers(
-                            chain, addr, from_block, to_block, limit=limit
-                        )
-            elif table == "deployer_events":
-                contract = self._single_address(filters)
-                if contract is not None:
-                    row = await self.rpc.fetch_deployer(chain, contract)
-                    rows = [row] if row else []
-        except Exception as exc:  # noqa: BLE001 — RPC is best-effort, never a query-killer
-            metrics_incr("ondemand_rpc_errors")
-            logger.warning("ondemand_rpc_failed", table=table, chain=chain, error=str(exc)[:100])
-            return []
-
-        if rows:
-            self.cache.set(cache_key, list(rows))
-        return rows
 
     # ── Core routing ─────────────────────────────────────────────────
 
@@ -792,9 +260,7 @@ class QueryRouter:
         self._check_table(table)
         limit = max(1, min(int(limit), 1000))
 
-        ch_rows = self._query_ch(
-            table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
-        )
+        ch_rows = self._query_ch(table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit)
         cold_rows = self._query_cold(
             table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
         )
@@ -816,17 +282,13 @@ class QueryRouter:
         if (
             use_rpc
             and self.on_demand_enabled
-            and self._needs_rpc_fallback(
-                table, ch_rows, cold_rows + biglake_rows, from_block, to_block, limit
-            )
+            and self._needs_rpc_fallback(table, ch_rows, cold_rows + biglake_rows, from_block, to_block, limit)
         ):
             envio_rows = await self._envio_route(
                 table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
             )
             if envio_rows:
-                merged = self._merge_rows(
-                    table, ch_rows, cold_rows, biglake_rows, envio_rows, limit=limit
-                )
+                merged = self._merge_rows(table, ch_rows, cold_rows, biglake_rows, envio_rows, limit=limit)
 
         indexed_rows: list[dict[str, Any]] = []
         if (
@@ -1037,9 +499,7 @@ class QueryRouter:
             result = await self.rpc.fetch_deployer(chain, addr, creation_tx=hint)
         except Exception as exc:  # noqa: BLE001 — RPC is best-effort
             metrics_incr("ondemand_rpc_errors")
-            logger.warning(
-                "ondemand_deployer_failed", chain=chain, address=addr, error=str(exc)[:100]
-            )
+            logger.warning("ondemand_deployer_failed", chain=chain, address=addr, error=str(exc)[:100])
             return rows[0] if rows else None
         if result:
             self.cache.set(cache_key, result)

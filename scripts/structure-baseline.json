@@ -35,7 +35,7 @@
     "lite_indexer/query/biglake_source.py": 391,
     "lite_indexer/query/envio_source.py": 378,
     "lite_indexer/query/indexed_source.py": 333,
-    "lite_indexer/query/router.py": 1050,
+    "lite_indexer/query/router.py": 510,
     "lite_indexer/query/rpc_fetcher.py": 751,
     "lite_indexer/query/sqd_source.py": 336,
     "lite_indexer/query/trace_wallet.py": 279,
