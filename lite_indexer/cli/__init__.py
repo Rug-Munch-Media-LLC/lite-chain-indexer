@@ -4,12 +4,6 @@ CLI entry point for LiteChainIndexer.
 Usage:
     lite-indexer --chain ethereum
     lite-indexer --chain ethereum --from-block 25645000
-    lite-indexer --daemon --chains ethereum,base,bsc
-    lite-indexer --daemon --dex --deployers --start-from-head
-    lite-indexer export-parquet --chain ethereum --date 2026-07-30 --upload --delete-after-upload
-    lite-indexer export-parquet --chain all --date 2026-07-30 --upload --delete-after-upload --publish-snapshot
-    lite-indexer bootstrap --list
-    lite-indexer bootstrap --chain ethereum --from-snapshot 2026-08-01
     lite-indexer bootstrap --all
 
 The subcommand handlers live in focused sibling modules (``_daemon``,
@@ -32,6 +26,7 @@ from lite_indexer.cli._bootstrap import run_bootstrap_cli
 from lite_indexer.cli._daemon import main_daemon
 from lite_indexer.cli._export import run_export_parquet
 from lite_indexer.cli._integrity import run_integrity_check_cli, run_reconcile_cli, run_recover_cli
+from lite_indexer.cli._lake import add_lake_parser, run_lake_backfill
 from lite_indexer.cli._query import run_query_cli
 from lite_indexer.config import (
     BATCH_SIZE,
@@ -57,6 +52,7 @@ __all__ = [
     "run_bootstrap_cli",
     "run_export_parquet",
     "run_integrity_check_cli",
+    "run_lake_backfill",
     "run_query_cli",
     "run_reconcile_cli",
     "run_recover_cli",
@@ -574,6 +570,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Disable the on-demand RPC fallback (indexed data only)",
     )
+    add_lake_parser(sub)
     return parser.parse_args(argv)
 
 
@@ -587,6 +584,9 @@ async def async_main(args: argparse.Namespace) -> int:
     # ── export-parquet subcommand ────────────────────────────────────
     if args.command == "export-parquet":
         return run_export_parquet(args)
+
+    if args.command == "lake-backfill":
+        return run_lake_backfill(args)
 
     # ── integrity-check subcommand ───────────────────────────────────
     if args.command == "integrity-check":
