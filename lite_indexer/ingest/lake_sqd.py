@@ -19,7 +19,7 @@ from lite_indexer.query.sqd_source import ERC20_TRANSFER_TOPIC, SQDSource
 
 logger = get_logger(__name__)
 
-WINDOW = 10_000  #: portal block window per ``stream`` call
+WINDOW = 1_000  #: portal block window per ``stream`` call (memory bound: ~1k blocks/call)
 MAX_BATCHES = 32  #: portal-side pagination budget per window call
 LOG_FIELDS: dict[str, Any] = {  # only Transfer logs leave the portal (topic0 filter)
     "block": {"number": True, "timestamp": True},
