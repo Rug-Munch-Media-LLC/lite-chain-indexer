@@ -22,6 +22,10 @@ import socket
 from collections.abc import Callable
 from urllib.parse import urlparse
 
+from lite_indexer.logging import get_logger
+
+logger = get_logger(__name__)
+
 Resolver = Callable[[str, int], list]
 
 #: Module-level default resolver — tests may swap this (shrink-only seam).
@@ -57,7 +61,8 @@ def resolve_and_check(host: str, *, resolver: Resolver | None = None) -> bool:
     """
     try:
         infos = (resolver or _default_resolver)(host, 0, socket.SOCK_STREAM)
-    except (socket.gaierror, OSError):
+    except (socket.gaierror, OSError) as exc:
+        logger.debug("ssrf_resolve_failed", host=host, error=str(exc)[:80])
         return False
     if not infos:
         return False
@@ -65,6 +70,7 @@ def resolve_and_check(host: str, *, resolver: Resolver | None = None) -> bool:
         try:
             addr = ipaddress.ip_address(info[4][0])
         except ValueError:
+            logger.debug("ssrf_bad_address", host=host)
             return False
         if _is_blocked_ip(addr):
             return False

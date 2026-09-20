@@ -17,6 +17,7 @@ monkeypatching of call sites.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import socket
 
 # Test methods intentionally omit return annotations (repo-wide test
@@ -31,6 +32,24 @@ from lite_indexer.webhooks.ssrf import is_safe_webhook_url, resolve_and_check
 from lite_indexer.webhooks.storage import WebhookStore
 
 PUBLIC = "93.184.216.34"
+
+
+_UNSET = object()
+
+
+def _setattr(target, name_or_value, value=_UNSET) -> None:
+    """Set an attribute without pytest monkeypatch.
+
+    Two forms: ``_setattr("module.attr", value)`` (dotted path) and
+    ``_setattr(obj, "attr", value)`` (live object).
+    """
+    if value is _UNSET:
+        import importlib
+
+        mod_path, _, attr = str(target).rpartition(".")
+        setattr(importlib.import_module(mod_path), attr, name_or_value)
+    else:
+        setattr(target, name_or_value, value)
 
 
 def _fake_resolver(*addresses):
@@ -48,6 +67,7 @@ def _literal_resolver(host, port, *args, **kwargs):
         ipaddress.ip_address(host)
         addr = host
     except ValueError:
+        logging.getLogger(__name__).debug("literal_resolver_name_host", host=host)
         addr = PUBLIC
     return [(socket.AF_INET, None, None, "", (addr, 0))]
 
@@ -99,11 +119,11 @@ class TestResolveAndCheck:
         ],
     )
     def test_unsafe_urls(self, url: str, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("lite_indexer.webhooks.ssrf._default_resolver", _literal_resolver)
+        _setattr("lite_indexer.webhooks.ssrf._default_resolver", _literal_resolver)
         assert is_safe_webhook_url(url) is False
 
     def test_safe_urls(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("lite_indexer.webhooks.ssrf._default_resolver", _literal_resolver)
+        _setattr("lite_indexer.webhooks.ssrf._default_resolver", _literal_resolver)
         assert is_safe_webhook_url("https://example.com/x") is True
         assert is_safe_webhook_url("https://example.com:8443/x") is True
 
@@ -119,10 +139,10 @@ def api_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
     store = WebhookStore(tmp_path / "ssrf-webhooks.db")
     delivery = WebhookDelivery(enabled=False, store=store)
 
-    monkeypatch.setattr("lite_indexer.webhooks.router._delivery", delivery)
-    monkeypatch.setattr("lite_indexer.webhooks.router._store", store)
-    monkeypatch.setattr("lite_indexer.webhooks.ssrf._default_resolver", _literal_resolver)
-    monkeypatch.setattr("lite_indexer.webhooks.auth.WEBHOOKS_API_KEY", None)
+    _setattr("lite_indexer.webhooks.router._delivery", delivery)
+    _setattr("lite_indexer.webhooks.router._store", store)
+    _setattr("lite_indexer.webhooks.ssrf._default_resolver", _literal_resolver)
+    _setattr("lite_indexer.webhooks.auth.WEBHOOKS_API_KEY", None)
 
     app = create_app()
     with TestClient(app) as c:
@@ -165,7 +185,7 @@ class TestSendTimeRebind:
             secret="",
             created_at="2026-09-20T00:00:00Z",
         )
-        monkeypatch.setattr(
+        _setattr(
             "lite_indexer.webhooks.ssrf._default_resolver",
             _fake_resolver("10.1.2.3"),  # rebinding: now private
         )
@@ -175,7 +195,7 @@ class TestSendTimeRebind:
             async def post(self, url, **kwargs):
                 posted.append(url)
 
-        monkeypatch.setattr(delivery, "_http", lambda: FakeHttp())
+        _setattr(delivery, "_http", lambda: FakeHttp())
         delivered, status, _dur, error = await delivery._attempt_post(
             sub, "wid", 1, "chain.ethereum.transfer", "transfer", "ethereum", b"{}"
         )
@@ -196,7 +216,7 @@ class TestApiKeyGate:
         ).json()["id"]
 
     def test_key_required_when_set(self, api_client: TestClient, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr("lite_indexer.webhooks.auth.WEBHOOKS_API_KEY", "sekrit")
+        _setattr("lite_indexer.webhooks.auth.WEBHOOKS_API_KEY", "sekrit")
         sub_id = self._register(api_client)
         assert api_client.delete(f"/api/v1/webhooks/{sub_id}").status_code == 401
         assert api_client.get(f"/api/v1/webhooks/{sub_id}/logs").status_code == 401

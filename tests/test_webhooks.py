@@ -36,13 +36,31 @@ from lite_indexer.webhooks import WebhookDelivery
 from lite_indexer.webhooks.delivery import _parse_subject, _sign, verify_signature
 from lite_indexer.webhooks.storage import WebhookStore, _subject_matches
 
+_UNSET = object()
+
+
+def _setattr(target, name_or_value, value=_UNSET) -> None:
+    """Set an attribute without pytest monkeypatch.
+
+    Two forms: ``_setattr("module.attr", value)`` (dotted path) and
+    ``_setattr(obj, "attr", value)`` (live object).
+    """
+    if value is _UNSET:
+        import importlib
+
+        mod_path, _, attr = str(target).rpartition(".")
+        setattr(importlib.import_module(mod_path), attr, name_or_value)
+    else:
+        setattr(target, name_or_value, value)
+
+
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
 @pytest.fixture(autouse=True)
 def _fake_dns(monkeypatch: pytest.MonkeyPatch):
     """SSRF seam: never touch real DNS in tests (public IP for all hosts)."""
-    monkeypatch.setattr(
+    _setattr(
         "lite_indexer.webhooks.ssrf._default_resolver",
         lambda host, port, *a, **k: [(socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
     )
@@ -75,7 +93,7 @@ def _make_delivery(
     # SSRF send-time check: fake resolver (public IP) so tests never
     # touch real DNS for the example.com hosts used here.
     if monkeypatch is not None:
-        monkeypatch.setattr(
+        _setattr(
             "lite_indexer.webhooks.ssrf._default_resolver",
             lambda host, port, *a, **k: [(socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
         )
@@ -588,15 +606,15 @@ def api_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
     store = WebhookStore(tmp_path / "api-webhooks.db")
     delivery = WebhookDelivery(enabled=False, store=store)
 
-    monkeypatch.setattr("lite_indexer.webhooks.router._delivery", delivery)
-    monkeypatch.setattr("lite_indexer.webhooks.router._store", store)
+    _setattr("lite_indexer.webhooks.router._delivery", delivery)
+    _setattr("lite_indexer.webhooks.router._store", store)
     # SSRF helper: fake resolver so tests never touch real DNS; public IP.
-    monkeypatch.setattr(
+    _setattr(
         "lite_indexer.webhooks.ssrf._default_resolver",
         lambda host, port, *a, **k: [(socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
     )
     # Auth gate: force dev mode (unset key) regardless of the host env.
-    monkeypatch.setattr("lite_indexer.webhooks.auth.WEBHOOKS_API_KEY", None)
+    _setattr("lite_indexer.webhooks.auth.WEBHOOKS_API_KEY", None)
 
     app = create_app()
     with TestClient(app) as c:

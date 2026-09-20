@@ -44,6 +44,7 @@ def slice_size() -> int:
     try:
         return max(1, int(raw))
     except (TypeError, ValueError):
+        logger.debug("checkpoint_slice_env_invalid", raw=raw)
         return DEFAULT_SYNC_CHECKPOINT_SLICE
 
 
