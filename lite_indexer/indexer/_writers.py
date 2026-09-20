@@ -191,23 +191,11 @@ async def flush_tron_launch(
 ) -> tuple[int, int]:
     """Drain + persist the Tron launch / pair buffers.
 
-    Pair events go through :func:`write_tron_pair`, everything else
-    through :func:`write_tron_launch`. The same drained events are
-    mirrored into ``wallet_memory.deployer_events`` (scanner-contract
-    table) via :func:`tron.deployer.write_tron_deployer_events` — the
-    batch-1 audit gap: tron previously wrote only ``tron_launches``.
-
-    Best-effort: a per-event failure logs and the buffer is cleared
-    regardless (matching the sync loop's flush semantics).
-
-    Args:
-        strategy: Tron strategy whose ``_last_launch_events`` buffer is
-            drained.
-        ch_writer: Shared ClickHouse writer.
-        nats_publisher: Optional NATS publisher for real-time fan-out.
-
-    Returns:
-        Tuple of (launch events written, deployer rows written).
+    Pair events -> :func:`write_tron_pair`, else :func:`write_tron_launch`;
+    the drained events are also mirrored into ``deployer_events`` via
+    :func:`tron.deployer.write_tron_deployer_events` (batch-1 audit gap).
+    Best-effort: per-event failures log; the buffer clears regardless.
+    Returns (launch events written, deployer rows written).
     """
     launch_written = 0
     tron_launch_events = strategy._last_launch_events

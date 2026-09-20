@@ -523,8 +523,7 @@ class SyncLoopMixin(IndexerMixinBase):
             elif solana_strategy and solana_strategy._last_deployer_events:
                 deployer_candidates = len(solana_strategy._last_deployer_events)
             elif tron_strategy and tron_strategy._last_launch_events:
-                # Tron deployer rows mirror the drained launch/pair buffer
-                # (batch-1 audit gap) — same pending-row semantics as EVM/Solana.
+                # Tron deployer rows mirror the drained launch buffer (batch-1).
                 deployer_candidates = len(tron_strategy._last_launch_events)
             deployer_written = await write_deployer_events(
                 self.chain,
@@ -553,9 +552,7 @@ class SyncLoopMixin(IndexerMixinBase):
                 tron_strategy, self.ch_writer, self.nats_publisher
             )
             launch_written += tron_launch_written
-            # Tron deployer rows are written by the same flush (mirrored
-            # from the drained launch/pair buffer) — fold into the count
-            # so the D6 pending-row check covers tron too.
+            # Fold tron deployer rows into D6 pending-row accounting.
             deployer_written += tron_deployer_written
         if launch_written:
             summary["launch_events_written"] = launch_written
@@ -693,8 +690,7 @@ class SyncLoopMixin(IndexerMixinBase):
                     summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
                     return summary
 
-        # 7c. NATS publishing (best-effort, after durable CH writes; failures
-        # swallowed, circuit breaker opens so a dead server costs ~1 attempt).
+        # 7c. NATS publishing (best-effort; failures swallowed + circuit-broken).
         nats_deployer_events: list[dict[str, Any]] = []
         if self.deployers_enabled:
             if evm_strategy and evm_strategy._last_pair_events:
@@ -715,9 +711,8 @@ class SyncLoopMixin(IndexerMixinBase):
         # 7d. Webhook fan-out (best-effort, process-wide, lazy, idempotent).
         await self._maybe_start_webhook_delivery()
 
-        # 7e. Writer completeness gate (D6): if an ENABLED best-effort
-        # writer (deployer/launch/trace) had pending rows and wrote none,
-        # do NOT advance — the range is retried next cycle.
+        # 7e. Writer completeness gate (D6): an enabled best-effort writer
+        # with pending rows and zero writes blocks the advance (retried).
         failed_writers: list[str] = []
         if self.deployers_enabled and deployer_candidates and deployer_written == 0:
             failed_writers.append("deployer")
@@ -751,8 +746,7 @@ class SyncLoopMixin(IndexerMixinBase):
         self._clear_reorg_recovery()
         self.state.save(to_block, total_events, enabled_events=self._enabled_event_types())
 
-        # 8-attest. Merkle-leaf attestation of the committed range
-        # (best-effort, off-loop; a failure logs and continues).
+        # 8-attest. Merkle-leaf attestation of the committed range (best-effort).
         if ATTESTATION_ENABLED and (events or dex_events):
             try:
                 from lite_indexer.attestation import collect_block_hashes, record_range_attestation
