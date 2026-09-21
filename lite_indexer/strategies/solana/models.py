@@ -41,7 +41,9 @@ SIG_WINDOW_MAX_SLOTS = 100
 SOLANA_BLOCK_MAX_PER_SYNC = 200
 
 # Max concurrent getTransaction calls
-SOLANA_TX_CONCURRENCY = 10
+# 2026-09-21: raised 10 -> 30 to reach real-time solana throughput
+# (chain = ~150 slots/min; 10 capped the lane near ~55 slots/min).
+SOLANA_TX_CONCURRENCY = 30
 
 # ── Dynamic Token Discovery (solana_launches → tracked set) ──────────
 # 2026-09-02: new meme tokens (pump.fun/Raydium launches) are written to
