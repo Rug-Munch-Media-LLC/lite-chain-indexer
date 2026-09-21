@@ -32,6 +32,7 @@ from lite_indexer.strategies.solana.parsing import (
     parse_solana_transfer_events,
 )
 from lite_indexer.strategies.solana.swaps import parse_solana_swap_events
+from lite_indexer.strategies.solana.timestamps import iso_from_epoch
 
 from ._base import SolanaMixinBase
 
@@ -256,7 +257,7 @@ class TransfersMixin(SolanaMixinBase):
                             "decimals": tok.get("decimals", 0),
                             "symbol": tok.get("symbol", ""),
                             "token_name": tok.get("name", ""),
-                            "block_timestamp": block.get("blockTime"),
+                            "blockTimestamp": iso_from_epoch(block.get("blockTime")),
                         }
                     )
                 # DEX swap detection in catch-up mode too (best-effort,

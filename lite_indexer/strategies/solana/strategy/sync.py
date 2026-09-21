@@ -18,6 +18,7 @@ from lite_indexer.logging import get_logger
 from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
 from lite_indexer.strategies.solana.launch import SOLANA_LAUNCHES_TABLE, detect_launch
 from lite_indexer.strategies.solana.parsing import is_vote_transaction
+from lite_indexer.strategies.solana.timestamps import coerce_event_ts
 from lite_indexer.strategies.solana.models import (
     MAX_SIGNATURES_PER_TOKEN,
     SOLANA_DISCOVERY_LOOKBACK_HOURS,
@@ -621,14 +622,8 @@ class SyncMixin(SolanaMixinBase):
         rows: list[tuple[Any, ...]] = []
 
         for event in events:
-            ts_str = event.get("blockTimestamp", "")
-            if ts_str:
-                try:
-                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                except (ValueError, TypeError):
-                    ts = now
-            else:
-                ts = now
+            raw_ts = event.get("blockTimestamp") or event.get("block_timestamp")
+            ts = coerce_event_ts(raw_ts, now)
 
             rows.append(
                 (
