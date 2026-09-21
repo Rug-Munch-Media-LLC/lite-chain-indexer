@@ -16,12 +16,41 @@ from lite_indexer.config import (
     DATA_RECONCILIATION_MAX_DISCREPANCY_PCT,
     GC_EVERY_N_CYCLES,
 )
+import time
+from pathlib import Path
+
+from lite_indexer.config import DATA_DIR, DATA_RECONCILIATION_REWIND_COOLDOWN_S
 from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.indexer._resource_guards import get_guarded_memory_mb
 from lite_indexer.logging import get_logger
 
 log = get_logger(__name__)
 logger = log  # god-file bodies reference `logger`; keep both names
+
+
+
+def rewind_cooldown_ok(chain: str, *, now: float | None = None, base_dir: Path | None = None) -> bool:
+    """Whether this chain may be rewound now (per-chain cooldown).
+
+    Returns False when the chain was rewound within
+    ``DATA_RECONCILIATION_REWIND_COOLDOWN_S``. Fail-open: a write error
+    never blocks recovery.
+    """
+    base = base_dir if base_dir is not None else DATA_DIR
+    path = base / f"lite-indexer-reconcile-rewind-{chain}.ts"
+    ts = time.time() if now is None else now
+    try:
+        last = float(path.read_text().strip())
+    except (OSError, ValueError):
+        last = 0.0
+    if ts - last < DATA_RECONCILIATION_REWIND_COOLDOWN_S:
+        return False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(ts))
+    except OSError:
+        pass
+    return True
 
 
 class MaintenanceMixin(IndexerMixinBase):
@@ -168,5 +197,16 @@ class MaintenanceMixin(IndexerMixinBase):
         # Feed the freemium backfill queue with the known-missing range
         # (idempotent), then rewind state so the next cycle re-fetches.
         # High-water mark is NOT rewound — it stays monotonic.
+        if not rewind_cooldown_ok(self.chain):
+            logger.warning(
+                "reconcile_rewind_throttled",
+                chain=self.chain,
+                from_block=from_block,
+                to_block=to_block,
+                discrepancy_pct=round(discrepancy_pct, 2),
+                cooldown_s=DATA_RECONCILIATION_REWIND_COOLDOWN_S,
+            )
+            summary["reconcile_rewind_throttled"] = True
+            return
         self._record_reconcile_rewind(from_block, to_block)
         self.state.save(from_block - 1, 0, enabled_events=self._enabled_event_types())

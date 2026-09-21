@@ -196,6 +196,11 @@ STATE_REGRESSION_TOLERANCE_BLOCKS: int = int(os.environ.get("STATE_REGRESSION_TO
 DATA_RECONCILIATION_ENABLED: bool = os.environ.get("DATA_RECONCILIATION_ENABLED", "1") == "1"
 DATA_RECONCILIATION_EVERY_N_CYCLES: int = int(os.environ.get("DATA_RECONCILIATION_EVERY_N_CYCLES", "50"))
 DATA_RECONCILIATION_MAX_DISCREPANCY_PCT: float = float(os.environ.get("DATA_RECONCILIATION_MAX_DISCREPANCY_PCT", "5.0"))
+
+# 2026-09-21: per-chain cooldown between reconciliation REWINDS. A range that
+# keeps mismatching (e.g. dedup-adjusted counts on re-fetched ranges) must not
+# rewind every cycle — one rewind per window, then re-detect.
+DATA_RECONCILIATION_REWIND_COOLDOWN_S: int = int(os.environ.get("DATA_RECONCILIATION_REWIND_COOLDOWN_S", "21600"))
 # ── Freemium-Only Backfill Queue ────────────────────────────────────────
 # Policy: the free/keyless RPC pool is reserved for the live tip. Ranges
 # the indexer did NOT index itself (a stalled/disabled chain's backlog, or
