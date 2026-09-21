@@ -410,7 +410,7 @@ class TestRangeCompleteness:
 
     def test_reconcile_mismatch_rewinds_state(self, indexer: LiteIndexer, tmp_path: Path):
         # Make the reconcile fire on the first check.
-        with patch("lite_indexer.indexer._maintenance.DATA_RECONCILIATION_EVERY_N_CYCLES", 1):
+        with patch("lite_indexer.indexer._reconcile.DATA_RECONCILIATION_EVERY_N_CYCLES", 1):
             indexer._ch_writer = FakeWriter(FakeCH(count_rows=[(100,)]))
             indexer._cycles_since_reconcile = 0
             summary: dict[str, Any] = {}
@@ -421,7 +421,7 @@ class TestRangeCompleteness:
         assert indexer.state.load().get("last_block") == 999
 
     def test_reconcile_within_tolerance_no_rewind(self, indexer: LiteIndexer, tmp_path: Path):
-        with patch("lite_indexer.indexer._maintenance.DATA_RECONCILIATION_EVERY_N_CYCLES", 1):
+        with patch("lite_indexer.indexer._reconcile.DATA_RECONCILIATION_EVERY_N_CYCLES", 1):
             indexer._ch_writer = FakeWriter(FakeCH(count_rows=[(980,)]))  # 2% short
             indexer._cycles_since_reconcile = 0
             summary: dict[str, Any] = {}

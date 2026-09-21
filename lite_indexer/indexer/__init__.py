@@ -51,6 +51,7 @@ from lite_indexer.config import (
     WEBHOOK_ENABLED,
 )
 from lite_indexer.indexer._maintenance import MaintenanceMixin
+from lite_indexer.indexer._reconcile import ReconcileMixin
 from lite_indexer.indexer._plugins import PluginsMixin
 from lite_indexer.indexer._resource_guards import (
     ClickHouseHealth,
@@ -175,6 +176,7 @@ _REORG_SENTINEL = "__CHAIN_REORG__"
 
 class LiteIndexer(
     MaintenanceMixin,
+    ReconcileMixin,
     RpcFetchMixin,
     PluginsMixin,
     SidecarsMixin,
