@@ -16,6 +16,7 @@ def add_lake_parsers(sub: argparse._SubParsersAction) -> None:
     _add_backfill_parser(sub)
     _add_gaps_parser(sub)
     _add_sqd_parser(sub)
+    _add_fill_solana_parser(sub)
 
 
 def _add_sqd_parser(sub: argparse._SubParsersAction) -> None:
@@ -89,10 +90,62 @@ def _add_gaps_parser(sub: argparse._SubParsersAction) -> None:
     gaps.add_argument("--fill", action="store_true", help="Backfill the detected gaps from the lake")
 
 
+def _add_fill_solana_parser(sub: argparse._SubParsersAction) -> None:
+    """Register fill-solana — BigLake (BigQuery public solana) gap fill."""
+    fill = sub.add_parser(
+        "fill-solana",
+        help="Fill solana history from the GCP BigLake dataset into ClickHouse",
+        description=(
+            "Stream SPL token transfers for a date range from the BigQuery public "
+            "solana dataset into ClickHouse through the live solana write path. "
+            "Volume-guarded: --max-rows hard-stops; --dry-run counts."
+        ),
+    )
+    fill.add_argument("--from-date", required=True, help="Inclusive start date YYYY-MM-DD")
+    fill.add_argument("--to-date", required=True, help="Inclusive end date YYYY-MM-DD")
+    fill.add_argument("--max-rows", type=int, default=200_000, help="Hard stop across the run (default: 200000)")
+    fill.add_argument("--batch-rows", type=int, default=5000, help="Rows per write batch (default: 5000)")
+    fill.add_argument("--mint", action="append", default=[], help="Optional mint filter (repeatable)")
+    fill.add_argument("--force", action="store_true", help="Write even for dates CH already covers")
+    fill.add_argument("--dry-run", action="store_true", help="Count rows without writing")
+
+
+def run_fill_solana(args: argparse.Namespace) -> int:
+    """Run fill-solana — BigLake → ClickHouse, volume-guarded, no RPC."""
+    from lite_indexer.ingest.lake_backfill import expand_dates
+    from lite_indexer.ingest.lake_bigquery_solana import (
+        SolanaBigQueryFillRequest,
+        backfill_solana_from_bigquery,
+    )
+
+    try:
+        dates = expand_dates(args.from_date, args.to_date)
+    except ValueError:
+        logger.warning("bigquery_fill_bad_dates", from_date=args.from_date, to_date=args.to_date)
+        print("error: --from-date/--to-date must be YYYY-MM-DD", file=sys.stderr)  # noqa: T201
+        return 2
+    req = SolanaBigQueryFillRequest(
+        dates=dates, dry_run=args.dry_run, batch_rows=args.batch_rows,
+        max_rows=args.max_rows, mints=tuple(args.mint), force=args.force,
+    )
+    try:
+        counts = backfill_solana_from_bigquery(req)
+    except ValueError as exc:
+        logger.warning("bigquery_fill_bad_request", error=str(exc)[:120])
+        print(f"error: {exc}", file=sys.stderr)  # noqa: T201
+        return 2
+    summary = {"chain": "solana", "dry_run": req.dry_run, "max_rows": req.max_rows,
+               "rows": sum(counts.values()), "counts": counts}
+    print(json.dumps(summary, indent=2))  # noqa: T201
+    return 0
+
+
 def run_lake_command(args: argparse.Namespace) -> int:
     """Dispatch the lake family subcommands."""
     if args.command == "sqd-fill":
         return run_sqd_fill(args)
+    if args.command == "fill-solana":
+        return run_fill_solana(args)
     if args.command == "lake-gaps":
         return run_lake_gaps(args)
     return run_lake_backfill(args)

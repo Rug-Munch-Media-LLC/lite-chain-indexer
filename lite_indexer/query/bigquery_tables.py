@@ -89,6 +89,8 @@ def build_query(
     to_block: int | None = None,
     dates: Sequence[str] | None = None,
     limit: int = 100,
+    mints: Sequence[str] | None = None,
+    offset: int | None = None,
 ) -> tuple[str, list[tuple[str, str, Any]]]:
     """Build parameterized SQL for one public-dataset table.
 
@@ -105,6 +107,8 @@ def build_query(
             to_block=to_block,
             dates=dates,
             limit=limit,
+            mints=mints,
+            offset=offset,
         )
     where: list[str] = []
     params: list[tuple[str, str, Any]] = []
@@ -142,6 +146,8 @@ def _build_solana_query(
     to_block: int | None = None,
     dates: Sequence[str] | None = None,
     limit: int = 100,
+    mints: Sequence[str] | None = None,
+    offset: int | None = None,
 ) -> tuple[str, list[tuple[str, str, Any]]]:
     """Build parameterized SQL for one ``crypto_solana_mainnet_us`` table.
 
@@ -154,6 +160,9 @@ def _build_solana_query(
         raise ValueError(f"unsupported solana bigquery table: {table!r}")
     where: list[str] = []
     params: list[tuple[str, str, Any]] = []
+    if mints:
+        where.append("mint IN UNNEST(@mints)")
+        params.append(("mints", "ARRAY<STRING>", [str(m) for m in mints]))
     if from_block is not None:
         where.append("block_slot >= @from_slot")
         params.append(("from_slot", "INT64", int(from_block)))
@@ -179,5 +188,8 @@ def _build_solana_query(
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY block_slot DESC LIMIT @limit"
     params.append(("limit", "INT64", max(1, min(int(limit), 1000))))
+    if offset is not None and int(offset) > 0:
+        sql += " OFFSET @offset"
+        params.append(("offset", "INT64", int(offset)))
     return sql, params
 

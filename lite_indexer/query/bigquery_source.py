@@ -149,6 +149,8 @@ class BigQuerySource:
         to_block: int | None = None,
         dates: list[str] | None = None,
         limit: int = 100,
+        mints: list[str] | None = None,
+        offset: int | None = None,
     ) -> list[dict[str, Any]]:
         """Read ``crypto_ethereum.<table>`` rows in the warehouse row shape.
 
@@ -165,6 +167,8 @@ class BigQuerySource:
                 to_block=to_block,
                 dates=dates,
                 limit=limit,
+                mints=mints,
+                offset=offset,
             )
         if chain != "eth" or table not in _TABLE_SELECT:
             return []
@@ -189,6 +193,8 @@ class BigQuerySource:
         to_block: int | None,
         dates: list[str] | None,
         limit: int,
+        mints: list[str] | None = None,
+        offset: int | None = None,
     ) -> list[dict[str, Any]]:
         """Read ``crypto_solana_mainnet_us`` rows in the solana row shape."""
         if table not in _SOLANA_TABLES:
@@ -203,6 +209,8 @@ class BigQuerySource:
             to_block=to_block,
             dates=dates,
             limit=limit,
+            mints=mints,
+            offset=offset,
         )
         rows = self._runner(sql, params) if self._runner is not None else run_bq(self._bq_bin, sql, params)
         if not rows:

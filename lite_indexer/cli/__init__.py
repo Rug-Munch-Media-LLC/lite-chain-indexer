@@ -585,7 +585,7 @@ async def async_main(args: argparse.Namespace) -> int:
     if args.command == "export-parquet":
         return run_export_parquet(args)
 
-    if args.command and args.command.startswith(("lake-", "sqd-")):
+    if args.command and args.command.startswith(("lake-", "sqd-", "fill-")):
         return run_lake_command(args)
 
     # ── integrity-check subcommand ───────────────────────────────────
