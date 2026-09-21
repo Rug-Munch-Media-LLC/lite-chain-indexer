@@ -27,7 +27,7 @@ _DATASET = "bigquery-public-data.crypto_ethereum"
 _TABLE_SELECT: dict[str, str] = {
     "transactions": (
         "block_number, UNIX_MILLIS(block_timestamp) AS block_timestamp, "
-        "hash AS tx_hash, from_address, to_address, value"
+        "`hash` AS tx_hash, from_address, to_address, value"
     ),
     "token_transfers": (
         "block_number, UNIX_MILLIS(block_timestamp) AS block_timestamp, "
@@ -38,7 +38,7 @@ _TABLE_SELECT: dict[str, str] = {
         "transaction_hash AS tx_hash, address AS token_address, log_index"
     ),
     "contracts": "block_number, UNIX_MILLIS(block_timestamp) AS block_timestamp, address AS token_address",
-    "blocks": "number AS block_number, UNIX_MILLIS(timestamp) AS block_timestamp, hash AS tx_hash, transaction_count",
+    "blocks": "number AS block_number, UNIX_MILLIS(timestamp) AS block_timestamp, `hash` AS tx_hash, transaction_count",
 }
 
 #: Address columns usable for the ``address`` filter (empty = unsupported).
@@ -102,7 +102,7 @@ def run_bq(bq_bin: str, sql: str, params: list[tuple[str, str, Any]]) -> list[di
     cmd.append(sql)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
-        logger.warning("bigquery_bq_failed", error=(proc.stderr or "")[:200])
+        logger.warning("bigquery_bq_failed", error=((proc.stderr or proc.stdout) or "")[:300])
         return []
     try:
         data = json.loads(proc.stdout or "[]")
