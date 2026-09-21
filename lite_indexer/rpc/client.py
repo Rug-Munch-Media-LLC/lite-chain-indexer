@@ -12,7 +12,6 @@ import asyncio
 import contextlib
 import json
 import time
-from collections import OrderedDict
 from typing import Any, cast
 
 import httpx
@@ -30,7 +29,6 @@ from lite_indexer.config import (
     RPC_RETRY_BASE_DELAY_S,
     RPC_RETRY_MAX_DELAY_S,
     RPC_TIMEOUT,
-    TIMESTAMP_CACHE_MAX,
     TIMESTAMP_FETCH_TIMEOUT,
     TIMESTAMP_PHASE_DEADLINE_S,
 )
@@ -82,6 +80,11 @@ from lite_indexer.rpc.routing import (
     record_rpc_latency,
     record_rpc_outcome,
 )
+from lite_indexer.rpc.ts_cache import (  # noqa: F401  (public re-export)
+    _ts_cache_get,
+    _ts_cache_put,
+    clear_timestamp_cache,
+)
 from lite_indexer.util.http import http_limits
 
 logger = get_logger(__name__)
@@ -89,36 +92,6 @@ logger = get_logger(__name__)
 # Max eth_getBlockByNumber header fetches per timestamp-enrichment call.
 # Larger sets are sampled and interpolated (see fetch_block_timestamps).
 _TS_SAMPLE_MAX_FETCHES = 64
-
-# Immutable block->timestamp LRU keyed by (chain, block). Timestamps never
-# change for a given (chain, block), so results are safe to serve across
-# cycles and overlapping catch-up ranges — the same header is never re-fetched.
-# Bounded by TIMESTAMP_CACHE_MAX; single-writer event-loop access only.
-_ts_cache: OrderedDict[tuple[str, int], str] = OrderedDict()
-
-
-def _ts_cache_get(chain: str, block: int) -> str | None:
-    key = (chain, block)
-    value = _ts_cache.get(key)
-    if value is None:
-        return None
-    _ts_cache.move_to_end(key)
-    return value
-
-
-def _ts_cache_put(chain: str, block: int, ts: str) -> None:
-    if not ts:
-        return
-    key = (chain, block)
-    _ts_cache[key] = ts
-    _ts_cache.move_to_end(key)
-    while len(_ts_cache) > TIMESTAMP_CACHE_MAX:
-        _ts_cache.popitem(last=False)
-
-
-def clear_timestamp_cache() -> None:
-    """Drop the in-process block->timestamp LRU (tests/ops)."""
-    _ts_cache.clear()
 
 
 def _safe_record(recorder: Any, *args: Any, **kwargs: Any) -> None:
