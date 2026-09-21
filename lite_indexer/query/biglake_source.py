@@ -214,8 +214,8 @@ class BigLakeSource:
         params.append(max(1, min(int(limit), 1000)))
 
         from lite_indexer.query.biglake_rotation import read_with_rotation
-
-        return read_with_rotation(self, sql=sql, params=params, table=table, biglake_table=biglake_table)
+        filters = {"address": address, "from_block": from_block, "to_block": to_block, "dates": dates, "limit": limit}
+        return read_with_rotation(self, (sql, params), table, biglake_table, filters)
 
     def _read_raw(self, sql: str, params: list[Any]) -> tuple[list[str], list[tuple[Any, ...]]]:
         """Execute the lake SQL and return (columns, raw rows)."""
