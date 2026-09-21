@@ -72,6 +72,8 @@ def _default_registry() -> dict[str, LakeProvider]:
                 ("eth", "blocks"),
                 ("eth", "contracts"),
                 ("eth", "logs"),
+                ("solana", "token_transfers"),
+                ("solana", "instructions"),
             },
             1.0,
             1000,
