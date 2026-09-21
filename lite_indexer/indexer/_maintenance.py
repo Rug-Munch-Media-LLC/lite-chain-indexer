@@ -42,8 +42,8 @@ def rewind_cooldown_ok(chain: str, *, now: float | None = None, base_dir: Path |
     try:
         last = float(path.read_text().strip())
     except (OSError, ValueError):
-        last = 0.0
-    if ts - last < DATA_RECONCILIATION_REWIND_COOLDOWN_S:
+        last = None
+    if last is not None and ts - last < DATA_RECONCILIATION_REWIND_COOLDOWN_S:
         return False
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
