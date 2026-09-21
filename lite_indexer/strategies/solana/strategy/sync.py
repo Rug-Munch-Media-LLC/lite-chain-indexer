@@ -17,6 +17,7 @@ from lite_indexer.config import REORG_PROTECTION_ENABLED
 from lite_indexer.logging import get_logger
 from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
 from lite_indexer.strategies.solana.launch import SOLANA_LAUNCHES_TABLE, detect_launch
+from lite_indexer.strategies.solana.parsing import is_vote_transaction
 from lite_indexer.strategies.solana.models import (
     MAX_SIGNATURES_PER_TOKEN,
     SOLANA_DISCOVERY_LOOKBACK_HOURS,
@@ -186,7 +187,7 @@ class SyncMixin(SolanaMixinBase):
             async with semaphore:
                 result = await self._rpc_call_versioned(
                     "getBlock",
-                    [slot, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "rewards": False}],
+                    [slot, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1, "rewards": False}],
                 )
             block = result.get("result") if isinstance(result, dict) else None
             if not isinstance(block, dict):
@@ -195,6 +196,8 @@ class SyncMixin(SolanaMixinBase):
             for tx in block.get("transactions") or []:
                 meta = tx.get("meta") or {}
                 if meta.get("err") is not None:
+                    continue
+                if is_vote_transaction(tx):
                     continue
                 try:
                     launch = detect_launch(tx, slot)
@@ -326,12 +329,27 @@ class SyncMixin(SolanaMixinBase):
         nothing — version is a MAX, so legacy payloads are unaffected.
         """
         result = await self._rpc_call(method, params)
-        if result is not None:
+
+        def _version_mismatch(res: Any) -> bool:
+            """True when the RPC rejected the call over the tx-version cap.
+
+            2026-09-21 measured: endpoints answer a v0 cap with -32015 in
+            ~0.5s, and the pool then burns retries/rotation on it. Treating
+            the error payload as a version mismatch lets us flip the cap
+            immediately instead of waiting for the pool to give up.
+            """
+            if not isinstance(res, dict):
+                return False
+            err = res.get("error") or {}
+            msg = f"{err.get('code', '')} {err.get('message', '')}".lower()
+            return "transaction version" in msg or "-32015" in msg
+
+        if result is not None and not _version_mismatch(result):
             return result
-        if len(params) > 1 and isinstance(params[1], dict) and params[1].get("maxSupportedTransactionVersion") == 0:
+        if len(params) > 1 and isinstance(params[1], dict) and "maxSupportedTransactionVersion" in params[1]:
             opts = dict(params[1])
-            opts["maxSupportedTransactionVersion"] = 1
-            result = await self._rpc_call(method, [params[0], opts])
+            opts["maxSupportedTransactionVersion"] = 0 if opts["maxSupportedTransactionVersion"] == 1 else 1
+            return await self._rpc_call(method, [params[0], opts])
         return result
 
     # ── Feature Flags ─────────────────────────────────────────────────
@@ -380,7 +398,7 @@ class SyncMixin(SolanaMixinBase):
                     sig,
                     {
                         "encoding": "jsonParsed",
-                        "maxSupportedTransactionVersion": 0,
+                        "maxSupportedTransactionVersion": 1,
                         "commitment": "finalized",
                     },
                 ],

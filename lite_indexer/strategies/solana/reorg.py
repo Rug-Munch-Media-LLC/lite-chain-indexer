@@ -91,7 +91,7 @@ async def _get_blockhash(client: Any, slot: int) -> str | None:
     result = await rpc_call(
         client,
         "getBlock",
-        [slot, {"transactionDetails": "none", "maxSupportedTransactionVersion": 0, "commitment": "finalized"}],
+        [slot, {"transactionDetails": "none", "maxSupportedTransactionVersion": 1, "commitment": "finalized"}],
     )
     if not result or not isinstance(result.get("result"), dict):
         return None

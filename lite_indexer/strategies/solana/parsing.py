@@ -150,3 +150,30 @@ def parse_solana_transfer_events(
         )
 
     return events
+
+
+#: Validator vote program — vote transactions carry no user/token activity.
+_VOTE_PROGRAM_ID = "Vote111111111111111111111111111111111111111"
+
+
+def is_vote_transaction(tx: dict[str, Any]) -> bool:
+    """True for validator vote transactions (skip these early).
+
+    Vote txs are a large share of Solana block volume and never contain
+    token/DEX/launch activity. ``jsonParsed`` instructions carry
+    ``programId``; fall back to scanning ``accountKeys`` for shapes
+    without an instructions list. Never raises (filter must not break a
+    sync): any parse error returns False.
+    """
+    try:
+        message = ((tx or {}).get("transaction") or {}).get("message") or {}
+        for ix in message.get("instructions") or []:
+            if ix.get("programId") == _VOTE_PROGRAM_ID:
+                return True
+        for key in message.get("accountKeys") or []:
+            pk = key.get("pubkey") if isinstance(key, dict) else key
+            if pk == _VOTE_PROGRAM_ID:
+                return True
+    except Exception:  # noqa: BLE001 — filter must never raise
+        return False
+    return False

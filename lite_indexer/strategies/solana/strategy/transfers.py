@@ -8,6 +8,8 @@ same getTransaction payloads (zero extra RPC).
 from __future__ import annotations
 
 import asyncio
+import os
+import time
 from typing import Any
 
 import httpx
@@ -25,7 +27,10 @@ from lite_indexer.strategies.solana.models import (
     SOLANA_TOKEN_CONCURRENCY,
     SOLANA_TX_CONCURRENCY,
 )
-from lite_indexer.strategies.solana.parsing import parse_solana_transfer_events
+from lite_indexer.strategies.solana.parsing import (
+    is_vote_transaction,
+    parse_solana_transfer_events,
+)
 from lite_indexer.strategies.solana.swaps import parse_solana_swap_events
 
 from ._base import SolanaMixinBase
@@ -62,6 +67,7 @@ class TransfersMixin(SolanaMixinBase):
         """
         if from_slot > to_slot:
             return []
+        _t0 = time.perf_counter()
 
         # Dynamic token discovery: merge recently launched mints (from
         # wallet_memory.solana_launches) into the tracked set at the start
@@ -95,6 +101,13 @@ class TransfersMixin(SolanaMixinBase):
                 await self.capture_deployers_for_new_tokens(new_tokens)
             except Exception as exc:  # noqa: BLE001 — capture is best-effort
                 logger.warning("solana_deployer_fallback_failed", error=str(exc)[:80])
+
+        if os.getenv("SOLANA_TIMING"):
+            logger.info(
+                "solana_pre_phase_timing",
+                pre_s=round(time.perf_counter() - _t0, 2),
+                new_tokens=len(new_tokens),
+            )
 
         # 2026-09-01 CATCH-UP DOCTRINE: window depth decides the strategy.
         #   - Small window (<= SIG_WINDOW_MAX_SLOTS, ~2000 slots ≈ real-time
@@ -175,6 +188,10 @@ class TransfersMixin(SolanaMixinBase):
             return []
 
         all_events: list[dict[str, Any]] = []
+        vote_skipped = 0
+        n_txs = 0
+        fetch_times: list[float] = []
+        parse_times: list[float] = []
         # 2026-09-01: process the FULL window in SOLANA_BLOCK_MAX_PER_SYNC
         # chunks — the old code capped at 200 slots total, silently dropping
         # the rest of a 1000-slot daemon window.
@@ -182,19 +199,27 @@ class TransfersMixin(SolanaMixinBase):
         semaphore = asyncio.Semaphore(SOLANA_TX_CONCURRENCY)
 
         async def _fetch_one_block(slot: int) -> list[dict[str, Any]]:
+            nonlocal vote_skipped, n_txs
             async with semaphore:
+                _t_fetch = time.perf_counter()
                 result = await self._rpc_call_versioned(
                     "getBlock",
-                    [slot, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "rewards": False}],
+                    [slot, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1, "rewards": False}],
                 )
+                fetch_times.append(time.perf_counter() - _t_fetch)
             if not result or "result" not in result or not result["result"]:
                 return []
             block = result["result"]
             events: list[dict[str, Any]] = []
+            _t_parse = time.perf_counter()
             for tx in block.get("transactions") or []:
                 meta = tx.get("meta") or {}
                 if meta.get("err") is not None:
                     continue
+                if is_vote_transaction(tx):
+                    vote_skipped += 1
+                    continue
+                n_txs += 1
                 pre = {
                     (b.get("mint"), b.get("owner") or "", b.get("accountIndex")): b
                     for b in (meta.get("preTokenBalances") or [])
@@ -256,6 +281,7 @@ class TransfersMixin(SolanaMixinBase):
                         slot=slot,
                         error=str(exc)[:60],
                     )
+            parse_times.append(time.perf_counter() - _t_parse)
             return events
 
         # Sample every 2nd slot for catch-up speed (halves RPC spend; the
@@ -270,6 +296,17 @@ class TransfersMixin(SolanaMixinBase):
             for r in results:
                 if isinstance(r, list):
                     all_events.extend(r)
+        if os.getenv("SOLANA_TIMING"):
+            logger.info(
+                "solana_blockwise_timing",
+                blocks=len(fetch_times),
+                fetch_s=round(sum(fetch_times), 1),
+                parse_s=round(sum(parse_times), 1),
+                txs=n_txs,
+                votes_skipped=vote_skipped,
+                events=len(all_events),
+                activity_rows=len(self._address_activity_rows),
+            )
         return all_events
 
     async def _fetch_mint_transfers(
@@ -392,7 +429,7 @@ class TransfersMixin(SolanaMixinBase):
                             sig,
                             {
                                 "encoding": "jsonParsed",
-                                "maxSupportedTransactionVersion": 0,
+                                "maxSupportedTransactionVersion": 1,
                                 "commitment": "finalized",
                             },
                         ],

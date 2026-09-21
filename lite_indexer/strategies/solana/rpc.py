@@ -119,7 +119,7 @@ async def get_transactions_for_address(
         "transactionDetails": transaction_details,
         "sortOrder": sort_order,
         "limit": limit,
-        "maxSupportedTransactionVersion": 0,
+        "maxSupportedTransactionVersion": 1,
         "filters": {"tokenAccounts": token_accounts},
     }
     if block_time_gte is not None or block_time_lt is not None:
