@@ -312,6 +312,17 @@ class TransfersMixin(SolanaMixinBase):
                 sig_infos = result["result"]
             if not result["result"]:
                 break  # exhausted history
+
+            # Short-circuit: if the newest page already contains a signature
+            # inside the target window, nothing older is worth walking to —
+            # stop paginating (pages 2+ would be fetched and discarded).
+            if any(
+                isinstance(s, dict)
+                and s.get("slot") is not None
+                and from_slot <= int(s["slot"]) <= to_slot
+                for s in result["result"]
+            ):
+                break
             oldest = result["result"][-1]
             oldest_slot = int(oldest.get("slot") or 0)
             # Keep walking back while the oldest signature on the page is
