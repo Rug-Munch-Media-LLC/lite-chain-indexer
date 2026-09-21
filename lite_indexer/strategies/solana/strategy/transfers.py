@@ -14,6 +14,7 @@ import httpx
 
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcFetchFailedError
+from lite_indexer.storage.ch_write_pool import run_ch_write
 from lite_indexer.strategies.solana.bundles import detect_bundle
 from lite_indexer.strategies.solana.launch import detect_launch
 from lite_indexer.strategies.solana.models import (
@@ -68,7 +69,13 @@ class TransfersMixin(SolanaMixinBase):
         # cycle of their launch. Best-effort — never blocks the fetch.
         new_tokens: list[dict[str, Any]] = []
         try:
-            new_tokens = self._discover_new_tokens()
+            # 2026-09-21: _discover_new_tokens runs a BLOCKING ClickHouse
+            # query (solana_launches 24h scan). Called inline it stalled the
+            # whole event loop for seconds-to-tens-of-seconds whenever CH
+            # was busy (25 chains writing) — visible as log gaps with zero
+            # events between sync_start and the first write. Run it on the
+            # bounded CH write-pool executor instead.
+            new_tokens = await run_ch_write(self._discover_new_tokens)
         except Exception as exc:  # noqa: BLE001 — discovery is best-effort
             logger.warning("solana_discovery_failed", error=str(exc)[:80])
 
