@@ -75,6 +75,13 @@ async def recycle_if_over_budget(
     os._exit(0)
 
 
+# 2026-09-21: chains exempt from the shared MAX_CONCURRENT_CHAINS
+# semaphore (dedicated lane). Solana measured ~14 slots/min effective
+# because it queued FIFO behind multi-minute EVM cycles; the chain
+# produces ~150 slots/min. Memory gating is unchanged for these chains.
+_SEMAPHORE_EXEMPT_CHAINS: frozenset[str] = frozenset({"solana"})
+
+
 def _watchdog_sleep(seconds: int) -> None:
     """Sleep helper for the watchdog loop (patch point for tests)."""
     time.sleep(seconds)
@@ -352,7 +359,13 @@ async def main_daemon(
                     )
                     await asyncio.sleep(MEMORY_PAUSE_SLEEP)
                     continue
-                if concurrency_slot is not None:
+                # 2026-09-21 solana real-time fix: the shared FIFO
+                # semaphore made the solana lane wait ~6.5 min behind long
+                # EVM cycles between 54s sync passes (~14 slots/min
+                # effective vs ~150 slots/min chain production). Exempt
+                # chains run on a dedicated lane; their own memory gate
+                # (solana budget 1024MB) still applies every cycle.
+                if concurrency_slot is not None and chain not in _SEMAPHORE_EXEMPT_CHAINS:
                     async with concurrency_slot:
                         result = await indexer.sync_loop()
                 else:

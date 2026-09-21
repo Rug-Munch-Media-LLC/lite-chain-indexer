@@ -96,6 +96,13 @@ class SolanaMixinBase:
     ) -> dict[str, Any] | None:
         raise NotImplementedError
 
+    async def _rpc_call_versioned(
+        self,
+        method: str,
+        params: list[Any],
+    ) -> dict[str, Any] | None:
+        raise NotImplementedError
+
     async def _capture_deployer_event(
         self,
         mint: str,

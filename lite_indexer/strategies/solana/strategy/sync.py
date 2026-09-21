@@ -184,7 +184,7 @@ class SyncMixin(SolanaMixinBase):
 
         async def _scan_block(slot: int) -> int:
             async with semaphore:
-                result = await self._rpc_call(
+                result = await self._rpc_call_versioned(
                     "getBlock",
                     [slot, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "rewards": False}],
                 )
@@ -310,6 +310,29 @@ class SyncMixin(SolanaMixinBase):
         """Make a JSON-RPC call using the shared client."""
         client = await self._get_client()
         return await rpc_call(client, method, params, endpoint)
+
+    async def _rpc_call_versioned(
+        self,
+        method: str,
+        params: list[Any],
+    ) -> dict[str, Any] | None:
+        """RPC call with a maxSupportedTransactionVersion fallback.
+
+        2026-09-21 measured: blocks containing version-1 transactions
+        reject ``maxSupportedTransactionVersion: 0`` with RPC error -32015
+        on every configured endpoint, so those blocks/txs were silently
+        dropped (and each failed call burned a full endpoint-rotation
+        retry). Retry ONCE with version 1 when the versioned call returns
+        nothing — version is a MAX, so legacy payloads are unaffected.
+        """
+        result = await self._rpc_call(method, params)
+        if result is not None:
+            return result
+        if len(params) > 1 and isinstance(params[1], dict) and params[1].get("maxSupportedTransactionVersion") == 0:
+            opts = dict(params[1])
+            opts["maxSupportedTransactionVersion"] = 1
+            result = await self._rpc_call(method, [params[0], opts])
+        return result
 
     # ── Feature Flags ─────────────────────────────────────────────────
 

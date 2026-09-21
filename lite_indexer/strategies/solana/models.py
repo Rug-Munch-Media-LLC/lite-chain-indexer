@@ -45,6 +45,13 @@ SOLANA_BLOCK_MAX_PER_SYNC = 200
 # (chain = ~150 slots/min; 10 capped the lane near ~55 slots/min).
 SOLANA_TX_CONCURRENCY = 30
 
+# 2026-09-21: max tracked mints fetched CONCURRENTLY in the signature-walk
+# path. The per-token loop was serial (~10+ mints x seconds of RPC each =
+# minutes per 100-slot window). Each token still shares the
+# SOLANA_TX_CONCURRENCY getTransaction semaphore, so total RPC concurrency
+# stays bounded.
+SOLANA_TOKEN_CONCURRENCY = 6
+
 # ── Dynamic Token Discovery (solana_launches → tracked set) ──────────
 # 2026-09-02: new meme tokens (pump.fun/Raydium launches) are written to
 # wallet_memory.solana_launches by the launch detector every cycle. The

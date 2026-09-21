@@ -21,6 +21,7 @@ from lite_indexer.strategies.solana.models import (
     SIG_WINDOW_MAX_SLOTS,
     SOLANA_BLOCK_MAX_PER_SYNC,
     SOLANA_SIG_MAX_PAGES,
+    SOLANA_TOKEN_CONCURRENCY,
     SOLANA_TX_CONCURRENCY,
 )
 from lite_indexer.strategies.solana.parsing import parse_solana_transfer_events
@@ -111,20 +112,35 @@ class TransfersMixin(SolanaMixinBase):
         all_events: list[dict[str, Any]] = []
         failures = 0
 
-        for token in self.tracked_tokens:
-            mint = token["mint"]
-            try:
-                events, ok = await self._fetch_mint_transfers(mint, from_slot, to_slot)
-                if not ok:
-                    failures += 1
-                all_events.extend(events)
-            except Exception as exc:
+        # 2026-09-21 real-time fix: the per-token loop ran serially — with
+        # 10+ tracked mints each taking seconds of RPC, a 100-slot window
+        # cost minutes (measured 54s/cycle at ~40 slots/min lane rate).
+        # Tokens are independent: gather them under a bounded token-level
+        # semaphore; the shared SOLANA_TX_CONCURRENCY semaphore inside
+        # _fetch_mint_transfers still caps total getTransaction concurrency.
+        token_sem = asyncio.Semaphore(SOLANA_TOKEN_CONCURRENCY)
+
+        async def _fetch_token(token: dict[str, Any]) -> tuple[list[dict[str, Any]], bool] | None:
+            async with token_sem:
+                try:
+                    return await self._fetch_mint_transfers(token["mint"], from_slot, to_slot)
+                except Exception as exc:
+                    logger.warning(
+                        "solana_mint_fetch_failed",
+                        mint=token["mint"][:20],
+                        error=str(exc)[:80],
+                    )
+                    return None
+
+        outcomes = await asyncio.gather(*(_fetch_token(t) for t in self.tracked_tokens))
+        for outcome in outcomes:
+            if outcome is None:
                 failures += 1
-                logger.warning(
-                    "solana_mint_fetch_failed",
-                    mint=mint[:20],
-                    error=str(exc)[:80],
-                )
+                continue
+            events, ok = outcome
+            if not ok:
+                failures += 1
+            all_events.extend(events)
 
         # Data-loss guard: if every tracked mint's RPC query failed, the
         # empty result does NOT mean "no transfers" — raise so the indexer
@@ -160,7 +176,7 @@ class TransfersMixin(SolanaMixinBase):
 
         async def _fetch_one_block(slot: int) -> list[dict[str, Any]]:
             async with semaphore:
-                result = await self._rpc_call(
+                result = await self._rpc_call_versioned(
                     "getBlock",
                     [slot, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "rewards": False}],
                 )
@@ -352,7 +368,7 @@ class TransfersMixin(SolanaMixinBase):
             slot = int(sig_info["slot"])
             async with semaphore:
                 try:
-                    tx_result = await self._rpc_call(
+                    tx_result = await self._rpc_call_versioned(
                         "getTransaction",
                         [
                             sig,
