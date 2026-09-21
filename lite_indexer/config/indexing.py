@@ -181,7 +181,11 @@ STATE_BACKWARD_PROTECTION: bool = os.environ.get("STATE_BACKWARD_PROTECTION", "1
 # A state regression smaller than this is treated as legitimate reorg
 # rewind (reorg rollbacks rewind state to fork_block-1, typically a few
 # blocks) and is NOT recovered. Only a larger gap is corruption.
-STATE_REGRESSION_TOLERANCE_BLOCKS: int = int(os.environ.get("STATE_REGRESSION_TOLERANCE_BLOCKS", "100"))
+# 2026-09-21: raised 100 -> 1000. A benign one-window trail (CH flush lands
+# before the slice-end state persist) is ~one sync window (~200 blocks)
+# behind ch_max and tripped recovery+alerts per slice all day. Real
+# regressions (thousands of blocks) still trigger far above this.
+STATE_REGRESSION_TOLERANCE_BLOCKS: int = int(os.environ.get("STATE_REGRESSION_TOLERANCE_BLOCKS", "1000"))
 # ── Periodic Data Reconciliation ────────────────────────────────────────
 # Every DATA_RECONCILIATION_EVERY_N_CYCLES sync cycles, compare the
 # ClickHouse row count for the just-synced range against the events
