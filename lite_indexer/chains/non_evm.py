@@ -67,10 +67,10 @@ TRON_ENDPOINTS: list[str] = [
 # Builtin free/keyless endpoints keep their order; the private overlay (if
 # present) is appended per chain. Unresolved ``${VAR}`` endpoints are dropped.
 _ENDPOINT_OVERLAY = load_endpoint_overlay()
-# 2026-09-21: Solana tries KEYED endpoints first. The free/keyless pool throttles
-# getBlock/getTransaction hard (measured ~55 slots/min vs the chain's ~150/min);
-# keyed providers (Helius/Alchemy/Chainstack/GetBlock/...) carry the throughput.
-# Free endpoints stay in the list as tail fallbacks.
+# 2026-09-21: Solana tries the curated/keyed overlay endpoints first. The
+# free/keyless pool throttles getBlock/getTransaction hard (measured ~55
+# slots/min vs the chain's ~150/min); overlay endpoints carry the throughput
+# and the free ones stay in the list as tail fallbacks.
 _SOLANA_FREE = list(SOLANA_ENDPOINTS)
 _SOLANA_KEYED = merge_endpoints({"solana": []}, _ENDPOINT_OVERLAY).get("solana", [])
 SOLANA_ENDPOINTS = _SOLANA_KEYED + [u for u in _SOLANA_FREE if u not in set(_SOLANA_KEYED)]
