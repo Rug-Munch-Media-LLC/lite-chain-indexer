@@ -54,8 +54,20 @@ def _default_registry() -> dict[str, LakeProvider]:
     Each spec is ``(kind, serves, rps, daily_requests, daily_bytes)``.
     """
     spec = {
-        "aws-eth": ("s3/anonymous", {("eth", "token_transfers"), ("eth", "traces")}, 10.0, None, None),
-        "aws-sonarx-base": ("s3/anonymous", {("base", "transfers"), ("base", "traces")}, 10.0, None, None),
+        "aws-eth": (
+            "s3/anonymous",
+            {("eth", "token_transfers"), ("eth", "traces")},
+            10.0,
+            None,
+            None,
+        ),
+        "aws-sonarx-base": (
+            "s3/anonymous",
+            {("base", "transfers"), ("base", "traces")},
+            10.0,
+            None,
+            None,
+        ),
         "aws-sonarx-arbitrum": (
             "s3/anonymous",
             {("arbitrum", "transfers"), ("arbitrum", "traces")},
@@ -72,6 +84,8 @@ def _default_registry() -> dict[str, LakeProvider]:
                 ("eth", "blocks"),
                 ("eth", "contracts"),
                 ("eth", "logs"),
+                ("solana", "token_transfers"),
+                ("solana", "instructions"),
             },
             1.0,
             1000,

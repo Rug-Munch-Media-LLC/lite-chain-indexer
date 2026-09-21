@@ -31,7 +31,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 from lite_indexer.logging import get_logger
-from lite_indexer.query.bigquery_tables import _ADDR_COLS, _TABLE_SELECT, build_query, run_bq
+from lite_indexer.query.bigquery_tables import (
+    _ADDR_COLS,
+    _SOLANA_SELECT,
+    _SOLANA_TABLES,
+    _TABLE_SELECT,
+    build_query,
+    run_bq,
+)
 from lite_indexer.query.lake_row_utils import _norm_addr, _num_str  # re-exported for tests
 
 logger = get_logger(__name__)
@@ -78,7 +85,9 @@ class BigQuerySource:
         bq_bin: str | None = None,
         router: Any | None = None,
     ) -> None:
-        self._credentials = credentials_path or os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or _DEFAULT_CREDS
+        self._credentials = (
+            credentials_path or os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or _DEFAULT_CREDS
+        )
         if enabled is None:
             enabled = _env_flag("BIGQUERY_ENABLED", os.path.exists(self._credentials))
         self._enabled = enabled
@@ -132,6 +141,15 @@ class BigQuerySource:
         mapping, an address filter is unsupported for the table, or the read
         fails.
         """
+        if chain == "solana":
+            return self._query_solana(
+                table,
+                address=address,
+                from_block=from_block,
+                to_block=to_block,
+                dates=dates,
+                limit=limit,
+            )
         if chain != "eth" or table not in _TABLE_SELECT:
             return []
         if not self.available():
@@ -139,15 +157,57 @@ class BigQuerySource:
         if address and not _ADDR_COLS.get(table):
             return []
         sql, params = build_query(
-            table, address=address, from_block=from_block, to_block=to_block, dates=dates, limit=limit
+            table,
+            address=address,
+            from_block=from_block,
+            to_block=to_block,
+            dates=dates,
+            limit=limit,
         )
         from lite_indexer.query.biglake_rotation import read_with_rotation
 
         return read_with_rotation(self, sql=sql, params=params, table=table, biglake_table=table)
 
+    def _query_solana(
+        self,
+        table: str,
+        *,
+        address: str | None,
+        from_block: int | None,
+        to_block: int | None,
+        dates: list[str] | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Read ``crypto_solana_mainnet_us`` rows in the solana row shape."""
+        if table not in _SOLANA_TABLES:
+            return []
+        if not self.available():
+            return []
+        sql, params = build_query(
+            table,
+            chain="solana",
+            address=address,
+            from_block=from_block,
+            to_block=to_block,
+            dates=dates,
+            limit=limit,
+        )
+        rows = (
+            self._runner(sql, params)
+            if self._runner is not None
+            else run_bq(self._bq_bin, sql, params)
+        )
+        if not rows:
+            return []
+        return [self._map_row(table, r, chain="solana") for r in rows]
+
     def _read_raw(self, sql: str, params: list[Any]) -> tuple[list[str], list[tuple[Any, ...]]]:
         """Execute via the injected runner (or ``bq``) and return (cols, rows)."""
-        rows = self._runner(sql, params) if self._runner is not None else run_bq(self._bq_bin, sql, params)
+        rows = (
+            self._runner(sql, params)
+            if self._runner is not None
+            else run_bq(self._bq_bin, sql, params)
+        )
         if not rows:
             return [], []
         cols = list(rows[0].keys())
@@ -155,7 +215,9 @@ class BigQuerySource:
 
     # ── Row mapping ──────────────────────────────────────────────────
 
-    def _map_row(self, table: str, raw: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG002 — uniform shape
+    def _map_row(self, table: str, raw: dict[str, Any], chain: str = "eth") -> dict[str, Any]:
+        if chain == "solana":
+            return self._map_solana_row(table, raw)
         return {
             "chain": "eth",
             "block_number": int(raw.get("block_number") or 0),
@@ -168,3 +230,99 @@ class BigQuerySource:
             "log_index": int(raw.get("log_index") or 0),
             "ingested_at": datetime.now(UTC),
         }
+
+    def _map_solana_row(self, table: str, raw: dict[str, Any]) -> dict[str, Any]:
+        """Map a BigQuery solana row to the indexer's solana row shapes.
+
+        ``token_transfers`` follows the ``solana_transfers`` shape used by
+        :mod:`lite_indexer.query.sqd_solana` (``pre_amount`` is unknown in the
+        public dataset, so it is ``"0"`` and ``delta == post_amount``);
+        ``instructions`` follows the owner-activity instruction shape.
+        """
+        ts = _ms_to_dt(raw.get("block_timestamp"))
+        ingested = datetime.now(UTC)
+        if table == "instructions":
+            accounts = raw.get("accounts") or []
+            return {
+                "chain": "solana",
+                "slot": int(raw.get("slot") or 0),
+                "block_timestamp": ts,
+                "tx_hash": raw.get("tx_hash") or "",
+                "transaction_index": raw.get("transaction_index"),
+                "program_id": raw.get("program_id") or "",
+                "accounts": list(accounts),
+                "account_count": len(accounts),
+                "data": raw.get("data") or "",
+                "owner": "",
+                "ingested_at": ingested,
+            }
+        value = str(raw.get("value") or "0")
+        return {
+            "chain": "solana",
+            "slot": int(raw.get("slot") or 0),
+            "block_timestamp": ts,
+            "tx_hash": raw.get("tx_hash") or "",
+            "token_account": "",
+            "mint": raw.get("mint") or "",
+            "owner": raw.get("owner") or "",
+            "pre_amount": "0",
+            "post_amount": value,
+            "delta": value,
+            "decimals": int(float(raw.get("decimals") or 0)),
+            "token_symbol": "",
+            "token_name": "",
+            "source": raw.get("source") or "",
+            "destination": raw.get("destination") or "",
+            "transfer_type": raw.get("transfer_type") or "",
+            "ingested_at": ingested,
+        }
+
+
+# ── CLI validation probe ─────────────────────────────────────────────
+
+
+def _cli() -> int:
+    """``python -m lite_indexer.query.bigquery_source <chain> <table> ...``.
+
+    Low-cost validation probe: always pass ``--dates`` (DAY-partition filter)
+    and a small ``--limit``. Prints mapped rows as JSON to stdout.
+    """
+    import argparse
+    import json as _json
+    import sys as _sys
+
+    _silence_console_logs()
+    parser = argparse.ArgumentParser(prog="bigquery_source", description=__doc__)
+    parser.add_argument("chain", choices=["eth", "solana"])
+    parser.add_argument("table")
+    parser.add_argument("--dates", nargs="*", default=None, help="YYYY-MM-DD partitions")
+    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--address", default=None)
+    args = parser.parse_args()
+    src = BigQuerySource()
+    if not src.available():
+        print("bigquery source unavailable (credentials or bq CLI missing)", file=_sys.stderr)  # noqa: T201
+        return 1
+    rows = src.query(
+        args.table,
+        chain=args.chain,
+        address=args.address,
+        dates=args.dates,
+        limit=args.limit,
+    )
+    print(_json.dumps(rows, default=str, indent=2))  # noqa: T201
+    return 0
+
+
+def _silence_console_logs() -> None:
+    """CLI stdout must stay machine-parseable (JSON only); logs go to stderr."""
+    try:
+        from loguru import logger as _loguru
+
+        _loguru.remove()
+    except ImportError:
+        pass
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())
