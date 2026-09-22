@@ -16,6 +16,7 @@ Contracts verified offline (stub transport, no network):
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -63,12 +64,15 @@ class StubClient:
 
 
 @pytest.fixture(autouse=True)
-def _default_consensus(monkeypatch: pytest.MonkeyPatch) -> None:
+def _default_consensus() -> Any:
     """Pin consensus config to deterministic defaults for every test."""
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_ENABLED", True)
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_MIN_AGREEMENT", 2)
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_SAMPLE_RATE", 1.0)
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_MAX_ENDPOINTS", 3)
+    with (
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_ENABLED", True),
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_MIN_AGREEMENT", 2),
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_SAMPLE_RATE", 1.0),
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_MAX_ENDPOINTS", 3),
+    ):
+        yield
 
 
 def test_canonical_hash_is_order_insensitive() -> None:
@@ -87,14 +91,13 @@ async def test_agreement_returns_majority() -> None:
     assert out.result == LOGS_A
 
 
-async def test_disagreement_fails_and_penalizes_outlier(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_disagreement_fails_and_penalizes_outlier() -> None:
     penalized: list[str] = []
-    monkeypatch.setattr(consensus, "record_endpoint_failure", penalized.append)
-
-    client = StubClient({ALPHA: LOGS_A, BETA: LOGS_A, GAMMA: LOGS_B})
-    out = await verify_across_providers(
-        client, "ethereum", "eth_getLogs", [{}], min_agreement=3, endpoints=[ALPHA, BETA, GAMMA]
-    )
+    with patch("lite_indexer.rpc.consensus.record_endpoint_failure", penalized.append):
+        client = StubClient({ALPHA: LOGS_A, BETA: LOGS_A, GAMMA: LOGS_B})
+        out = await verify_across_providers(
+            client, "ethereum", "eth_getLogs", [{}], min_agreement=3, endpoints=[ALPHA, BETA, GAMMA]
+        )
 
     assert out.mismatch is True
     assert out.verified is False
@@ -104,15 +107,12 @@ async def test_disagreement_fails_and_penalizes_outlier(monkeypatch: pytest.Monk
     assert penalized == [GAMMA]
 
 
-async def test_successful_answers_below_min_agreement_is_not_a_mismatch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_successful_answers_below_min_agreement_is_not_a_mismatch() -> None:
     """Two providers split 1-1 form no quorum → the read fails (mismatch)."""
     penalized: list[str] = []
-    monkeypatch.setattr(consensus, "record_endpoint_failure", penalized.append)
-
-    client = StubClient({ALPHA: LOGS_A, BETA: LOGS_B})
-    out = await verify_across_providers(client, "ethereum", "eth_getLogs", [{}], endpoints=[ALPHA, BETA])
+    with patch("lite_indexer.rpc.consensus.record_endpoint_failure", penalized.append):
+        client = StubClient({ALPHA: LOGS_A, BETA: LOGS_B})
+        out = await verify_across_providers(client, "ethereum", "eth_getLogs", [{}], endpoints=[ALPHA, BETA])
 
     # 1-1 reaches min_agreement=2 providers but no quorum → mismatch.
     assert out.mismatch is True
@@ -120,12 +120,11 @@ async def test_successful_answers_below_min_agreement_is_not_a_mismatch(
     assert len(penalized) == 1
 
 
-async def test_errored_provider_leaves_insufficient_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_errored_provider_leaves_insufficient_evidence() -> None:
     penalized: list[str] = []
-    monkeypatch.setattr(consensus, "record_endpoint_failure", penalized.append)
-
-    client = StubClient({ALPHA: LOGS_A}, errors={BETA})
-    out = await verify_across_providers(client, "ethereum", "eth_getLogs", [{}], endpoints=[ALPHA, BETA])
+    with patch("lite_indexer.rpc.consensus.record_endpoint_failure", penalized.append):
+        client = StubClient({ALPHA: LOGS_A}, errors={BETA})
+        out = await verify_across_providers(client, "ethereum", "eth_getLogs", [{}], endpoints=[ALPHA, BETA])
 
     # Only one usable answer for a min_agreement of 2 → fail-open, not fail.
     assert out.verified is False
@@ -134,12 +133,11 @@ async def test_errored_provider_leaves_insufficient_evidence(monkeypatch: pytest
     assert penalized == []
 
 
-async def test_errored_provider_does_not_block_quorum(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_errored_provider_does_not_block_quorum() -> None:
     penalized: list[str] = []
-    monkeypatch.setattr(consensus, "record_endpoint_failure", penalized.append)
-
-    client = StubClient({ALPHA: LOGS_A, BETA: LOGS_A}, errors={GAMMA})
-    out = await verify_across_providers(client, "ethereum", "eth_getLogs", [{}], endpoints=[ALPHA, BETA, GAMMA])
+    with patch("lite_indexer.rpc.consensus.record_endpoint_failure", penalized.append):
+        client = StubClient({ALPHA: LOGS_A, BETA: LOGS_A}, errors={GAMMA})
+        out = await verify_across_providers(client, "ethereum", "eth_getLogs", [{}], endpoints=[ALPHA, BETA, GAMMA])
 
     assert out.verified is True
     assert out.mismatch is False
@@ -159,16 +157,16 @@ async def test_min_agreement_above_provider_count() -> None:
     assert client.calls == []
 
 
-def test_sample_rate_zero_disables(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sample_rate_zero_disables() -> None:
     assert should_sample() is True  # fixture pins rate to 1.0
 
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_SAMPLE_RATE", 0.0)
-    assert should_sample() is False
+    with patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_SAMPLE_RATE", 0.0):
+        assert should_sample() is False
 
 
-def test_disabled_flag_short_circuits(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_ENABLED", False)
-    assert should_sample() is False
+def test_disabled_flag_short_circuits() -> None:
+    with patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_ENABLED", False):
+        assert should_sample() is False
 
 
 def test_same_account_counts_as_one_provider() -> None:
@@ -195,67 +193,71 @@ async def _no_split(_once: Any, from_block: int, to_block: int, fetch_many: Any 
     return [{"blockNumber": "0x1"}]
 
 
-async def test_getlogs_skips_consensus_when_sampling_misses(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_getlogs_skips_consensus_when_sampling_misses() -> None:
     calls = {"verify": 0}
 
     async def spy_verify(*args: Any, **kwargs: Any) -> ConsensusResult:
         calls["verify"] += 1
         return ConsensusResult(verified=False)
 
-    monkeypatch.setattr(consensus, "should_sample", lambda: False)
-    monkeypatch.setattr(consensus, "verify_across_providers", spy_verify)
-    monkeypatch.setattr("lite_indexer.rpc.range_split.fetch_logs_split", _no_split)
-
-    client = RpcClient()
-    logs = await client.get_logs(ALPHA, 1, 100, TOPIC, chain="ethereum")
+    with (
+        patch("lite_indexer.rpc.consensus.should_sample", lambda: False),
+        patch("lite_indexer.rpc.consensus.verify_across_providers", spy_verify),
+        patch("lite_indexer.rpc.range_split.fetch_logs_split", _no_split),
+    ):
+        client = RpcClient()
+        logs = await client.get_logs(ALPHA, 1, 100, TOPIC, chain="ethereum")
 
     assert logs == [{"blockNumber": "0x1"}]
     assert calls["verify"] == 0
 
 
-async def test_getlogs_mismatch_fails_read(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_getlogs_mismatch_fails_read() -> None:
     async def fake_verify(*args: Any, **kwargs: Any) -> ConsensusResult:
         return ConsensusResult(mismatch=True, reason="mismatch")
 
-    monkeypatch.setattr(consensus, "should_sample", lambda: True)
-    monkeypatch.setattr(consensus, "verify_across_providers", fake_verify)
-    monkeypatch.setattr("lite_indexer.rpc.range_split.fetch_logs_split", _no_split)
-
-    client = RpcClient()
-    logs = await client.get_logs(ALPHA, 1, 100, TOPIC, chain="ethereum")
+    with (
+        patch("lite_indexer.rpc.consensus.should_sample", lambda: True),
+        patch("lite_indexer.rpc.consensus.verify_across_providers", fake_verify),
+        patch("lite_indexer.rpc.range_split.fetch_logs_split", _no_split),
+    ):
+        client = RpcClient()
+        logs = await client.get_logs(ALPHA, 1, 100, TOPIC, chain="ethereum")
 
     assert logs is None
 
 
-async def test_getlogs_returns_verified_majority(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_getlogs_returns_verified_majority() -> None:
     majority = [{"blockNumber": "0x2"}]
 
     async def fake_verify(*args: Any, **kwargs: Any) -> ConsensusResult:
         return ConsensusResult(result=majority, verified=True, agreement=2, total=3)
 
-    monkeypatch.setattr(consensus, "should_sample", lambda: True)
-    monkeypatch.setattr(consensus, "verify_across_providers", fake_verify)
-    monkeypatch.setattr("lite_indexer.rpc.range_split.fetch_logs_split", _no_split)
-
-    client = RpcClient()
-    logs = await client.get_logs(ALPHA, 1, 100, TOPIC, chain="ethereum")
+    with (
+        patch("lite_indexer.rpc.consensus.should_sample", lambda: True),
+        patch("lite_indexer.rpc.consensus.verify_across_providers", fake_verify),
+        patch("lite_indexer.rpc.range_split.fetch_logs_split", _no_split),
+    ):
+        client = RpcClient()
+        logs = await client.get_logs(ALPHA, 1, 100, TOPIC, chain="ethereum")
 
     assert logs == majority
 
 
-async def test_getlogs_without_chain_is_unverified(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_getlogs_without_chain_is_unverified() -> None:
     calls = {"verify": 0}
 
     async def spy_verify(*args: Any, **kwargs: Any) -> ConsensusResult:
         calls["verify"] += 1
         return ConsensusResult(verified=False)
 
-    monkeypatch.setattr(consensus, "should_sample", lambda: True)
-    monkeypatch.setattr(consensus, "verify_across_providers", spy_verify)
-    monkeypatch.setattr("lite_indexer.rpc.range_split.fetch_logs_split", _no_split)
-
-    client = RpcClient()
-    logs = await client.get_logs(ALPHA, 1, 100, TOPIC)
+    with (
+        patch("lite_indexer.rpc.consensus.should_sample", lambda: True),
+        patch("lite_indexer.rpc.consensus.verify_across_providers", spy_verify),
+        patch("lite_indexer.rpc.range_split.fetch_logs_split", _no_split),
+    ):
+        client = RpcClient()
+        logs = await client.get_logs(ALPHA, 1, 100, TOPIC)
 
     assert logs == [{"blockNumber": "0x1"}]
     assert calls["verify"] == 0
@@ -284,31 +286,31 @@ def test_intrinsic_shape_and_empty_violations() -> None:
     assert consensus._intrinsic_violations("eth_call", None, "0x1") == []  # noqa: SLF001
 
 
-async def test_intrinsic_validators_off_is_observe_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_VALIDATORS", False)
+async def test_intrinsic_validators_off_is_observe_only() -> None:
     params = [{"fromBlock": "0x64", "toBlock": "0xc8"}]
     out_of_range = [{"blockNumber": "0x12c", "logIndex": "0x0"}]
     good = [{"blockNumber": "0x96", "logIndex": "0x0"}]
     client = StubClient({ALPHA: out_of_range, BETA: out_of_range, GAMMA: good})
 
-    out = await verify_across_providers(
-        client, "ethereum", "eth_getLogs", params, endpoints=[ALPHA, BETA, GAMMA]
-    )
+    with patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_VALIDATORS", False):
+        out = await verify_across_providers(
+            client, "ethereum", "eth_getLogs", params, endpoints=[ALPHA, BETA, GAMMA]
+        )
     # Observe-only: the invalid pair still counts, so quorum is reached.
     assert out.verified is True
     assert out.agreement == 2
 
 
-async def test_intrinsic_validators_on_rejects_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_VALIDATORS", True)
+async def test_intrinsic_validators_on_rejects_invalid() -> None:
     params = [{"fromBlock": "0x64", "toBlock": "0xc8"}]
     out_of_range = [{"blockNumber": "0x12c", "logIndex": "0x0"}]
     good = [{"blockNumber": "0x96", "logIndex": "0x0"}]
     client = StubClient({ALPHA: out_of_range, BETA: out_of_range, GAMMA: good})
 
-    out = await verify_across_providers(
-        client, "ethereum", "eth_getLogs", params, endpoints=[ALPHA, BETA, GAMMA]
-    )
+    with patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_VALIDATORS", True):
+        out = await verify_across_providers(
+            client, "ethereum", "eth_getLogs", params, endpoints=[ALPHA, BETA, GAMMA]
+        )
     # Validators on: the two invalid answers are rejected, leaving one
     # provider — not enough evidence, so the read is not failed either.
     assert out.verified is False

@@ -84,31 +84,30 @@ class _Clock:
 
 
 @pytest.fixture()
-def clock(monkeypatch: pytest.MonkeyPatch):
+def clock():
     """Fake clock shared across pool + routing modules."""
     fake = _Clock()
-    import lite_indexer.rpc.pool as pool_mod
-    import lite_indexer.rpc.routing as routing_mod
-
-    monkeypatch.setattr(pool_mod.time, "time", fake)
-    monkeypatch.setattr(routing_mod.time, "time", fake)
-    return fake
+    with (
+        patch("lite_indexer.rpc.pool.time.time", fake),
+        patch("lite_indexer.rpc.routing.time.time", fake),
+    ):
+        yield fake
 
 
 @pytest.fixture(autouse=True)
-def _clean_pool(_mp: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch):
+def _clean_pool():
     """Reset pool state between tests so bans/failures never leak."""
     import lite_indexer.rpc.ban_state as ban_state_mod
-    import lite_indexer.rpc.pool as pool_mod
-    import lite_indexer.rpc.routing as routing_mod
 
-    monkeypatch.setattr(pool_mod, "_endpoint_failures", {})
-    _mp.setattr(ban_state_mod, "_endpoint_bans", {})
-    _mp.setattr(ban_state_mod, "_endpoint_ban_level", {})
-    _mp.setattr(ban_state_mod, "_endpoint_hard_bans", set())
-    _mp.setattr(ban_state_mod, "_endpoint_429_streaks", {})
-    monkeypatch.setattr(routing_mod, "CIRCUIT_BREAKER", RpcCircuitBreaker())
-    yield
+    with (
+        patch("lite_indexer.rpc.pool._endpoint_failures", {}),
+        patch.object(ban_state_mod, "_endpoint_bans", {}),
+        patch.object(ban_state_mod, "_endpoint_ban_level", {}),
+        patch.object(ban_state_mod, "_endpoint_hard_bans", set()),
+        patch.object(ban_state_mod, "_endpoint_429_streaks", {}),
+        patch("lite_indexer.rpc.routing.CIRCUIT_BREAKER", RpcCircuitBreaker()),
+    ):
+        yield
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -173,7 +172,7 @@ class TestPoolWideOutage:
         with _breaker_seam(_PredicateBreaker(lambda ep: ep in (a, b))):
             assert pool_fully_down([a, b]) is True
 
-    def test_rate_limited_pool_fetch_attempts_and_advances(self, _mp: pytest.MonkeyPatch, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
+    def test_rate_limited_pool_fetch_attempts_and_advances(self, clock: _Clock):
         """End-to-end: an all-soft-banned pool must NOT raise the
         "waiting for desperation probe" deadlock — it attempts the least-
         penalized endpoint and returns the (empty) log set."""
@@ -200,9 +199,6 @@ class TestPoolWideOutage:
             async def __aexit__(self, *exc: object) -> None:
                 return None
 
-        _mp.setattr(th, "apply_endpoint_backoff", _no_backoff)
-        _mp.setattr(th, "provider_slot", lambda _key: _Slot())
-
         def _handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": []})
 
@@ -210,32 +206,36 @@ class TestPoolWideOutage:
             async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as client:
                 return await th._fetch_range("celo", 1, 5, client=client, topic="0xtopic", endpoints=[a, b])
 
-        assert asyncio.run(_run()) == []
+        with (
+            patch.object(th, "apply_endpoint_backoff", _no_backoff),
+            patch.object(th, "provider_slot", lambda _key: _Slot()),
+        ):
+            assert asyncio.run(_run()) == []
 
-    def test_rate_limited_rotation_spreads_across_calls(self, _mp: pytest.MonkeyPatch, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
+    def test_rate_limited_rotation_spreads_across_calls(self, clock: _Clock):
         """The crawl must rotate the starting endpoint so no soft-banned
         endpoint is pinned and re-banned every cycle."""
         from lite_indexer.strategies.evm import range_planning as rp
 
-        _mp.setattr(rp, "_RATE_LIMITED_CURSOR", {})
         eps = ["https://a.invalid", "https://b.invalid", "https://c.invalid"]
-        first = rp._rate_limited_rotation("celo", eps)
-        second = rp._rate_limited_rotation("celo", eps)
-        third = rp._rate_limited_rotation("celo", eps)
+        with patch.object(rp, "_RATE_LIMITED_CURSOR", {}):
+            first = rp._rate_limited_rotation("celo", eps)
+            second = rp._rate_limited_rotation("celo", eps)
+            third = rp._rate_limited_rotation("celo", eps)
         assert first == eps
         assert second == eps[1:] + eps[:1]
         assert third == eps[2:] + eps[:2]
         assert {first[0], second[0], third[0]} == set(eps)  # progress, not pinning
 
-    def test_prefer_wide_range_orders_high_caps_first(self, _mp: pytest.MonkeyPatch, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
+    def test_prefer_wide_range_orders_high_caps_first(self, clock: _Clock):
         """Catch-up must dial the 100-range endpoints before the 10-range
         ones so chunks are not throttled to the narrowest provider cap."""
         from lite_indexer.strategies.evm import range_planning as rp
 
         narrow, wide = "https://narrow.invalid", "https://wide.invalid"
-        _mp.setattr(rp, "get_max_block_range", lambda ep: 10 if ep == narrow else 100)
-        assert rp._prefer_wide_range([narrow, wide], 100) == [wide, narrow]
-        assert rp._prefer_wide_range([narrow, wide], 10) == [narrow, wide]
+        with patch.object(rp, "get_max_block_range", lambda ep: 10 if ep == narrow else 100):
+            assert rp._prefer_wide_range([narrow, wide], 100) == [wide, narrow]
+            assert rp._prefer_wide_range([narrow, wide], 10) == [narrow, wide]
 
     def test_get_best_endpoint_returns_least_banned_not_stall(self, clock: _Clock):
         """All banned → must return an endpoint (no crash), and it must be
@@ -878,15 +878,15 @@ class _FakeRedis:
 
 
 @pytest.fixture()
-def fake_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
+def fake_redis() -> _FakeRedis:
     """Wire the circuit module to an in-memory Redis double."""
-    import lite_indexer.rpc.circuit as circuit_mod
-
     fake = _FakeRedis()
-    monkeypatch.setattr(circuit_mod, "CB_ENABLED", True)
-    monkeypatch.setattr(circuit_mod, "REDIS_URL", "redis://fake.invalid")
-    monkeypatch.setattr(circuit_mod, "_redis", fake)
-    return fake
+    with (
+        patch("lite_indexer.rpc.circuit.CB_ENABLED", True),
+        patch("lite_indexer.rpc.circuit.REDIS_URL", "redis://fake.invalid"),
+        patch("lite_indexer.rpc.circuit._redis", fake),
+    ):
+        yield fake
 
 
 class TestRedisCircuitBreaker:
@@ -938,15 +938,15 @@ class TestRedisCircuitBreaker:
         await circuit_mod.record_circuit_failure(ep)
         assert await circuit_mod.circuit_open(ep) is False
 
-    async def test_circuit_disabled_when_env_off(self, fake_redis: _FakeRedis, monkeypatch: pytest.MonkeyPatch):
+    async def test_circuit_disabled_when_env_off(self, fake_redis: _FakeRedis):
         """RPC_CIRCUIT_ENABLED=0 → breaker is a no-op (fail-open)."""
         import lite_indexer.rpc.circuit as circuit_mod
 
-        monkeypatch.setattr(circuit_mod, "CB_ENABLED", False)
         ep = "https://cb-disabled.invalid"
-        for _ in range(circuit_mod.CB_FAILURE_THRESHOLD + 2):
-            await circuit_mod.record_circuit_failure(ep)
-        assert await circuit_mod.circuit_open(ep) is False
+        with patch("lite_indexer.rpc.circuit.CB_ENABLED", False):
+            for _ in range(circuit_mod.CB_FAILURE_THRESHOLD + 2):
+                await circuit_mod.record_circuit_failure(ep)
+            assert await circuit_mod.circuit_open(ep) is False
         assert fake_redis.strings == {}  # nothing was ever written
 
 
@@ -960,18 +960,11 @@ async def _noop_async(*args: object, **kwargs: object) -> None:
 
 
 @pytest.fixture()
-def hermetic_rpc(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+def hermetic_rpc() -> list[float]:
     """Silence every side-effecting dependency of RpcClient.call.
 
     Returns the list of asyncio.sleep delays observed (backoff trace).
     """
-    import lite_indexer.rpc.autotune as autotune_mod
-    import lite_indexer.rpc.circuit as circuit_mod
-    import lite_indexer.rpc.client as client_mod
-    import lite_indexer.rpc.ledger as ledger_mod
-    import lite_indexer.rpc.routing as routing_mod
-    import lite_indexer.rpc.throttle as throttle_mod
-
     sleeps: list[float] = []
 
     async def _fake_sleep(delay: float) -> None:
@@ -983,36 +976,38 @@ def hermetic_rpc(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     async def _circuit_open_false(endpoint: str) -> bool:
         return False
 
-    monkeypatch.setattr(client_mod.asyncio, "sleep", _fake_sleep)
-    monkeypatch.setattr(throttle_mod, "throttle_before", _noop_async)
-    monkeypatch.setattr(throttle_mod, "record_rpc_response", _noop)
-    monkeypatch.setattr(client_mod, "record_endpoint_success", _noop)
-    monkeypatch.setattr(client_mod, "record_endpoint_failure", _noop)
-    monkeypatch.setattr(client_mod, "record_rate_limit", _noop)
-    monkeypatch.setattr(client_mod, "ban_endpoint", _noop)
-    monkeypatch.setattr(autotune_mod, "autotune_wait", _noop_async)
-    monkeypatch.setattr(autotune_mod, "record_call", _noop)
-    monkeypatch.setattr(ledger_mod, "record_endpoint_call", _noop)
-    monkeypatch.setattr(routing_mod, "incr_in_flight", _noop)
-    monkeypatch.setattr(routing_mod, "decr_in_flight", _noop)
-    monkeypatch.setattr(routing_mod, "record_rpc_latency", _noop)
-    monkeypatch.setattr(routing_mod, "record_rpc_outcome", _noop)
-    monkeypatch.setattr(routing_mod, "record_rpc_usage", _noop)
-    monkeypatch.setattr(routing_mod, "record_endpoint_block_height", _noop)
-    monkeypatch.setattr(circuit_mod, "circuit_open", _circuit_open_false)
-    monkeypatch.setattr(circuit_mod, "record_circuit_failure", _noop_async)
-    monkeypatch.setattr(circuit_mod, "record_circuit_success", _noop_async)
-    import lite_indexer.rpc.ratelimit as ratelimit_mod
+    with (
+        patch("lite_indexer.rpc.client.asyncio.sleep", _fake_sleep),
+        patch("lite_indexer.rpc.throttle.throttle_before", _noop_async),
+        patch("lite_indexer.rpc.throttle.record_rpc_response", _noop),
+        patch("lite_indexer.rpc.client.record_endpoint_success", _noop),
+        patch("lite_indexer.rpc.client.record_endpoint_failure", _noop),
+        patch("lite_indexer.rpc.client.record_rate_limit", _noop),
+        patch("lite_indexer.rpc.client.ban_endpoint", _noop),
+        patch("lite_indexer.rpc.autotune.autotune_wait", _noop_async),
+        patch("lite_indexer.rpc.autotune.record_call", _noop),
+        patch("lite_indexer.rpc.ledger.record_endpoint_call", _noop),
+        patch("lite_indexer.rpc.routing.incr_in_flight", _noop),
+        patch("lite_indexer.rpc.routing.decr_in_flight", _noop),
+        patch("lite_indexer.rpc.routing.record_rpc_latency", _noop),
+        patch("lite_indexer.rpc.routing.record_rpc_outcome", _noop),
+        patch("lite_indexer.rpc.routing.record_rpc_usage", _noop),
+        patch("lite_indexer.rpc.routing.record_endpoint_block_height", _noop),
+        patch("lite_indexer.rpc.circuit.circuit_open", _circuit_open_false),
+        patch("lite_indexer.rpc.circuit.record_circuit_failure", _noop_async),
+        patch("lite_indexer.rpc.circuit.record_circuit_success", _noop_async),
+        patch("lite_indexer.rpc.ratelimit.apply_provider_rate_limit", _noop_async),
+    ):
+        yield sleeps
 
-    monkeypatch.setattr(ratelimit_mod, "apply_provider_rate_limit", _noop_async)
-    return sleeps
 
+def _install_mock_transport(handler: Any) -> tuple[list[dict[str, Any]], Any]:
+    """Route RpcClient.call through httpx.MockTransport; return sent payloads.
 
-def _install_mock_transport(monkeypatch: pytest.MonkeyPatch, handler: Any) -> list[dict[str, Any]]:
-    """Route RpcClient.call through httpx.MockTransport; return sent payloads."""
+    Returns ``(sent, patcher)`` — the caller enters ``patcher`` as a context
+    manager so the transport is installed for the duration of the test.
+    """
     import httpx
-
-    import lite_indexer.rpc.client as client_mod
 
     sent: list[dict[str, Any]] = []
 
@@ -1021,8 +1016,8 @@ def _install_mock_transport(monkeypatch: pytest.MonkeyPatch, handler: Any) -> li
         return handler(request)
 
     mock_client = httpx.AsyncClient(transport=httpx.MockTransport(_transport_handler))
-    monkeypatch.setattr(client_mod, "_get_call_client", _mock_get_client(mock_client))
-    return sent
+    patcher = patch("lite_indexer.rpc.client._get_call_client", _mock_get_client(mock_client))
+    return sent, patcher
 
 
 def _mock_get_client(mock_client: Any) -> Any:
@@ -1033,23 +1028,21 @@ def _mock_get_client(mock_client: Any) -> Any:
 
 
 class TestRpcRetry:
-    async def test_retry_exponential_backoff(self, hermetic_rpc: list[float], monkeypatch: pytest.MonkeyPatch):
+    async def test_retry_exponential_backoff(self, hermetic_rpc: list[float]):
         """Transient failures retry with 0.1 → 0.2 → 0.4 backoff, then give
         up returning None (the existing failure shape). Jitter is disabled
         here so the deterministic exponential ceiling is asserted; the
         full-jitter behavior is covered in tests/test_backoff.py."""
         import httpx
 
-        import lite_indexer.rpc.backoff as backoff_mod
         import lite_indexer.rpc.client as client_mod
-
-        monkeypatch.setattr(backoff_mod, "RPC_BACKOFF_JITTER", False)
 
         def _always_down(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
-        _install_mock_transport(monkeypatch, _always_down)
-        result = await client_mod.RpcClient().call("https://retry.invalid", "eth_blockNumber")
+        sent, transport = _install_mock_transport(_always_down)
+        with patch("lite_indexer.rpc.backoff.RPC_BACKOFF_JITTER", False), transport:
+            result = await client_mod.RpcClient().call("https://retry.invalid", "eth_blockNumber")
 
         assert result is None
         assert len(hermetic_rpc) == client_mod.RPC_RETRY_ATTEMPTS - 1
@@ -1057,7 +1050,7 @@ class TestRpcRetry:
         for i in range(1, len(hermetic_rpc)):
             assert hermetic_rpc[i] == pytest.approx(hermetic_rpc[i - 1] * 2)
 
-    async def test_retry_skips_non_transient_errors(self, hermetic_rpc: list[float], monkeypatch: pytest.MonkeyPatch):
+    async def test_retry_skips_non_transient_errors(self, hermetic_rpc: list[float]):
         """429, 403 and JSON-RPC errors return immediately — no retry, no
         backoff sleep."""
         import httpx
@@ -1067,23 +1060,26 @@ class TestRpcRetry:
         def _rate_limited(request: httpx.Request) -> httpx.Response:
             return httpx.Response(429, text="too many requests")
 
-        _install_mock_transport(monkeypatch, _rate_limited)
-        result = await client_mod.RpcClient().call("https://rl.invalid", "eth_blockNumber")
+        _sent, transport = _install_mock_transport(_rate_limited)
+        with transport:
+            result = await client_mod.RpcClient().call("https://rl.invalid", "eth_blockNumber")
         assert result is None
         assert hermetic_rpc == []  # no backoff sleeps at all
 
         def _forbidden(request: httpx.Request) -> httpx.Response:
             return httpx.Response(403, text="forbidden")
 
-        _install_mock_transport(monkeypatch, _forbidden)
-        result = await client_mod.RpcClient().call("https://fb.invalid", "eth_blockNumber")
+        _sent, transport = _install_mock_transport(_forbidden)
+        with transport:
+            result = await client_mod.RpcClient().call("https://fb.invalid", "eth_blockNumber")
         assert result is None
         assert hermetic_rpc == []
 
         def _rpc_error(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": "boom"}})
 
-        _install_mock_transport(monkeypatch, _rpc_error)
-        result = await client_mod.RpcClient().call("https://rpcerr.invalid", "eth_blockNumber")
+        _sent, transport = _install_mock_transport(_rpc_error)
+        with transport:
+            result = await client_mod.RpcClient().call("https://rpcerr.invalid", "eth_blockNumber")
         assert result is not None and "error" in result
         assert hermetic_rpc == []

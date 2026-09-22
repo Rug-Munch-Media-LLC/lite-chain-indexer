@@ -15,6 +15,8 @@ Hermetic — no network.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from lite_indexer import metrics
@@ -22,19 +24,21 @@ from lite_indexer.rpc import consensus
 
 
 @pytest.fixture(autouse=True)
-def _deterministic(monkeypatch: pytest.MonkeyPatch):
+def _deterministic():
     """Pin config and neutralise live health signals for determinism."""
     consensus.reset_adaptive_state()
     metrics.reset()
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_ENABLED", True)
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_ADAPTIVE", True)
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_SAMPLE_RATE", 0.05)
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_SAMPLE_MIN", 0.01)
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_SAMPLE_MAX", 0.25)
-    monkeypatch.setattr(consensus, "_health_risk", lambda: 0.0)
-    monkeypatch.setattr(consensus, "_stale_risk", lambda: 0.0)
-    monkeypatch.setattr(consensus, "_unvetted_risk", lambda: 0.0)
-    yield
+    with (
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_ENABLED", True),
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_ADAPTIVE", True),
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_SAMPLE_RATE", 0.05),
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_SAMPLE_MIN", 0.01),
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_SAMPLE_MAX", 0.25),
+        patch("lite_indexer.rpc.consensus._health_risk", lambda: 0.0),
+        patch("lite_indexer.rpc.consensus._stale_risk", lambda: 0.0),
+        patch("lite_indexer.rpc.consensus._unvetted_risk", lambda: 0.0),
+    ):
+        yield
     consensus.reset_adaptive_state()
     metrics.reset()
 
@@ -73,33 +77,37 @@ def test_rate_stays_within_bounds() -> None:
         assert 0.01 - 1e-9 <= consensus.effective_sample_rate() <= 0.25 + 1e-9
 
 
-def test_health_and_stale_signals_raise_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_health_and_stale_signals_raise_rate() -> None:
     base = consensus.effective_sample_rate()
-    monkeypatch.setattr(consensus, "_stale_risk", lambda: 1.0)
-    assert consensus.effective_sample_rate() > base
+    with patch("lite_indexer.rpc.consensus._stale_risk", lambda: 1.0):
+        assert consensus.effective_sample_rate() > base
 
-    monkeypatch.setattr(consensus, "_stale_risk", lambda: 0.0)
-    monkeypatch.setattr(consensus, "_health_risk", lambda: 1.0)
-    assert consensus.effective_sample_rate() > base
-
-
-def test_adaptive_disabled_uses_fixed_rate(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_ADAPTIVE", False)
-    for _ in range(50):
-        consensus._record_verification(mismatch=True)  # noqa: SLF001
-    assert consensus.effective_sample_rate() == pytest.approx(0.05)
+    with (
+        patch("lite_indexer.rpc.consensus._stale_risk", lambda: 0.0),
+        patch("lite_indexer.rpc.consensus._health_risk", lambda: 1.0),
+    ):
+        assert consensus.effective_sample_rate() > base
 
 
-def test_adaptive_disabled_clamps_base_into_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_ADAPTIVE", False)
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_SAMPLE_RATE", 0.9)
-    assert consensus.effective_sample_rate() == pytest.approx(0.25)
+def test_adaptive_disabled_uses_fixed_rate() -> None:
+    with patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_ADAPTIVE", False):
+        for _ in range(50):
+            consensus._record_verification(mismatch=True)  # noqa: SLF001
+        assert consensus.effective_sample_rate() == pytest.approx(0.05)
 
 
-def test_consensus_disabled_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consensus, "RPC_CONSENSUS_ENABLED", False)
-    assert consensus.effective_sample_rate() == 0.0
-    assert consensus.should_sample() is False
+def test_adaptive_disabled_clamps_base_into_bounds() -> None:
+    with (
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_ADAPTIVE", False),
+        patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_SAMPLE_RATE", 0.9),
+    ):
+        assert consensus.effective_sample_rate() == pytest.approx(0.25)
+
+
+def test_consensus_disabled_returns_zero() -> None:
+    with patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_ENABLED", False):
+        assert consensus.effective_sample_rate() == 0.0
+        assert consensus.should_sample() is False
 
 
 def test_effective_rate_gauge_exported() -> None:
@@ -109,8 +117,8 @@ def test_effective_rate_gauge_exported() -> None:
     assert metrics.gauge("rpc_consensus_effective_rate") == pytest.approx(rate)
 
 
-def test_should_sample_honours_effective_rate(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(consensus, "effective_sample_rate", lambda: 1.0)
-    assert consensus.should_sample() is True
-    monkeypatch.setattr(consensus, "effective_sample_rate", lambda: 0.0)
-    assert consensus.should_sample() is False
+def test_should_sample_honours_effective_rate() -> None:
+    with patch("lite_indexer.rpc.consensus.effective_sample_rate", lambda: 1.0):
+        assert consensus.should_sample() is True
+    with patch("lite_indexer.rpc.consensus.effective_sample_rate", lambda: 0.0):
+        assert consensus.should_sample() is False
