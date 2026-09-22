@@ -94,12 +94,7 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         """Record a pushed head and wake the daemon's poll wait early."""
         if self._head_wakeup is not None:
             self._head_wakeup.set()
-        logger.info(
-            "ws_head_received",
-            chain=self.chain,
-            block_number=block_number,
-            block_hash=block_hash[:12],
-        )
+        logger.info("ws_head_received", chain=self.chain, block_number=block_number, block_hash=block_hash[:12],)
 
     async def start_head_pool(self) -> None:
         """Start the EVM webSocket head subscriber (no-op when unconfigured).
