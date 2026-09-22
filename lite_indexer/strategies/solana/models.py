@@ -6,7 +6,17 @@ Tracked SPL tokens, RPC endpoints, and concurrency limits.
 
 from __future__ import annotations
 
+import os
 from typing import Any
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int env knob, falling back to the default on missing/invalid."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip().lstrip("-").isdigit():
+        return default
+    return int(raw)
+
 
 # ── Tracked SPL Tokens ───────────────────────────────────────────────
 SOLANA_TRACKED_TOKENS: list[dict[str, Any]] = [
@@ -38,12 +48,12 @@ SOLANA_SIG_MAX_PAGES = 40
 SIG_WINDOW_MAX_SLOTS = 100
 # Max slots processed per block-based catch-up sync (bounded chunks; the
 # daemon advances the highwater per window and the next window continues).
-SOLANA_BLOCK_MAX_PER_SYNC = 200
+SOLANA_BLOCK_MAX_PER_SYNC = _env_int("SOLANA_BLOCK_MAX_PER_SYNC", 200)
 
 # Max concurrent getTransaction calls
 # 2026-09-21: raised 10 -> 30 to reach real-time solana throughput
 # (chain = ~150 slots/min; 10 capped the lane near ~55 slots/min).
-SOLANA_TX_CONCURRENCY = 30
+SOLANA_TX_CONCURRENCY = _env_int("SOLANA_TX_CONCURRENCY", 30)
 
 # 2026-09-21: max tracked mints fetched CONCURRENTLY in the signature-walk
 # path. The per-token loop was serial (~10+ mints x seconds of RPC each =

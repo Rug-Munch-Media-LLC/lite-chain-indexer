@@ -102,8 +102,7 @@ class TransfersBlockwiseMixin(SolanaMixinBase):
         fetch_times: list[float] = []
         parse_times: list[float] = []
         # 2026-09-01: process the FULL window in SOLANA_BLOCK_MAX_PER_SYNC
-        # chunks — the old code capped at 200 slots total, silently dropping
-        # the rest of a 1000-slot daemon window.
+        # 2026-09-01: process the FULL window in SOLANA_BLOCK_MAX_PER_SYNC chunks (the old code capped at 200 slots, silently dropping the rest of a 1000-slot daemon window).
         slots = list(range(from_slot, to_slot + 1))
         semaphore = asyncio.Semaphore(SOLANA_TX_CONCURRENCY)
 
@@ -165,8 +164,7 @@ class TransfersBlockwiseMixin(SolanaMixinBase):
             base,
         )
         tasks = [_fetch_one_block(slot) for slot in slots if slot % stride == 0]
-        # Process in bounded batches so a 1000-slot window doesn't blow the
-        # daemon timeout — 200-slot chunks with a gather per chunk.
+        # Bounded batches: 200-slot chunks with a gather per chunk.
         chunk_size = SOLANA_BLOCK_MAX_PER_SYNC
         for i in range(0, len(tasks), chunk_size):
             chunk = tasks[i : i + chunk_size]
@@ -178,6 +176,11 @@ class TransfersBlockwiseMixin(SolanaMixinBase):
         self._sample_mean_fetch_s = mean_fetch
         self._sample_stride = next_sample_stride(stride, mean_fetch, base)
         if os.getenv("SOLANA_TIMING"):
+            logger.info(
+                "solana_blockwise_concurrency",
+                tx_concurrency=SOLANA_TX_CONCURRENCY,
+                chunk_size=SOLANA_BLOCK_MAX_PER_SYNC,
+            )
             logger.info(
                 "solana_sample_stride",
                 stride=stride,
