@@ -50,12 +50,15 @@ class FakePooled:
 
 
 @pytest.fixture(autouse=True)
-def _quiet_side_channels(monkeypatch):
+def _quiet_side_channels():
     """Stub throttle/autotune/ledger side channels — this suite tests the
     call() decision matrix, not those subsystems (own test files)."""
-    monkeypatch.setattr(rc, "_defer_reason_for", lambda ep, m: None)
-    monkeypatch.setattr("lite_indexer.rpc.throttle.throttle_before", async_none())
-    yield
+    with (
+        patch.object(rc, "_defer_reason_for", lambda ep, m: None),
+        patch("lite_indexer.rpc.throttle.throttle_before", async_none()),
+        patch("lite_indexer.rpc.client._get_call_client", async_none()),
+    ):
+        yield
 
 
 def async_none():
@@ -76,14 +79,13 @@ async def test_valid_result_parsed():
     async def fake_pooled(timeout):
         return FakePooled(_ok({"result": "0x4b7"}))
 
-    with patch.object(rc, "_get_call_client", fake_pooled):
+    with patch("lite_indexer.rpc.client._get_call_client", fake_pooled):
         out = await rc.RpcClient().call("https://e", "eth_blockNumber")
     assert out == {"result": "0x4b7"}
 
 
 @pytest.mark.asyncio
-async def test_deferred_call_short_circuits(monkeypatch):
-    monkeypatch.setattr(rc, "_defer_reason_for", lambda ep, m: "level2 heavy")
+async def test_deferred_call_short_circuits():
     dispatched = False
 
     async def fake_pooled(timeout):
@@ -91,7 +93,10 @@ async def test_deferred_call_short_circuits(monkeypatch):
         dispatched = True
         return FakePooled(_ok({"result": "0x1"}))
 
-    with patch.object(rc, "_get_call_client", fake_pooled):
+    with (
+        patch.object(rc, "_defer_reason_for", lambda ep, m: "level2 heavy"),
+        patch("lite_indexer.rpc.client._get_call_client", fake_pooled),
+    ):
         out = await rc.RpcClient().call("https://e", "eth_getLogs")
     assert out is None
     assert dispatched is False  # never hit the wire
@@ -102,7 +107,7 @@ async def test_empty_response_rejected():
     async def fake_pooled(timeout):
         return FakePooled(FakeResp(text=""))
 
-    with patch.object(rc, "_get_call_client", fake_pooled):
+    with patch("lite_indexer.rpc.client._get_call_client", fake_pooled):
         assert await rc.RpcClient().call("https://http-err.example", "eth_chainId") is None
 
 
@@ -111,7 +116,7 @@ async def test_malformed_json_rejected():
     async def fake_pooled(timeout):
         return FakePooled(FakeResp(text="<html>gateway error</html>"))
 
-    with patch.object(rc, "_get_call_client", fake_pooled):
+    with patch("lite_indexer.rpc.client._get_call_client", fake_pooled):
         assert await rc.RpcClient().call("https://http-err.example", "eth_chainId") is None
 
 
@@ -120,7 +125,7 @@ async def test_http_error_status_rejected():
     async def fake_pooled(timeout):
         return FakePooled(FakeResp(text="rate limited", status_code=429))
 
-    with patch.object(rc, "_get_call_client", fake_pooled):
+    with patch("lite_indexer.rpc.client._get_call_client", fake_pooled):
         assert await rc.RpcClient().call("https://http-err.example", "eth_chainId") is None
 
 
@@ -136,7 +141,10 @@ async def test_rpc_error_payload_returned_not_ok():
     async def fake_pooled(timeout):
         return FakePooled(_ok({"error": {"code": -32000, "message": "range too large"}}))
 
-    with patch.object(rc, "_get_call_client", fake_pooled), patch.object(rc, "_safe_record", lambda fn, *a, **k: None):
+    with (
+        patch("lite_indexer.rpc.client._get_call_client", fake_pooled),
+        patch("lite_indexer.rpc.client._safe_record", lambda fn, *a, **k: None),
+    ):
         await rc.RpcClient().call("https://e", "eth_getLogs")
     # returned shape preserved for caller inspection is covered by
     # test_valid_result_parsed; here we assert no exception escapes.

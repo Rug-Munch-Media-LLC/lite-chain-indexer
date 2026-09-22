@@ -15,6 +15,8 @@ Hermetic. Covers:
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import asyncio
 import contextlib
 from unittest.mock import AsyncMock, Mock
@@ -84,35 +86,36 @@ class _Client:
 
 
 @pytest.mark.asyncio
-async def test_probe_403_html_is_capability_not_ban(monkeypatch):
-    monkeypatch.setattr(cap.httpx, "AsyncClient", lambda **k: _Client(_Resp(403, "<html>Just a moment...</html>")))
-    status = await cap.probe_logs_capability(EP, 1_000_000)
+async def test_probe_403_html_is_capability_not_ban():
+    with patch.object(cap.httpx, "AsyncClient", lambda **k: _Client(_Resp(403, "<html>Just a moment...</html>"))):
+        status = await cap.probe_logs_capability(EP, 1_000_000)
     assert status is GetLogsCapability.CANNOT_SERVE_LOGS
     # A capability refusal must not be treated as an abuse signal.
     assert pool.is_endpoint_banned(EP) is False
 
 
 @pytest.mark.asyncio
-async def test_probe_html_200_is_capability(monkeypatch):
-    monkeypatch.setattr(cap.httpx, "AsyncClient", lambda **k: _Client(_Resp(200, "<html>cloudflare</html>")))
-    assert await cap.probe_logs_capability(EP, 1_000_000) is GetLogsCapability.CANNOT_SERVE_LOGS
+async def test_probe_html_200_is_capability():
+    with patch.object(cap.httpx, "AsyncClient", lambda **k: _Client(_Resp(200, "<html>cloudflare</html>"))):
+        assert await cap.probe_logs_capability(EP, 1_000_000) is GetLogsCapability.CANNOT_SERVE_LOGS
 
 
 # ── D4 — probes never ban ──────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_health_probe_never_bans(monkeypatch):
-    monkeypatch.setattr(hh, "_probe_endpoint", AsyncMock(return_value=403))
-    monkeypatch.setattr("lite_indexer.chains.GET_LOGS_ENDPOINTS", {"ethereum": [EP]})
+async def test_health_probe_never_bans():
     banned: list[str] = []
-    monkeypatch.setattr(pool, "ban_endpoint", lambda *a, **k: banned.append(a[0] if a else ""))
-
-    task = asyncio.create_task(hh.monitor_endpoint_health(chains=["ethereum"], interval=0.01, timeout=0.01))
-    await asyncio.sleep(0.05)
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    with (
+        patch.object(hh, "_probe_endpoint", AsyncMock(return_value=403)),
+        patch("lite_indexer.chains.GET_LOGS_ENDPOINTS", {"ethereum": [EP]}),
+        patch.object(pool, "ban_endpoint", lambda *a, **k: banned.append(a[0] if a else "")),
+    ):
+        task = asyncio.create_task(hh.monitor_endpoint_health(chains=["ethereum"], interval=0.01, timeout=0.01))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
     assert banned == []
     assert pool.is_endpoint_banned(EP) is False
@@ -142,7 +145,7 @@ def test_ban_state_persists_across_restart():
     assert pool.is_endpoint_banned(EP) is True
 
 
-def test_health_state_persists_across_restart(monkeypatch):
+def test_health_state_persists_across_restart():
     hh._set_health(EP, True)
     hh.clear_health_state()  # simulate restart
     assert hh.load_health_state() >= 1
@@ -158,11 +161,8 @@ class _StubRpc:
 
 
 @pytest.mark.asyncio
-async def test_verified_set_survives_second_cycle(monkeypatch):
+async def test_verified_set_survives_second_cycle():
     endpoints = ["https://a.example", "https://b.example"]
-    monkeypatch.setattr(vf, "GET_LOGS_ENDPOINTS", {"ethereum": list(endpoints)})
-    monkeypatch.setattr(vf, "verify_endpoints_for_chain", AsyncMock(return_value=list(endpoints)))
-    monkeypatch.setattr(vf, "ENDPOINT_VERIFY_CONCURRENCY", 1)
 
     calls = {"n": 0}
 
@@ -170,10 +170,14 @@ async def test_verified_set_survives_second_cycle(monkeypatch):
         calls["n"] += 1
         return GetLogsCapability.CAPABLE
 
-    monkeypatch.setattr(vf, "_probe_and_record_capabilities", _gate)
-
-    first = await vf.verify_chain_endpoints("ethereum", _StubRpc())
-    second = await vf.verify_chain_endpoints("ethereum", _StubRpc())
+    with (
+        patch.object(vf, "GET_LOGS_ENDPOINTS", {"ethereum": list(endpoints)}),
+        patch.object(vf, "verify_endpoints_for_chain", AsyncMock(return_value=list(endpoints))),
+        patch.object(vf, "ENDPOINT_VERIFY_CONCURRENCY", 1),
+        patch.object(vf, "_probe_and_record_capabilities", _gate),
+    ):
+        first = await vf.verify_chain_endpoints("ethereum", _StubRpc())
+        second = await vf.verify_chain_endpoints("ethereum", _StubRpc())
 
     assert first is not None and second is first  # cached, not re-derived
     assert calls["n"] == len(endpoints)  # probed exactly once
@@ -183,12 +187,11 @@ async def test_verified_set_survives_second_cycle(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_state_not_advanced_when_enabled_writer_fails(tmp_path, monkeypatch):
+async def test_state_not_advanced_when_enabled_writer_fails(tmp_path):
     from lite_indexer.indexer import LiteIndexer
 
-    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
-
-    indexer = LiteIndexer(chain="ethereum", from_block=100, to_block=200, data_dir=tmp_path)
+    with patch("lite_indexer.state.STATE_DIR", tmp_path / "state"):
+        indexer = LiteIndexer(chain="ethereum", from_block=100, to_block=200, data_dir=tmp_path)
     indexer.state.save(99, 0)  # seed: last indexed block = 99
     indexer.deployers_enabled = True
     indexer.dex_enabled = False
@@ -208,21 +211,22 @@ async def test_state_not_advanced_when_enabled_writer_fails(tmp_path, monkeypatc
     indexer.fetch_block_timestamps = AsyncMock(return_value={})
     # The deployer write mirrors pair events into evm_launches (best-effort);
     # stub it so the test never reaches a real RPC/DB.
-    monkeypatch.setattr("lite_indexer.indexer._writers.write_evm_launch", AsyncMock())
     # No-network guard: any residual strategy RPC returns immediately instead
     # of backing off against the live pool.
-    monkeypatch.setattr("lite_indexer.rpc.client.RpcClient.call", AsyncMock(return_value=None))
-    monkeypatch.setattr("lite_indexer.rpc.client.RpcClient.get_logs", AsyncMock(return_value=("error", None)))
-    monkeypatch.setattr("lite_indexer.rpc.client.RpcClient.eth_block_number", AsyncMock(return_value=500))
+    with (
+        patch("lite_indexer.indexer._writers.write_evm_launch", AsyncMock()),
+        patch("lite_indexer.rpc.client.RpcClient.call", AsyncMock(return_value=None)),
+        patch("lite_indexer.rpc.client.RpcClient.get_logs", AsyncMock(return_value=("error", None))),
+        patch("lite_indexer.rpc.client.RpcClient.eth_block_number", AsyncMock(return_value=500)),
+    ):
+        ch = Mock()
+        ch.write_deployer_events = AsyncMock(return_value=0)  # silently drops rows
+        ch.write_wallet_features = AsyncMock(return_value={})
+        ch.client.return_value = None
+        indexer._ch_writer = ch
+        indexer._ch_health = type("_ChHealthStub", (), {"ok": lambda self: True})()
 
-    ch = Mock()
-    ch.write_deployer_events = AsyncMock(return_value=0)  # silently drops rows
-    ch.write_wallet_features = AsyncMock(return_value={})
-    ch.client.return_value = None
-    indexer._ch_writer = ch
-    indexer._ch_health = type("_ChHealthStub", (), {"ok": lambda self: True})()
-
-    summary = await indexer._sync_loop_inner({"status": "ok", "errors": []}, __import__("time").monotonic())
+        summary = await indexer._sync_loop_inner({"status": "ok", "errors": []}, __import__("time").monotonic())
 
     assert summary["status"] == "writer_incomplete"
     assert summary["failed_writers"] == ["deployer"]

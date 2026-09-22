@@ -14,6 +14,10 @@ so the suite is hermetic — no CH_HOST required.
 
 from __future__ import annotations
 
+import os
+
+from unittest.mock import patch
+
 from typing import Any
 
 import pytest
@@ -294,27 +298,28 @@ async def test_get_auto_holders_reads_inner_table() -> None:
 
 
 @pytest.mark.asyncio
-async def test_write_wallet_features_full(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_write_wallet_features_full() -> None:
     import lite_indexer.storage.clickhouse as chmod
 
-    monkeypatch.setattr(chmod, "WALLET_PROJECTION_ENABLED", True)
-    monkeypatch.setattr(chmod, "TOKEN_META_ENABLED", True)
-    monkeypatch.setattr(chmod, "BALANCE_CACHE_ENABLED", True)
-    monkeypatch.setattr(chmod, "HOLDER_BALANCES_MV_ENABLED", True)
+    with (
+        patch.object(chmod, "WALLET_PROJECTION_ENABLED", True),
+        patch.object(chmod, "TOKEN_META_ENABLED", True),
+        patch.object(chmod, "BALANCE_CACHE_ENABLED", True),
+        patch.object(chmod, "HOLDER_BALANCES_MV_ENABLED", True),
+    ):
+        writer = ClickHouseWriter()
+        client = FakeClient()
+        writer._client = client
 
-    writer = ClickHouseWriter()
-    client = FakeClient()
-    writer._client = client
+        events = [
+            # Token A: X -> Y (+100), Y -> Z (+30 net for Y: +100-30 = +70)
+            _transfer(token="0xaaa", from_addr="0xX", to_addr="0xY", value="100"),
+            _transfer(token="0xaaa", from_addr="0xY", to_addr="0xZ", value="30"),
+            # Token B self-transfer: X -> X nets to zero and is skipped.
+            _transfer(token="0xbbb", from_addr="0xX", to_addr="0xX", value="50"),
+        ]
 
-    events = [
-        # Token A: X -> Y (+100), Y -> Z (+30 net for Y: +100-30 = +70)
-        _transfer(token="0xaaa", from_addr="0xX", to_addr="0xY", value="100"),
-        _transfer(token="0xaaa", from_addr="0xY", to_addr="0xZ", value="30"),
-        # Token B self-transfer: X -> X nets to zero and is skipped.
-        _transfer(token="0xbbb", from_addr="0xX", to_addr="0xX", value="50"),
-    ]
-
-    stats = await writer.write_wallet_features("ethereum", events)
+        stats = await writer.write_wallet_features("ethereum", events)
 
     assert stats["wallet_projection_ready"] == 1
     assert stats["token_meta_upserted"] == 2  # once per unique token (A, B)
@@ -347,7 +352,7 @@ async def test_write_wallet_features_full(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_write_wallet_features_other_features_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_write_wallet_features_other_features_disabled() -> None:
     """With the configurable features off, token meta still runs.
 
     ``TOKEN_META_ENABLED`` is always on (non-configurable), so the token
@@ -356,20 +361,18 @@ async def test_write_wallet_features_other_features_disabled(monkeypatch: pytest
     """
     import lite_indexer.storage.clickhouse as chmod
 
-    for flag in (
-        "WALLET_PROJECTION_ENABLED",
-        "BALANCE_CACHE_ENABLED",
-        "HOLDER_BALANCES_MV_ENABLED",
+    with (
+        patch.object(chmod, "WALLET_PROJECTION_ENABLED", False),
+        patch.object(chmod, "BALANCE_CACHE_ENABLED", False),
+        patch.object(chmod, "HOLDER_BALANCES_MV_ENABLED", False),
     ):
-        monkeypatch.setattr(chmod, flag, False)
+        writer = ClickHouseWriter()
+        client = FakeClient()
+        writer._client = client
 
-    writer = ClickHouseWriter()
-    client = FakeClient()
-    writer._client = client
-
-    stats = await writer.write_wallet_features(
-        "ethereum", [_transfer(token="0xaaa", from_addr="0xX", to_addr="0xY", value="100")]
-    )
+        stats = await writer.write_wallet_features(
+            "ethereum", [_transfer(token="0xaaa", from_addr="0xX", to_addr="0xY", value="100")]
+        )
     assert stats == {"token_meta_upserted": 1}
     queries = client.queries
     assert any("CREATE TABLE IF NOT EXISTS wallet_memory.token_meta_ref" in q for q in queries)
@@ -380,23 +383,22 @@ async def test_write_wallet_features_other_features_disabled(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
-async def test_write_wallet_features_no_client(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_write_wallet_features_no_client() -> None:
     # ISOLATION (found 2026-08-23): this host runs a real ClickHouse and
     # _connect() defaults to it — without pinning an unreachable port the
     # writer CONNECTED to prod-local CH and even ran ensure_wallet_projection
     # DDL against it. Port 1 refuses instantly → _connect() returns None,
     # which is the exact condition this test exists to exercise.
-    monkeypatch.setenv("CH_PORT", "1")
-    monkeypatch.setenv("CLICKHOUSE_PORT", "1")
-    writer = ClickHouseWriter()  # no client, unreachable CH → _connect() returns None
-    stats = await writer.write_wallet_features("ethereum", [])
+    with patch.dict(os.environ, {"CH_PORT": "1", "CLICKHOUSE_PORT": "1"}):
+        writer = ClickHouseWriter()  # no client, unreachable CH → _connect() returns None
+        stats = await writer.write_wallet_features("ethereum", [])
     assert stats == {}
 
 
 # ── Integration: write_transfers + token meta behavior ────────────────
 
 
-def test_write_transfers_strips_enrichment_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_write_transfers_strips_enrichment_columns() -> None:
     """transfer rows never carry token_symbol/token_name/source.
 
     ``TOKEN_META_ENABLED`` is always on (non-configurable): the INSERT
@@ -406,11 +408,10 @@ def test_write_transfers_strips_enrichment_columns(monkeypatch: pytest.MonkeyPat
     """
     import lite_indexer.storage.clickhouse as chmod
 
-    monkeypatch.setattr(chmod, "CH_TTL_ENABLED", False)
-
-    writer = ClickHouseWriter()
-    client = FakeClient()
-    writer._client = client
+    with patch.object(chmod, "CH_TTL_ENABLED", False):
+        writer = ClickHouseWriter()
+        client = FakeClient()
+        writer._client = client
 
     events = [
         {

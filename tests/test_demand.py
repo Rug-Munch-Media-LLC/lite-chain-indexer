@@ -9,6 +9,8 @@ persist in the state file across restarts.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from pathlib import Path
 
 import pytest
@@ -68,48 +70,47 @@ class TestDemandRegistry:
 class TestDemandFiles:
     """File-touch demand signaling (scanner → indexer)."""
 
-    def test_read_demand_files(self, monkeypatch, tmp_path: Path):
+    def test_read_demand_files(self, tmp_path: Path):
         from lite_indexer.chains import demand as demand_mod
 
         demand_dir = tmp_path / "indexer-demand"
-        monkeypatch.setattr(demand_mod, "INDEXER_DEMAND_DIR", demand_dir)
+        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", demand_dir):
+            assert demand_mod.read_demand_files("scroll") == set()
 
-        assert demand_mod.read_demand_files("scroll") == set()
+            (demand_dir / "scroll").mkdir(parents=True)
+            (demand_dir / "scroll" / "dex").touch()
+            assert demand_mod.read_demand_files("scroll") == {"dex"}
+            assert demand_mod.read_demand_files("SCROLL") == {"dex"}
 
-        (demand_dir / "scroll").mkdir(parents=True)
-        (demand_dir / "scroll" / "dex").touch()
-        assert demand_mod.read_demand_files("scroll") == {"dex"}
-        assert demand_mod.read_demand_files("SCROLL") == {"dex"}
+            (demand_dir / "scroll" / "deployer").touch()
+            assert demand_mod.read_demand_files("scroll") == {"dex", "deployer"}
 
-        (demand_dir / "scroll" / "deployer").touch()
-        assert demand_mod.read_demand_files("scroll") == {"dex", "deployer"}
-
-    def test_demand_file_path(self, monkeypatch, tmp_path: Path):
+    def test_demand_file_path(self, tmp_path: Path):
         from lite_indexer.chains import demand as demand_mod
 
         demand_dir = tmp_path / "indexer-demand"
-        monkeypatch.setattr(demand_mod, "INDEXER_DEMAND_DIR", demand_dir)
-        assert demand_mod.demand_file_path("Scroll", "dex") == demand_dir / "scroll" / "dex"
+        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", demand_dir):
+            assert demand_mod.demand_file_path("Scroll", "dex") == demand_dir / "scroll" / "dex"
 
-    def test_read_demand_missing_dir_ok(self, monkeypatch, tmp_path: Path):
+    def test_read_demand_missing_dir_ok(self, tmp_path: Path):
         from lite_indexer.chains import demand as demand_mod
 
-        monkeypatch.setattr(demand_mod, "INDEXER_DEMAND_DIR", tmp_path / "does-not-exist")
-        assert demand_mod.read_demand_files("scroll") == set()
+        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", tmp_path / "does-not-exist"):
+            assert demand_mod.read_demand_files("scroll") == set()
 
-    def test_read_demand_files_ignores_directories(self, monkeypatch, tmp_path: Path):
+    def test_read_demand_files_ignores_directories(self, tmp_path: Path):
         """A directory named 'dex' is NOT a demand signal (only files count)."""
         from lite_indexer.chains import demand as demand_mod
 
         demand_dir = tmp_path / "indexer-demand"
-        monkeypatch.setattr(demand_mod, "INDEXER_DEMAND_DIR", demand_dir)
-        (demand_dir / "scroll").mkdir(parents=True)
-        (demand_dir / "scroll" / "dex").mkdir()  # directory, not a file
+        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", demand_dir):
+            (demand_dir / "scroll").mkdir(parents=True)
+            (demand_dir / "scroll" / "dex").mkdir()  # directory, not a file
 
-        assert demand_mod.read_demand_files("scroll") == set()
+            assert demand_mod.read_demand_files("scroll") == set()
 
-        (demand_dir / "scroll" / "deployer").touch()
-        assert demand_mod.read_demand_files("scroll") == {"deployer"}
+            (demand_dir / "scroll" / "deployer").touch()
+            assert demand_mod.read_demand_files("scroll") == {"deployer"}
 
 
 class TestDefaultEnabledEvents:
@@ -165,12 +166,12 @@ class TestDefaultEnabledEvents:
 
 
 @pytest.fixture()
-def _indexer_env(monkeypatch, tmp_path: Path):
+def _indexer_env(tmp_path: Path):
     """Point STATE_DIR + demand dir at tmp so LiteIndexer construction is hermetic."""
     from lite_indexer import state as state_mod
 
-    monkeypatch.setattr(state_mod, "STATE_DIR", tmp_path / "state")
-    return tmp_path
+    with patch.object(state_mod, "STATE_DIR", tmp_path / "state"):
+        yield tmp_path
 
 
 class TestLazyIndexingRefresh:
@@ -192,16 +193,16 @@ class TestLazyIndexingRefresh:
         assert indexer.dex_enabled is False
         assert indexer.deployers_enabled is False
 
-    def test_long_tail_enabled_by_demand_file(self, monkeypatch, _indexer_env, tmp_path: Path):
+    def test_long_tail_enabled_by_demand_file(self, _indexer_env, tmp_path: Path):
         from lite_indexer.chains import demand as demand_mod
 
         demand_dir = tmp_path / "indexer-demand"
-        monkeypatch.setattr(demand_mod, "INDEXER_DEMAND_DIR", demand_dir)
-        (demand_dir / "scroll").mkdir(parents=True)
-        (demand_dir / "scroll" / "dex").touch()
+        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", demand_dir):
+            (demand_dir / "scroll").mkdir(parents=True)
+            (demand_dir / "scroll" / "dex").touch()
 
-        indexer = LiteIndexer(chain="scroll", lazy_indexing=True, data_dir=tmp_path)
-        indexer._refresh_demand_enabled()
+            indexer = LiteIndexer(chain="scroll", lazy_indexing=True, data_dir=tmp_path)
+            indexer._refresh_demand_enabled()
 
         assert indexer.dex_enabled is True
         assert indexer.deployers_enabled is False
@@ -222,16 +223,16 @@ class TestLazyIndexingRefresh:
         fresh._refresh_demand_enabled()
         assert fresh.dex_enabled is True
 
-    def test_lazy_disabled_is_noop(self, monkeypatch, _indexer_env, tmp_path: Path):
+    def test_lazy_disabled_is_noop(self, _indexer_env, tmp_path: Path):
         from lite_indexer.chains import demand as demand_mod
 
         demand_dir = tmp_path / "indexer-demand"
-        monkeypatch.setattr(demand_mod, "INDEXER_DEMAND_DIR", demand_dir)
-        (demand_dir / "scroll").mkdir(parents=True)
-        (demand_dir / "scroll" / "dex").touch()
+        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", demand_dir):
+            (demand_dir / "scroll").mkdir(parents=True)
+            (demand_dir / "scroll" / "dex").touch()
 
-        indexer = LiteIndexer(chain="scroll", lazy_indexing=False, data_dir=tmp_path)
-        indexer._refresh_demand_enabled()
+            indexer = LiteIndexer(chain="scroll", lazy_indexing=False, data_dir=tmp_path)
+            indexer._refresh_demand_enabled()
 
         # Legacy: CLI flags are the authority, demand files ignored
         assert indexer.dex_enabled is False

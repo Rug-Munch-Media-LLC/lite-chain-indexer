@@ -18,6 +18,8 @@ All ClickHouse/RPC interactions are mocked; no external services needed.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from typing import Any
 
 import pytest
@@ -93,15 +95,17 @@ class FakeCH:
 
 
 @pytest.fixture()
-def _monkeypatch_rpc(monkeypatch: pytest.MonkeyPatch, fake_rpc: FakeRpcClient):
+def _monkeypatch_rpc(fake_rpc: FakeRpcClient):
     """Point _resolve_deployer_eoas at the fake RPC client + endpoints."""
 
     def _fake_get_best(endpoints: list[str]) -> str:
         return endpoints[0]
 
-    monkeypatch.setattr("lite_indexer.rpc.RpcClient", lambda: fake_rpc)
-    monkeypatch.setattr("lite_indexer.rpc.get_best_endpoint", _fake_get_best)
-    return fake_rpc
+    with (
+        patch("lite_indexer.rpc.RpcClient", lambda: fake_rpc),
+        patch("lite_indexer.rpc.get_best_endpoint", _fake_get_best),
+    ):
+        yield fake_rpc
 
 
 @pytest.fixture()
@@ -125,14 +129,13 @@ async def test_resolve_deployer_eoas_returns_from_address(
 
 
 @pytest.mark.asyncio
-async def test_resolve_deployer_eoas_lowercases_from(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_resolve_deployer_eoas_lowercases_from() -> None:
     rpc = FakeRpcClient(by_tx={TX_HASH: "0xABC123ABC123ABC123ABC123ABC123ABC123ABc1"})
-    monkeypatch.setattr("lite_indexer.rpc.RpcClient", lambda: rpc)
-    monkeypatch.setattr("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0])
-
-    mapping = await _resolve_deployer_eoas("ethereum", [{"transactionHash": TX_HASH}])
+    with (
+        patch("lite_indexer.rpc.RpcClient", lambda: rpc),
+        patch("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0]),
+    ):
+        mapping = await _resolve_deployer_eoas("ethereum", [{"transactionHash": TX_HASH}])
     assert mapping[TX_HASH] == "0xabc123abc123abc123abc123abc123abc123abc1"
 
 
@@ -143,20 +146,15 @@ async def test_resolve_deployer_eoas_empty_events() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_deployer_eoas_no_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_deployer_eoas_no_endpoints() -> None:
     # _resolve_deployer_eoas imports GET_LOGS_ENDPOINTS from the chains
     # package at call time — patch the package attribute.
-    monkeypatch.setattr(
-        "lite_indexer.chains.GET_LOGS_ENDPOINTS",
-        {"ethereum": []},
-    )
-    assert await _resolve_deployer_eoas("ethereum", [{"transactionHash": TX_HASH}]) == {}
+    with patch("lite_indexer.chains.GET_LOGS_ENDPOINTS", {"ethereum": []}):
+        assert await _resolve_deployer_eoas("ethereum", [{"transactionHash": TX_HASH}]) == {}
 
 
 @pytest.mark.asyncio
-async def test_resolve_deployer_eoas_rotates_to_healthy_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_resolve_deployer_eoas_rotates_to_healthy_endpoint() -> None:
     """The pool is rotated: a dead best endpoint must not blank the batch."""
     from lite_indexer.chains import GET_LOGS_ENDPOINTS
 
@@ -168,25 +166,25 @@ async def test_resolve_deployer_eoas_rotates_to_healthy_endpoint(
         by_tx={TX_HASH: EOA},
         failing_endpoints={first_endpoint},
     )
-    monkeypatch.setattr("lite_indexer.rpc.RpcClient", lambda: rpc)
-    monkeypatch.setattr("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0])
-
-    mapping = await _resolve_deployer_eoas("ethereum", [{"transactionHash": TX_HASH}])
+    with (
+        patch("lite_indexer.rpc.RpcClient", lambda: rpc),
+        patch("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0]),
+    ):
+        mapping = await _resolve_deployer_eoas("ethereum", [{"transactionHash": TX_HASH}])
     assert mapping == {TX_HASH: EOA}
     # It tried more than one endpoint.
     assert len({call[0] for call in rpc.calls}) >= 2
 
 
 @pytest.mark.asyncio
-async def test_resolve_deployer_eoas_all_endpoints_fail_empty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_resolve_deployer_eoas_all_endpoints_fail_empty() -> None:
     rpc = FakeRpcClient(by_tx={}, failing_endpoints=set())
-    monkeypatch.setattr("lite_indexer.rpc.RpcClient", lambda: rpc)
-    monkeypatch.setattr("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0])
-    monkeypatch.setattr("lite_indexer.rpc.record_endpoint_failure", lambda ep: None)
-
-    mapping = await _resolve_deployer_eoas("ethereum", [{"transactionHash": TX_HASH}])
+    with (
+        patch("lite_indexer.rpc.RpcClient", lambda: rpc),
+        patch("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0]),
+        patch("lite_indexer.rpc.record_endpoint_failure", lambda ep: None),
+    ):
+        mapping = await _resolve_deployer_eoas("ethereum", [{"transactionHash": TX_HASH}])
     assert mapping == {}
 
 
@@ -196,9 +194,7 @@ async def test_resolve_deployer_eoas_all_endpoints_fail_empty(
 
 
 @pytest.mark.asyncio
-async def test_write_deployer_events_stores_eoa_not_factory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_write_deployer_events_stores_eoa_not_factory() -> None:
     """deployer / deployer_eoa = real EOA; factory stays the factory."""
     events = [
         {
@@ -217,10 +213,11 @@ async def test_write_deployer_events_stores_eoa_not_factory(
     writer._client = client  # inject the fake client (bypasses _connect)
 
     rpc = FakeRpcClient(by_tx={TX_HASH: EOA})
-    monkeypatch.setattr("lite_indexer.rpc.RpcClient", lambda: rpc)
-    monkeypatch.setattr("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0])
-
-    inserted = await writer.write_deployer_events("ethereum", events)
+    with (
+        patch("lite_indexer.rpc.RpcClient", lambda: rpc),
+        patch("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0]),
+    ):
+        inserted = await writer.write_deployer_events("ethereum", events)
 
     assert inserted == 1
     assert len(client.inserted) == 1
@@ -249,9 +246,7 @@ async def test_write_deployer_events_empty_events() -> None:
 
 
 @pytest.mark.asyncio
-async def test_write_deployer_events_resolution_failure_keeps_empty_deployer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_write_deployer_events_resolution_failure_keeps_empty_deployer() -> None:
     """If EOA resolution fails, deployer stays empty — never the factory."""
     events = [
         {
@@ -270,11 +265,12 @@ async def test_write_deployer_events_resolution_failure_keeps_empty_deployer(
 
     # All endpoints fail → no EOA resolution.
     rpc = FakeRpcClient(by_tx={})
-    monkeypatch.setattr("lite_indexer.rpc.RpcClient", lambda: rpc)
-    monkeypatch.setattr("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0])
-    monkeypatch.setattr("lite_indexer.rpc.record_endpoint_failure", lambda ep: None)
-
-    inserted = await writer.write_deployer_events("ethereum", events)
+    with (
+        patch("lite_indexer.rpc.RpcClient", lambda: rpc),
+        patch("lite_indexer.rpc.get_best_endpoint", lambda eps: eps[0]),
+        patch("lite_indexer.rpc.record_endpoint_failure", lambda ep: None),
+    ):
+        inserted = await writer.write_deployer_events("ethereum", events)
     assert inserted == 1
     row = client.inserted[0]
     assert row[0] == ""  # deployer empty, NOT the factory

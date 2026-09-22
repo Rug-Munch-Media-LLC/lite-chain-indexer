@@ -16,6 +16,8 @@ Each test gets a fresh temp SQLite DB via the autouse conftest fixture.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import time
 from typing import Any
 
@@ -73,21 +75,23 @@ class TestL2:
         got = respcache.get("eth_getLogs", [_log_filter(1, 10)], chain="ethereum", from_block=1, to_block=10, tip=1000)
         assert got is not None
 
-    def test_ttl_expiry(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(respcache, "RPC_CACHE_TTL_S", 0.05)
-        assert _put_logs(1, 10)
-        respcache.clear()
-        time.sleep(0.08)
-        assert (
-            respcache.get("eth_getLogs", [_log_filter(1, 10)], chain="ethereum", from_block=1, to_block=10, tip=1000)
-            is None
-        )
+    def test_ttl_expiry(self):
+        with patch.object(respcache, "RPC_CACHE_TTL_S", 0.05):
+            assert _put_logs(1, 10)
+            respcache.clear()
+            time.sleep(0.08)
+            assert (
+                respcache.get(
+                    "eth_getLogs", [_log_filter(1, 10)], chain="ethereum", from_block=1, to_block=10, tip=1000
+                )
+                is None
+            )
 
-    def test_eviction_at_max_entries(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(cache_db, "RPC_CACHE_MAX_ENTRIES", 2)
-        respcache.reset()  # rebuild L2 with the small cap
-        for i in range(3):
-            respcache.put("eth_chainId", [i], {"result": "0x1"}, chain="ethereum")
+    def test_eviction_at_max_entries(self):
+        with patch.object(cache_db, "RPC_CACHE_MAX_ENTRIES", 2):
+            respcache.reset()  # rebuild L2 with the small cap
+            for i in range(3):
+                respcache.put("eth_chainId", [i], {"result": "0x1"}, chain="ethereum")
         assert respcache.stats().get("l2_entries") == 2
         assert metrics.get("rpc_cache_evictions") >= 1.0
 
@@ -168,23 +172,21 @@ class TestVolatileNotCached:
 
 
 class TestFailureSafe:
-    def test_db_error_is_transparent_miss(self, monkeypatch: pytest.MonkeyPatch):
+    def test_db_error_is_transparent_miss(self):
         def _boom() -> Any:
             raise RuntimeError("db down")
 
-        monkeypatch.setattr(respcache.cache_db, "get_db", _boom)
-        assert respcache.get("eth_chainId", None) is None
-        # L1 write still succeeds; the L2 failure is swallowed.
-        assert respcache.put("eth_chainId", None, {"result": "0x1"}, chain="ethereum") is True
+        with patch.object(respcache.cache_db, "get_db", _boom):
+            assert respcache.get("eth_chainId", None) is None
+            # L1 write still succeeds; the L2 failure is swallowed.
+            assert respcache.put("eth_chainId", None, {"result": "0x1"}, chain="ethereum") is True
 
     @pytest.mark.asyncio
-    async def test_get_logs_survives_broken_db(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_get_logs_survives_broken_db(self):
         import lite_indexer.rpc.client as rc
 
         def _boom() -> Any:
             raise RuntimeError("db down")
-
-        monkeypatch.setattr(respcache.cache_db, "get_db", _boom)
 
         class _Resp:
             status_code = 200
@@ -210,18 +212,21 @@ class TestFailureSafe:
         async def _get_client() -> _Http:
             return http
 
-        monkeypatch.setattr(rc, "apply_provider_rate_limit", _noop)
-        monkeypatch.setattr(rc, "provider_throttle_before", _noop)
-        monkeypatch.setattr(rc, "record_provider_response", lambda *a, **k: None)
-        monkeypatch.setattr(rc, "_safe_record", lambda *a, **k: None)
-        monkeypatch.setattr(rc, "_defer_reason_for", lambda *a, **k: None)
-        monkeypatch.setattr("lite_indexer.rpc.throttle.throttle_before", _noop)
-        monkeypatch.setattr("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None)
-        monkeypatch.setattr("lite_indexer.rpc.consensus.should_sample", lambda: False)
+        patch.object(rc, "apply_provider_rate_limit", _noop).start()
+        patch.object(rc, "provider_throttle_before", _noop).start()
+        patch.object(rc, "record_provider_response", lambda *a, **k: None).start()
+        patch.object(rc, "_safe_record", lambda *a, **k: None).start()
+        patch.object(rc, "_defer_reason_for", lambda *a, **k: None).start()
+        patch("lite_indexer.rpc.throttle.throttle_before", _noop).start()
+        patch("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None).start()
+        patch("lite_indexer.rpc.consensus.should_sample", lambda: False).start()
 
         client = rc.RpcClient()
         client._get_client = _get_client  # noqa: SLF001 — test seam
-        logs = await client.get_logs("https://archive.example", 1, 10, "0x" + "ab" * 32, chain="ethereum", tip=1000)
+        with patch.object(respcache.cache_db, "get_db", _boom):
+            logs = await client.get_logs(
+                "https://archive.example", 1, 10, "0x" + "ab" * 32, chain="ethereum", tip=1000
+            )
         assert logs == [{"blockNumber": "0x5"}]
 
 

@@ -13,6 +13,8 @@ Hermetic — no network, no disk.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import random
 from typing import Any
 
@@ -33,9 +35,9 @@ class TestFullJitter:
         assert full_jitter(0.0) == 0.0
         assert full_jitter(-3.0) == 0.0
 
-    def test_disabled_returns_upper(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(bo, "RPC_BACKOFF_JITTER", False)
-        assert full_jitter(2.0) == 2.0
+    def test_disabled_returns_upper(self):
+        with patch.object(bo, "RPC_BACKOFF_JITTER", False):
+            assert full_jitter(2.0) == 2.0
 
     def test_seedable_reproducible(self):
         set_jitter_seed(1234)
@@ -47,8 +49,8 @@ class TestFullJitter:
 
 
 class TestExponentialBackoff:
-    def test_ceiling_capped(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(bo, "RPC_BACKOFF_JITTER", False)
+    def test_ceiling_capped(self):
+        patch.object(bo, "RPC_BACKOFF_JITTER", False).start()
         assert exponential_backoff(0, base=0.1, cap=1.0) == pytest.approx(0.1)
         assert exponential_backoff(1, base=0.1, cap=1.0) == pytest.approx(0.2)
         assert exponential_backoff(5, base=0.1, cap=1.0) == pytest.approx(1.0)  # capped
@@ -82,7 +84,7 @@ class _FakeHttp:
         return self._resp
 
 
-async def _sleeps_for_getlogs(monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]) -> list[float]:
+async def _sleeps_for_getlogs(headers: dict[str, str]) -> list[float]:
     import lite_indexer.rpc.client as rc
 
     sleeps: list[float] = []
@@ -94,12 +96,12 @@ async def _sleeps_for_getlogs(monkeypatch: pytest.MonkeyPatch, headers: dict[str
         return None
 
     http = _FakeHttp(_FakeResp(429, headers))
-    monkeypatch.setattr(rc.asyncio, "sleep", _fake_sleep)
-    monkeypatch.setattr(rc, "apply_provider_rate_limit", _noop)
-    monkeypatch.setattr(rc, "provider_throttle_before", _noop)
-    monkeypatch.setattr(rc, "record_provider_response", lambda *a, **k: None)
-    monkeypatch.setattr(rc, "_safe_record", lambda *a, **k: None)
-    monkeypatch.setattr("lite_indexer.rpc.throttle.throttle_before", _noop)
+    patch.object(rc.asyncio, "sleep", _fake_sleep).start()
+    patch.object(rc, "apply_provider_rate_limit", _noop).start()
+    patch.object(rc, "provider_throttle_before", _noop).start()
+    patch.object(rc, "record_provider_response", lambda *a, **k: None).start()
+    patch.object(rc, "_safe_record", lambda *a, **k: None).start()
+    patch("lite_indexer.rpc.throttle.throttle_before", _noop).start()
 
     client = rc.RpcClient()
 
@@ -112,18 +114,18 @@ async def _sleeps_for_getlogs(monkeypatch: pytest.MonkeyPatch, headers: dict[str
 
 
 @pytest.mark.asyncio
-async def test_retry_after_is_exact(monkeypatch: pytest.MonkeyPatch):
-    sleeps = await _sleeps_for_getlogs(monkeypatch, {"Retry-After": "7"})
+async def test_retry_after_is_exact():
+    sleeps = await _sleeps_for_getlogs({"Retry-After": "7"})
     assert sleeps, "expected the 429 path to sleep"
     assert sleeps[0] == pytest.approx(7.0, abs=0.05)
 
 
 @pytest.mark.asyncio
-async def test_no_retry_after_uses_jitter(monkeypatch: pytest.MonkeyPatch):
+async def test_no_retry_after_uses_jitter():
     from lite_indexer.config import RATE_LIMIT_WAIT_CAP
 
     set_jitter_seed(99)
-    sleeps = await _sleeps_for_getlogs(monkeypatch, {})
+    sleeps = await _sleeps_for_getlogs({})
     set_jitter_seed(None)
     assert sleeps, "expected the 429 path to sleep"
     assert 0.0 <= sleeps[0] <= float(RATE_LIMIT_WAIT_CAP)

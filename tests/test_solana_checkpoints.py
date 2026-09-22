@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import asyncio
 from typing import Any
 from unittest.mock import MagicMock
@@ -51,17 +53,17 @@ class FakeCH:
         return []
 
 
-def test_checkpoint_slot_persists_the_real_slot(monkeypatch):
+def test_checkpoint_slot_persists_the_real_slot():
     slot = 443_718_051
 
     async def _fake_blockhash(_client: object, _slot: int) -> str:
         return "5" * 43
 
-    monkeypatch.setattr(sol_reorg, "_get_blockhash", _fake_blockhash)
-    ch = MagicMock()
-    ch.execute.return_value = 1
+    with patch.object(sol_reorg, "_get_blockhash", _fake_blockhash):
+        ch = MagicMock()
+        ch.execute.return_value = 1
 
-    ok = asyncio.run(sol_reorg.checkpoint_slot(object(), slot, ch))
+        ok = asyncio.run(sol_reorg.checkpoint_slot(object(), slot, ch))
 
     assert ok is True
     sql, params = ch.execute.call_args.args
@@ -74,88 +76,92 @@ def _strategy() -> SolanaStrategy:
     return SolanaStrategy()
 
 
-def test_solana_check_reorg_tristate(monkeypatch):
+def test_solana_check_reorg_tristate():
     ch = FakeCH()
     ch.checkpoints[68] = "stored"
 
     async def _current(_client: object, _slot: int) -> str:
         return "current"
 
-    monkeypatch.setattr(sol_reorg, "_get_blockhash", _current)
-    check = asyncio.run(sol_reorg.check_reorg(object(), 100, ch))
-    assert check.status is ReorgStatus.REORG
-    assert check.fork_block == 68
+    with patch.object(sol_reorg, "_get_blockhash", _current):
+        check = asyncio.run(sol_reorg.check_reorg(object(), 100, ch))
+        assert check.status is ReorgStatus.REORG
+        assert check.fork_block == 68
 
-    # Lookup failure → UNKNOWN with an error (never fail open).
-    ch.fail_select = True
-    check = asyncio.run(sol_reorg.check_reorg(object(), 100, ch))
-    assert check.status is ReorgStatus.UNKNOWN
-    assert check.error
+        # Lookup failure → UNKNOWN with an error (never fail open).
+        ch.fail_select = True
+        check = asyncio.run(sol_reorg.check_reorg(object(), 100, ch))
+        assert check.status is ReorgStatus.UNKNOWN
+        assert check.error
 
-    # No checkpoint → UNKNOWN, benign (no error).
-    ch = FakeCH()
-    check = asyncio.run(sol_reorg.check_reorg(object(), 100, ch))
-    assert check.status is ReorgStatus.UNKNOWN
-    assert check.error is None
+        # No checkpoint → UNKNOWN, benign (no error).
+        ch = FakeCH()
+        check = asyncio.run(sol_reorg.check_reorg(object(), 100, ch))
+        assert check.status is ReorgStatus.UNKNOWN
+        assert check.error is None
 
 
-def test_reorg_stage_no_checkpoint_is_benign(monkeypatch):
-    monkeypatch.setattr("lite_indexer.strategies.solana.strategy.sync.REORG_PROTECTION_ENABLED", True)
-
+def test_reorg_stage_no_checkpoint_is_benign():
     async def _hash(_client: object, _slot: int) -> str:
         return "h"
 
-    monkeypatch.setattr(sol_reorg, "_get_blockhash", _hash)
-    ch = FakeCH()
-    outcome = asyncio.run(_strategy().reorg_stage(1, 100, ch))
+    with (
+        patch("lite_indexer.strategies.solana.strategy.sync.REORG_PROTECTION_ENABLED", True),
+        patch.object(sol_reorg, "_get_blockhash", _hash),
+    ):
+        ch = FakeCH()
+        outcome = asyncio.run(_strategy().reorg_stage(1, 100, ch))
 
     assert outcome.status is ReorgStatus.NO_REORG
     assert ch.deletes == []
 
 
-def test_reorg_stage_lookup_failure_is_unknown_and_does_not_rollback(monkeypatch):
-    monkeypatch.setattr("lite_indexer.strategies.solana.strategy.sync.REORG_PROTECTION_ENABLED", True)
-
+def test_reorg_stage_lookup_failure_is_unknown_and_does_not_rollback():
     async def _hash(_client: object, _slot: int) -> str:
         return "h"
 
-    monkeypatch.setattr(sol_reorg, "_get_blockhash", _hash)
-    ch = FakeCH()
-    ch.fail_select = True
-    outcome = asyncio.run(_strategy().reorg_stage(1, 100, ch))
+    with (
+        patch("lite_indexer.strategies.solana.strategy.sync.REORG_PROTECTION_ENABLED", True),
+        patch.object(sol_reorg, "_get_blockhash", _hash),
+    ):
+        ch = FakeCH()
+        ch.fail_select = True
+        outcome = asyncio.run(_strategy().reorg_stage(1, 100, ch))
 
     assert outcome.status is ReorgStatus.UNKNOWN
     assert outcome.error
     assert ch.deletes == []  # did NOT proceed to rollback
 
 
-def test_reorg_stage_detects_and_rolls_back(monkeypatch):
-    monkeypatch.setattr("lite_indexer.strategies.solana.strategy.sync.REORG_PROTECTION_ENABLED", True)
-
+def test_reorg_stage_detects_and_rolls_back():
     async def _current(_client: object, _slot: int) -> str:
         return "current"
 
-    monkeypatch.setattr(sol_reorg, "_get_blockhash", _current)
-    ch = FakeCH()
-    ch.checkpoints[68] = "stored"
-    outcome = asyncio.run(_strategy().reorg_stage(1, 100, ch))
+    with (
+        patch("lite_indexer.strategies.solana.strategy.sync.REORG_PROTECTION_ENABLED", True),
+        patch.object(sol_reorg, "_get_blockhash", _current),
+    ):
+        ch = FakeCH()
+        ch.checkpoints[68] = "stored"
+        outcome = asyncio.run(_strategy().reorg_stage(1, 100, ch))
 
     assert outcome.status is ReorgStatus.REORG
     assert outcome.fork_block == 68
     assert ch.deletes  # rollback issued
 
 
-def test_reorg_stage_rollback_failure_is_unknown(monkeypatch):
-    monkeypatch.setattr("lite_indexer.strategies.solana.strategy.sync.REORG_PROTECTION_ENABLED", True)
-
+def test_reorg_stage_rollback_failure_is_unknown():
     async def _current(_client: object, _slot: int) -> str:
         return "current"
 
-    monkeypatch.setattr(sol_reorg, "_get_blockhash", _current)
-    ch = FakeCH()
-    ch.checkpoints[68] = "stored"
-    ch.fail_delete = True
-    outcome = asyncio.run(_strategy().reorg_stage(1, 100, ch))
+    with (
+        patch("lite_indexer.strategies.solana.strategy.sync.REORG_PROTECTION_ENABLED", True),
+        patch.object(sol_reorg, "_get_blockhash", _current),
+    ):
+        ch = FakeCH()
+        ch.checkpoints[68] = "stored"
+        ch.fail_delete = True
+        outcome = asyncio.run(_strategy().reorg_stage(1, 100, ch))
 
     assert outcome.status is ReorgStatus.UNKNOWN
     assert outcome.fork_block == 68

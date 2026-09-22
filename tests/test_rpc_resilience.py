@@ -101,10 +101,10 @@ def _clean_pool():
 
     with (
         patch("lite_indexer.rpc.pool._endpoint_failures", {}),
-        patch.object(ban_state_mod, "_endpoint_bans", {}),
-        patch.object(ban_state_mod, "_endpoint_ban_level", {}),
-        patch.object(ban_state_mod, "_endpoint_hard_bans", set()),
-        patch.object(ban_state_mod, "_endpoint_429_streaks", {}),
+        patch("lite_indexer.rpc.ban_state._endpoint_bans", {}),
+        patch("lite_indexer.rpc.ban_state._endpoint_ban_level", {}),
+        patch("lite_indexer.rpc.ban_state._endpoint_hard_bans", set()),
+        patch("lite_indexer.rpc.ban_state._endpoint_429_streaks", {}),
         patch("lite_indexer.rpc.routing.CIRCUIT_BREAKER", RpcCircuitBreaker()),
     ):
         yield
@@ -218,7 +218,7 @@ class TestPoolWideOutage:
         from lite_indexer.strategies.evm import range_planning as rp
 
         eps = ["https://a.invalid", "https://b.invalid", "https://c.invalid"]
-        with patch.object(rp, "_RATE_LIMITED_CURSOR", {}):
+        with patch("lite_indexer.strategies.evm.range_planning._RATE_LIMITED_CURSOR", {}):
             first = rp._rate_limited_rotation("celo", eps)
             second = rp._rate_limited_rotation("celo", eps)
             third = rp._rate_limited_rotation("celo", eps)
@@ -233,7 +233,7 @@ class TestPoolWideOutage:
         from lite_indexer.strategies.evm import range_planning as rp
 
         narrow, wide = "https://narrow.invalid", "https://wide.invalid"
-        with patch.object(rp, "get_max_block_range", lambda ep: 10 if ep == narrow else 100):
+        with patch("lite_indexer.strategies.evm.range_planning.get_max_block_range", lambda ep: 10 if ep == narrow else 100):
             assert rp._prefer_wide_range([narrow, wide], 100) == [wide, narrow]
             assert rp._prefer_wide_range([narrow, wide], 10) == [narrow, wide]
 

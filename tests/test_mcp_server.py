@@ -6,6 +6,8 @@ import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
+import os
 
 import pytest
 
@@ -22,13 +24,15 @@ def _write(path: Path, payload: dict) -> Path:
 
 
 @pytest.fixture
-def state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def state(tmp_path: Path) -> Path:
     """Point the server at an isolated state dir + throttle/ledger files."""
-    monkeypatch.setattr(mcp_server.cfg, "STATE_DIR", tmp_path)
-    monkeypatch.setattr(mcp_server.cfg, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(mcp_server.cfg, "RPC_THROTTLE_FILE", str(tmp_path / "rpc_throttle.json"))
-    monkeypatch.setenv("QUOTA_LEDGER_FILE", str(tmp_path / "quota_ledger.json"))
-    return tmp_path
+    with (
+        patch.object(mcp_server.cfg, "STATE_DIR", tmp_path),
+        patch.object(mcp_server.cfg, "DATA_DIR", tmp_path),
+        patch.object(mcp_server.cfg, "RPC_THROTTLE_FILE", str(tmp_path / "rpc_throttle.json")),
+        patch.dict(os.environ, {"QUOTA_LEDGER_FILE": str(tmp_path / "quota_ledger.json")}),
+    ):
+        yield tmp_path
 
 
 class FakeCH:
@@ -85,7 +89,7 @@ def test_chain_head_reports_time_since_advance(state: Path) -> None:
     assert 25 <= out["seconds_since_advance"] <= 60
 
 
-def test_recent_transfers_evm_shape_and_clamp(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recent_transfers_evm_shape_and_clamp(state: Path) -> None:
     _write(state / "lite_ethereum.json", {"last_block": 1})
     fake = FakeCH(
         rows=[("ethereum", 1, "0xdead", "0x" + "a" * 40, "0x" + "b" * 40, "0xtoken", 7, "2026-01-01 00:00:00", 3)],
@@ -104,9 +108,9 @@ def test_recent_transfers_evm_shape_and_clamp(state: Path, monkeypatch: pytest.M
             )
         ],
     )
-    monkeypatch.setattr(mcp_server, "_client", lambda: fake)
-    address = "0x" + "a" * 40
-    out = mcp_server.lci_recent_transfers("ethereum", address=address, limit=5000)
+    with patch.object(mcp_server, "_client", lambda: fake):
+        address = "0x" + "a" * 40
+        out = mcp_server.lci_recent_transfers("ethereum", address=address, limit=5000)
     assert out["status"] == "ok"
     assert out["limit"] == 100  # clamped
     assert out["rows"][0]["tx_hash"] == "0xdead"
@@ -116,11 +120,11 @@ def test_recent_transfers_evm_shape_and_clamp(state: Path, monkeypatch: pytest.M
     assert params == {"lim": 100, "chain": "ethereum", "addr": address}
 
 
-def test_recent_transfers_solana_uses_solana_table(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recent_transfers_solana_uses_solana_table(state: Path) -> None:
     _write(state / "lite_solana.json", {"last_block": 9})
     fake = FakeCH(rows=[], columns=[(name, "String") for name in ("slot", "signature")])
-    monkeypatch.setattr(mcp_server, "_client", lambda: fake)
-    out = mcp_server.lci_recent_transfers("solana")
+    with patch.object(mcp_server, "_client", lambda: fake):
+        out = mcp_server.lci_recent_transfers("solana")
     assert out["status"] == "ok"
     query, params = fake.calls[0]
     assert "solana_transfers" in query
@@ -134,14 +138,14 @@ def test_recent_transfers_rejects_bad_input(state: Path) -> None:
     assert mcp_server.lci_recent_transfers("ethereum", address="nope")["status"] == "error"
 
 
-def test_recent_transfers_unreachable_clickhouse_masks_secret(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recent_transfers_unreachable_clickhouse_masks_secret(state: Path) -> None:
     _write(state / "lite_ethereum.json", {"last_block": 1})
 
     def boom() -> FakeCH:
         raise RuntimeError("connect failed https://rpc.example.org/v2/SUPERSECRETKEY123456789?apikey=SECRETVALUE")
 
-    monkeypatch.setattr(mcp_server, "_client", boom)
-    out = mcp_server.lci_recent_transfers("ethereum")
+    with patch.object(mcp_server, "_client", boom):
+        out = mcp_server.lci_recent_transfers("ethereum")
     assert out["status"] == "unavailable"
     assert out["rows"] == []
     dumped = json.dumps(out)
@@ -167,26 +171,32 @@ def test_rpc_health_without_throttle_file_is_unavailable(state: Path) -> None:
     assert out["endpoints"] == 0
 
 
-def test_attest_verify_disabled(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mcp_server.cfg, "ATTESTATION_ENABLED", False)
-    assert mcp_server.lci_attest_verify("whatever.json")["status"] == "disabled"
+def test_attest_verify_disabled(state: Path) -> None:
+    with patch.object(mcp_server.cfg, "ATTESTATION_ENABLED", False):
+        assert mcp_server.lci_attest_verify("whatever.json")["status"] == "disabled"
 
 
-def test_attest_verify_rejects_path_outside_root(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mcp_server.cfg, "ATTESTATION_ENABLED", True)
-    monkeypatch.setattr(mcp_server.cfg, "ATTESTATION_DIR", state / "attestations")
+def test_attest_verify_rejects_path_outside_root(state: Path) -> None:
     outside = _write(state / "evil.json", {})
-    assert mcp_server.lci_attest_verify(str(outside))["status"] == "error"
+    with (
+        patch.object(mcp_server.cfg, "ATTESTATION_ENABLED", True),
+        patch.object(mcp_server.cfg, "ATTESTATION_DIR", state / "attestations"),
+    ):
+        assert mcp_server.lci_attest_verify(str(outside))["status"] == "error"
 
 
-def test_attest_verify_valid_manifest(state: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_attest_verify_valid_manifest(state: Path) -> None:
     root = state / "attestations"
-    monkeypatch.setattr(mcp_server.cfg, "ATTESTATION_ENABLED", True)
-    monkeypatch.setattr(mcp_server.cfg, "ATTESTATION_DIR", root)
-    monkeypatch.setattr(att, "ATTESTATION_ENABLED", True)
-    written = att.record_range_attestation("ethereum", 1, 10, [{"tx_hash": "0xabc"}], ["0x" + "a" * 64], state_dir=root)
-    assert written is not None
-    out = mcp_server.lci_attest_verify(str(root / "ethereum-1-10.json"))
+    with (
+        patch.object(mcp_server.cfg, "ATTESTATION_ENABLED", True),
+        patch.object(mcp_server.cfg, "ATTESTATION_DIR", root),
+        patch.object(att, "ATTESTATION_ENABLED", True),
+    ):
+        written = att.record_range_attestation(
+            "ethereum", 1, 10, [{"tx_hash": "0xabc"}], ["0x" + "a" * 64], state_dir=root
+        )
+        assert written is not None
+        out = mcp_server.lci_attest_verify(str(root / "ethereum-1-10.json"))
     assert out["status"] == "ok"
     assert out["chain"] == "ethereum"
     assert out["from_block"] == 1 and out["to_block"] == 10

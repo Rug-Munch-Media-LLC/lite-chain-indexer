@@ -19,6 +19,8 @@ Hermetic — no network.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import asyncio
 import time
 
@@ -57,15 +59,15 @@ class _TipClient:
 
 
 @pytest.mark.asyncio
-async def test_range_probe_stops_at_first_failure(monkeypatch):
+async def test_range_probe_stops_at_first_failure():
     calls = {"n": 0}
 
     async def _probe(endpoint, from_block, to_block, topic0, timeout=0.0):
         calls["n"] += 1
         return cap._GetLogsProbeStatus.RANGE_ERROR
 
-    monkeypatch.setattr(cap, "_probe_getlogs_once", _probe)
-    result = await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
+    with patch.object(cap, "_probe_getlogs_once", _probe):
+        result = await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
 
     assert result == 0
     assert calls["n"] == 1  # first failure bounds it; no binary search
@@ -73,7 +75,7 @@ async def test_range_probe_stops_at_first_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_range_probe_returns_conservative_lower_bound(monkeypatch):
+async def test_range_probe_returns_conservative_lower_bound():
     seen: list[int] = []
 
     async def _probe(endpoint, from_block, to_block, topic0, timeout=0.0):
@@ -81,8 +83,8 @@ async def test_range_probe_returns_conservative_lower_bound(monkeypatch):
         seen.append(size)
         return cap._GetLogsProbeStatus.OK if size <= 100 else cap._GetLogsProbeStatus.RANGE_ERROR
 
-    monkeypatch.setattr(cap, "_probe_getlogs_once", _probe)
-    result = await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
+    with patch.object(cap, "_probe_getlogs_once", _probe):
+        result = await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
 
     assert result == 100  # conservative bound, not the exact max
     assert seen == [10, 100, 1000]
@@ -104,25 +106,25 @@ async def test_timing_out_endpoint_respects_budget(monkeypatch):
             type(self).posts += 1
             raise cap.httpx.TimeoutException("probe timed out")
 
-    monkeypatch.setattr(cap.httpx, "AsyncClient", lambda **k: _SlowClient())
-    result = await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
+    with patch.object(cap.httpx, "AsyncClient", lambda **k: _SlowClient()):
+        result = await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
 
     assert result == 0
     assert _SlowClient.posts <= GETLOGS_PROBE_MAX_CALLS
 
 
 @pytest.mark.asyncio
-async def test_range_probe_wall_time_bounded(monkeypatch):
+async def test_range_probe_wall_time_bounded():
     per_call = 0.05
 
     async def _slow(endpoint, from_block, to_block, topic0, timeout=0.0):
         await asyncio.sleep(per_call)
         return cap._GetLogsProbeStatus.RANGE_ERROR
 
-    monkeypatch.setattr(cap, "_probe_getlogs_once", _slow)
-    started = time.monotonic()
-    await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
-    elapsed = time.monotonic() - started
+    with patch.object(cap, "_probe_getlogs_once", _slow):
+        started = time.monotonic()
+        await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
+        elapsed = time.monotonic() - started
 
     assert elapsed < per_call * GETLOGS_PROBE_MAX_CALLS + 0.15
 
@@ -135,28 +137,30 @@ async def _forbidden(*args, **kwargs):
 
 
 @pytest.mark.asyncio
-async def test_warm_cache_with_range_skips_all_probes(monkeypatch):
+async def test_warm_cache_with_range_skips_all_probes():
     set_capability(
         CapabilityRecord(endpoint=EP, chain="bsc", getlogs_max_range=64, logs_capable=None, probed_at=time.time())
     )
-    monkeypatch.setattr(vf, "probe_archive", _forbidden)
-    monkeypatch.setattr(vf, "probe_getlogs_range", _forbidden)
-    monkeypatch.setattr(vf, "probe_logs_capability", _forbidden)
-
-    status = await vf._probe_and_record_capabilities(_TipClient(), EP, "bsc", 1_000_000)  # noqa: SLF001
+    with (
+        patch.object(vf, "probe_archive", _forbidden),
+        patch.object(vf, "probe_getlogs_range", _forbidden),
+        patch.object(vf, "probe_logs_capability", _forbidden),
+    ):
+        status = await vf._probe_and_record_capabilities(_TipClient(), EP, "bsc", 1_000_000)  # noqa: SLF001
 
     assert status is GetLogsCapability.TRANSIENT  # never excluded on a timeout
     assert get_capability(EP).getlogs_max_range == 64  # range reused
 
 
 @pytest.mark.asyncio
-async def test_warm_cache_conclusive_verdict_skips_probes(monkeypatch):
+async def test_warm_cache_conclusive_verdict_skips_probes():
     set_capability(CapabilityRecord(endpoint=EP, chain="bsc", logs_capable=True, probed_at=time.time()))
-    monkeypatch.setattr(vf, "probe_archive", _forbidden)
-    monkeypatch.setattr(vf, "probe_getlogs_range", _forbidden)
-    monkeypatch.setattr(vf, "probe_logs_capability", _forbidden)
-
-    status = await vf._probe_and_record_capabilities(_TipClient(), EP, "bsc", 1_000_000)  # noqa: SLF001
+    with (
+        patch.object(vf, "probe_archive", _forbidden),
+        patch.object(vf, "probe_getlogs_range", _forbidden),
+        patch.object(vf, "probe_logs_capability", _forbidden),
+    ):
+        status = await vf._probe_and_record_capabilities(_TipClient(), EP, "bsc", 1_000_000)  # noqa: SLF001
 
     assert status is GetLogsCapability.CAPABLE
 
@@ -165,7 +169,7 @@ async def test_warm_cache_conclusive_verdict_skips_probes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cold_probe_classifies_and_persists_conservative_range(monkeypatch):
+async def test_cold_probe_classifies_and_persists_conservative_range():
     async def _archive(*args, **kwargs):
         return False
 
@@ -175,11 +179,12 @@ async def test_cold_probe_classifies_and_persists_conservative_range(monkeypatch
     async def _cap(endpoint, tip, timeout=0.0):
         return GetLogsCapability.CAPABLE
 
-    monkeypatch.setattr(vf, "probe_archive", _archive)
-    monkeypatch.setattr(vf, "probe_getlogs_range", _range)
-    monkeypatch.setattr(vf, "probe_logs_capability", _cap)
-
-    status = await vf._probe_and_record_capabilities(_TipClient(), EP, "bsc", 1_000_000)  # noqa: SLF001
+    with (
+        patch.object(vf, "probe_archive", _archive),
+        patch.object(vf, "probe_getlogs_range", _range),
+        patch.object(vf, "probe_logs_capability", _cap),
+    ):
+        status = await vf._probe_and_record_capabilities(_TipClient(), EP, "bsc", 1_000_000)  # noqa: SLF001
 
     assert status is GetLogsCapability.CAPABLE
     record = get_capability(EP)

@@ -7,6 +7,8 @@ for the real-warehouse smoke test.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from datetime import datetime
 from typing import Any
 
@@ -17,7 +19,7 @@ from api.app import create_app
 
 
 @pytest.fixture()
-def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def client() -> TestClient:
     """TestClient with ClickHouse queries stubbed out."""
     app = create_app()
 
@@ -81,12 +83,14 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
             ],
         )
 
-    monkeypatch.setattr("api.routers.transfers.query", fake_query)
-    monkeypatch.setattr("api.routers.deployers.query", fake_query)
-    monkeypatch.setattr("api.routers.whales.query", fake_query)
-    monkeypatch.setattr("api.routers.stats.query", fake_query)
-    monkeypatch.setattr("api.routers.query.query_rows", fake_query_rows)
-    with TestClient(app) as c:
+    with (
+        patch("api.routers.transfers.query", fake_query),
+        patch("api.routers.deployers.query", fake_query),
+        patch("api.routers.whales.query", fake_query),
+        patch("api.routers.stats.query", fake_query),
+        patch("api.routers.query.query_rows", fake_query_rows),
+        TestClient(app) as c,
+    ):
         yield c
 
 
@@ -174,8 +178,8 @@ def test_transfers_solana_summary_maps_spl_rows(monkeypatch: pytest.MonkeyPatch,
             },
         ]
 
-    monkeypatch.setattr("api.routers.transfers.query", solana_fake_query)
-    resp = client.get("/api/v1/transfers/walletxyz?chain=solana")
+    with patch("api.routers.transfers.query", solana_fake_query):
+        resp = client.get("/api/v1/transfers/walletxyz?chain=solana")
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["data"]) == 2
@@ -197,7 +201,7 @@ def test_transfers_solana_summary_maps_spl_rows(monkeypatch: pytest.MonkeyPatch,
     assert second["to_address"] == ""
 
 
-def test_transfers_solana_summary_direction_filter(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+def test_transfers_solana_summary_direction_filter(client: TestClient) -> None:
     """direction=out on the solana summary path filters to negative deltas."""
     from datetime import datetime as dt
 
@@ -219,13 +223,13 @@ def test_transfers_solana_summary_direction_filter(monkeypatch: pytest.MonkeyPat
             }
         ]
 
-    monkeypatch.setattr("api.routers.transfers.query", solana_fake_query)
-    resp = client.get("/api/v1/transfers/walletxyz?chain=solana&direction=out")
+    with patch("api.routers.transfers.query", solana_fake_query):
+        resp = client.get("/api/v1/transfers/walletxyz?chain=solana&direction=out")
     assert resp.status_code == 200
     assert resp.json()["data"][0]["direction"] == "out"
 
 
-def test_transfers_solana_full_maps_trace_rows(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+def test_transfers_solana_full_maps_trace_rows(client: TestClient) -> None:
     """chain=solana + include_counterparty queries solana_transfers (real from/to)."""
     from datetime import datetime as dt
 
@@ -247,8 +251,8 @@ def test_transfers_solana_full_maps_trace_rows(monkeypatch: pytest.MonkeyPatch, 
             }
         ]
 
-    monkeypatch.setattr("api.routers.transfers.query", solana_trace_query)
-    resp = client.get("/api/v1/transfers/walletxyz?chain=solana&include_counterparty=true")
+    with patch("api.routers.transfers.query", solana_trace_query):
+        resp = client.get("/api/v1/transfers/walletxyz?chain=solana&include_counterparty=true")
     assert resp.status_code == 200
     assert "solana_transfers" in captured["sql"]
     item = resp.json()["data"][0]

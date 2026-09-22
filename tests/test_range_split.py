@@ -13,6 +13,8 @@ Hermetic — no network, no disk.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from typing import Any
 
 import pytest
@@ -101,29 +103,31 @@ class TestRecursiveDriver:
         assert calls == [(0, 100)]
 
     @pytest.mark.asyncio
-    async def test_depth_cap_bounds_recursion(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(rs, "GETLOGS_SPLIT_MAX_DEPTH", 1)
+    async def test_depth_cap_bounds_recursion(self):
         calls: list[tuple[int, int]] = []
 
         async def fetch(f: int, t: int) -> rs.FetchResult:
             calls.append((f, t))
             return ("range", None)
 
-        assert await fetch_logs_split(fetch, 0, 7) is None
+        with patch.object(rs, "GETLOGS_SPLIT_MAX_DEPTH", 1):
+            assert await fetch_logs_split(fetch, 0, 7) is None
         # depth 0 splits once → two depth-1 leaves; depth cap stops there.
         assert len(calls) == 3
 
     @pytest.mark.asyncio
-    async def test_min_block_floor_blocks_split(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(rs, "GETLOGS_SPLIT_MAX_DEPTH", 10)
-        monkeypatch.setattr(rs, "GETLOGS_SPLIT_MIN_BLOCKS", 100)
+    async def test_min_block_floor_blocks_split(self):
         calls: list[tuple[int, int]] = []
 
         async def fetch(f: int, t: int) -> rs.FetchResult:
             calls.append((f, t))
             return ("range", None)
 
-        assert await fetch_logs_split(fetch, 0, 50) is None  # size 51 <= floor
+        with (
+            patch.object(rs, "GETLOGS_SPLIT_MAX_DEPTH", 10),
+            patch.object(rs, "GETLOGS_SPLIT_MIN_BLOCKS", 100),
+        ):
+            assert await fetch_logs_split(fetch, 0, 50) is None  # size 51 <= floor
         assert calls == [(0, 50)]
 
     @pytest.mark.asyncio
@@ -188,7 +192,7 @@ class _FakeHttp:
 
 
 @pytest.mark.asyncio
-async def test_rpcclient_get_logs_splits_in_call(monkeypatch: pytest.MonkeyPatch):
+async def test_rpcclient_get_logs_splits_in_call():
     import lite_indexer.rpc.client as rc
 
     http = _FakeHttp()
@@ -196,13 +200,13 @@ async def test_rpcclient_get_logs_splits_in_call(monkeypatch: pytest.MonkeyPatch
     async def _noop(*a: Any, **k: Any) -> None:
         return None
 
-    monkeypatch.setattr(rc, "apply_provider_rate_limit", _noop)
-    monkeypatch.setattr(rc, "provider_throttle_before", _noop)
-    monkeypatch.setattr(rc, "record_provider_response", lambda *a, **k: None)
-    monkeypatch.setattr(rc, "_safe_record", lambda *a, **k: None)
-    monkeypatch.setattr("lite_indexer.rpc.throttle.throttle_before", _noop)
-    monkeypatch.setattr("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None)
-    monkeypatch.setattr(rc, "_defer_reason_for", lambda *a, **k: None)
+    patch.object(rc, "apply_provider_rate_limit", _noop).start()
+    patch.object(rc, "provider_throttle_before", _noop).start()
+    patch.object(rc, "record_provider_response", lambda *a, **k: None).start()
+    patch.object(rc, "_safe_record", lambda *a, **k: None).start()
+    patch("lite_indexer.rpc.throttle.throttle_before", _noop).start()
+    patch("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None).start()
+    patch.object(rc, "_defer_reason_for", lambda *a, **k: None).start()
 
     async def _get_client() -> _FakeHttp:
         return http
@@ -212,7 +216,7 @@ async def test_rpcclient_get_logs_splits_in_call(monkeypatch: pytest.MonkeyPatch
 
     client = rc.RpcClient()
     client._get_client = _get_client  # noqa: SLF001 — test seam
-    monkeypatch.setattr(rc, "_get_call_client", _get_call_client)
+    patch.object(rc, "_get_call_client", _get_call_client).start()
     result = await client.get_logs("https://archive.example", 0, 15, "0x" + "ab" * 32)
     assert result is not None
     blocks = [int(x["blockNumber"], 16) for x in result]

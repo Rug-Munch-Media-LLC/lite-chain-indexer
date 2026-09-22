@@ -14,6 +14,8 @@ Hermetic — no network, no disk.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import json
 from typing import Any
 
@@ -70,36 +72,38 @@ class _Http:
 
 
 @pytest.fixture(autouse=True)
-def _hermetic(monkeypatch: pytest.MonkeyPatch):
+def _hermetic():
     async def _noop(*a: Any, **k: Any) -> None:
         return None
 
     async def _circuit_false(endpoint: str) -> bool:
         return False
 
-    monkeypatch.setattr(rc, "_safe_record", lambda *a, **k: None)
-    monkeypatch.setattr(rc, "_defer_reason_for", lambda *a, **k: None)
-    monkeypatch.setattr(rc, "provider_throttle_before", _noop)
-    monkeypatch.setattr(rc, "record_provider_response", lambda *a, **k: None)
-    monkeypatch.setattr("lite_indexer.rpc.throttle.throttle_before", _noop)
-    monkeypatch.setattr("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None)
-    monkeypatch.setattr(circuit_mod, "circuit_open", _circuit_false)
-    metrics.reset()
-    yield
-    metrics.reset()
+    with (
+        patch.object(rc, "_safe_record", lambda *a, **k: None),
+        patch.object(rc, "_defer_reason_for", lambda *a, **k: None),
+        patch.object(rc, "provider_throttle_before", _noop),
+        patch.object(rc, "record_provider_response", lambda *a, **k: None),
+        patch("lite_indexer.rpc.throttle.throttle_before", _noop),
+        patch("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None),
+        patch.object(circuit_mod, "circuit_open", _circuit_false),
+    ):
+        metrics.reset()
+        yield
+        metrics.reset()
 
 
-def _wire(monkeypatch: pytest.MonkeyPatch, http: _Http) -> None:
+def _wire(http: _Http) -> None:
     async def _get(timeout: float) -> _Http:
         return http
 
-    monkeypatch.setattr(rc, "_get_call_client", _get)
+    patch.object(rc, "_get_call_client", _get).start()
 
 
 @pytest.mark.asyncio
-async def test_batch_collapses_to_one_request(monkeypatch: pytest.MonkeyPatch):
+async def test_batch_collapses_to_one_request():
     http = _Http()
-    _wire(monkeypatch, http)
+    _wire(http)
     calls = [("eth_getBlockByNumber", [hex(i), False]) for i in range(5)]
     results = await rc.RpcClient().call_batch("https://batch.example", calls)
 
@@ -111,7 +115,7 @@ async def test_batch_collapses_to_one_request(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_per_element_error_isolation(monkeypatch: pytest.MonkeyPatch):
+async def test_per_element_error_isolation():
     class _PartialHttp(_Http):
         async def post(self, url: str, json: Any = None):  # noqa: A002
             self.posts.append(json)
@@ -124,7 +128,7 @@ async def test_per_element_error_isolation(monkeypatch: pytest.MonkeyPatch):
             )
 
     http = _PartialHttp()
-    _wire(monkeypatch, http)
+    _wire(http)
     results = await rc.RpcClient().call_batch(
         "https://batch.example",
         [("eth_blockNumber", None), ("eth_call", [{"to": "0x1"}, "latest"]), ("eth_chainId", None)],
@@ -135,9 +139,9 @@ async def test_per_element_error_isolation(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_batch_failure_falls_back_to_individual(monkeypatch: pytest.MonkeyPatch):
+async def test_batch_failure_falls_back_to_individual():
     http = _Http(reject_batches=True)
-    _wire(monkeypatch, http)
+    _wire(http)
 
     individual: list[str] = []
 
@@ -147,7 +151,7 @@ async def test_batch_failure_falls_back_to_individual(monkeypatch: pytest.Monkey
         individual.append(method)
         return {"result": {"single": method}}
 
-    monkeypatch.setattr(rc.RpcClient, "call", _fake_call)
+    patch.object(rc.RpcClient, "call", _fake_call).start()
     results = await rc.RpcClient().call_batch(
         "https://batch.example",
         [("eth_blockNumber", None), ("eth_chainId", None), ("eth_gasPrice", None)],
@@ -158,10 +162,10 @@ async def test_batch_failure_falls_back_to_individual(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_batch_max_chunks_requests(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(rc, "RPC_BATCH_MAX", 2)
+async def test_batch_max_chunks_requests():
+    patch.object(rc, "RPC_BATCH_MAX", 2).start()
     http = _Http()
-    _wire(monkeypatch, http)
+    _wire(http)
     calls = [("eth_blockNumber", None) for _ in range(5)]
     results = await rc.RpcClient().call_batch("https://batch.example", calls)
 
@@ -171,10 +175,10 @@ async def test_batch_max_chunks_requests(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_batch_failure_without_fallback_leaves_none(monkeypatch: pytest.MonkeyPatch):
+async def test_batch_failure_without_fallback_leaves_none():
     """``fallback=False`` must NOT explode a failed batch into per-element calls."""
     http = _Http(reject_batches=True)
-    _wire(monkeypatch, http)
+    _wire(http)
 
     individual: list[str] = []
 
@@ -184,7 +188,7 @@ async def test_batch_failure_without_fallback_leaves_none(monkeypatch: pytest.Mo
         individual.append(method)
         return {"result": method}
 
-    monkeypatch.setattr(rc.RpcClient, "call", _fake_call)
+    patch.object(rc.RpcClient, "call", _fake_call).start()
     results = await rc.RpcClient().call_batch(
         "https://batch.example",
         [("eth_getBlockByNumber", ["0x1", False]), ("eth_getBlockByNumber", ["0x2", False])],
@@ -197,10 +201,10 @@ async def test_batch_failure_without_fallback_leaves_none(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_batch_disabled_uses_individual(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(rc, "RPC_BATCH_ENABLED", False)
+async def test_batch_disabled_uses_individual():
+    patch.object(rc, "RPC_BATCH_ENABLED", False).start()
     http = _Http()
-    _wire(monkeypatch, http)
+    _wire(http)
     individual: list[str] = []
 
     async def _fake_call(
@@ -209,7 +213,7 @@ async def test_batch_disabled_uses_individual(monkeypatch: pytest.MonkeyPatch):
         individual.append(method)
         return {"result": method}
 
-    monkeypatch.setattr(rc.RpcClient, "call", _fake_call)
+    patch.object(rc.RpcClient, "call", _fake_call).start()
     results = await rc.RpcClient().call_batch(
         "https://batch.example", [("eth_blockNumber", None), ("eth_chainId", None)]
     )

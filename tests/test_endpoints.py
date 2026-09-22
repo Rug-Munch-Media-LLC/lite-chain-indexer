@@ -15,6 +15,8 @@ Covers:
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import json
 import os
 import subprocess
@@ -76,49 +78,54 @@ EXPECTED_EVM_CHAINS = [
 
 
 class TestResolveEndpointUrl:
-    def test_expands_env_var(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("YOUR_PROVIDER_KEY", "test-key-123")
-        url = _resolve_endpoint_url("https://mainnet.example-rpc.com/v1/${YOUR_PROVIDER_KEY}")
+    def test_expands_env_var(self):
+        with patch.dict(os.environ, {"YOUR_PROVIDER_KEY": "test-key-123"}):
+            url = _resolve_endpoint_url("https://mainnet.example-rpc.com/v1/${YOUR_PROVIDER_KEY}")
         assert url == "https://mainnet.example-rpc.com/v1/test-key-123"
 
-    def test_unset_var_leaves_placeholder(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.delenv("YOUR_PROVIDER_KEY", raising=False)
-        url = _resolve_endpoint_url("https://mainnet.example-rpc.com/v1/${YOUR_PROVIDER_KEY}")
+    def test_unset_var_leaves_placeholder(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("YOUR_PROVIDER_KEY", None)
+            url = _resolve_endpoint_url("https://mainnet.example-rpc.com/v1/${YOUR_PROVIDER_KEY}")
         assert "${YOUR_PROVIDER_KEY}" in url
 
-    def test_dollar_bare_form_supported(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("YOUR_PROVIDER_KEY", "kb")
-        assert _resolve_endpoint_url("https://eth.example-rpc.com/?api_key=$YOUR_PROVIDER_KEY").endswith("?api_key=kb")
+    def test_dollar_bare_form_supported(self):
+        with patch.dict(os.environ, {"YOUR_PROVIDER_KEY": "kb"}):
+            assert _resolve_endpoint_url("https://eth.example-rpc.com/?api_key=$YOUR_PROVIDER_KEY").endswith(
+                "?api_key=kb"
+            )
 
     def test_no_placeholder_passthrough(self):
         assert _resolve_endpoint_url("https://mainnet.example-rpc.com") == "https://mainnet.example-rpc.com"
 
 
 class TestResolvedEndpoints:
-    def test_drops_unresolved_placeholders(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.delenv("YOUR_PROVIDER_KEY", raising=False)
+    def test_drops_unresolved_placeholders(self):
         urls = [
             "https://mainnet.example-rpc.com",
             "https://mainnet.example-rpc.com/v1/${YOUR_PROVIDER_KEY}",
             "https://${YOUR_DEDICATED_ENDPOINT}",
         ]
-        assert _resolved_endpoints(urls) == ["https://mainnet.example-rpc.com"]
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("YOUR_PROVIDER_KEY", None)
+            assert _resolved_endpoints(urls) == ["https://mainnet.example-rpc.com"]
 
-    def test_keeps_resolved_placeholder_endpoints(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("YOUR_PROVIDER_KEY", "k123")
+    def test_keeps_resolved_placeholder_endpoints(self):
         urls = [
             "https://mainnet.example-rpc.com",
             "https://mainnet.example-rpc.com/v1/${YOUR_PROVIDER_KEY}",
         ]
-        assert _resolved_endpoints(urls) == [
-            "https://mainnet.example-rpc.com",
-            "https://mainnet.example-rpc.com/v1/k123",
-        ]
+        with patch.dict(os.environ, {"YOUR_PROVIDER_KEY": "k123"}):
+            assert _resolved_endpoints(urls) == [
+                "https://mainnet.example-rpc.com",
+                "https://mainnet.example-rpc.com/v1/k123",
+            ]
 
-    def test_preserves_order(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.delenv("YOUR_PROVIDER_KEY", raising=False)
+    def test_preserves_order(self):
         urls = ["https://b.example", "https://a.example", "https://c.example"]
-        assert _resolved_endpoints(urls) == urls
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("YOUR_PROVIDER_KEY", None)
+            assert _resolved_endpoints(urls) == urls
 
 
 class TestGetLogsEndpoints:
@@ -240,15 +247,15 @@ class TestOverlayLoad:
         assert overlay["ethereum"]["endpoints"] == ["https://mainnet.example-rpc.com/v1/${YOUR_PROVIDER_KEY}"]
         assert overlay["ethereum"]["notes"]["https://mainnet.example-rpc.com/v1/${YOUR_PROVIDER_KEY}"] == "T4 — mine"
 
-    def test_env_var_path_is_honored(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_env_var_path_is_honored(self, tmp_path: Path):
         f = tmp_path / "env.json"
         f.write_text(json.dumps({"base": ["https://base.example-rpc.com/${YOUR_PROVIDER_KEY}"]}), encoding="utf-8")
-        monkeypatch.setenv("LITE_INDEXER_ENDPOINT_OVERLAY", str(f))
-        assert load_endpoint_overlay()["base"]["endpoints"] == ["https://base.example-rpc.com/${YOUR_PROVIDER_KEY}"]
+        with patch.dict(os.environ, {"LITE_INDEXER_ENDPOINT_OVERLAY": str(f)}):
+            assert load_endpoint_overlay()["base"]["endpoints"] == ["https://base.example-rpc.com/${YOUR_PROVIDER_KEY}"]
 
-    def test_env_var_missing_file_falls_back_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("LITE_INDEXER_ENDPOINT_OVERLAY", str(tmp_path / "nope.json"))
-        assert load_endpoint_overlay() == {}
+    def test_env_var_missing_file_falls_back_empty(self, tmp_path: Path):
+        with patch.dict(os.environ, {"LITE_INDEXER_ENDPOINT_OVERLAY": str(tmp_path / "nope.json")}):
+            assert load_endpoint_overlay() == {}
 
 
 class TestOverlayMerge:

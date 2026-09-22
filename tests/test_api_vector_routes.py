@@ -8,6 +8,8 @@ exemptions for health/metrics.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from typing import Any
 
 import pytest
@@ -45,13 +47,15 @@ class FakeStore:
 
 
 @pytest.fixture()
-def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def client() -> TestClient:
     """TestClient with a fake vector store installed."""
     app = create_app()
-    monkeypatch.setattr("api.routers.search._store", FakeStore())
-    monkeypatch.setattr("api.routers.search._store_error", None)
-    monkeypatch.setattr("api.routers.search.VECTOR_SEARCH_ENABLED", True)
-    with TestClient(app) as c:
+    with (
+        patch("api.routers.search._store", FakeStore()),
+        patch("api.routers.search._store_error", None),
+        patch("api.routers.search.VECTOR_SEARCH_ENABLED", True),
+        TestClient(app) as c,
+    ):
         yield c
 
 
@@ -115,33 +119,39 @@ def test_search_collection_missing(client: TestClient, monkeypatch: pytest.Monke
 
             raise CollectionNotFoundError(f"collection '{collection}' does not exist")
 
-    monkeypatch.setattr("api.routers.search._store", EmptyStore())
-    resp = client.get("/api/v1/search/wallets?q=rug+pull")
+    with patch("api.routers.search._store", EmptyStore()):
+        resp = client.get("/api/v1/search/wallets?q=rug+pull")
     assert resp.status_code == 404
 
 
-def test_search_store_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_store_unavailable() -> None:
     app = create_app()
-    monkeypatch.setattr("api.routers.search._store", None)
-    monkeypatch.setattr("api.routers.search._store_error", "lancedb not installed")
-    monkeypatch.setattr("api.routers.search.VECTOR_SEARCH_ENABLED", True)
-    with TestClient(app) as c:
+    with (
+        patch("api.routers.search._store", None),
+        patch("api.routers.search._store_error", "lancedb not installed"),
+        patch("api.routers.search.VECTOR_SEARCH_ENABLED", True),
+        TestClient(app) as c,
+    ):
         resp = c.get("/api/v1/search/wallets?q=rug+pull")
     assert resp.status_code == 503
     assert "unavailable" in resp.json()["detail"]
 
 
-def test_search_disabled_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_search_disabled_flag() -> None:
     app = create_app()
-    monkeypatch.setattr("api.routers.search.VECTOR_SEARCH_ENABLED", False)
-    with TestClient(app) as c:
+    with (
+        patch("api.routers.search.VECTOR_SEARCH_ENABLED", False),
+        TestClient(app) as c,
+    ):
         resp = c.get("/api/v1/search/wallets?q=rug+pull")
     assert resp.status_code == 503
 
 
-def test_health_still_works_with_search_down(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_health_still_works_with_search_down() -> None:
     app = create_app()
-    monkeypatch.setattr("api.routers.search._store", None)
-    monkeypatch.setattr("api.routers.search._store_error", "boom")
-    with TestClient(app) as c:
+    with (
+        patch("api.routers.search._store", None),
+        patch("api.routers.search._store_error", "boom"),
+        TestClient(app) as c,
+    ):
         assert c.get("/health").status_code == 200

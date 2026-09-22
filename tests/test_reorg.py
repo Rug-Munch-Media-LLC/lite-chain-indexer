@@ -15,6 +15,8 @@ Uses a fake ClickHouse client and a fake RPC so the suite is hermetic.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from typing import Any
 
 import pytest
@@ -259,10 +261,10 @@ def test_max_reorg_depth_per_chain() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_no_reorg_returns_no_reorg(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reorg_stage_no_reorg_returns_no_reorg() -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
+    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
 
     # Tip (200) checkpointed; verify block (188 = 200 - 12) hash matches.
     rpc = FakeRPC({200: HASH_A, 188: HASH_A})
@@ -281,10 +283,10 @@ async def test_reorg_stage_no_reorg_returns_no_reorg(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_detects_and_rolls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reorg_stage_detects_and_rolls_back() -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
+    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
 
     # The block that should be deep-confirmed (188) changed its hash: reorg.
     rpc = FakeRPC({200: HASH_A, 188: HASH_B})
@@ -301,13 +303,11 @@ async def test_reorg_stage_detects_and_rolls_back(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_lookup_failure_is_unknown_and_does_not_rollback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_reorg_stage_lookup_failure_is_unknown_and_does_not_rollback() -> None:
     """A checkpoint lookup failure must fail CLOSED: UNKNOWN, no rollback."""
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
+    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
 
     class LookupFailCH(FakeCH):
         def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
@@ -326,13 +326,11 @@ async def test_reorg_stage_lookup_failure_is_unknown_and_does_not_rollback(
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_no_checkpoint_is_benign_and_proceeds(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_reorg_stage_no_checkpoint_is_benign_and_proceeds() -> None:
     """No checkpoint yet is benign ('cannot verify yet'), not a halt."""
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
+    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
 
     rpc = FakeRPC({200: HASH_A, 188: HASH_B})
     client = FakeCH()  # no checkpoints seeded
@@ -344,11 +342,11 @@ async def test_reorg_stage_no_checkpoint_is_benign_and_proceeds(
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_rollback_failure_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reorg_stage_rollback_failure_is_unknown() -> None:
     """A failed rollback surfaces as UNKNOWN — not a successful reorg."""
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
+    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
 
     class RollbackFailCH(FakeCH):
         def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
@@ -368,10 +366,10 @@ async def test_reorg_stage_rollback_failure_is_unknown(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_disabled_returns_no_reorg(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reorg_stage_disabled_returns_no_reorg() -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", False)
+    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", False).start()
 
     rpc = FakeRPC({200: HASH_A, 188: HASH_B})
     client = FakeCH()
@@ -383,20 +381,20 @@ async def test_reorg_stage_disabled_returns_no_reorg(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_no_ch_client_returns_no_reorg(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reorg_stage_no_ch_client_returns_no_reorg() -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
+    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
     strategy = EVMChainStrategy("ethereum", rpc=FakeRPC({200: HASH_A, 188: HASH_B}))
     outcome = await strategy.reorg_stage(100, 200, None)
     assert outcome.status is ReorgStatus.NO_REORG
 
 
 @pytest.mark.asyncio
-async def test_reorg_stage_no_endpoints_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reorg_stage_no_endpoints_is_unknown() -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    monkeypatch.setattr("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True)
+    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
     strategy = EVMChainStrategy("not-a-real-chain", rpc=FakeRPC({200: HASH_A}))
     outcome = await strategy.reorg_stage(100, 200, FakeCH())
     assert outcome.status is ReorgStatus.UNKNOWN

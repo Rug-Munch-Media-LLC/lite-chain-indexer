@@ -16,6 +16,8 @@ cold side reads a temp parquet tree in mount mode.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -240,7 +242,7 @@ class TestColdStore:
                 "ingested_at",
             }
 
-    def test_fetch_mode_uses_rclone_cat(self, parquet_tree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    def test_fetch_mode_uses_rclone_cat(self, parquet_tree: Path, tmp_path: Path):
         store = ColdStore(
             remote="b2-crypt-v2:chain-data/parquet",
             fetch=True,
@@ -259,13 +261,13 @@ class TestColdStore:
             out.flush()
             return subprocess.CompletedProcess(cmd, 0)
 
-        monkeypatch.setattr("subprocess.run", fake_rclone)
-        rows = store.query(
+        with patch("subprocess.run", fake_rclone):
+            rows = store.query(
             "evm_transfers",
             "ethereum",
-            from_time=datetime(2026, 6, 30, tzinfo=UTC),
-            to_time=datetime(2026, 6, 30, 23, 59, tzinfo=UTC),
-        )
+                from_time=datetime(2026, 6, 30, tzinfo=UTC),
+                to_time=datetime(2026, 6, 30, 23, 59, tzinfo=UTC),
+            )
         assert len(rows) == 2
 
 
@@ -590,45 +592,51 @@ class TestViewRewrite:
 
 
 class TestApiWiring:
-    def test_query_routes_through_historical_view(self, monkeypatch: pytest.MonkeyPatch):
+    def test_query_routes_through_historical_view(self):
         import api.db as db
 
         fake = FakeCH(hot_rows=[_hot_row(200, "0xhot")], views=["evm_transfers_historical"])
-        monkeypatch.setattr(db, "get_client", lambda: fake)
-        monkeypatch.setattr(db, "HISTORICAL_ACCESS_ENABLED", True)
-        monkeypatch.setattr(db, "_historical_init", False)
-        monkeypatch.setattr(db, "_historical", None)
-        rows = db.query(
-            "SELECT chain, block_number, tx_hash FROM wallet_memory.evm_transfers WHERE chain = 'ethereum' LIMIT 10"
-        )
+        with (
+            patch.object(db, "get_client", lambda: fake),
+            patch.object(db, "HISTORICAL_ACCESS_ENABLED", True),
+            patch.object(db, "_historical_init", False),
+            patch.object(db, "_historical", None),
+        ):
+            rows = db.query(
+                "SELECT chain, block_number, tx_hash FROM wallet_memory.evm_transfers WHERE chain = 'ethereum' LIMIT 10"
+            )
         executed_sqls = [s for s, _ in fake.executed]
         assert any("wallet_memory.evm_transfers_historical" in s for s in executed_sqls)
         assert rows and rows[0]["tx_hash"] == "0xhot"
 
-    def test_query_unroutable_passes_through(self, monkeypatch: pytest.MonkeyPatch):
+    def test_query_unroutable_passes_through(self):
         import api.db as db
 
         fake = FakeCH(hot_rows=[_hot_row()], views=["evm_transfers_historical"])
-        monkeypatch.setattr(db, "get_client", lambda: fake)
-        monkeypatch.setattr(db, "HISTORICAL_ACCESS_ENABLED", True)
-        monkeypatch.setattr(db, "_historical_init", False)
-        monkeypatch.setattr(db, "_historical", None)
-        rows = db.query("SELECT chain FROM wallet_memory.wallet_labels LIMIT 1")
+        with (
+            patch.object(db, "get_client", lambda: fake),
+            patch.object(db, "HISTORICAL_ACCESS_ENABLED", True),
+            patch.object(db, "_historical_init", False),
+            patch.object(db, "_historical", None),
+        ):
+            rows = db.query("SELECT chain FROM wallet_memory.wallet_labels LIMIT 1")
         executed_sqls = [s for s, _ in fake.executed]
         # original SQL passed through unchanged (no view rewrite)
         assert any("SELECT chain FROM wallet_memory.wallet_labels LIMIT 1" in s for s in executed_sqls)
         assert not any("_historical" in s for s in executed_sqls)
         assert isinstance(rows, list)
 
-    def test_disabled_skips_historical(self, monkeypatch: pytest.MonkeyPatch):
+    def test_disabled_skips_historical(self):
         import api.db as db
 
         fake = FakeCH(hot_rows=[_hot_row()], views=["evm_transfers_historical"])
-        monkeypatch.setattr(db, "get_client", lambda: fake)
-        monkeypatch.setattr(db, "HISTORICAL_ACCESS_ENABLED", False)
-        monkeypatch.setattr(db, "_historical_init", False)
-        monkeypatch.setattr(db, "_historical", None)
-        db.query("SELECT chain FROM wallet_memory.evm_transfers WHERE chain = 'ethereum' LIMIT 10")
+        with (
+            patch.object(db, "get_client", lambda: fake),
+            patch.object(db, "HISTORICAL_ACCESS_ENABLED", False),
+            patch.object(db, "_historical_init", False),
+            patch.object(db, "_historical", None),
+        ):
+            db.query("SELECT chain FROM wallet_memory.evm_transfers WHERE chain = 'ethereum' LIMIT 10")
         executed_sqls = [s for s, _ in fake.executed]
         assert not any("_historical" in s for s in executed_sqls)
         assert not any("system.tables" in s for s in executed_sqls)
