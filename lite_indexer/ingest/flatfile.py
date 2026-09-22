@@ -74,6 +74,7 @@ from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from lite_indexer.bootstrap import SnapshotBootstrap, build_import_sql
+from lite_indexer.ingest.flatfile_seams import injected_fetcher
 from lite_indexer.config import BOOTSTRAP_CH_FILE_ROOT, FLATFILE_STAGE_DIR
 from lite_indexer.logging import get_logger
 from lite_indexer.snapshot_manifest import MANIFEST_NAME, SnapshotManifest, SnapshotTable
@@ -90,10 +91,8 @@ _CHAIN_DIR_PREFIX = "chain="
 # Date fallback for a manifest-less dataset (filesystem-safe, no semantics).
 _GLOB_DATE = "flatfile"
 
-
 class FlatfileSourceError(RuntimeError):
     """Raised for an invalid or unusable flat-file source."""
-
 
 @dataclass(frozen=True)
 class FlatfileChunk:
@@ -116,7 +115,6 @@ class FlatfileChunk:
     start_block: int = 0
     end_block: int = 0
 
-
 @dataclass(frozen=True)
 class FlatfileTable:
     """A table within a dataset (declared stats + chunk list)."""
@@ -130,7 +128,6 @@ class FlatfileTable:
         if self.declared_rows > 0:
             return self.declared_rows
         return sum(c.rows for c in self.chunks)
-
 
 @dataclass(frozen=True)
 class FlatfileDataset:
@@ -211,7 +208,6 @@ class FlatfileDataset:
             "manifest": self.from_manifest,
         }
 
-
 @dataclass
 class FlatfileImportResult:
     """Outcome of one ``import_chain`` run."""
@@ -249,7 +245,6 @@ class FlatfileImportResult:
             "duration_seconds": round(self.duration_seconds, 2),
             "errors": self.errors,
         }
-
 
 class ExternalFlatfileSource:
     """Hydrate from a pre-indexed parquet dataset (local dir / http / pyarrow.fs).
@@ -338,7 +333,10 @@ class ExternalFlatfileSource:
 
     @staticmethod
     def _fetch_url(url: str) -> bytes:
-        """Fetch a URL (monkeypatched in tests to avoid real network I/O)."""
+        """Fetch a URL for an external flatfile source."""
+        injected = injected_fetcher()
+        if injected is not None:
+            return injected(url)
         try:
             with urlopen(url, timeout=60) as response:  # noqa: S310 — scheme validated to http(s)
                 data: bytes = response.read()
@@ -796,7 +794,6 @@ class ExternalFlatfileSource:
         """Reuse the bootstrap row-count verification; return only mismatches."""
         verify = self._importer._verify_row_counts(client, manifest, self.target_db)
         return {table: stats for table, stats in verify.items() if stats["actual"] != stats["expected"]}
-
 
 __all__ = [
     "ExternalFlatfileSource",

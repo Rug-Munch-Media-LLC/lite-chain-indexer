@@ -1,9 +1,9 @@
 """Parquet write/upload/export orchestration (ParquetExporter)."""
 
 from __future__ import annotations
+from lite_indexer.storage.parquet.tooling import run as tool_run, which as tool_which
 
 import json
-import shutil
 import subprocess
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -40,7 +40,6 @@ from lite_indexer.storage.parquet.schema import (
 )
 
 logger = get_logger(__name__)
-
 
 class ParquetExporter:
     """Export old ClickHouse rows to Parquet and upload them to B2.
@@ -224,11 +223,11 @@ class ParquetExporter:
         Returns:
             True when the upload is verified.
         """
-        if not self.rclone_bin or shutil.which(self.rclone_bin) is None:
+        if not self.rclone_bin or tool_which(self.rclone_bin) is None:
             logger.warning("parquet_rclone_missing", bin=self.rclone_bin)
             return False
         try:
-            copy = subprocess.run(
+            copy = tool_run(
                 [self.rclone_bin, "copy", str(local), remote],
                 capture_output=True,
                 text=True,
@@ -238,7 +237,7 @@ class ParquetExporter:
             if copy.returncode != 0:
                 logger.warning("parquet_upload_failed", remote=remote, error=copy.stderr[-300:])
                 return False
-            verify = subprocess.run(
+            verify = tool_run(
                 [self.rclone_bin, "check", str(local), remote],
                 capture_output=True,
                 text=True,
@@ -639,6 +638,5 @@ class ParquetExporter:
         else:
             logger.warning("snapshot_publish_failed", chain=chain, date=day.isoformat(), remote=remote)
         return ok
-
 
 __all__ = ["ParquetExporter"]

@@ -614,8 +614,9 @@ class TestExportPublish:
             calls.append(list(cmd))
             return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
-        monkeypatch.setattr("lite_indexer.storage.parquet.shutil.which", lambda _bin: "/usr/bin/rclone")
-        monkeypatch.setattr("lite_indexer.storage.parquet.subprocess.run", fake_run)
+        from lite_indexer.storage.parquet import tooling as parquet_tooling
+
+        parquet_tooling.set_tool_seams(which=lambda _bin: "/usr/bin/rclone", run=fake_run)
 
         exporter = ParquetExporter(data_dir=tmp_path / "parquet")
         ok = exporter.publish_snapshot(

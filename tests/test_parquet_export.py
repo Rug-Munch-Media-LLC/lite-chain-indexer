@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from lite_indexer.cli import parse_args, run_export_parquet
+from lite_indexer.storage.parquet import tooling as parquet_tooling
 from lite_indexer.storage.parquet import (
     ParquetExporter,
     _local_dir,
@@ -176,6 +177,18 @@ def _dex_row(chain: str = "ethereum") -> dict[str, Any]:
 DAY = date(2026, 7, 30)
 
 
+@pytest.fixture(autouse=True)
+def _reset_seams() -> Any:
+    """Seam hygiene: real tooling + config cap for every test boundary."""
+    from lite_indexer.storage.parquet.reader import set_max_rows_per_day
+
+    parquet_tooling.set_tool_seams(None, None)
+    set_max_rows_per_day(None)
+    yield
+    parquet_tooling.set_tool_seams(None, None)
+    set_max_rows_per_day(None)
+
+
 # ── layout ──────────────────────────────────────────────────────────
 
 
@@ -291,19 +304,18 @@ def test_export_writes_and_verifies_parquet(tmp_path: Path) -> None:
     assert (tmp_path / "state" / "ethereum" / "2026-07-30.done").exists()
 
 
-def test_upload_verified_then_delete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_upload_verified_then_delete(tmp_path: Path) -> None:
     """delete-after-upload deletes rows only after the upload verifies."""
     client = FakeClickHouse(transfers=[_transfer_row()], dex=[_dex_row()])
     exporter = FakeExporter(client, data_dir=tmp_path / "parquet", state_dir=tmp_path / "state")
 
-    monkeypatch.setattr("lite_indexer.storage.parquet.shutil.which", lambda _bin: "/usr/bin/rclone")
     calls: list[list[str]] = []
 
     def fake_run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("lite_indexer.storage.parquet.subprocess.run", fake_run)
+    parquet_tooling.set_tool_seams(which=lambda _bin: "/usr/bin/rclone", run=fake_run)
 
     summary = exporter.export_chain("ethereum", dates=[DAY], upload=True, delete=True)
 
@@ -318,17 +330,16 @@ def test_upload_verified_then_delete(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert client.last_status() == "deleted"
 
 
-def test_upload_failure_skips_delete(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_upload_failure_skips_delete(tmp_path: Path) -> None:
     """When the upload is not verified, rows are NOT deleted."""
     client = FakeClickHouse(transfers=[_transfer_row()], dex=[_dex_row()])
     exporter = FakeExporter(client, data_dir=tmp_path / "parquet", state_dir=tmp_path / "state")
 
-    monkeypatch.setattr("lite_indexer.storage.parquet.shutil.which", lambda _bin: "/usr/bin/rclone")
 
     def fake_run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="boom")
 
-    monkeypatch.setattr("lite_indexer.storage.parquet.subprocess.run", fake_run)
+    parquet_tooling.set_tool_seams(which=lambda _bin: "/usr/bin/rclone", run=fake_run)
 
     summary = exporter.export_chain("ethereum", dates=[DAY], upload=True, delete=True)
 
@@ -357,7 +368,7 @@ def test_delete_without_upload_is_skipped(tmp_path: Path) -> None:
 # ── smoke: dry-run + full pipeline safety ───────────────────────────
 
 
-def test_parquet_export_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parquet_export_dry_run(tmp_path: Path) -> None:
     """Smoke: dry-run with mocked ClickHouse + B2 touches nothing.
 
     Even with --upload/--delete requested, a dry run must not: connect to
@@ -368,10 +379,9 @@ def test_parquet_export_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     exporter = FakeExporter(client, data_dir=tmp_path / "parquet", state_dir=tmp_path / "state")
 
     rclone_calls: list[list[str]] = []
-    monkeypatch.setattr("lite_indexer.storage.parquet.shutil.which", lambda _bin: "/usr/bin/rclone")
-    monkeypatch.setattr(
-        "lite_indexer.storage.parquet.subprocess.run",
-        lambda cmd, **_: (
+    parquet_tooling.set_tool_seams(
+        which=lambda _bin: "/usr/bin/rclone",
+        run=lambda cmd, **_: (
             rclone_calls.append(list(cmd)) or subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
         ),
     )
@@ -410,11 +420,11 @@ def test_parquet_export_skips_existing_markers(tmp_path: Path) -> None:
     assert client.state_inserts == []  # no state written
 
 
-def test_parquet_export_over_cap_fails_safely(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parquet_export_over_cap_fails_safely(tmp_path: Path) -> None:
     """A day over the row cap is marked failed — rows are never deleted."""
-    import lite_indexer.storage.parquet as parquet_mod
+    from lite_indexer.storage.parquet.reader import set_max_rows_per_day
 
-    monkeypatch.setattr(parquet_mod, "_MAX_ROWS_PER_DAY", 2)
+    set_max_rows_per_day(2)
 
     client = FakeClickHouse(transfers=[_transfer_row() for _ in range(3)], dex=[_dex_row()])
     exporter = FakeExporter(client, data_dir=tmp_path / "parquet", state_dir=tmp_path / "state")

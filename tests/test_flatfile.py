@@ -24,6 +24,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from lite_indexer.cli import parse_args
+from lite_indexer.ingest.flatfile_seams import set_url_fetcher
 from lite_indexer.ingest.flatfile import (
     ExternalFlatfileSource,
     FlatfileDataset,
@@ -266,7 +267,7 @@ class TestHttpSource:
                 return manifest.encode()
             return b"PARQUET"
 
-        monkeypatch.setattr(ExternalFlatfileSource, "_fetch_url", staticmethod(fake_fetch))
+        set_url_fetcher(fake_fetch)
         client = FakeClickHouse(counts={"evm_transfers": 3}, import_rows=3)
         src = FakeSource(
             client,
@@ -294,7 +295,7 @@ class TestHttpSource:
         def fake_fetch(url: str) -> bytes:
             raise FlatfileSourceError(f"cannot fetch {url!r}: HTTP Error 404: Not Found")
 
-        monkeypatch.setattr(ExternalFlatfileSource, "_fetch_url", staticmethod(fake_fetch))
+        set_url_fetcher(fake_fetch)
         src = ExternalFlatfileSource(source="https://example.com/dataset", stage_dir=tmp_path / "stage")
         with pytest.raises(FlatfileSourceError, match="cannot be listed"):
             await src.list()

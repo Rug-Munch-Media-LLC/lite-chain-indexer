@@ -13,13 +13,20 @@ from lite_indexer.storage.parquet.schema import PYARROW_AVAILABLE, pq
 logger = get_logger(__name__)
 
 
-def _max_rows_per_day() -> int:
-    """Resolve the per-day row cap at call time.
+_MAX_ROWS_OVERRIDE: int | None = None
 
-    Reads ``_MAX_ROWS_PER_DAY`` from the package namespace so tests can
-    monkeypatch ``lite_indexer.storage.parquet._MAX_ROWS_PER_DAY``.
-    """
-    from lite_indexer.storage.parquet import _MAX_ROWS_PER_DAY  # noqa: PLC0415 — lazy to avoid circular import
+
+def set_max_rows_per_day(value: int | None) -> None:
+    """Ops/test seam for the per-day row cap (None restores the config)."""
+    global _MAX_ROWS_OVERRIDE
+    _MAX_ROWS_OVERRIDE = value
+
+
+def _max_rows_per_day() -> int:
+    """Resolve the per-day row cap (the seam override wins over config)."""
+    if _MAX_ROWS_OVERRIDE is not None:
+        return _MAX_ROWS_OVERRIDE
+    from lite_indexer.storage.parquet.schema import _MAX_ROWS_PER_DAY
 
     return _MAX_ROWS_PER_DAY
 

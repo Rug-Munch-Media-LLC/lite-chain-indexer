@@ -11,8 +11,6 @@
 
 from __future__ import annotations
 
-import shutil  # noqa: F401 — re-exported for test monkeypatching
-import subprocess  # noqa: F401 — re-exported for test monkeypatching
 
 from lite_indexer.storage.parquet.helpers import (
     _block_range,
