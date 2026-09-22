@@ -17,13 +17,13 @@ from lite_indexer.strategies.solana.models import (
     SOLANA_TX_CONCURRENCY,
 )
 from lite_indexer.strategies.solana.parsing import is_vote_transaction
+from lite_indexer.strategies.solana.stride import base_stride, next_sample_stride
 from lite_indexer.strategies.solana.swaps import parse_solana_swap_events
 from lite_indexer.strategies.solana.timestamps import iso_from_epoch
 
 from ._base import SolanaMixinBase
 
 logger = get_logger(__name__)
-
 
 class TransfersBlockwiseMixin(SolanaMixinBase):
     """getBlock-per-slot transfer extraction for deep catch-up windows."""
@@ -156,9 +156,15 @@ class TransfersBlockwiseMixin(SolanaMixinBase):
             parse_times.append(time.perf_counter() - _t_parse)
             return events
 
-        # Sample every 2nd slot for catch-up speed (halves RPC spend; the
-        # sampled coverage is sufficient for tracked-mint transfer capture).
-        tasks = [_fetch_one_block(slot) for slot in slots if slot % 4 == 0]  # every 4th slot for catch-up speed
+        # Sampled coverage (adaptive stride: escalates when per-block RPC
+        # latency is high so a window still fits the chain's rate).
+        base = base_stride()
+        stride = next_sample_stride(
+            getattr(self, "_sample_stride", None),
+            float(getattr(self, "_sample_mean_fetch_s", 0.0) or 0.0),
+            base,
+        )
+        tasks = [_fetch_one_block(slot) for slot in slots if slot % stride == 0]
         # Process in bounded batches so a 1000-slot window doesn't blow the
         # daemon timeout — 200-slot chunks with a gather per chunk.
         chunk_size = SOLANA_BLOCK_MAX_PER_SYNC
@@ -168,7 +174,16 @@ class TransfersBlockwiseMixin(SolanaMixinBase):
             for r in results:
                 if isinstance(r, list):
                     all_events.extend(r)
+        mean_fetch = (sum(fetch_times) / len(fetch_times)) if fetch_times else 0.0
+        self._sample_mean_fetch_s = mean_fetch
+        self._sample_stride = next_sample_stride(stride, mean_fetch, base)
         if os.getenv("SOLANA_TIMING"):
+            logger.info(
+                "solana_sample_stride",
+                stride=stride,
+                next_stride=self._sample_stride,
+                mean_fetch_s=round(mean_fetch, 2),
+            )
             logger.info(
                 "solana_blockwise_timing",
                 blocks=len(fetch_times),
