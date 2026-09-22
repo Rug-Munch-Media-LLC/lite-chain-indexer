@@ -26,7 +26,10 @@ from lite_indexer.query.bigquery_common import BigQueryQuotaError
 from lite_indexer.ingest.lake_fill_common import (
     _estimated_scan_gib,
     _existing_day_count,
+    build_writer,
     fill_summary,
+    parse_since,
+    row_ts,
 )
 from lite_indexer.storage.clickhouse import ClickHouseUnavailable
 
@@ -70,6 +73,7 @@ class SolanaBigQueryFillRequest:
     # unless force_budget is set — the free quota is 1 TiB/month.
     max_scan_gib: float = 60.0
     force_budget: bool = False
+    since_ts: str | None = None  # surgical resume: drop rows older than this ISO ts
 
 @dataclass
 class _FillCtx:
@@ -79,20 +83,8 @@ class _FillCtx:
     writer: Any
     ch: Any
     req: SolanaBigQueryFillRequest
+    since_dt: Any = None
 
-def _build_writer() -> Any:
-    """Lake writer adapter: only the mixins ``write_clickhouse`` needs."""
-    from lite_indexer.strategies.solana.strategy.address_activity import AddressActivityMixin
-    from lite_indexer.strategies.solana.strategy.sync import SyncMixin
-    from lite_indexer.strategies.solana.strategy.traces import TracesMixin
-    from lite_indexer.strategies.solana.strategy.writes import WritesMixin
-
-    class _Writer(WritesMixin, AddressActivityMixin, SyncMixin, TracesMixin):
-        # drains need empty buffers; class attrs suffice (never mutated in place)
-        _trace_rows: list[dict[str, Any]] = []
-        _address_activity_rows: list[dict[str, Any]] = []
-
-    return _Writer()
 
 def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int:
     """Stream one (date, table) partition; ``sink=None`` counts only (dry run)."""
@@ -108,6 +100,8 @@ def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int
         )
         if not rows:
             break
+        if ctx.since_dt is not None:
+            rows = [r for r in rows if row_ts(r) >= ctx.since_dt]
         total += len(rows)
         if sink is not None:
             batch.extend(_to_writer_event(r) for r in rows)
@@ -145,7 +139,9 @@ def backfill_solana_from_bigquery(
         logger.warning("bigquery_fill_unavailable")
         return {}
     wh = ch_writer if ch_writer is not None else _default_ch_writer()
-    ctx = _FillCtx(src=src, writer=_build_writer(), ch=wh, req=req)
+    ctx = _FillCtx(
+        src=src, writer=build_writer(), ch=wh, req=req, since_dt=parse_since(req.since_ts)
+    )
 
     counts: dict[str, int] = {}
     written_total = 0

@@ -223,3 +223,27 @@ def test_is_quota_error_matches_bq_stderr() -> None:
     assert is_quota_error("quotaExceeded: something")
     assert not is_quota_error("not found: table x")
     assert not is_quota_error("")
+
+
+# ── Surgical resume (since-ts) ───────────────────────────────────────
+
+
+def test_since_ts_drops_older_rows(tmp_path: Any) -> None:
+    rows = [_raw_row(i) for i in range(25)]
+    ch = FakeCHWriter()
+    counts = backfill_solana_from_bigquery(
+        _req(since_ts="2026-09-21T00:00:05.000000+00:00", force=True),
+        source=_source(tmp_path, FakeRunner({DAY: rows})),
+        ch_writer=ch,
+    )
+    written = sum(len(b) for b in ch.client_obj.inserts)
+    assert written == counts[f"solana/{DAY}/token_transfers"] < 25
+
+
+def test_since_ts_none_writes_everything(tmp_path: Any) -> None:
+    rows = [_raw_row(i) for i in range(5)]
+    ch = FakeCHWriter()
+    counts = backfill_solana_from_bigquery(
+        _req(force=True), source=_source(tmp_path, FakeRunner({DAY: rows})), ch_writer=ch
+    )
+    assert counts[f"solana/{DAY}/token_transfers"] == 5

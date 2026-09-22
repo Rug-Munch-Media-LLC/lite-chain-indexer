@@ -109,6 +109,8 @@ def _add_fill_solana_parser(sub: argparse._SubParsersAction) -> None:
     fill.add_argument("--max-scan-gib", type=float, default=60.0,
                       help="Refuse runs whose estimated scan exceeds this (default 60)")
     fill.add_argument("--force-budget", action="store_true", help="Override the scan-budget guard")
+    fill.add_argument("--since-ts", default=None,
+                      help="Drop fetched rows older than this ISO ts (surgical resume fills)")
     fill.add_argument("--force", action="store_true", help="Write even for dates CH already covers")
     fill.add_argument("--dry-run", action="store_true", help="Count rows without writing")
 

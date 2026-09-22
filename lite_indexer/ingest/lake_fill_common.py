@@ -40,3 +40,38 @@ def fill_summary(req: SolanaBigQueryFillRequest, counts: dict[str, int]) -> dict
         "rows": sum(counts.values()), "counts": counts,
     }
 
+
+
+def build_writer() -> Any:
+    """Lake writer adapter: only the mixins ``write_clickhouse`` needs."""
+    from lite_indexer.strategies.solana.strategy.address_activity import AddressActivityMixin
+    from lite_indexer.strategies.solana.strategy.sync import SyncMixin
+    from lite_indexer.strategies.solana.strategy.traces import TracesMixin
+    from lite_indexer.strategies.solana.strategy.writes import WritesMixin
+
+    class _Writer(WritesMixin, AddressActivityMixin, SyncMixin, TracesMixin):
+        # drains need empty buffers; class attrs suffice (never mutated in place)
+        _trace_rows: list[dict[str, Any]] = []
+        _address_activity_rows: list[dict[str, Any]] = []
+
+    return _Writer()
+
+
+def parse_since(value: str | None) -> Any:
+    """Parse a --since-ts ISO string once (None disables the filter)."""
+    if not value:
+        return None
+    from datetime import UTC, datetime
+
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def row_ts(raw: dict[str, Any]) -> Any:
+    """Row block_timestamp as an aware datetime (accepts ms epoch)."""
+    from lite_indexer.query.bigquery_common import ms_to_dt
+
+    value = raw.get("block_timestamp")
+    if hasattr(value, "tzinfo"):
+        return value
+    return ms_to_dt(value)

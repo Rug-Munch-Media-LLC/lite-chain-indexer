@@ -32,6 +32,7 @@ def run_fill_solana(args: argparse.Namespace) -> int:
         dates=dates, dry_run=args.dry_run, batch_rows=args.batch_rows,
         max_rows=args.max_rows, mints=tuple(args.mint), force=args.force,
         max_scan_gib=args.max_scan_gib, force_budget=args.force_budget,
+        since_ts=getattr(args, "since_ts", None),
     )
     try:
         counts = backfill_solana_from_bigquery(req)
