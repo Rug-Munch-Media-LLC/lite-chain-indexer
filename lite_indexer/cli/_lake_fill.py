@@ -42,7 +42,8 @@ def run_fill_solana(args: argparse.Namespace) -> int:
     except BigQueryQuotaError as exc:
         logger.warning("bigquery_fill_quota_exceeded", error=str(exc)[:160])
         print(
-            "error: BigQuery free-bytes-scanned quota exhausted (1 TiB/month, resets monthly).\n"
+            "error: BigQuery free-bytes-scanned quota exhausted on every configured account.\n"
+            "  rotation state: /var/data/chain-indexer/state/bigquery_accounts.json\n"
             "  options: wait for the monthly reset, enable billing (Blaze, $6.25/TiB after the free 1 TiB),\n"
             "  or point at a fresh project: BIGQUERY_PROJECT_ID=<new-id> + GOOGLE_APPLICATION_CREDENTIALS=<new key>.",
             file=sys.stderr,

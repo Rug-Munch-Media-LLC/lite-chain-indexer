@@ -26,14 +26,12 @@ This is a package facade over ``selector`` / ``health`` / ``balancer``
 / ``helpers`` sub-modules; every public name is re-exported here so
 ``from lite_indexer.rpc.routing import X`` keeps working.
 
-Patch/reload compatibility notes (tests rely on these):
-- ``ERROR_RATE_DAMPING`` is computed HERE (not in ``balancer.py``) so
-  that ``importlib.reload(lite_indexer.rpc.routing)`` re-reads the
-  ``RPC_ERROR_RATE_DAMPING`` env override, and so monkeypatching
-  ``routing.ERROR_RATE_DAMPING`` affects ``EndpointLatency.damped_score``
-  (which reads it through this package at call time).
-- ``time`` and ``random`` are imported here so ``routing.time`` /
-  ``routing.random`` remain valid monkeypatch targets.
+Configuration + injection notes:
+- ``ERROR_RATE_DAMPING`` is computed HERE so a reload re-reads the
+  ``RPC_ERROR_RATE_DAMPING`` env override; runtime overrides go through
+  :func:`lite_indexer.rpc.routing.seams.set_damping`.
+- ``time`` and ``random`` are imported here for the balancer/health
+  helpers that re-export them.
 """
 
 from __future__ import annotations

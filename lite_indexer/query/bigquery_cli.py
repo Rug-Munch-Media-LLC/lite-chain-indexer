@@ -63,21 +63,14 @@ _ADDR_COLS: dict[str, tuple[str, ...]] = {
 
 
 def bq_accounts() -> list[tuple[str, str | None]]:
-    """Query accounts in preference order: [primary, alt].
+    """Query accounts in rotation order: healthy (LRU) first, exhausted last.
 
-    Two-account alternation: when the primary project's free query-bytes
-    quota is exhausted, the alt account serves the rest of the run.
-    primary: BIGQUERY_PROJECT_ID + GOOGLE_APPLICATION_CREDENTIALS
-    alt:     BIGQUERY_ALT_PROJECT_ID + BIGQUERY_ALT_CREDENTIALS
+    Registry: ``BIGQUERY_ACCOUNTS`` JSON, else the legacy
+    ``BIGQUERY_PROJECT_ID``/``GOOGLE_APPLICATION_CREDENTIALS`` (+ALT_*) pair.
     """
-    accounts = [(
-        os.environ.get("BIGQUERY_PROJECT_ID") or _DEFAULT_PROJECT,
-        os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
-    )]
-    alt_project = os.environ.get("BIGQUERY_ALT_PROJECT_ID")
-    if alt_project:
-        accounts.append((alt_project, os.environ.get("BIGQUERY_ALT_CREDENTIALS")))
-    return accounts
+    from lite_indexer.query.bigquery_accounts import ordered_accounts
+
+    return [(a.project, a.creds) for a in ordered_accounts()]
 
 
 def bq_env(creds: str | None) -> dict[str, str]:
@@ -123,6 +116,9 @@ def run_bq(bq_bin: str, sql: str, params: list[tuple[str, str, Any]]) -> list[di
             logger.warning("bigquery_bq_retry", project=project, error=((proc.stderr or "") or "")[:120])
             proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=bq_env(creds))
         if proc.returncode == 0:
+            from lite_indexer.query.bigquery_accounts import mark_used
+
+            mark_used(project)
             try:
                 data = json.loads(proc.stdout or "[]")
             except ValueError:
@@ -133,6 +129,9 @@ def run_bq(bq_bin: str, sql: str, params: list[tuple[str, str, Any]]) -> list[di
         if is_quota_error(detail):
             last_quota_error = detail
             logger.warning("bigquery_quota_exceeded", project=project, error=detail[:200])
+            from lite_indexer.query.bigquery_accounts import mark_exhausted
+
+            mark_exhausted(project)
             if idx + 1 < len(accounts):
                 logger.warning("bigquery_account_swapped", to_project=accounts[idx + 1][0])
                 continue
