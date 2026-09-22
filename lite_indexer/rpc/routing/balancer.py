@@ -57,25 +57,22 @@ def select_p2c_healthy(endpoints: list[str]) -> str:
     scoring and calls :func:`select_p2c` directly). Falls back to the
     full list when fewer than two healthy candidates exist.
 
-    ``is_circuit_open`` is read through the ``lite_indexer.rpc.routing``
-    package at call time so that monkeypatching
-    ``lite_indexer.rpc.routing.is_circuit_open`` (tests) takes effect.
-
     Args:
         endpoints: Pool candidate URLs.
 
     Returns:
         The selected endpoint URL.
     """
-    from lite_indexer.rpc import routing as _rt
     from lite_indexer.rpc.pool import is_endpoint_banned
+    from lite_indexer.rpc.routing.health import is_circuit_open
+    from lite_indexer.rpc.routing.seams import selector
 
     stale = set(stale_endpoints(endpoints))
     tip_failed = set(tip_failed_endpoints(endpoints))
     healthy = [
         ep
         for ep in endpoints
-        if not is_endpoint_banned(ep) and not _rt.is_circuit_open(ep) and ep not in stale and ep not in tip_failed
+        if not is_endpoint_banned(ep) and not is_circuit_open(ep) and ep not in stale and ep not in tip_failed
     ]
     candidates = healthy if len(healthy) >= 2 else endpoints
-    return select_p2c(candidates)
+    return selector()(candidates)

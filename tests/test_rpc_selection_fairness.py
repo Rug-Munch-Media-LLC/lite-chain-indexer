@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from lite_indexer.rpc import pool
+from lite_indexer.rpc.routing.seams import set_circuit_breaker, set_selector
 
 
 @pytest.fixture(autouse=True)
@@ -28,8 +29,10 @@ def _clean_pool(_mp: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch) -> Any
     _mp.setattr(ban_state, "_endpoint_bans", {})
     _mp.setattr(ban_state, "_endpoint_ban_level", {})
     monkeypatch.setattr(pool, "_SELECTION_COUNTS", {})
-    monkeypatch.setattr("lite_indexer.rpc.routing.CIRCUIT_BREAKER", RpcCircuitBreaker())
+    set_circuit_breaker(RpcCircuitBreaker())
     yield
+    set_circuit_breaker(None)
+    set_selector(None)
 
 
 ENDPOINTS = [f"https://rpc{i}.example.com" for i in range(4)]
@@ -57,7 +60,7 @@ class TestFairSpread:
             calls.append(list(candidates))
             return candidates[0]
 
-        monkeypatch.setattr("lite_indexer.rpc.routing.select_p2c", _capture)
+        set_selector(_capture)
         chosen = pool.get_best_endpoint(["https://a.example.com", "https://b.example.com"])
         assert calls, "P2C must be consulted inside the fairness window"
         assert chosen in calls[0]

@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from lite_indexer.config import RPC_STALE_TIP_BLOCKS
+from lite_indexer.rpc.routing.seams import set_selector
 from lite_indexer.rpc import routing
 from lite_indexer.rpc.routing import health
 
@@ -92,7 +93,7 @@ def test_selector_excludes_stale_endpoint(monkeypatch: pytest.MonkeyPatch) -> No
         captured.append(list(candidates))
         return candidates[0]
 
-    monkeypatch.setattr("lite_indexer.rpc.routing.balancer.select_p2c", _capture)
+    set_selector(_capture)
     chosen = routing.select_p2c_healthy([A, B, C])
 
     assert captured, "select_p2c was not called"
@@ -124,7 +125,7 @@ def test_selector_excludes_tip_failed_endpoint(monkeypatch: pytest.MonkeyPatch) 
         captured.append(list(candidates))
         return candidates[0]
 
-    monkeypatch.setattr("lite_indexer.rpc.routing.balancer.select_p2c", _capture)
+    set_selector(_capture)
     chosen = routing.select_p2c_healthy([A, B, C])
 
     assert captured, "select_p2c was not called"

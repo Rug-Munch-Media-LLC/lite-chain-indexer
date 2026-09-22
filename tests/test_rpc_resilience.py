@@ -43,6 +43,31 @@ from lite_indexer.rpc.pool import (
     unban_endpoint,
 )
 from lite_indexer.rpc.routing import RpcCircuitBreaker
+from lite_indexer.rpc.routing.seams import set_circuit_breaker
+
+
+class _PredicateBreaker:
+    """Breaker-shaped adapter for predicate-style test logic."""
+
+    def __init__(self, predicate: Any) -> None:
+        self._predicate = predicate
+
+    def is_open(self, endpoint: str) -> bool:
+        return bool(self._predicate(endpoint))
+
+
+class _breaker_seam:
+    """Context manager injecting a breaker via the routing seam."""
+
+    def __init__(self, breaker: Any) -> None:
+        self._breaker = breaker
+
+    def __enter__(self) -> Any:
+        set_circuit_breaker(self._breaker)
+        return self._breaker
+
+    def __exit__(self, *exc: Any) -> None:
+        set_circuit_breaker(None)
 
 
 class _Clock:
@@ -145,7 +170,7 @@ class TestPoolWideOutage:
         breaker.record_failure(a)
         breaker.record_failure(b)
         breaker.record_failure(b)
-        with patch("lite_indexer.rpc.routing.is_circuit_open", lambda ep: ep in (a, b)):
+        with _breaker_seam(_PredicateBreaker(lambda ep: ep in (a, b))):
             assert pool_fully_down([a, b]) is True
 
     def test_rate_limited_pool_fetch_attempts_and_advances(self, _mp: pytest.MonkeyPatch, clock: _Clock, monkeypatch: pytest.MonkeyPatch):
@@ -274,7 +299,7 @@ class TestPoolWideOutage:
         open_ok = "https://open.invalid"
         with patch("lite_indexer.config.ENDPOINT_BAN_BASE_SECONDS", 3600):
             ban_endpoint(banned, reason="http_403")
-        with patch("lite_indexer.rpc.routing.is_circuit_open", lambda ep: ep == open_ok):
+        with _breaker_seam(_PredicateBreaker(lambda ep: ep == open_ok)):
             eligible = probe_eligible_endpoints([banned, open_ok])
         assert eligible == [open_ok]
 
@@ -423,7 +448,7 @@ class TestEndpointRecovery:
         """pool.force_probe_endpoint bypasses the shared breaker for one call."""
         ep = "https://wrapped.invalid"
         breaker = RpcCircuitBreaker(failure_threshold=2)
-        with patch("lite_indexer.rpc.routing.CIRCUIT_BREAKER", breaker):
+        with _breaker_seam(breaker):
             breaker.record_failure(ep)
             breaker.record_failure(ep)
             assert force_probe_endpoint(ep) is True
@@ -486,7 +511,7 @@ class TestSingleEndpointFailure:
         breaker = RpcCircuitBreaker(failure_threshold=2)
         breaker.record_failure(broken)
         breaker.record_failure(broken)
-        with patch("lite_indexer.rpc.routing.is_circuit_open", lambda ep: ep == broken):
+        with _breaker_seam(_PredicateBreaker(lambda ep: ep == broken)):
             for _ in range(20):
                 assert get_best_endpoint([healthy, broken]) == healthy
 

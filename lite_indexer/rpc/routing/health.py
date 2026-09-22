@@ -27,10 +27,9 @@ from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 
 logger = get_logger(__name__)
-
+from lite_indexer.rpc.routing.seams import damping as damping_value  # noqa: E402
 
 # ── Per-Endpoint Circuit Breaker ────────────────────────────────────────
-
 
 class RpcCircuitBreaker:
     """Per-endpoint circuit breaker (open / half-open / closed).
@@ -211,18 +210,14 @@ class RpcCircuitBreaker:
 
         return min(endpoints, key=_rank)
 
-
 # Module-level breaker shared across the codebase.
 CIRCUIT_BREAKER = RpcCircuitBreaker()
-
 
 def is_circuit_open(endpoint: str) -> bool:
     """Check the shared breaker for an endpoint (convenience wrapper).
 
-    Reads ``CIRCUIT_BREAKER`` through the ``lite_indexer.rpc.routing``
-    package at call time so that monkeypatching
-    ``lite_indexer.rpc.routing.CIRCUIT_BREAKER`` (tests, operators)
-    takes effect here too.
+    The breaker comes from :mod:`lite_indexer.rpc.routing.seams` so tests
+    and operators can inject a replacement.
 
     Args:
         endpoint: RPC endpoint URL.
@@ -230,10 +225,9 @@ def is_circuit_open(endpoint: str) -> bool:
     Returns:
         True when the circuit is open (skip this endpoint).
     """
-    from lite_indexer.rpc import routing as _rt
+    from lite_indexer.rpc.routing.seams import circuit_breaker
 
-    return _rt.CIRCUIT_BREAKER.is_open(endpoint)
-
+    return circuit_breaker().is_open(endpoint)
 
 # ── EWMA Latency / Staleness Gate ─────────────────────────────────────
 #
@@ -268,7 +262,6 @@ STALE_ENDPOINT_PENALTY = 15000
 # failures demote it from tip rotation until it records a height.
 TIP_FAILURE_THRESHOLD = 2
 TIP_FAILURE_PENALTY = 15000
-
 
 @dataclass
 class EndpointLatency:
@@ -324,10 +317,9 @@ class EndpointLatency:
         """
         from lite_indexer.rpc import routing as _rt
 
-        damping = _rt.ERROR_RATE_DAMPING
+        damping = damping_value()
         base = self.ewma_ms * (1.0 + self.in_flight)
         return base * (1.0 + damping * self.error_rate())
-
 
 # Module-level latency state shared across the codebase.
 _LATENCY: dict[str, EndpointLatency] = {}
@@ -335,7 +327,6 @@ _LATENCY: dict[str, EndpointLatency] = {}
 # demote/recover transition is logged once per episode instead of on every
 # pool selection.
 _demoted_tips: set[str] = set()
-
 
 def _endpoint_label(endpoint: str) -> str:
     """Non-secret endpoint identity for logs (domain + hashed key id)."""
@@ -345,7 +336,6 @@ def _endpoint_label(endpoint: str) -> str:
         return account_key_for_endpoint(endpoint)
     except Exception:  # noqa: BLE001 — label must never break selection
         return "unknown"
-
 
 def _note_tip_demotions(stale: list[str], median: int | None) -> None:
     """Log each endpoint's stale-tip demote / catch-up transition once."""
@@ -370,7 +360,6 @@ def _note_tip_demotions(stale: list[str], median: int | None) -> None:
     _demoted_tips.clear()
     _demoted_tips.update(stale_set)
 
-
 def _stats(endpoint: str) -> EndpointLatency:
     """Return (creating on first use) the latency stats for ``endpoint``."""
     stats = _LATENCY.get(endpoint)
@@ -378,7 +367,6 @@ def _stats(endpoint: str) -> EndpointLatency:
         stats = EndpointLatency(endpoint=endpoint)
         _LATENCY[endpoint] = stats
     return stats
-
 
 def record_rpc_latency(endpoint: str, latency_ms: float) -> None:
     """Update the per-endpoint EWMA latency (α=0.2).
@@ -390,7 +378,6 @@ def record_rpc_latency(endpoint: str, latency_ms: float) -> None:
     stats = _stats(endpoint)
     stats.ewma_ms = (1.0 - EWMA_ALPHA) * stats.ewma_ms + EWMA_ALPHA * max(0.0, latency_ms)
     stats.last_updated_at = time.time()
-
 
 def record_rpc_outcome(endpoint: str, *, ok: bool) -> None:
     """Record a call outcome for the windowed error rate.
@@ -408,7 +395,6 @@ def record_rpc_outcome(endpoint: str, *, ok: bool) -> None:
     stats._outcomes.append((now, ok))
     stats._outcomes = [(ts, o) for ts, o in stats._outcomes if now - ts <= ERROR_WINDOW_SECONDS]
 
-
 def record_rpc_call(endpoint: str, *, ok: bool, latency_ms: float | None = None) -> None:
     """Record latency + outcome for one RPC call (convenience wrapper).
 
@@ -421,32 +407,26 @@ def record_rpc_call(endpoint: str, *, ok: bool, latency_ms: float | None = None)
         record_rpc_latency(endpoint, latency_ms)
     record_rpc_outcome(endpoint, ok=ok)
 
-
 def endpoint_ewma_ms(endpoint: str) -> float:
     """Current EWMA latency (ms) for an endpoint (never raises)."""
     return _stats(endpoint).ewma_ms
-
 
 def endpoint_error_rate(endpoint: str) -> float:
     """Windowed error rate for an endpoint (0.0 when no data)."""
     return _stats(endpoint).error_rate()
 
-
 def incr_in_flight(endpoint: str) -> None:
     """Increment the in-flight request count for ``endpoint``."""
     _stats(endpoint).in_flight += 1
-
 
 def decr_in_flight(endpoint: str) -> None:
     """Decrement the in-flight request count (floored at 0)."""
     stats = _stats(endpoint)
     stats.in_flight = max(0, stats.in_flight - 1)
 
-
 def in_flight_count(endpoint: str) -> int:
     """Current in-flight request count for ``endpoint``."""
     return _stats(endpoint).in_flight
-
 
 @asynccontextmanager
 async def track_in_flight(endpoint: str) -> AsyncIterator[None]:
@@ -463,7 +443,6 @@ async def track_in_flight(endpoint: str) -> AsyncIterator[None]:
         yield
     finally:
         decr_in_flight(endpoint)
-
 
 def record_endpoint_block_height(endpoint: str, height: int) -> None:
     """Record the latest block height observed from ``endpoint``.
@@ -490,7 +469,6 @@ def record_endpoint_block_height(endpoint: str, height: int) -> None:
     stats.tip_failures = 0
     stats.last_updated_at = time.time()
 
-
 def record_endpoint_tip_failure(endpoint: str) -> int:
     """Record a failed tip observation (null/error ``eth_blockNumber``).
 
@@ -510,21 +488,17 @@ def record_endpoint_tip_failure(endpoint: str) -> int:
     stats.last_updated_at = time.time()
     return stats.tip_failures
 
-
 def is_endpoint_tip_failed(endpoint: str) -> bool:
     """Whether ``endpoint`` is currently demoted for repeated tip failures."""
     return _stats(endpoint).tip_failures >= TIP_FAILURE_THRESHOLD
-
 
 def tip_failed_endpoints(endpoints: list[str]) -> list[str]:
     """All pool endpoints currently demoted for repeated tip failures."""
     return [ep for ep in endpoints if is_endpoint_tip_failed(ep)]
 
-
 def endpoint_block_height(endpoint: str) -> int | None:
     """Last recorded block height for an endpoint, or None."""
     return _stats(endpoint).last_block_height
-
 
 def _pool_median_height(endpoints: list[str]) -> int | None:
     """Median of recorded block heights across the pool (None if none)."""
@@ -540,7 +514,6 @@ def _pool_median_height(endpoints: list[str]) -> int | None:
     if len(heights) % 2:
         return heights[mid]
     return (heights[mid - 1] + heights[mid]) // 2
-
 
 def staleness_blocks(endpoint: str, endpoints: list[str]) -> int | None:
     """How many blocks ``endpoint`` lags behind the pool median height.
@@ -562,7 +535,6 @@ def staleness_blocks(endpoint: str, endpoints: list[str]) -> int | None:
         return None
     return median - height
 
-
 def is_endpoint_stale(endpoint: str, endpoints: list[str]) -> bool:
     """Whether ``endpoint`` lags >STALENESS_MAX_BLOCKS behind the median.
 
@@ -575,7 +547,6 @@ def is_endpoint_stale(endpoint: str, endpoints: list[str]) -> bool:
     """
     lag = staleness_blocks(endpoint, endpoints)
     return lag is not None and lag > STALENESS_MAX_BLOCKS
-
 
 def stale_endpoints(endpoints: list[str]) -> list[str]:
     """All pool endpoints lagging >STALENESS_MAX_BLOCKS behind the median.
@@ -597,7 +568,6 @@ def stale_endpoints(endpoints: list[str]) -> list[str]:
     _note_tip_demotions(stale, median)
     return stale
 
-
 def latency_snapshot() -> dict[str, dict[str, Any]]:
     """Per-endpoint EWMA/error-rate/in-flight snapshot (for logging)."""
     return {
@@ -611,11 +581,9 @@ def latency_snapshot() -> dict[str, dict[str, Any]]:
         for ep, s in _LATENCY.items()
     }
 
-
 def stale_demoted_count() -> int:
     """Number of endpoints currently demoted by the stale-tip gate."""
     return len(_demoted_tips)
-
 
 def reset_latency_state() -> None:
     """Clear all latency/height tracking (tests, operator reset)."""

@@ -48,7 +48,6 @@ BUDGET_EXHAUSTED_PENALTY = 20000
 # absorbs a chain) and uses P2C only as the latency tiebreak within it.
 _SELECTION_COUNTS: dict[str, int] = {}
 
-
 def _logs_capability_excluded(endpoint: str) -> bool:
     """Whether ``endpoint`` is permanently unable to serve broad getLogs.
 
@@ -59,7 +58,6 @@ def _logs_capability_excluded(endpoint: str) -> bool:
     from lite_indexer.rpc.capabilities import is_logs_capability_excluded
 
     return is_logs_capability_excluded(endpoint)
-
 
 def _logs_capability_reprobe_due(endpoint: str) -> bool:
     """Whether a stale capability exclusion may be re-probed.
@@ -72,22 +70,18 @@ def _logs_capability_reprobe_due(endpoint: str) -> bool:
 
     return is_logs_capability_reprobe_due(endpoint)
 
-
 def selection_counts() -> dict[str, int]:
     """Copy of the per-endpoint selection counters (tests/telemetry)."""
     return dict(_SELECTION_COUNTS)
-
 
 def reset_selection_state() -> None:
     """Clear the fairness counters (tests / shutdown)."""
     _SELECTION_COUNTS.clear()
 
-
 # ── Ban / streak state lives in rpc.ban_state (extracted 2026-09-19) ──
 
 # Recent-failure timestamps per endpoint (feeds backoff + scoring).
 _endpoint_failures: dict[str, list[float]] = {}
-
 
 def pool_fully_down(endpoints: list[str]) -> bool:
     """Whether every endpoint in a pool is HARD-banned or circuit-open.
@@ -114,10 +108,9 @@ def pool_fully_down(endpoints: list[str]) -> bool:
     """
     if not endpoints:
         return False
-    from lite_indexer.rpc.routing import is_circuit_open
+    from lite_indexer.rpc.routing.seams import circuit_breaker
 
-    return all(is_endpoint_hard_banned(ep) or is_circuit_open(ep) for ep in endpoints)
-
+    return all(is_endpoint_hard_banned(ep) or circuit_breaker().is_open(ep) for ep in endpoints)
 
 def pool_rate_limited(endpoints: list[str]) -> bool:
     """Whether the pool is rate-limited (soft-banned throughout) but not down.
@@ -139,10 +132,9 @@ def pool_rate_limited(endpoints: list[str]) -> bool:
         return False
     if pool_fully_down(endpoints):
         return False
-    from lite_indexer.rpc.routing import is_circuit_open
+    from lite_indexer.rpc.routing.seams import circuit_breaker
 
-    return all(is_endpoint_banned(ep) or is_circuit_open(ep) for ep in endpoints)
-
+    return all(is_endpoint_banned(ep) or circuit_breaker().is_open(ep) for ep in endpoints)
 
 def least_banned_endpoint(endpoints: list[str]) -> str:
     """Return the endpoint with the lowest combined pool penalty.
@@ -162,7 +154,7 @@ def least_banned_endpoint(endpoints: list[str]) -> str:
     if not endpoints:
         raise ValueError("least_banned_endpoint requires a non-empty endpoint list")
 
-    from lite_indexer.rpc.routing import is_circuit_open
+    from lite_indexer.rpc.routing.seams import circuit_breaker
 
     now = time.time()
     scored: list[tuple[int, str]] = []
@@ -171,12 +163,11 @@ def least_banned_endpoint(endpoints: list[str]) -> str:
         penalty = len(failures) * 1000 + i
         if is_endpoint_banned(ep):
             penalty += 50000
-        if is_circuit_open(ep):
+        if circuit_breaker().is_open(ep):
             penalty += 20000
         scored.append((penalty, ep))
     scored.sort(key=lambda x: x[0])
     return scored[0][1]
-
 
 def probe_eligible_endpoints(endpoints: list[str]) -> list[str]:
     """Endpoints the desperation probe is ALLOWED to dial.
@@ -213,7 +204,6 @@ def probe_eligible_endpoints(endpoints: list[str]) -> list[str]:
         eligible.append(ep)
     return eligible
 
-
 def force_probe_endpoint(endpoint: str) -> bool:
     """Bypass the circuit ban for a single request to ``endpoint``.
 
@@ -229,10 +219,9 @@ def force_probe_endpoint(endpoint: str) -> bool:
     Returns:
         True — the probe may proceed.
     """
-    from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+    from lite_indexer.rpc.routing.seams import circuit_breaker
 
-    return CIRCUIT_BREAKER.force_probe(endpoint)
-
+    return circuit_breaker().force_probe(endpoint)
 
 def desperation_probe_due(endpoints: list[str], now: float | None = None) -> bool:
     """Whether a pool-wide desperation probe may fire for ``endpoints``.
@@ -248,12 +237,11 @@ def desperation_probe_due(endpoints: list[str], now: float | None = None) -> boo
         True when the desperation interval has elapsed since the last
         probe for this pool.
     """
-    from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+    from lite_indexer.rpc.routing.seams import circuit_breaker
 
     if not endpoints:
         return False
-    return CIRCUIT_BREAKER.desperation_probe_due(endpoints[0], now=now)
-
+    return circuit_breaker().desperation_probe_due(endpoints[0], now=now)
 
 def mark_desperation_probe(endpoints: list[str], now: float | None = None) -> None:
     """Record that a desperation probe fired for ``endpoints``.
@@ -262,15 +250,13 @@ def mark_desperation_probe(endpoints: list[str], now: float | None = None) -> No
         endpoints: Pool candidate URLs.
         now: Epoch time override (tests).
     """
-    from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+    from lite_indexer.rpc.routing.seams import circuit_breaker
 
     if not endpoints:
         return
-    CIRCUIT_BREAKER.mark_desperation_probe(endpoints[0], now=now)
-
+    circuit_breaker().mark_desperation_probe(endpoints[0], now=now)
 
 # ── Best Endpoint Selection ──────────────────────────────────────────
-
 
 def get_best_endpoint(endpoints: list[str]) -> str:
     """Return the healthiest endpoint with load-balanced rotation.
@@ -296,10 +282,11 @@ def get_best_endpoint(endpoints: list[str]) -> str:
     from lite_indexer.rpc.routing import (
         STALE_ENDPOINT_PENALTY,
         TIP_FAILURE_PENALTY,
-        is_circuit_open,
         is_endpoint_tip_failed,
         stale_endpoints,
     )
+    from lite_indexer.rpc.routing.seams import circuit_breaker
+
 
     # Staleness gate: endpoints lagging >3 blocks behind the pool median
     # block height are excluded until they record a fresh height. With no
@@ -319,7 +306,7 @@ def get_best_endpoint(endpoints: list[str]) -> str:
             penalty += 50000
 
         # Circuit breaker: an open circuit fully skips the endpoint.
-        if is_circuit_open(ep):
+        if circuit_breaker().is_open(ep):
             penalty += 20000
 
         # Staleness gate: a lagging endpoint is skipped until it catches
@@ -366,7 +353,6 @@ def get_best_endpoint(endpoints: list[str]) -> str:
     # least-used half): no endpoint absorbs a chain.
     return _select_fair(healthy)
 
-
 def _select_fair(healthy: list[str]) -> str:
     """Fair-spread selection: least-used half of the healthy set, P2C tiebreak.
 
@@ -383,15 +369,13 @@ def _select_fair(healthy: list[str]) -> str:
         ordered = sorted(enumerate(healthy), key=lambda item: (_SELECTION_COUNTS.get(item[1], 0), item[0]))
         window = max(2, (len(ordered) + 1) // 2)
         candidates = [ep for _i, ep in ordered[:window]]
-        from lite_indexer.rpc.routing import select_p2c
+        from lite_indexer.rpc.routing.seams import selector
 
-        chosen = select_p2c(candidates)
+        chosen = selector()(candidates)
     _SELECTION_COUNTS[chosen] = _SELECTION_COUNTS.get(chosen, 0) + 1
     return chosen
 
-
 # ── Failure Tracking ────────────────────────────────────────────────
-
 
 def record_endpoint_failure(endpoint: str) -> None:
     """Record a failure for this endpoint (feeds backoff + circuit breaker).
@@ -406,10 +390,9 @@ def record_endpoint_failure(endpoint: str) -> None:
         logger.debug("endpoint_failure_ignored_logs_capability", endpoint=endpoint[:60])
         return
     _endpoint_failures.setdefault(endpoint, []).append(time.time())
-    from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+    from lite_indexer.rpc.routing.seams import circuit_breaker
 
-    CIRCUIT_BREAKER.record_failure(endpoint)
-
+    circuit_breaker().record_failure(endpoint)
 
 def record_rate_limit(endpoint: str) -> None:
     """Record a 429 rate limit for backoff WITHOUT tripping the circuit.
@@ -436,15 +419,13 @@ def record_rate_limit(endpoint: str) -> None:
     # 429 storm. Success anywhere clears the streak (record_endpoint_success).
     record_429_streak(endpoint)
 
-
 def record_endpoint_success(endpoint: str) -> None:
     """Record a success for this endpoint (closes its circuit + unban)."""
-    from lite_indexer.rpc.routing import CIRCUIT_BREAKER
+    from lite_indexer.rpc.routing.seams import circuit_breaker
 
-    CIRCUIT_BREAKER.record_success(endpoint)
+    circuit_breaker().record_success(endpoint)
     unban_endpoint(endpoint)
     clear_429_streak(endpoint)
-
 
 async def apply_endpoint_backoff(url: str) -> None:
     """Apply exponential backoff if this endpoint has recent failures."""
@@ -452,7 +433,6 @@ async def apply_endpoint_backoff(url: str) -> None:
     if recent_failures:
         backoff = 2 ** len(recent_failures)
         await asyncio.sleep(min(backoff, BACKOFF_CAP))
-
 
 async def handle_rate_limit(url: str) -> None:
     """Handle a 429: backoff only — no circuit trip, no hard ban.

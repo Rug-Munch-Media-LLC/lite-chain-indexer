@@ -53,3 +53,6 @@ data/
 
 # AI/session build artifacts — never commit
 .superpowers/
+
+# Methodology checker ignore-list (contains internal hostnames; never commit)
+.methodology-patterns
