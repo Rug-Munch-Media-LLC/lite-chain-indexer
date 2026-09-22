@@ -41,12 +41,14 @@ def test_stream_query_one_job_free_pages() -> None:
                 "jobReference": {"jobId": "job1", "location": "US"},
                 "schema": {"fields": [{"name": "slot"}, {"name": "mint"}]},
                 "rows": [{"f": [{"v": "1"}, {"v": "A"}]}],
-                "pageToken": "p2",
+                "totalRows": "2",
+                "jobComplete": True,
             }
-        assert kw["params"]["pageToken"] == "p2"
+        assert kw["params"]["startIndex"] == 1
         return {
             "schema": {"fields": [{"name": "slot"}, {"name": "mint"}]},
             "rows": [{"f": [{"v": "2"}, {"v": "B"}]}],
+            "totalRows": "2",
         }
 
     rest.set_transport(fake)
@@ -76,3 +78,30 @@ def test_param_spec_scalar_passthrough() -> None:
     spec = rest._param_spec(("limit", "INT64", 1000))
     assert spec["parameterType"] == {"type": "INT64"}
     assert spec["parameterValue"] == {"value": "1000"}
+
+
+def test_stream_query_walks_total_rows_by_start_index() -> None:
+    """totalRows drives the walk: 3 pages even if pageToken is absent."""
+    calls: list[dict[str, Any]] = []
+    pages = [
+        {"schema": {"fields": [{"name": "n"}]}, "rows": [{"f": [{"v": str(i)}]} for i in range(50_000)], "totalRows": "150000"},
+        {"schema": {"fields": [{"name": "n"}]}, "rows": [{"f": [{"v": str(i)}]} for i in range(50_000, 100_000)], "totalRows": "150000"},
+        {"schema": {"fields": [{"name": "n"}]}, "rows": [{"f": [{"v": str(i)}]} for i in range(100_000, 150_000)], "totalRows": "150000"},
+    ]
+
+    def fake(method: str, url: str, **kw: Any) -> dict[str, Any]:
+        calls.append({"method": method, "params": kw.get("params"), "payload": kw.get("payload")})
+        if method == "POST":
+            return {"jobReference": {"jobId": "j1", "location": "US"}, **pages[0], "jobComplete": True}
+        start = int((kw.get("params") or {}).get("startIndex") or 0)
+        return pages[start // 50_000]
+
+    rest.set_transport(fake)
+    try:
+        got = sum(len(p) for p in rest.stream_query("SELECT n", [], project="p", page_size=50_000))
+    finally:
+        rest.set_transport(None)
+    assert got == 150_000
+    assert len([c for c in calls if c["method"] == "POST"]) == 1  # one job, free result pages
+    starts = [int(c["params"]["startIndex"]) for c in calls if c["method"] == "GET"]
+    assert starts == [50_000, 100_000]

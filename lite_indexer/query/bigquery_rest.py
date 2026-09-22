@@ -113,11 +113,16 @@ def estimate_scan_bytes(sql: str, params: list[tuple[str, str, Any]], *, project
 
 def stream_query(sql: str, params: list[tuple[str, str, Any]], *, project: str,
                  creds_path: str | None = None, page_size: int = 50_000) -> Iterator[list[dict[str, Any]]]:
-    """Yield pages of ONE query job — result pages never re-scan."""
+    """Yield pages of ONE query job — result pages never re-scan.
+
+    Pages are walked by ``startIndex`` against the job's ``totalRows``
+    (deterministic; the result pages are served from the job's cache, so
+    only the first page costs a partition scan).
+    """
     body = {
         "query": sql, "useLegacySql": False, "parameterMode": "NAMED",
         "queryParameters": [_param_spec(p) for p in params],
-        "maxResults": page_size, "timeoutMs": 60_000,
+        "maxResults": page_size, "timeoutMs": 120_000,
     }
     token = _token(creds_path)
     resp = _http("POST", f"{_API}/projects/{project}/queries", token=token, payload=body)
@@ -125,17 +130,20 @@ def stream_query(sql: str, params: list[tuple[str, str, Any]], *, project: str,
     job_id = job.get("jobId", "")
     location = job.get("location", "US")
     waited = 0
-    while not resp.get("jobComplete", True) and waited < 120:
+    while not resp.get("jobComplete", True) and waited < 300:
         time.sleep(2)
         waited += 2
         resp = _http("GET", f"{_API}/projects/{project}/queries/{job_id}", token=token,
                      params={"location": location, "maxResults": page_size})
+    total = int(resp.get("totalRows") or 0)
+    fetched = 0
     while True:
         rows = _rows_of(resp)
-        if rows:
-            yield rows
-        page_token = resp.get("pageToken")
-        if not page_token:
+        if not rows:
+            break
+        yield rows
+        fetched += len(rows)
+        if fetched >= total:
             break
         resp = _http("GET", f"{_API}/projects/{project}/queries/{job_id}", token=token,
-                     params={"pageToken": page_token, "maxResults": page_size, "location": location})
+                     params={"startIndex": fetched, "maxResults": page_size, "location": location})
