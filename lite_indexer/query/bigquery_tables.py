@@ -38,6 +38,8 @@ _SOLANA_TABLES: dict[str, str] = {
 }
 
 #: Per-table SELECT lists for the solana dataset, aliased to warehouse names.
+_SOLANA_MAX_PAGE = 50_000  # fill page size (LIMIT does not change scan bytes)
+
 _SOLANA_SELECT: dict[str, str] = {
     "token_transfers": (
         "block_slot AS slot, UNIX_MILLIS(block_timestamp) AS block_timestamp, "
@@ -186,7 +188,7 @@ def _build_solana_query(
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY block_slot DESC LIMIT @limit"
-    params.append(("limit", "INT64", max(1, min(int(limit), 1000))))
+    params.append(("limit", "INT64", max(1, min(int(limit), _SOLANA_MAX_PAGE))))
     if offset is not None and int(offset) > 0:
         sql += " OFFSET @offset"
         params.append(("offset", "INT64", int(offset)))

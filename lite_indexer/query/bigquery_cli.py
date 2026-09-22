@@ -112,12 +112,16 @@ def run_bq(bq_bin: str, sql: str, params: list[tuple[str, str, Any]]) -> list[di
             "--quiet",
             "query",
             "--use_legacy_sql=false",
+            "--max_rows=200000",  # display cap (query flag); SQL LIMIT governs the page
         ]
         for name, bigquery_type, value in params:
             rendered = json.dumps(value) if bigquery_type.startswith("ARRAY<") else str(value)
             cmd.append(f"--parameter={name}:{bigquery_type}:{rendered}")
         cmd.append(sql)
         proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=bq_env(creds))
+        if proc.returncode != 0 and "gcloud crashed" in ((proc.stderr or "") + (proc.stdout or "")):
+            logger.warning("bigquery_bq_retry", project=project, error=((proc.stderr or "") or "")[:120])
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False, env=bq_env(creds))
         if proc.returncode == 0:
             try:
                 data = json.loads(proc.stdout or "[]")

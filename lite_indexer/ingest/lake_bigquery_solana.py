@@ -35,7 +35,7 @@ from lite_indexer.storage.clickhouse import ClickHouseUnavailable
 
 logger = get_logger(__name__)
 
-_PAGE_ROWS = 1000  # per-BQ-read page size (the SQL builder caps LIMIT at 1000)
+_PAGE_ROWS = 50_000  # per-BQ-read page size (solana SQL clamp is 50k)
 FILLABLE_TABLES: tuple[str, ...] = ("token_transfers",)  # only tables with a CH writer
 
 def _to_writer_event(row: dict[str, Any]) -> dict[str, Any]:
@@ -74,6 +74,10 @@ class SolanaBigQueryFillRequest:
     max_scan_gib: float = 60.0
     force_budget: bool = False
     since_ts: str | None = None  # surgical resume: drop rows older than this ISO ts
+    # OFFSET paging re-scans the whole partition per page (2026-09-22 quota
+    # burn: 5 pages x 49.5 GiB). Until the one-job REST result-paging runner
+    # lands, fills are bounded to a single page per day on purpose.
+    max_pages_per_day: int = 1
 
 @dataclass
 class _FillCtx:
@@ -91,7 +95,12 @@ def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int
     total = 0
     batch: list[dict[str, Any]] = []
     offset = 0
+    pages = 0
     while True:
+        pages += 1
+        if pages > ctx.req.max_pages_per_day:
+            logger.warning("bigquery_fill_page_cap", day=day, pages=pages - 1)
+            break
         rows = ctx.src.query(
             BigQuerySpec(
                 table, chain="solana", dates=[day], limit=_PAGE_ROWS,
