@@ -31,11 +31,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # ── Ratchet gates (REQUIRED, in order) ───────────────────────
+      # The four repo ratchets run before lint so a structural or
+      # anti-pattern regression fails fast. See docs/CI-GATES.md.
+      - name: Structure gate (shrink-only ratchet)
+        run: python3 scripts/check-structure.py
+
       - name: Antipattern gate (per-repo ratchet)
-        run: python3 scripts/check-antipatterns.py --repo .
+        run: python3 scripts/check-antipatterns.py
 
       - name: Monkeypatch gate (decrease-only ratchet)
-        run: python3 scripts/check-monkeypatch.py --repo .
+        run: python3 scripts/check-monkeypatch.py
+
+      - name: Public-leak gate (freemium scan)
+        run: python3 scripts/check-public-no-freemium.py
 
       - name: Gate self-test (prove gates catch violations)
         run: bash scripts/ci-gate-selftest.sh
@@ -107,7 +116,10 @@ jobs:
           pip install -e ".[dev]" diff-cover
 
       - name: Unit tests with coverage (BLOCKING)
-        # Tests MUST pass and global coverage must meet the 60% floor.
+        # Tests MUST pass and global coverage must meet the 74% floor.
+        # RATCHET: the floor only ever RISES. Measured 75% on 2026-09-22
+        # (1890 passed); 74% is the rounded-down floor with a small margin.
+        # Raise it as coverage improves — never lower it. See docs/CI-GATES.md.
         # covgate (the Rust CLI used by frontend repos) does not parse Python
         # coverage output; diff-cover provides the same per-diff gate below.
         run: |
@@ -116,7 +128,7 @@ jobs:
             --cov-report=term \
             --cov-report=xml:coverage.xml \
             --cov-report=lcov:coverage.lcov \
-            --cov-fail-under=60
+            --cov-fail-under=74
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -127,7 +139,7 @@ jobs:
       - name: Per-diff coverage gate (diff-cover — BLOCKING)
         # Ratchet: lines CHANGED vs origin/main must be >=60% covered.
         # On pushes to main the diff is empty and this passes trivially.
-        run: diff-cover coverage.xml --compare-branch=origin/main --fail-under=60
+        run: diff-cover coverage.xml --compare-branch=origin/main --fail-under=74
 
       - name: Upload coverage report
         if: always()
