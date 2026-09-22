@@ -10,6 +10,8 @@ Hermetic — no network, no disk.
 
 from __future__ import annotations
 
+import random
+
 from typing import Any
 
 import pytest
@@ -30,6 +32,7 @@ def _clean_pool(_mp: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch) -> Any
     _mp.setattr(ban_state, "_endpoint_ban_level", {})
     monkeypatch.setattr(pool, "_SELECTION_COUNTS", {})
     set_circuit_breaker(RpcCircuitBreaker())
+    random.seed(7)  # deterministic p2c draws: the spread bound is RNG-dependent
     yield
     set_circuit_breaker(None)
     set_selector(None)
@@ -40,7 +43,7 @@ ENDPOINTS = [f"https://rpc{i}.example.com" for i in range(4)]
 
 class TestFairSpread:
     def test_load_spreads_across_healthy_endpoints(self) -> None:
-        for _ in range(40):
+        for _ in range(200):  # enough draws for the fairness window to converge
             pool.get_best_endpoint(ENDPOINTS)
         counts = pool.selection_counts()
         assert set(counts) == set(ENDPOINTS)

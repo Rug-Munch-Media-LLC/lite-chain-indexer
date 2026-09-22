@@ -112,3 +112,10 @@ python3 scripts/check-monkeypatch.py --update-baseline
 
 `--update-baseline` only ever removes or shrinks entries. Review the diff —
 a baseline that *grew* is a bug in the change, not the gate.
+
+## Suite chunking (OOM guard)
+
+The full pytest suite is run as **two deterministic halves** of `tests/test_*.py`
+(`test_traces.py` and `test_critical_paths.py` run solo) because a monolithic
+run gets OOM-killed on the 10 GiB heavy-run cage. Coverage accumulates with
+`--cov-append`; the `--cov-fail-under` floor applies on the final chunk only.

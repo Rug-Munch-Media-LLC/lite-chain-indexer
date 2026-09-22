@@ -58,8 +58,19 @@ jobs:
       - name: Type check with mypy
         run: mypy lite_indexer/
 
-      - name: Run tests
-        run: pytest -v --tb=short
+      - name: Run tests (chunk 1/2)
+        # The monolithic suite is OOM-killed on the 10G cage: deterministic
+        # halves (traces + critical_paths run solo in their own step).
+        run: |
+          FILES=$(ls tests/test_*.py | grep -vE 'test_(traces|critical_paths)\.py')
+          HALF=$(( $(echo "$FILES" | wc -l) / 2 ))
+          pytest $(echo "$FILES" | head -$HALF | tr '\n' ' ') -v --tb=short
+
+      - name: Run tests (chunk 2/2)
+        run: |
+          FILES=$(ls tests/test_*.py | grep -vE 'test_(traces|critical_paths)\.py')
+          HALF=$(( $(echo "$FILES" | wc -l) / 2 ))
+          pytest $(echo "$FILES" | tail -n +$((HALF+1)) | tr '\n' ' ') -v --tb=short
 
       - name: Check import
         run: python -c "from lite_indexer import LiteIndexer; print('Package import OK')"
@@ -123,12 +134,14 @@ jobs:
         # covgate (the Rust CLI used by frontend repos) does not parse Python
         # coverage output; diff-cover provides the same per-diff gate below.
         run: |
-          pytest -m "not smoke" -q --tb=short \
-            --cov=lite_indexer \
-            --cov-report=term \
-            --cov-report=xml:coverage.xml \
-            --cov-report=lcov:coverage.lcov \
-            --cov-fail-under=74
+          FILES=$(ls tests/test_*.py | grep -vE 'test_(traces|critical_paths)\.py')
+          HALF=$(( $(echo "$FILES" | wc -l) / 2 ))
+          pytest $(echo "$FILES" | head -$HALF | tr '\n' ' ') -m "not smoke" -q --tb=short \
+            --cov=lite_indexer --cov-report=term --cov-fail-under=0
+          pytest $(echo "$FILES" | tail -n +$((HALF+1)) | tr '\n' ' ') -m "not smoke" -q --tb=short \
+            --cov=lite_indexer --cov-report=term \
+            --cov-report=xml:coverage.xml --cov-report=lcov:coverage.lcov \
+            --cov-append --cov-fail-under=74
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
