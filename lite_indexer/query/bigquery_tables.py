@@ -82,7 +82,6 @@ _ADDR_COLS: dict[str, tuple[str, ...]] = {
     "blocks": (),
 }
 
-
 def build_query(
     spec: BigQuerySpec,
 ) -> tuple[str, list[tuple[str, str, Any]]]:
@@ -138,7 +137,6 @@ def build_query(
     params.append(("limit", "INT64", max(1, min(int(limit), 1000))))
     return sql, params
 
-
 def _build_solana_query(
     spec: BigQuerySpec,
 ) -> tuple[str, list[tuple[str, str, Any]]]:
@@ -164,12 +162,10 @@ def _build_solana_query(
     if mints:
         where.append("mint IN UNNEST(@mints)")
         params.append(("mints", "ARRAY<STRING>", [str(m) for m in mints]))
-    if spec.since_ts:
-        where.append("block_timestamp >= @since_ts")
-        params.append(("since_ts", "TIMESTAMP", spec.since_ts))
-    if spec.until_ts:
-        where.append("block_timestamp <= @until_ts")
-        params.append(("until_ts", "TIMESTAMP", spec.until_ts))
+    for name, bound, op in (("since_ts", spec.since_ts, ">="), ("until_ts", spec.until_ts, "<=")):
+        if bound:
+            where.append(f"block_timestamp {op} @{name}")
+            params.append((name, "TIMESTAMP", bound))
     if from_block is not None:
         where.append("block_slot >= @from_slot")
         params.append(("from_slot", "INT64", int(from_block)))
