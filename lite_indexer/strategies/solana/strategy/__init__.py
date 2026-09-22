@@ -25,6 +25,8 @@ from .dex_events import DexEventsMixin
 from .sync import SyncMixin
 from .traces import TracesMixin
 from .transfers import TransfersMixin
+from .transfers_blockwise import TransfersBlockwiseMixin
+from .writes import WritesMixin
 
 __all__ = [
     "AddressActivityMixin",
@@ -32,12 +34,21 @@ __all__ = [
     "SolanaStrategy",
     "SyncMixin",
     "TracesMixin",
+    "TransfersBlockwiseMixin",
+    "WritesMixin",
     "TransfersMixin",
 ]
 
 
 class SolanaStrategy(
-    AddressActivityMixin, SyncMixin, TransfersMixin, TracesMixin, DexEventsMixin, AbstractChainStrategy
+    AddressActivityMixin,
+    SyncMixin,
+    TransfersMixin,
+    TransfersBlockwiseMixin,
+    WritesMixin,
+    TracesMixin,
+    DexEventsMixin,
+    AbstractChainStrategy
 ):
     """Strategy for Solana — indexes SPL token balance changes.
 
