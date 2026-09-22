@@ -11,6 +11,7 @@ referenced here as a bare name so the mixin works standalone in tests.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
 
@@ -22,7 +23,6 @@ from lite_indexer.config import (
     DEX_SKIP_TO_HEAD,
     DEX_SKIP_TO_HEAD_HOURS,
     HEAD_BUFFER,
-    REORG_PROTECTION_ENABLED,
     RPC_WS_HEAD_ENABLED,
     STATE_BACKWARD_PROTECTION,
     STATE_REGRESSION_TOLERANCE_BLOCKS,
@@ -37,6 +37,7 @@ from lite_indexer.indexer._checkpoint import (
 )
 from lite_indexer.indexer._dex_phase import note_dex_timeout, resolve_dex_events
 from lite_indexer.indexer._phase_guard import PhaseTimeoutError, guarded_phase
+from lite_indexer.indexer._reorg_phase import ReorgPhaseMixin
 from lite_indexer.indexer._writers import (
     flush_solana_launch_bundles,
     flush_tron_launch,
@@ -47,12 +48,10 @@ from lite_indexer.logging import get_logger
 from lite_indexer.rpc import RpcFetchFailedError
 from lite_indexer.storage.ch_write_pool import run_ch_write
 from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrategy
-from lite_indexer.strategies.reorg_status import ReorgStatus
 
 logger = get_logger(__name__)
 
-
-class SyncLoopMixin(IndexerMixinBase):
+class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
     """Sync loop body — extracted from the former god-file.
 
     Holds the main sync cycle: block range determination, event fetching,
@@ -332,6 +331,9 @@ class SyncLoopMixin(IndexerMixinBase):
         start_time: float,
     ) -> dict[str, Any]:
         """Sync one sub-slice (restore handled in finally)."""
+        _timing = os.getenv("SOLANA_TIMING") and self.chain == "solana"  # phase timers
+        _t_win = time.perf_counter()
+        _t_fetch = _t_ch = _t_drains = _t_nats = _t_state = _t_side = 0.0
         # 2a. Graceful ClickHouse pause: probe CH BEFORE fetching events
         # from RPC. Unreachable CH aborts here with status "ch_unavailable"
         # — no RPC budget burned, no state movement (retry next poll).
@@ -353,6 +355,7 @@ class SyncLoopMixin(IndexerMixinBase):
 
         try:
             # Solana block catch-up needs headroom (200 slots × getBlock ≈ 40-90s).
+            _t0 = time.perf_counter()
             events = await guarded_phase(
                 "transfers",
                 self.fetch_transfers(from_block, to_block),
@@ -360,6 +363,7 @@ class SyncLoopMixin(IndexerMixinBase):
                 from_block=from_block,
                 to_block=to_block,
             )
+            _t_fetch = time.perf_counter() - _t0
         except (RpcFetchFailedError, PhaseTimeoutError) as exc:
             # Data-loss guard: all endpoints failed for this range. Do NOT
             # advance state — the range is retried on the next cycle.
@@ -429,7 +433,9 @@ class SyncLoopMixin(IndexerMixinBase):
                 except PhaseTimeoutError as exc:
                     # Non-fatal: the transfers leg checkpointed this slice.
                     note_dex_timeout(summary, chain=self.chain, exc=exc)
-                dex_events = resolve_dex_events(dex_events, summary, chain=self.chain, from_block=from_block, to_block=to_block)
+                dex_events = resolve_dex_events(
+                    dex_events, summary, chain=self.chain, from_block=from_block, to_block=to_block
+                )
                 if self._check_reorg(dex_events):
                     logger.warning("chain_reorg_during_dex_sync", chain=self.chain)
                     self.start_from_head = True
@@ -525,6 +531,7 @@ class SyncLoopMixin(IndexerMixinBase):
             elif tron_strategy and tron_strategy._last_launch_events:
                 # Tron deployer rows mirror the drained launch buffer (batch-1).
                 deployer_candidates = len(tron_strategy._last_launch_events)
+            _t0 = time.perf_counter()
             deployer_written = await write_deployer_events(
                 self.chain,
                 evm_strategy,
@@ -533,6 +540,7 @@ class SyncLoopMixin(IndexerMixinBase):
                 self._enrich_timestamps,
                 nats=self.nats_publisher,
             )
+            _t_drains += time.perf_counter() - _t0
             if deployer_written:
                 summary["deployer_events_written"] = deployer_written
 
@@ -546,7 +554,9 @@ class SyncLoopMixin(IndexerMixinBase):
             launch_candidates += len(getattr(tron_strategy, "_last_launch_events", None) or [])
         launch_written = 0
         if solana_strategy is not None:
+            _t0 = time.perf_counter()
             launch_written += await flush_solana_launch_bundles(solana_strategy, self.ch_writer, self.nats_publisher)
+            _t_drains += time.perf_counter() - _t0
         if tron_strategy is not None:
             tron_launch_written, tron_deployer_written = await flush_tron_launch(
                 tron_strategy, self.ch_writer, self.nats_publisher
@@ -572,7 +582,9 @@ class SyncLoopMixin(IndexerMixinBase):
         if events:
             # Offload the blocking ClickHouse insert to the bounded write pool
             # so one chain's insert never stalls the others' event loop.
+            _t0 = time.perf_counter()
             ch_inserted = await run_ch_write(self.strategy.write_clickhouse, events, self.ch_writer)
+            _t_ch += time.perf_counter() - _t0
             summary["events_written_ch"] = ch_inserted
             ch_available = ch_inserted > 0
 
@@ -616,7 +628,9 @@ class SyncLoopMixin(IndexerMixinBase):
 
         if dex_events:
             # Blocking dex insert + whale/price row-building → bounded pool.
+            _t0 = time.perf_counter()
             dex_ch_inserted = await run_ch_write(self.ch_writer.write_dex_events, self.chain, dex_events)
+            _t_ch += time.perf_counter() - _t0
             summary["dex_events_written_ch"] = dex_ch_inserted
 
             # Data-loss guard (mirrors step 7): dex rows are the scanner's
@@ -651,44 +665,10 @@ class SyncLoopMixin(IndexerMixinBase):
         else:
             trace_written = 0
 
-        # 7b. Reorg staging (EVM + Solana): checkpoint the batch tip, then
-        # verify tip - depth against it. On mismatch roll back rows above
-        # the fork point and re-fetch from the fork next cycle.
-        if REORG_PROTECTION_ENABLED and isinstance(self.strategy, (EVMChainStrategy, SolanaStrategy)):
-            try:
-                ch_client = self.ch_writer.client()
-            except Exception as exc:  # noqa: BLE001 — staging is best-effort
-                ch_client = None
-                logger.debug("reorg_ch_client_failed", chain=self.chain, error=str(exc)[:80])
-
-            if ch_client is not None:
-                outcome = await self.strategy.reorg_stage(from_block, to_block, ch_client)
-                if outcome.status is ReorgStatus.UNKNOWN:
-                    # Fail CLOSED: unverified range → do NOT advance state.
-                    logger.error(
-                        "reorg_status_unknown",
-                        chain=self.chain,
-                        block=outcome.fork_block if outcome.fork_block is not None else to_block,
-                        error=outcome.error,
-                    )
-                    metrics.incr_labeled("lite_indexer_reorg_unknown", chain=self.chain)
-                    summary["status"] = "reorg_status_unknown"
-                    summary["errors"].append(f"reorg status unknown for range {from_block}-{to_block}: {outcome.error}")
-                    summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
-                    self._save_current_state()
-                    return summary
-                if outcome.status is ReorgStatus.REORG and outcome.fork_block is not None:
-                    logger.warning(
-                        "reorg_rollback_scheduled",
-                        chain=self.chain,
-                        fork_block=outcome.fork_block,
-                    )
-                    summary["status"] = "reorg_rollback"
-                    summary["reorg_fork_block"] = outcome.fork_block
-                    # Re-fetch from fork: next cycle starts at fork_block.
-                    self.state.save(outcome.fork_block - 1, 0, enabled_events=self._enabled_event_types())
-                    summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
-                    return summary
+        # 7b. Reorg staging (EVM + Solana) — extracted to _reorg_phase.py.
+        _reorg = await self._run_reorg_stage(from_block, to_block, summary, start_time)
+        if _reorg is not None:
+            return _reorg
 
         # 7c. NATS publishing (best-effort; failures swallowed + circuit-broken).
         nats_deployer_events: list[dict[str, Any]] = []
@@ -697,6 +677,7 @@ class SyncLoopMixin(IndexerMixinBase):
                 nats_deployer_events = list(evm_strategy._last_pair_events)
             elif solana_strategy and solana_strategy._last_deployer_events:
                 nats_deployer_events = list(solana_strategy._last_deployer_events)
+        _t0 = time.perf_counter()
         nats_published = await self._publish_nats_events(
             self.chain,
             to_block,
@@ -705,6 +686,7 @@ class SyncLoopMixin(IndexerMixinBase):
             nats_deployer_events,
             trace_events,
         )
+        _t_nats = time.perf_counter() - _t0
         if nats_published:
             summary["nats_events_published"] = nats_published
 
@@ -744,7 +726,9 @@ class SyncLoopMixin(IndexerMixinBase):
         # 8. Save state
         total_events = len(events) + len(dex_events) + deployer_written + len(trace_events)
         self._clear_reorg_recovery()
+        _t0 = time.perf_counter()
         self.state.save(to_block, total_events, enabled_events=self._enabled_event_types())
+        _t_state = time.perf_counter() - _t0
 
         # 8-attest. Merkle-leaf attestation of the committed range (best-effort).
         if ATTESTATION_ENABLED and (events or dex_events):
@@ -778,15 +762,32 @@ class SyncLoopMixin(IndexerMixinBase):
         # number through keyed endpoints. Memory-gated; never blocks.
         if BACKFILL_ENABLED:
             self._enqueue_backfill_gaps(self._last_tip)
+            _t0 = time.perf_counter()
             backfill_stats = await self._run_backfill_sidecar()
+            _t_side += time.perf_counter() - _t0
             if backfill_stats and backfill_stats.get("dispatched"):
                 summary["backfill"] = backfill_stats
 
         # 8a. Vector ingestion (optional LanceDB, gated + interval-limited;
         # exception-guarded — CH is the durable store, never blocked).
+        _t0 = time.perf_counter()
         await self._run_vector_ingestion_guarded(from_block, to_block, summary)
+        _t_side += time.perf_counter() - _t0
 
         summary["duration_seconds"] = round(time.monotonic() - start_time, 2)
+        if _timing:  # single per-window phase budget line
+            logger.info(
+                "solana_window_phases",
+                from_block=from_block,
+                to_block=to_block,
+                total_s=round(time.perf_counter() - _t_win, 2),
+                fetch_s=round(_t_fetch, 2),
+                ch_write_s=round(_t_ch, 2),
+                drains_s=round(_t_drains, 2),
+                nats_s=round(_t_nats, 2),
+                state_s=round(_t_state, 2),
+                sidecars_s=round(_t_side, 2),
+            )
         logger.info(
             "sync_complete",
             chain=self.chain,
