@@ -11,39 +11,18 @@ from typing import Any
 
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.query.leg_request import LegRequest
 
 logger = get_logger(__name__)
 
 
-def rpc_cache_key(
-    table: str,
-    chain: str,
-    from_block: int | None,
-    to_block: int | None,
-    filters: dict[str, Any] | list[dict[str, Any]] | None,
-    limit: int,
-) -> tuple[Any, ...]:
-    """Stable cache key for a range query (filters normalized to tuples)."""
-    if isinstance(filters, dict):
-        fkey: Any = tuple(sorted(filters.items()))
-    elif isinstance(filters, list):
-        fkey = tuple(tuple(sorted(item.items())) for item in filters)
-    else:
-        fkey = ()
-    return (chain, table, from_block, to_block, fkey, int(limit))
 
-
-async def rpc_route(
-    router: Any,
-    table: str,
-    chain: str,
-    from_block: int | None,
-    to_block: int | None,
-    filters: dict[str, Any] | list[dict[str, Any]] | None,
-    limit: int,
-) -> list[dict[str, Any]]:
+async def rpc_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     """Route a query to the on-demand RPC fetcher, cached."""
-    cache_key = router._rpc_cache_key(table, chain, from_block, to_block, filters, limit)
+    table, chain = req.table, req.chain
+    from_block, to_block = req.from_block, req.to_block
+    filters, limit = req.filters, req.limit
+    cache_key = req.cache_key()
     cached = router.cache.get(cache_key)
     if cached is not None:
         return list(cached)

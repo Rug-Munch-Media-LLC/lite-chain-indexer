@@ -11,6 +11,7 @@ from typing import Any
 
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.query.leg_request import LegRequest
 from lite_indexer.query.legs_common import CH_TABLE_REF, block_col
 from lite_indexer.storage.cold_store import TABLE_COLUMNS, TABLE_KINDS, TABLE_ORDER
 
@@ -34,17 +35,11 @@ def check_table(table: str) -> str:
     return table
 
 
-def query_ch(
-    router: Any,
-    table: str,
-    chain: str,
-    *,
-    from_block: int | None = None,
-    to_block: int | None = None,
-    filters: dict[str, Any] | list[dict[str, Any]] | None = None,
-    limit: int = 100,
-) -> list[dict[str, Any]]:
+def query_ch(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     """Query ClickHouse directly. Returns [] when unavailable/failing."""
+    table, chain = req.table, req.chain
+    from_block, to_block = req.from_block, req.to_block
+    filters, limit = req.filters, req.limit
     client = router._ch_client()
     if client is None:
         return []

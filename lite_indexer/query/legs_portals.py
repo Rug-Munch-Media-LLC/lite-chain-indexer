@@ -14,26 +14,21 @@ from typing import Any
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.query.envio_source import EnvioSource
+from lite_indexer.query.leg_request import LegRequest
 from lite_indexer.query.sqd_source import SQDSource
 
 logger = get_logger(__name__)
 
 
-async def envio_route(
-    router: Any,
-    table: str,
-    chain: str,
-    *,
-    from_block: int | None,
-    to_block: int | None,
-    filters: dict[str, Any] | list[dict[str, Any]] | None,
-    limit: int,
-) -> list[dict[str, Any]]:
+async def envio_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     """Try Envio HyperRPC for bounded wallet queries the indexed tiers missed.
 
     Only serves ``evm_transfers`` address queries with an explicit
     block window; anything else falls through to the RPC leg.
     """
+    table, chain = req.table, req.chain
+    from_block, to_block = req.from_block, req.to_block
+    filters, limit = req.filters, req.limit
     if table != "evm_transfers" or from_block is None or to_block is None:
         return []
     if not router.envio.available() or chain not in EnvioSource.CHAIN_IDS:
@@ -54,16 +49,7 @@ async def envio_route(
     return filtered
 
 
-async def indexed_route(
-    router: Any,
-    table: str,
-    chain: str,
-    *,
-    from_block: int | None,
-    to_block: int | None,
-    filters: dict[str, Any] | list[dict[str, Any]] | None,
-    limit: int,
-) -> list[dict[str, Any]]:
+async def indexed_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     """Try the Indexed.xyz R2 lake for bounded wallet queries.
 
     Independent third path for EVM chains (ethereum/base/gnosis/linea/
@@ -71,6 +57,9 @@ async def indexed_route(
     range via :func:`lake_dates`. Best-effort: failures return an
     empty list so routing falls through to the RPC leg.
     """
+    table, chain = req.table, req.chain
+    from_block, to_block = req.from_block, req.to_block
+    filters, limit = req.filters, req.limit
     if table != "evm_transfers" or from_block is None or to_block is None:
         return []
     if not router.indexed.available() or chain not in router.indexed.CHAINS:
@@ -99,21 +88,15 @@ async def indexed_route(
     return filtered
 
 
-async def sqd_traces_route(
-    router: Any,
-    table: str,
-    chain: str,
-    *,
-    from_block: int | None,
-    to_block: int | None,
-    filters: dict[str, Any] | list[dict[str, Any]] | None,
-    limit: int,
-) -> list[dict[str, Any]]:
+async def sqd_traces_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     """Try the SQD portal traces dataset for full-history EVM internals.
 
     Serves ``internal_transfers`` for ~13 EVM chains with ``callFrom`` /
     ``callTo`` server-side filtering. Best-effort: failures return [].
     """
+    table, chain = req.table, req.chain
+    from_block, to_block = req.from_block, req.to_block
+    filters, limit = req.filters, req.limit
     if table != "internal_transfers" or from_block is None or to_block is None:
         return []
     if not router.sqd.available() or chain not in SQDSource.EVM_DATASETS:

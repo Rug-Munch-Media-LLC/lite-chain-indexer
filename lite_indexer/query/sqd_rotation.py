@@ -56,6 +56,7 @@ def stream_with_rotation(
                 prov.name,
             )
         except SQDPortalError as exc:
+            logger.debug("sqd_portal_error", error=str(exc)[:100])
             last_error = exc
             continue
         router.report_success(prov.name)

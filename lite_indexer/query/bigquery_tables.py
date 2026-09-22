@@ -9,11 +9,11 @@ subprocess shell-out to the ``bq`` CLI. Imported by
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
 from typing import Any
 
 from lite_indexer.logging import get_logger
 from lite_indexer.query.bigquery_cli import run_bq  # noqa: F401  (public re-export)
+from lite_indexer.query.bigquery_spec import BigQuerySpec
 
 logger = get_logger(__name__)
 
@@ -81,16 +81,7 @@ _ADDR_COLS: dict[str, tuple[str, ...]] = {
 
 
 def build_query(
-    table: str,
-    *,
-    chain: str = "eth",
-    address: str | None = None,
-    from_block: int | None = None,
-    to_block: int | None = None,
-    dates: Sequence[str] | None = None,
-    limit: int = 100,
-    mints: Sequence[str] | None = None,
-    offset: int | None = None,
+    spec: BigQuerySpec,
 ) -> tuple[str, list[tuple[str, str, Any]]]:
     """Build parameterized SQL for one public-dataset table.
 
@@ -99,17 +90,15 @@ def build_query(
     Returns ``(sql, params)`` where params are ``(name, bigquery_type, value)``.
     Raises ``ValueError`` on a malformed date or an unknown solana table.
     """
+    table = spec.table
+    chain = spec.chain
+    address = spec.address
+    from_block = spec.from_block
+    to_block = spec.to_block
+    dates = spec.dates
+    limit = spec.limit
     if chain == "solana":
-        return _build_solana_query(
-            table,
-            address=address,
-            from_block=from_block,
-            to_block=to_block,
-            dates=dates,
-            limit=limit,
-            mints=mints,
-            offset=offset,
-        )
+        return _build_solana_query(spec)
     where: list[str] = []
     params: list[tuple[str, str, Any]] = []
     if from_block is not None:
@@ -139,15 +128,7 @@ def build_query(
 
 
 def _build_solana_query(
-    table: str,
-    *,
-    address: str | None = None,
-    from_block: int | None = None,
-    to_block: int | None = None,
-    dates: Sequence[str] | None = None,
-    limit: int = 100,
-    mints: Sequence[str] | None = None,
-    offset: int | None = None,
+    spec: BigQuerySpec,
 ) -> tuple[str, list[tuple[str, str, Any]]]:
     """Build parameterized SQL for one ``crypto_solana_mainnet_us`` table.
 
@@ -156,6 +137,14 @@ def _build_solana_query(
     are interpreted as slot bounds. For ``instructions`` the ``address``
     filter matches membership in the base58 ``accounts`` array.
     """
+    table = spec.table
+    address = spec.address
+    from_block = spec.from_block
+    to_block = spec.to_block
+    dates = spec.dates
+    limit = spec.limit
+    mints = spec.mints
+    offset = spec.offset
     if table not in _SOLANA_TABLES:
         raise ValueError(f"unsupported solana bigquery table: {table!r}")
     where: list[str] = []

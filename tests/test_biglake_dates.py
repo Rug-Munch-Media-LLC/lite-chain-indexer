@@ -6,6 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from lite_indexer.query.leg_request import LegRequest
 from lite_indexer.query.router import QueryRouter
 
 _TS = {
@@ -121,7 +122,7 @@ def test_biglake_route_passes_derived_dates() -> None:
     router = _router(biglake=lake)
     rows = asyncio.run(
         router._biglake_route(
-            "evm_transfers", "ethereum", from_block=100, to_block=200, filters=None, limit=10
+            LegRequest("evm_transfers", "ethereum", from_block=100, to_block=200, filters=None, limit=10)
         )
     )
     assert rows == []
@@ -132,7 +133,7 @@ def test_biglake_route_failure_returns_empty() -> None:
     router = _router(biglake=FakeBigLake(fail=True))
     rows = asyncio.run(
         router._biglake_route(
-            "evm_transfers", "ethereum", from_block=100, to_block=200, filters=None, limit=10
+            LegRequest("evm_transfers", "ethereum", from_block=100, to_block=200, filters=None, limit=10)
         )
     )
     assert rows == []

@@ -84,3 +84,51 @@ def run_bq(bq_bin: str, sql: str, params: list[tuple[str, str, Any]]) -> list[di
         logger.warning("bigquery_bad_json", error=(proc.stdout or "")[:200])
         return []
     return data if isinstance(data, list) else []
+
+def _silence_console_logs() -> None:
+    """CLI stdout must stay machine-parseable (JSON only)."""
+    try:
+        from loguru import logger as _loguru
+
+        _loguru.remove()
+    except ImportError:
+        logger.debug("loguru_not_installed")
+
+
+def main() -> int:
+    """``python -m lite_indexer.query.bigquery_source <chain> <table> ...``.
+
+    Low-cost validation probe: always pass ``--dates`` (DAY-partition filter)
+    and a small ``--limit``. Prints mapped rows as JSON to stdout.
+    """
+    import argparse
+    import json as _json
+    import sys as _sys
+
+    _silence_console_logs()
+    parser = argparse.ArgumentParser(prog="bigquery_source", description=__doc__)
+    parser.add_argument("chain", choices=["eth", "solana"])
+    parser.add_argument("table")
+    parser.add_argument("--dates", nargs="*", default=None, help="YYYY-MM-DD partitions")
+    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--address", default=None)
+    args = parser.parse_args()
+    from lite_indexer.query.bigquery_source import BigQuerySource
+    from lite_indexer.query.bigquery_spec import BigQuerySpec
+
+    src = BigQuerySource()
+    if not src.available():
+        print("bigquery source unavailable (credentials or bq CLI missing)", file=_sys.stderr)  # noqa: T201
+        return 1
+    rows = src.query(
+        BigQuerySpec(
+            table=args.table, chain=args.chain, address=args.address,
+            dates=args.dates, limit=args.limit,
+        )
+    )
+    print(_json.dumps(rows, default=str, indent=2))  # noqa: T201
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -46,6 +46,7 @@ from lite_indexer.query.biglake_source import BigLakeSource
 from lite_indexer.query.cache import QueryCache
 from lite_indexer.query.envio_source import EnvioSource
 from lite_indexer.query.indexed_source import IndexedXyzSource
+from lite_indexer.query.leg_request import LegRequest
 from lite_indexer.query.legs_common import ROW_KEYS, SORT_COLS, sort_value
 from lite_indexer.query.rpc_fetcher import RPCFetcher
 from lite_indexer.query.sqd_source import SQDSource
@@ -137,7 +138,6 @@ class QueryRouter:
     _envio_route = legs_portals.envio_route
     _indexed_route = legs_portals.indexed_route
     _sqd_traces_route = legs_portals.sqd_traces_route
-    _rpc_cache_key = staticmethod(legs_rpc.rpc_cache_key)
     _rpc_route = legs_rpc.rpc_route
 
     # ── Merge ────────────────────────────────────────────────────────
@@ -259,11 +259,13 @@ class QueryRouter:
         """
         self._check_table(table)
         limit = max(1, min(int(limit), 1000))
-
-        ch_rows = self._query_ch(table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit)
-        cold_rows = self._query_cold(
-            table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
+        req = LegRequest(
+            table=table, chain=chain, from_block=from_block,
+            to_block=to_block, filters=filters, limit=limit,
         )
+
+        ch_rows = self._query_ch(req)
+        cold_rows = self._query_cold(req)
         merged = self._merge_rows(table, ch_rows, cold_rows, limit=limit)
 
         biglake_rows: list[dict[str, Any]] = []
@@ -272,9 +274,7 @@ class QueryRouter:
             and self.on_demand_enabled
             and self._needs_rpc_fallback(table, ch_rows, cold_rows, from_block, to_block, limit)
         ):
-            biglake_rows = await self._biglake_route(
-                table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
-            )
+            biglake_rows = await self._biglake_route(req)
             if biglake_rows:
                 merged = self._merge_rows(table, ch_rows, cold_rows, biglake_rows, limit=limit)
 
@@ -284,9 +284,7 @@ class QueryRouter:
             and self.on_demand_enabled
             and self._needs_rpc_fallback(table, ch_rows, cold_rows + biglake_rows, from_block, to_block, limit)
         ):
-            envio_rows = await self._envio_route(
-                table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
-            )
+            envio_rows = await self._envio_route(req)
             if envio_rows:
                 merged = self._merge_rows(table, ch_rows, cold_rows, biglake_rows, envio_rows, limit=limit)
 
@@ -298,9 +296,7 @@ class QueryRouter:
                 table, ch_rows, cold_rows + biglake_rows + envio_rows, from_block, to_block, limit
             )
         ):
-            indexed_rows = await self._indexed_route(
-                table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
-            )
+            indexed_rows = await self._indexed_route(req)
             if indexed_rows:
                 merged = self._merge_rows(
                     table, ch_rows, cold_rows, biglake_rows, envio_rows, indexed_rows, limit=limit
@@ -319,9 +315,7 @@ class QueryRouter:
                 limit,
             )
         ):
-            sqd_rows = await self._sqd_traces_route(
-                table, chain, from_block=from_block, to_block=to_block, filters=filters, limit=limit
-            )
+            sqd_rows = await self._sqd_traces_route(req)
             if sqd_rows:
                 merged = self._merge_rows(
                     table,
@@ -347,7 +341,7 @@ class QueryRouter:
             )
         ):
             metrics_incr("ondemand_rpc_routes")
-            rpc_rows = await self._rpc_route(table, chain, from_block, to_block, filters, limit)
+            rpc_rows = await self._rpc_route(req)
             if rpc_rows:
                 merged = self._merge_rows(
                     table,

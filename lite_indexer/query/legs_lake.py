@@ -13,6 +13,7 @@ from typing import Any
 
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.query.leg_request import LegRequest
 
 logger = get_logger(__name__)
 
@@ -67,16 +68,7 @@ async def lake_dates(router: Any, chain: str, from_block: int | None, to_block: 
         return None
 
 
-async def biglake_route(
-    router: Any,
-    table: str,
-    chain: str,
-    *,
-    from_block: int | None,
-    to_block: int | None,
-    filters: dict[str, Any] | list[dict[str, Any]] | None,
-    limit: int,
-) -> list[dict[str, Any]]:
+async def biglake_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     """Try the AWS public lake for ranges the indexed tiers could not serve.
 
     Derives date partitions for deep block ranges so historical queries
@@ -84,6 +76,9 @@ async def biglake_route(
     Best-effort: any failure returns an empty list so routing falls
     through to the RPC leg as before.
     """
+    table, chain = req.table, req.chain
+    from_block, to_block = req.from_block, req.to_block
+    filters, limit = req.filters, req.limit
     if not router.biglake.available():
         return []
     address = router._address_from_filters(filters) or router._single_address(filters)

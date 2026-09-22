@@ -10,8 +10,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from lite_indexer.logging import get_logger
 from lite_indexer.query.sqd_common import ts
 
+logger = get_logger(__name__)
 if TYPE_CHECKING:
     from lite_indexer.query.sqd_source import SQDSource
 
@@ -44,11 +46,13 @@ def map_trace(chain: str, block: dict[str, Any], rec: dict[str, Any]) -> dict[st
     try:
         value = str(int(str(value_raw), 16))
     except (TypeError, ValueError):
+        logger.debug("sqd_evm_value_fallback", raw=str(value_raw)[:40])
         value = str(value_raw)
     gas_raw = result.get("gasUsed") or "0x0"
     try:
         gas_used = int(str(gas_raw), 16)
     except (TypeError, ValueError):
+        logger.debug("sqd_evm_gas_fallback", raw=str(gas_raw)[:40])
         gas_used = 0
     input_raw = str(action.get("input") or "")
     return {

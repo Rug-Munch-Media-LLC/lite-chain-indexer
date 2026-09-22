@@ -11,22 +11,17 @@ from typing import Any
 
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.query.leg_request import LegRequest
 from lite_indexer.query.legs_common import cold_lit
 
 logger = get_logger(__name__)
 
 
-def query_cold(
-    router: Any,
-    table: str,
-    chain: str,
-    *,
-    from_block: int | None = None,
-    to_block: int | None = None,
-    filters: dict[str, Any] | list[dict[str, Any]] | None = None,
-    limit: int = 100,
-) -> list[dict[str, Any]]:
+def query_cold(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     """Query the B2 parquet cold store. Returns [] when unavailable."""
+    table, chain = req.table, req.chain
+    from_block, to_block = req.from_block, req.to_block
+    filters, limit = req.filters, req.limit
     if router.cold is None:
         return []
     where = router._build_cold_where(filters)

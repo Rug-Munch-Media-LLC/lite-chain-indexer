@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from lite_indexer.logging import get_logger
 
+logger = get_logger(__name__)
 def _num_str(value: Any) -> str:
     """Stringify lake numerics without float noise for integral values.
 
@@ -21,6 +23,7 @@ def _num_str(value: Any) -> str:
     try:
         fvalue = float(value)
     except (TypeError, ValueError):
+        logger.debug("lake_row_num_fallback", value=str(value)[:40])
         return str(value)
     return str(int(fvalue)) if fvalue.is_integer() else str(fvalue)
 

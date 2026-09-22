@@ -21,13 +21,13 @@ from typing import Any
 
 from lite_indexer.logging import get_logger
 from lite_indexer.query.bigquery_source import BigQuerySource
+from lite_indexer.query.bigquery_spec import BigQuerySpec
 from lite_indexer.storage.clickhouse import ClickHouseUnavailable
 
 logger = get_logger(__name__)
 
 _PAGE_ROWS = 1000  # per-BQ-read page size (the SQL builder caps LIMIT at 1000)
 FILLABLE_TABLES: tuple[str, ...] = ("token_transfers",)  # only tables with a CH writer
-
 
 def _to_writer_event(row: dict[str, Any]) -> dict[str, Any]:
     """Map a BigQuery solana row to the ``write_clickhouse`` event shape."""
@@ -48,7 +48,6 @@ def _to_writer_event(row: dict[str, Any]) -> dict[str, Any]:
         "token_name": row.get("token_name", ""),
     }
 
-
 @dataclass
 class SolanaBigQueryFillRequest:
     """One BigLake fill run: dates, tables, batching and volume guards."""
@@ -61,7 +60,6 @@ class SolanaBigQueryFillRequest:
     mints: tuple[str, ...] = ()
     force: bool = False
 
-
 @dataclass
 class _FillCtx:
     """Per-run context: source, writers, request (keeps arities small)."""
@@ -71,20 +69,19 @@ class _FillCtx:
     ch: Any
     req: SolanaBigQueryFillRequest
 
-
 def _build_writer() -> Any:
     """Lake writer adapter: only the mixins ``write_clickhouse`` needs."""
     from lite_indexer.strategies.solana.strategy.address_activity import AddressActivityMixin
     from lite_indexer.strategies.solana.strategy.sync import SyncMixin
     from lite_indexer.strategies.solana.strategy.traces import TracesMixin
+    from lite_indexer.strategies.solana.strategy.writes import WritesMixin
 
-    class _Writer(AddressActivityMixin, SyncMixin, TracesMixin):
+    class _Writer(WritesMixin, AddressActivityMixin, SyncMixin, TracesMixin):
         # drains need empty buffers; class attrs suffice (never mutated in place)
         _trace_rows: list[dict[str, Any]] = []
         _address_activity_rows: list[dict[str, Any]] = []
 
     return _Writer()
-
 
 def _existing_day_count(client: Any, day: str) -> int | None:
     """Rows already in CH for ``day`` (None = check unavailable)."""
@@ -98,7 +95,6 @@ def _existing_day_count(client: Any, day: str) -> int | None:
         return None
     return int(rows[0][0]) if rows else 0
 
-
 def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int:
     """Stream one (date, table) partition; ``sink=None`` counts only (dry run)."""
     total = 0
@@ -106,8 +102,10 @@ def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int
     offset = 0
     while True:
         rows = ctx.src.query(
-            table, chain="solana", dates=[day], limit=_PAGE_ROWS,
-            mints=list(ctx.req.mints) or None, offset=offset or None,
+            BigQuerySpec(
+                table, chain="solana", dates=[day], limit=_PAGE_ROWS,
+                mints=list(ctx.req.mints) or None, offset=offset or None,
+            )
         )
         if not rows:
             break
@@ -123,7 +121,6 @@ def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int
     if sink is not None and batch:
         sink.write_clickhouse(batch, ctx.ch)
     return total
-
 
 def backfill_solana_from_bigquery(
     req: SolanaBigQueryFillRequest,
@@ -170,7 +167,6 @@ def backfill_solana_from_bigquery(
         logger.warning("bigquery_fill_max_rows_reached", max_rows=req.max_rows)
     return counts
 
-
 def _guarded_write(ctx: _FillCtx, table: str, day: str) -> int:
     """Write one partition, skipping days ClickHouse already covers."""
     client = ctx.ch.client()
@@ -182,13 +178,11 @@ def _guarded_write(ctx: _FillCtx, table: str, day: str) -> int:
         return 0
     return _read_pages(ctx, table, day, sink=ctx.writer)
 
-
 def _default_ch_writer() -> Any:
     """Build the real ClickHouseWriter (same client the indexer uses)."""
     from lite_indexer.storage.clickhouse import ClickHouseWriter
 
     return ClickHouseWriter()
-
 
 def fill_summary(req: SolanaBigQueryFillRequest, counts: dict[str, int]) -> dict[str, Any]:
     """Machine-readable run summary for the CLI."""
