@@ -105,3 +105,27 @@ def test_stream_query_walks_total_rows_by_start_index() -> None:
     assert len([c for c in calls if c["method"] == "POST"]) == 1  # one job, free result pages
     starts = [int(c["params"]["startIndex"]) for c in calls if c["method"] == "GET"]
     assert starts == [50_000, 100_000]
+
+
+def test_stream_query_walks_until_empty_without_total_rows() -> None:
+    """Real jobs may omit totalRows: the walk must continue until a page is empty."""
+    calls: list[dict[str, Any]] = []
+    table_rows = [{"f": [{"v": str(i)}]} for i in range(50_000)]
+
+    def fake(method: str, url: str, **kw: Any) -> dict[str, Any]:
+        calls.append({"method": method, "params": kw.get("params")})
+        if method == "POST":
+            return {"jobReference": {"jobId": "j2", "location": "US"}, "schema": {"fields": [{"name": "n"}]},
+                    "rows": table_rows, "jobComplete": True}  # no totalRows!
+        start = int((kw.get("params") or {}).get("startIndex") or 0)
+        if start >= 150_000:
+            return {"schema": {"fields": [{"name": "n"}]}, "rows": []}
+        return {"schema": {"fields": [{"name": "n"}]}, "rows": table_rows}
+
+    rest.set_transport(fake)
+    try:
+        got = sum(len(p) for p in rest.stream_query("SELECT n", [], project="p", page_size=50_000))
+    finally:
+        rest.set_transport(None)
+    assert got == 150_000  # 3 full pages, then the empty page ends the walk
+    assert len([c for c in calls if c["method"] == "POST"]) == 1

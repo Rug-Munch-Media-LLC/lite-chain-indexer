@@ -137,13 +137,16 @@ def stream_query(sql: str, params: list[tuple[str, str, Any]], *, project: str,
                      params={"location": location, "maxResults": page_size})
     total = int(resp.get("totalRows") or 0)
     fetched = 0
-    while True:
+    for _page in range(500):  # safety cap; each page is a free cached-result read
         rows = _rows_of(resp)
         if not rows:
             break
         yield rows
         fetched += len(rows)
-        if fetched >= total:
+        if total and fetched >= total:
             break
+        # totalRows is not guaranteed on every response — keep walking by
+        # startIndex until a page comes back empty.
         resp = _http("GET", f"{_API}/projects/{project}/queries/{job_id}", token=token,
                      params={"startIndex": fetched, "maxResults": page_size, "location": location})
+    logger.debug("bigquery_rest_stream_done", fetched=fetched, total=total)
