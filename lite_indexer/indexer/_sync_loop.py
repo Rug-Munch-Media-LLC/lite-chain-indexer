@@ -27,6 +27,7 @@ from lite_indexer.config import (
     STATE_BACKWARD_PROTECTION,
     STATE_REGRESSION_TOLERANCE_BLOCKS,
 )
+from lite_indexer.config import REORG_PROTECTION_ENABLED  # noqa: F401 — patched by tests
 from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.indexer._checkpoint import (
     HARD_ABORT_STATUSES,

@@ -24,6 +24,7 @@ import pytest
 from lite_indexer.indexer import _checkpoint
 from lite_indexer.indexer import _sync_loop as sync_loop_mod
 from lite_indexer.indexer._phase_guard import PhaseTimeoutError
+from lite_indexer.indexer._reorg_phase import ReorgPhaseMixin
 from lite_indexer.indexer._sync_loop import SyncLoopMixin
 
 
@@ -144,7 +145,7 @@ def test_slice_size_default_override_and_junk():
 # ── Secondary phases are non-fatal ──────────────────────────────────────
 
 
-class _RangeHost:
+class _RangeHost(ReorgPhaseMixin):
     chain = "base"
     dex_enabled = True
     deployers_enabled = False

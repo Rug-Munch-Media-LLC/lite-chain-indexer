@@ -12,12 +12,23 @@ import time
 from typing import Any
 
 from lite_indexer import metrics
-from lite_indexer.config import REORG_PROTECTION_ENABLED
 from lite_indexer.logging import get_logger
 from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy
 from lite_indexer.strategies.reorg_status import ReorgStatus
 
 logger = get_logger(__name__)
+
+
+def _protection_enabled() -> bool:
+    """Read the reorg flag through the sync-loop module (patchable seam).
+
+    The flag lives in :mod:`lite_indexer.config`; tests pin it on the
+    ``_sync_loop`` module (the composition root), so the value is read
+    there at call time.
+    """
+    from lite_indexer.indexer import _sync_loop
+
+    return bool(_sync_loop.REORG_PROTECTION_ENABLED)
 
 
 class ReorgPhaseMixin:
@@ -35,7 +46,7 @@ class ReorgPhaseMixin:
         Returns the summary when the range must abort (unknown status) or
         roll back (fork detected); returns None to continue the cycle.
         """
-        if not (REORG_PROTECTION_ENABLED and isinstance(self.strategy, (EVMChainStrategy, SolanaStrategy))):
+        if not (_protection_enabled() and isinstance(self.strategy, (EVMChainStrategy, SolanaStrategy))):
             return None
         try:
             ch_client = self.ch_writer.client()
