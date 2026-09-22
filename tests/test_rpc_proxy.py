@@ -17,13 +17,14 @@ Hermetic — dummy hosts only, no network.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
 
 from lite_indexer.rpc import client as rc
-from lite_indexer.rpc import proxy as rpc_proxy
 from lite_indexer.rpc.proxy import ProxyRouter, ProxySpec, parse_proxy_entry, parse_proxy_list
 
 
@@ -99,24 +100,22 @@ class TestParseShapes:
 
 
 class TestRouter:
-    def test_default_off_is_direct(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("WEBSHARE_PROXY_LIST", raising=False)
-        monkeypatch.delenv("RPC_PROXY_ENABLED", raising=False)
-        router = ProxyRouter.from_env()
+    def test_default_off_is_direct(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k not in ("WEBSHARE_PROXY_LIST", "RPC_PROXY_ENABLED")}
+        with patch.dict(os.environ, env, clear=True):
+            router = ProxyRouter.from_env()
         assert router.enabled is False
         assert router.proxy_for("https://rpc.example") is None
 
-    def test_configured_but_disabled_is_direct(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("WEBSHARE_PROXY_LIST", "proxy.example:8080")
-        monkeypatch.setenv("RPC_PROXY_ENABLED", "0")
-        router = ProxyRouter.from_env()
+    def test_configured_but_disabled_is_direct(self) -> None:
+        with patch.dict(os.environ, {"WEBSHARE_PROXY_LIST": "proxy.example:8080", "RPC_PROXY_ENABLED": "0"}):
+            router = ProxyRouter.from_env()
         assert router.enabled is False
         assert router.proxy_for("https://rpc.example") is None
 
-    def test_env_enables_pool(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("WEBSHARE_PROXY_LIST", "proxy.example:8080")
-        monkeypatch.setenv("RPC_PROXY_ENABLED", "1")
-        router = ProxyRouter.from_env()
+    def test_env_enables_pool(self) -> None:
+        with patch.dict(os.environ, {"WEBSHARE_PROXY_LIST": "proxy.example:8080", "RPC_PROXY_ENABLED": "1"}):
+            router = ProxyRouter.from_env()
         assert router.enabled is True
         assert router.mode == "sticky"
 
@@ -151,11 +150,16 @@ class TestRouter:
         assert "pass" not in json.dumps(snap)
         assert snap["proxy_count"] == 1
 
-    def test_fallback_only_makes_direct_primary(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("WEBSHARE_PROXY_LIST", "proxy.example:8080")
-        monkeypatch.setenv("RPC_PROXY_ENABLED", "1")
-        monkeypatch.setenv("RPC_PROXY_FALLBACK_ONLY", "1")
-        router = ProxyRouter.from_env()
+    def test_fallback_only_makes_direct_primary(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "WEBSHARE_PROXY_LIST": "proxy.example:8080",
+                "RPC_PROXY_ENABLED": "1",
+                "RPC_PROXY_FALLBACK_ONLY": "1",
+            },
+        ):
+            router = ProxyRouter.from_env()
         assert router.enabled is True
         assert router.fallback_only is True
         assert router.proxy_for("https://rpc.example") is None  # direct primary
@@ -178,29 +182,29 @@ class _FlakyDirectClient:
 
 class TestClientIntegration:
     @pytest.fixture(autouse=True)
-    def _reset_clients(self, monkeypatch: pytest.MonkeyPatch) -> Any:
-        monkeypatch.setattr(rpc_proxy, "PROXY_ROUTER", ProxyRouter([], enabled=False))
-        rc._call_clients.clear()
-        yield
+    def _reset_clients(self) -> Any:
+        with patch("lite_indexer.rpc.proxy.PROXY_ROUTER", ProxyRouter([], enabled=False)):
+            rc._call_clients.clear()
+            yield
         rc._call_clients.clear()
 
     @pytest.mark.asyncio
-    async def test_get_call_client_applies_proxy_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_get_call_client_applies_proxy_url(self) -> None:
         created: list[dict[str, Any]] = []
 
         def factory(**kwargs: Any) -> _DirectClient:
             created.append(kwargs)
             return _DirectClient()
 
-        monkeypatch.setattr(rc.httpx, "AsyncClient", factory)
         spec = ProxySpec("http://proxy.example:8080", "proxy.example:8080")
-        await rc._get_call_client(5.0, proxy=spec)
-        assert created[0]["proxy"] == "http://proxy.example:8080"
-        await rc._get_call_client(5.0)
-        assert "proxy" not in created[1]
+        with patch("httpx.AsyncClient", factory):
+            await rc._get_call_client(5.0, proxy=spec)
+            assert created[0]["proxy"] == "http://proxy.example:8080"
+            await rc._get_call_client(5.0)
+            assert "proxy" not in created[1]
 
     @pytest.mark.asyncio
-    async def test_post_json_default_off_is_direct(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_post_json_default_off_is_direct(self) -> None:
         direct = _DirectClient()
         seen: list[Any] = []
 
@@ -208,17 +212,16 @@ class TestClientIntegration:
             seen.append(proxy)
             return direct
 
-        monkeypatch.setattr(rc, "_get_call_client", fake)
-        resp = await rc._post_json("https://rpc.example", {"a": 1}, 5.0)
+        with patch("lite_indexer.rpc.client._get_call_client", fake):
+            resp = await rc._post_json("https://rpc.example", {"a": 1}, 5.0)
         assert resp.status_code == 200
         assert direct.calls == 1
         assert seen == [None]
 
     @pytest.mark.asyncio
-    async def test_proxy_failure_falls_back_direct_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_proxy_failure_falls_back_direct_once(self) -> None:
         spec = ProxySpec("http://proxy.example:8080", "proxy.example:8080")
         router = ProxyRouter([spec], enabled=True, mode="sticky")
-        monkeypatch.setattr(rpc_proxy, "PROXY_ROUTER", router)
         proxy_client = _ProxyClient()
         direct_client = _DirectClient()
         seen: list[Any] = []
@@ -227,8 +230,11 @@ class TestClientIntegration:
             seen.append(proxy)
             return proxy_client if proxy is not None else direct_client
 
-        monkeypatch.setattr(rc, "_get_call_client", fake)
-        resp = await rc._post_json("https://rpc.example", {"a": 1}, 5.0)
+        with (
+            patch("lite_indexer.rpc.proxy.PROXY_ROUTER", router),
+            patch("lite_indexer.rpc.client._get_call_client", fake),
+        ):
+            resp = await rc._post_json("https://rpc.example", {"a": 1}, 5.0)
         assert resp.status_code == 200
         assert proxy_client.calls == 1
         assert direct_client.calls == 1
@@ -237,10 +243,9 @@ class TestClientIntegration:
         assert router.snapshot()["failed_proxies"] == 1
 
     @pytest.mark.asyncio
-    async def test_fallback_only_direct_failure_retries_via_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_fallback_only_direct_failure_retries_via_proxy(self) -> None:
         spec = ProxySpec("http://proxy.example:8080", "proxy.example:8080")
         router = ProxyRouter([spec], enabled=True, mode="sticky", fallback_only=True)
-        monkeypatch.setattr(rpc_proxy, "PROXY_ROUTER", router)
         flaky_direct = _FlakyDirectClient()
         proxy_client = _DirectClient()
         seen: list[Any] = []
@@ -249,8 +254,11 @@ class TestClientIntegration:
             seen.append(proxy)
             return proxy_client if proxy is not None else flaky_direct
 
-        monkeypatch.setattr(rc, "_get_call_client", fake)
-        resp = await rc._post_json("https://rpc.example", {"a": 1}, 5.0)
+        with (
+            patch("lite_indexer.rpc.proxy.PROXY_ROUTER", router),
+            patch("lite_indexer.rpc.client._get_call_client", fake),
+        ):
+            resp = await rc._post_json("https://rpc.example", {"a": 1}, 5.0)
         assert resp.status_code == 200
         assert flaky_direct.calls == 1  # direct attempted first
         assert proxy_client.calls == 1  # proxy used only after the failure
