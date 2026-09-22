@@ -90,10 +90,15 @@ def row_ts(raw: dict[str, Any]) -> Any:
     return ms_to_dt(value)
 
 def rest_transport() -> bool:
-    """True when fills should use the one-job REST transport (free pages)."""
+    """True unless the OFFSET/CLI path is explicitly requested.
+
+    REST is the default: OFFSET paging re-scans the partition per page
+    (2026-09-22 incident). ``BIGQUERY_TRANSPORT=cli`` opts back in for
+    tests/fakes; real fills use one job with free result pages.
+    """
     import os
 
-    return os.environ.get("BIGQUERY_TRANSPORT", "cli").strip().lower() == "rest"
+    return os.environ.get("BIGQUERY_TRANSPORT", "rest").strip().lower() != "cli"
 
 def read_full_day(ctx: Any, table: str, day: str, sink: Any | None) -> int:
     """One REST job per day; result pages are free (no partition re-scan)."""
