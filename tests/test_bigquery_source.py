@@ -53,7 +53,7 @@ def test_unavailable_without_credentials(tmp_path: Any) -> None:
     runner = FakeRunner()
     src = BigQuerySource(credentials_path=str(tmp_path / "missing.json"), runner=runner)
     assert src.available() is False
-    assert src.query(BigQuerySpec("transactions")) == []
+    assert src.query(BigQuerySpec("transactions", dates=["2026-09-12"])) == []
     assert runner.calls == []
 
 
@@ -86,7 +86,7 @@ def test_date_range_sql(tmp_path: Any) -> None:
 
 def test_block_range_sql(tmp_path: Any) -> None:
     runner = FakeRunner()
-    _source(tmp_path, runner).query(BigQuerySpec("transactions", from_block=100, to_block=200))
+    _source(tmp_path, runner).query(BigQuerySpec("transactions", from_block=100, to_block=200, dates=["2026-09-12"]))
     sql, params = runner.calls[-1]
     assert "block_number >= @from_block" in sql and "block_number <= @to_block" in sql
     assert _params(params)["from_block"] == 100
@@ -95,7 +95,7 @@ def test_block_range_sql(tmp_path: Any) -> None:
 
 def test_address_filter_sql_uses_padded_tail(tmp_path: Any) -> None:
     runner = FakeRunner()
-    _source(tmp_path, runner).query(BigQuerySpec("transactions", address=PADDED))
+    _source(tmp_path, runner).query(BigQuerySpec("transactions", address=PADDED, dates=["2026-09-12"]))
     sql, params = runner.calls[-1]
     assert "LOWER(from_address) = @address" in sql
     assert "LOWER(to_address) = @address" in sql
@@ -104,7 +104,7 @@ def test_address_filter_sql_uses_padded_tail(tmp_path: Any) -> None:
 
 def test_limit_is_parameterized_and_clamped(tmp_path: Any) -> None:
     runner = FakeRunner()
-    _source(tmp_path, runner).query(BigQuerySpec("transactions", limit=99999))
+    _source(tmp_path, runner).query(BigQuerySpec("transactions", limit=99999, dates=["2026-09-12"]))
     assert _params(runner.calls[-1][1])["limit"] == 1000
 
 
@@ -140,7 +140,7 @@ def test_row_mapping_padded_addresses_and_ms_timestamp(tmp_path: Any) -> None:
         "value": 61.0,
         "log_index": 382,
     }
-    out = _source(tmp_path, FakeRunner([row])).query(BigQuerySpec("transactions"))
+    out = _source(tmp_path, FakeRunner([row])).query(BigQuerySpec("transactions", dates=["2026-09-12"]))
     assert len(out) == 1
     r = out[0]
     assert r["chain"] == "eth"
@@ -155,7 +155,7 @@ def test_row_mapping_padded_addresses_and_ms_timestamp(tmp_path: Any) -> None:
 
 def test_missing_columns_map_to_defaults(tmp_path: Any) -> None:
     row = {"block_number": 1, "block_timestamp": None, "hash": "0xH"}
-    out = _source(tmp_path, FakeRunner([row])).query(BigQuerySpec("transactions"))
+    out = _source(tmp_path, FakeRunner([row])).query(BigQuerySpec("transactions", dates=["2026-09-12"]))
     r = out[0]
     assert r["block_timestamp"] is None
     assert r["from_address"] == ""
@@ -199,7 +199,7 @@ def test_solana_instructions_sql_address_in_accounts(tmp_path: Any) -> None:
 
 def test_solana_slot_bounds_sql(tmp_path: Any) -> None:
     runner = FakeRunner()
-    _source(tmp_path, runner).query(BigQuerySpec("token_transfers", chain="solana", from_block=100, to_block=200))
+    _source(tmp_path, runner).query(BigQuerySpec("token_transfers", chain="solana", from_block=100, to_block=200, dates=["2026-09-12"]))
     sql, params = runner.calls[-1]
     assert "block_slot >= @from_slot" in sql and "block_slot <= @to_slot" in sql
     assert _params(params)["from_slot"] == 100
@@ -229,7 +229,7 @@ def test_solana_token_transfer_row_mapping(tmp_path: Any) -> None:
         "destination": "DST",
         "transfer_type": "1",
     }
-    out = _source(tmp_path, FakeRunner([row])).query(BigQuerySpec("token_transfers", chain="solana"))
+    out = _source(tmp_path, FakeRunner([row])).query(BigQuerySpec("token_transfers", chain="solana", dates=["2026-09-12"]))
     r = out[0]
     assert r["chain"] == "solana"
     assert r["slot"] == 300_000_001
@@ -253,7 +253,7 @@ def test_solana_instruction_row_mapping(tmp_path: Any) -> None:
         "accounts": ["A1", "A2"],
         "data": "0xdeadbeef",
     }
-    out = _source(tmp_path, FakeRunner([row])).query(BigQuerySpec("instructions", chain="solana"))
+    out = _source(tmp_path, FakeRunner([row])).query(BigQuerySpec("instructions", chain="solana", dates=["2026-09-12"]))
     r = out[0]
     assert r["chain"] == "solana"
     assert r["program_id"] == "PROG"

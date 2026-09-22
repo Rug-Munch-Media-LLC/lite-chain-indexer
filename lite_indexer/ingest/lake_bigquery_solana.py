@@ -22,6 +22,12 @@ from typing import Any
 from lite_indexer.logging import get_logger
 from lite_indexer.query.bigquery_source import BigQuerySource
 from lite_indexer.query.bigquery_spec import BigQuerySpec
+from lite_indexer.query.bigquery_common import BigQueryQuotaError
+from lite_indexer.ingest.lake_fill_common import (
+    _estimated_scan_gib,
+    _existing_day_count,
+    fill_summary,
+)
 from lite_indexer.storage.clickhouse import ClickHouseUnavailable
 
 logger = get_logger(__name__)
@@ -59,6 +65,11 @@ class SolanaBigQueryFillRequest:
     max_rows: int = 200_000
     mints: tuple[str, ...] = ()
     force: bool = False
+    # Scan-budget guard: a day-partition read scans the whole partition
+    # (~tens of GiB). Refuse runs whose ESTIMATED scan exceeds the budget
+    # unless force_budget is set — the free quota is 1 TiB/month.
+    max_scan_gib: float = 60.0
+    force_budget: bool = False
 
 @dataclass
 class _FillCtx:
@@ -82,18 +93,6 @@ def _build_writer() -> Any:
         _address_activity_rows: list[dict[str, Any]] = []
 
     return _Writer()
-
-def _existing_day_count(client: Any, day: str) -> int | None:
-    """Rows already in CH for ``day`` (None = check unavailable)."""
-    try:
-        rows = client.execute(
-            "SELECT count() FROM wallet_memory.solana_spl_balance_changes WHERE toDate(block_timestamp) = %(day)s",
-            {"day": day},
-        )
-    except Exception as exc:  # noqa: BLE001 — guard is best-effort
-        logger.debug("bigquery_fill_day_count_failed", day=day, error=str(exc)[:100])
-        return None
-    return int(rows[0][0]) if rows else 0
 
 def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int:
     """Stream one (date, table) partition; ``sink=None`` counts only (dry run)."""
@@ -130,6 +129,14 @@ def backfill_solana_from_bigquery(
 ) -> dict[str, int]:
     """Fill ``req`` from BigLake into ClickHouse; returns ``{key: rows}``."""
 
+    est_gib = _estimated_scan_gib(len(req.dates), len(req.tables))
+    if est_gib > req.max_scan_gib and not req.force_budget:
+        raise ValueError(
+            f"estimated scan {est_gib:.0f} GiB exceeds --max-scan-gib {req.max_scan_gib:.0f} "
+            f"(a day-partition read scans the whole partition; free quota = 1 TiB/month). "
+            f"Lower the date range, or pass --force-budget to override."
+        )
+
     bad = [t for t in req.tables if t not in FILLABLE_TABLES]
     if bad:
         raise ValueError(f"unsupported solana fill table(s): {bad} (fillable: {FILLABLE_TABLES})")
@@ -152,6 +159,9 @@ def backfill_solana_from_bigquery(
                 total = _read_pages(ctx, table, day, sink=None) if req.dry_run else _guarded_write(ctx, table, day)
             except ClickHouseUnavailable:
                 logger.error("bigquery_fill_aborted_clickhouse_unavailable", date=day, table=table)
+                raise
+            except BigQueryQuotaError:
+                logger.error("bigquery_fill_aborted_quota", date=day, table=table)
                 raise
             except Exception as exc:  # noqa: BLE001 — one bad date must not abort the run
                 logger.warning("bigquery_fill_partition_failed", date=day, table=table, error=str(exc)[:120])
@@ -183,11 +193,4 @@ def _default_ch_writer() -> Any:
     from lite_indexer.storage.clickhouse import ClickHouseWriter
 
     return ClickHouseWriter()
-
-def fill_summary(req: SolanaBigQueryFillRequest, counts: dict[str, int]) -> dict[str, Any]:
-    """Machine-readable run summary for the CLI."""
-    return {
-        "chain": "solana", "dry_run": req.dry_run, "max_rows": req.max_rows,
-        "rows": sum(counts.values()), "counts": counts,
-    }
 

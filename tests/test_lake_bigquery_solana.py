@@ -93,7 +93,7 @@ def _source(tmp_path: Any, runner: FakeRunner) -> BigQuerySource:
 
 
 def _req(**kwargs: Any) -> SolanaBigQueryFillRequest:
-    defaults: dict[str, Any] = {"dates": [DAY], "batch_rows": 10, "max_rows": 200_000}
+    defaults: dict[str, Any] = {"dates": [DAY], "batch_rows": 10, "max_rows": 200_000, "max_scan_gib": 500.0}
     defaults.update(kwargs)
     return SolanaBigQueryFillRequest(**defaults)
 
@@ -189,3 +189,37 @@ def test_mint_filter_reaches_sql(tmp_path: Any) -> None:
     src = _source(tmp_path, runner)
     backfill_solana_from_bigquery(_req(dry_run=True, mints=("Mint0",)), source=src, ch_writer=FakeCHWriter())
     assert src is not None
+
+
+# ── Quota handling ───────────────────────────────────────────────────
+
+
+class QuotaRunner:
+    """Runner that simulates the BigQuery free-bytes quota cap."""
+
+    def __call__(self, sql: str, params: Any) -> list[dict[str, Any]]:
+        from lite_indexer.query.bigquery_common import BigQueryQuotaError
+
+        raise BigQueryQuotaError("Quota exceeded: free query bytes scanned")
+
+
+def test_quota_error_aborts_whole_run(tmp_path: Any) -> None:
+    import pytest
+
+    from lite_indexer.query.bigquery_common import BigQueryQuotaError
+
+    with pytest.raises(BigQueryQuotaError):
+        backfill_solana_from_bigquery(
+            _req(dates=[DAY, "2026-09-22"]),
+            source=_source(tmp_path, QuotaRunner()),
+            ch_writer=FakeCHWriter(),
+        )
+
+
+def test_is_quota_error_matches_bq_stderr() -> None:
+    from lite_indexer.query.bigquery_common import is_quota_error
+
+    assert is_quota_error("Quota exceeded: Your project exceeded quota for free query bytes scanned.")
+    assert is_quota_error("quotaExceeded: something")
+    assert not is_quota_error("not found: table x")
+    assert not is_quota_error("")

@@ -8,6 +8,7 @@ subprocess shell-out to the ``bq`` CLI. Imported by
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
 
@@ -18,7 +19,7 @@ from lite_indexer.query.bigquery_spec import BigQuerySpec
 logger = get_logger(__name__)
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_PROJECT = "gen-lang-client-0708984505"
+_PROJECT = os.environ.get("BIGQUERY_PROJECT_ID", "gen-lang-client-0708984505")
 _DATASET = "bigquery-public-data.crypto_ethereum"
 
 # Solana public dataset (verified 2026-09-21 via ``bq show --schema``):
@@ -92,6 +93,15 @@ def build_query(
     """
     table = spec.table
     chain = spec.chain
+    if not spec.dates:
+        # Fail-closed: a query without day partitions scans the WHOLE table
+        # (the 2026-09-21 incident: one undated eth scan = 886 GiB of the
+        # 1 TiB/month free quota). Callers must pass the partitions they
+        # need — the router derives them from block ranges already.
+        raise ValueError(
+            "refusing unbounded scan: pass day partitions (dates=[...]) — "
+            "an undated read scans the entire table (quota bomb)"
+        )
     address = spec.address
     from_block = spec.from_block
     to_block = spec.to_block

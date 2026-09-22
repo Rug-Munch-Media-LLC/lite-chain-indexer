@@ -6,15 +6,17 @@ Extracted 2026-09-21 from ``query/bigquery_tables.py`` (structure gate: NEW >200
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from typing import Any
 
 from lite_indexer.logging import get_logger
+from lite_indexer.query.bigquery_common import BigQueryQuotaError, is_quota_error
 
 logger = get_logger(__name__)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_PROJECT = "gen-lang-client-0708984505"
+_PROJECT = os.environ.get("BIGQUERY_PROJECT_ID", "gen-lang-client-0708984505")
 _DATASET = "bigquery-public-data.crypto_ethereum"
 _SOLANA_DATASET = "bigquery-public-data.crypto_solana_mainnet_us"
 _SOLANA_TABLES: dict[str, str] = {
@@ -76,7 +78,11 @@ def run_bq(bq_bin: str, sql: str, params: list[tuple[str, str, Any]]) -> list[di
     cmd.append(sql)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
-        logger.warning("bigquery_bq_failed", error=((proc.stderr or proc.stdout) or "")[:300])
+        detail = ((proc.stderr or proc.stdout) or "")[:300]
+        if is_quota_error(detail):
+            logger.warning("bigquery_quota_exceeded", error=detail[:200])
+            raise BigQueryQuotaError(detail)
+        logger.warning("bigquery_bq_failed", error=detail)
         return []
     try:
         data = json.loads(proc.stdout or "[]")
