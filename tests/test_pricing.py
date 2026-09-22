@@ -37,6 +37,23 @@ from lite_indexer.pricing import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fast_pricing() -> Any:
+    """No real pacing/backoff waits in tests (interval consts -> 0)."""
+    from unittest.mock import patch
+
+    import lite_indexer.pricing.fetchers as fetchers
+
+    with patch.multiple(
+        fetchers,
+        RATE_LIMIT_BACKOFF_S=0.0,
+        COINGECKO_RATE_LIMIT_BACKOFF_S=0.0,
+        COINGECKO_MIN_INTERVAL=0.0,
+        DEFILLAMA_MIN_INTERVAL=0.0,
+    ):
+        yield
+
+
 class FakeClient:
     """Minimal ClickHouse client double for pricing tests."""
 

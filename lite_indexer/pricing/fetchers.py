@@ -21,6 +21,10 @@ from lite_indexer.util.http import http_limits
 
 logger = get_logger(__name__)
 
+#: Backoff after a 429 (patchable in tests; seconds).
+RATE_LIMIT_BACKOFF_S = 5.0
+COINGECKO_RATE_LIMIT_BACKOFF_S = 10.0
+
 # Per-provider last-request monotonic timestamp (free-tier pacing).
 _LAST_REQUEST: dict[str, float] = {}
 
@@ -71,7 +75,7 @@ class PriceFetcher:
             try:
                 resp = await self._client.get(url)
                 if resp.status_code == 429:
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(RATE_LIMIT_BACKOFF_S)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
@@ -113,7 +117,7 @@ class PriceFetcher:
             try:
                 resp = await self._client.get(url)
                 if resp.status_code == 429:
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(COINGECKO_RATE_LIMIT_BACKOFF_S)
                     continue
                 resp.raise_for_status()
                 data = resp.json()

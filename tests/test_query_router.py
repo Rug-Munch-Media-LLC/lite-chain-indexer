@@ -30,6 +30,25 @@ from lite_indexer.query import QueryCache, QueryRouter, RPCFetcher
 from lite_indexer.rpc import RpcClient
 from lite_indexer.storage.cold_store import ColdStore
 
+
+@pytest.fixture(autouse=True)
+def _no_network_legs() -> Any:
+    """Fallback must reach the injected fakes: real network legs return [].
+
+    The legs are class attributes bound at import time, so tests patch them
+    on the router class (string targets) — no real HTTP in the suite.
+    """
+    from unittest.mock import patch
+
+    async def _empty(*_args: Any, **_kw: Any) -> list[Any]:
+        return []
+
+    with patch("lite_indexer.query.router.QueryRouter._biglake_route", _empty), \
+            patch("lite_indexer.query.router.QueryRouter._envio_route", _empty), \
+            patch("lite_indexer.query.router.QueryRouter._indexed_route", _empty), \
+            patch("lite_indexer.query.router.QueryRouter._sqd_traces_route", _empty):
+        yield
+
 # ── Fakes ───────────────────────────────────────────────────────────────
 
 _EVM_COLS = (
