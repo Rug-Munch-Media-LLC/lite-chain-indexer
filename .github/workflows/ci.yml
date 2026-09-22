@@ -20,14 +20,37 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # ── Ratchet gates (REQUIRED, in order) ───────────────────────
+      # The four repo ratchets run before lint so a structural or
+      # anti-pattern regression fails fast. See docs/CI-GATES.md.
+      - name: Structure gate (shrink-only ratchet)
+        run: python3 scripts/check-structure.py
+
+      - name: Antipattern gate (per-repo ratchet)
+        run: python3 scripts/check-antipatterns.py
+
+      - name: Monkeypatch gate (decrease-only ratchet)
+        run: python3 scripts/check-monkeypatch.py
+
+      - name: Public-leak gate (freemium scan)
+        run: python3 scripts/check-public-no-freemium.py
+
       - name: Lint with ruff
         run: ruff check .
 
       - name: Type check with mypy
         run: mypy lite_indexer/
 
-      - name: Run tests
-        run: pytest -v --tb=short
+      - name: Run tests with coverage (BLOCKING)
+        # RATCHET: the floor only ever RISES. Measured 75% on 2026-09-22
+        # (1890 passed); 74% is the rounded-down floor with a small margin.
+        # Raise it as coverage improves — never lower it. See docs/CI-GATES.md.
+        run: |
+          pytest -v --tb=short \
+            --cov=lite_indexer \
+            --cov-report=term \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=74
 
       - name: Check import
         run: python -c "from lite_indexer import LiteIndexer; print('Package import OK')"
