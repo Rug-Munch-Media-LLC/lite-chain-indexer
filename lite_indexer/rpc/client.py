@@ -4,1205 +4,134 @@ RPC client — direct JSON-RPC HTTP calls for blockchain data.
 Provides the RpcClient class for making eth_getLogs, eth_blockNumber,
 eth_getBlockByNumber, and eth_call requests. Also includes the
 fetch_block_timestamps utility function.
+
+Split into cohesive modules (2026-09-22, shrink-only ratchet); this
+module is the public facade — every historically importable name is
+re-exported here, and the implementation resolves patchable
+collaborators through this facade so monkeypatched attributes keep
+working.
 """
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import json
-import time
-from typing import Any, cast
+import asyncio  # noqa: F401  (module attribute used by tests)
+import contextlib  # noqa: F401  (module attribute preserved)
+import json  # noqa: F401  (module attribute preserved)
+import time  # noqa: F401  (module attribute preserved)
+from typing import Any, cast  # noqa: F401  (module attributes preserved)
 
-import httpx
+import httpx  # noqa: F401  (module attribute used by tests)
 
 from lite_indexer.config import (
-    CHAIN_BLOCK_TIMES,
-    DEFAULT_BLOCK_TIME,
-    GET_LOGS_SEMAPHORE_LIMIT,
-    RATE_LIMIT_WAIT_CAP,
-    RPC_BATCH_ENABLED,
-    RPC_BATCH_MAX,
+    CHAIN_BLOCK_TIMES,  # noqa: F401  (re-exported)
+    DEFAULT_BLOCK_TIME,  # noqa: F401  (re-exported)
+    GET_LOGS_SEMAPHORE_LIMIT,  # noqa: F401  (re-exported)
+    RATE_LIMIT_WAIT_CAP,  # noqa: F401  (re-exported)
+    RPC_BATCH_ENABLED,  # noqa: F401  (re-exported; tests patch it here)
+    RPC_BATCH_MAX,  # noqa: F401  (re-exported; tests patch it here)
     RPC_CALL_CLIENTS_MAX,  # noqa: F401  (re-exported; rpc.client_pool reads it at runtime)
-    RPC_CALL_TIMEOUT,
-    RPC_RETRY_ATTEMPTS,
-    RPC_RETRY_BASE_DELAY_S,
-    RPC_RETRY_MAX_DELAY_S,
-    RPC_TIMEOUT,
-    TIMESTAMP_FETCH_TIMEOUT,
-    TIMESTAMP_PHASE_DEADLINE_S,
+    RPC_CALL_TIMEOUT,  # noqa: F401  (re-exported)
+    RPC_RETRY_ATTEMPTS,  # noqa: F401  (re-exported)
+    RPC_RETRY_BASE_DELAY_S,  # noqa: F401  (re-exported)
+    RPC_RETRY_MAX_DELAY_S,  # noqa: F401  (re-exported)
+    RPC_TIMEOUT,  # noqa: F401  (re-exported)
+    TIMESTAMP_FETCH_TIMEOUT,  # noqa: F401  (re-exported)
+    TIMESTAMP_PHASE_DEADLINE_S,  # noqa: F401  (re-exported)
 )
 from lite_indexer.logging import get_logger
-from lite_indexer.metrics import incr as metrics_incr
-from lite_indexer.rpc import proxy as rpc_proxy
-from lite_indexer.rpc.budgets import (
+from lite_indexer.metrics import incr as metrics_incr  # noqa: F401  (re-exported)
+from lite_indexer.rpc import proxy as rpc_proxy  # noqa: F401  (re-exported)
+from lite_indexer.rpc.budgets import (  # noqa: F401  (re-exported)
     budget_slot,
     budget_wait_seconds,
     record_budget_dispatch,
     record_budget_response,
     record_budget_success,
 )
-from lite_indexer.rpc.client_pool import (
-    _call_clients,  # noqa: F401  (re-export for import stability)
+from lite_indexer.rpc.client_batch import BatchMixin
+from lite_indexer.rpc.client_blocks import BlocksMixin
+from lite_indexer.rpc.client_call import CallMixin
+from lite_indexer.rpc.client_logrange import LogRangeMixin
+from lite_indexer.rpc.client_logs import LogsMixin
+from lite_indexer.rpc.client_pool import (  # noqa: F401  (re-export for import stability)
+    _call_clients,
     _drop_call_client,
     _get_call_client,
     _is_closed_client_error,
-    aclose_call_clients,  # noqa: F401  (re-export for import stability)
+    aclose_call_clients,
 )
-from lite_indexer.rpc.defer_gate import _defer_reason_for, _warn_deferred
-from lite_indexer.rpc.jsonparse import decode_response_async
-from lite_indexer.rpc.ledger import (
-    record_endpoint_call,
+from lite_indexer.rpc.client_timestamps import (
+    _TS_SAMPLE_MAX_FETCHES,  # noqa: F401  (re-exported)
+    fetch_block_timestamps,
 )
-from lite_indexer.rpc.pool import (
+from lite_indexer.rpc.client_transport import (  # noqa: F401  (re-exported)
+    TransportMixin,
+    _budget_before,
+    _post_direct,
+    _post_json,
+    _safe_record,
+)
+from lite_indexer.rpc.defer_gate import _defer_reason_for, _warn_deferred  # noqa: F401  (re-exported)
+from lite_indexer.rpc.jsonparse import decode_response_async  # noqa: F401  (re-exported)
+from lite_indexer.rpc.ledger import record_endpoint_call  # noqa: F401  (re-exported)
+from lite_indexer.rpc.pool import (  # noqa: F401  (re-exported)
     ban_endpoint,
     get_best_endpoint,
     record_endpoint_failure,
     record_endpoint_success,
     record_rate_limit,
 )
-from lite_indexer.rpc.provider_caps import (
+from lite_indexer.rpc.provider_caps import (  # noqa: F401  (re-exported)
     account_key_for_endpoint,
     provider_concurrency_slot,
     provider_throttle_before,
     record_provider_response,
 )
-from lite_indexer.rpc.ratelimit import apply_provider_rate_limit
-from lite_indexer.rpc.routing import (
+from lite_indexer.rpc.ratelimit import apply_provider_rate_limit  # noqa: F401  (re-exported)
+from lite_indexer.rpc.routing import (  # noqa: F401  (re-exported)
     decr_in_flight,
     incr_in_flight,
     record_endpoint_block_height,
     record_endpoint_tip_failure,
     record_rpc_latency,
     record_rpc_outcome,
+    record_rpc_usage,
 )
 from lite_indexer.rpc.ts_cache import (  # noqa: F401  (public re-export)
     _ts_cache_get,
     _ts_cache_put,
     clear_timestamp_cache,
 )
-from lite_indexer.util.http import http_limits
+from lite_indexer.util.http import http_limits  # noqa: F401  (re-exported)
 
 logger = get_logger(__name__)
 
-# Max eth_getBlockByNumber header fetches per timestamp-enrichment call.
-# Larger sets are sampled and interpolated (see fetch_block_timestamps).
-_TS_SAMPLE_MAX_FETCHES = 64
 
-
-def _safe_record(recorder: Any, *args: Any, **kwargs: Any) -> None:
-    """Run an additive ledger/routing telemetry call without breaking RPC.
-
-    The quota ledger (``rpc/ledger.py``) and EWMA/staleness trackers
-    (``rpc/routing.py``) are best-effort observability layers: if a
-    recorder ever raises (e.g. a corrupt ledger file), the error is
-    logged and the RPC result is returned untouched.
-    """
-    try:
-        recorder(*args, **kwargs)
-    except Exception as exc:  # noqa: BLE001 — telemetry must never raise into the RPC path
-        logger.debug("rpc_telemetry_skipped", error=str(exc)[:80])
-
-
-async def _budget_before(endpoint: str) -> None:
-    """Honor the identity budget: pace to rps, then record the dispatch."""
-    wait = budget_wait_seconds(endpoint)
-    if wait > 0:
-        logger.debug("rpc_budget_wait", endpoint=endpoint[:50], wait_s=round(wait, 2))
-        await asyncio.sleep(wait)
-    record_budget_dispatch(endpoint)
-
-
-async def _post_direct(
-    client: httpx.AsyncClient,
-    endpoint: str,
-    payload: Any,
-    timeout: float,
-) -> httpx.Response:
-    """POST directly, retrying ONCE via a proxy after a transport failure.
-
-    Only active in ``RPC_PROXY_FALLBACK_ONLY`` mode (``fallback_proxy_for``
-    returns None otherwise). The passed client carries its timeout.
-    """
-    try:
-        return await client.post(endpoint, json=payload)
-    except (httpx.TransportError, httpx.TimeoutException) as exc:
-        fallback = rpc_proxy.fallback_proxy_for(endpoint)
-        if fallback is None:
-            raise
-        logger.warning(
-            "rpc_proxy_fallback_used",
-            endpoint=endpoint[:50],
-            proxy=fallback.label,
-            error=str(exc)[:80],
-        )
-        metrics_incr("rpc_proxy_fallback_used")
-        proxy_client = await _get_call_client(timeout, proxy=fallback)
-        return await proxy_client.post(endpoint, json=payload)
-    except RuntimeError as exc:
-        if not _is_closed_client_error(exc):
-            raise
-        # Self-heal: the pooled client was closed under us (LRU eviction /
-        # shutdown race). Drop it, recreate once, retry the same request.
-        logger.warning("rpc_client_recreated", endpoint=endpoint[:50])
-        metrics_incr("rpc_client_recreated")
-        _drop_call_client(timeout, None)
-        return await (await _get_call_client(timeout)).post(endpoint, json=payload)
-
-
-async def _post_json(
-    endpoint: str,
-    payload: Any,
-    timeout: float,
-    *,
-    proxy: rpc_proxy.ProxySpec | None = None,
-) -> httpx.Response:
-    """POST a JSON body, routing through the residency proxy when enabled.
-
-    Selected by ``RPC_PROXY_FALLBACK_ONLY``: proxy-primary (default, ONE
-    direct retry on proxy failure — ``rpc_proxy_fallback_direct``) or
-    direct-primary / fallback-only (ONE proxy retry —
-    ``rpc_proxy_fallback_used``), the quota-safe default for the scheduler.
-    """
-    spec = proxy if proxy is not None else rpc_proxy.proxy_for_endpoint(endpoint)
-    if spec is None:
-        return await _post_direct(await _get_call_client(timeout), endpoint, payload, timeout)
-    try:
-        client = await _get_call_client(timeout, proxy=spec)
-        return await client.post(endpoint, json=payload)
-    except (httpx.ProxyError, RuntimeError, httpx.TransportError) as exc:
-        if isinstance(exc, httpx.ProxyError):
-            logger.warning(
-                "rpc_proxy_fallback_direct",
-                endpoint=endpoint[:50],
-                proxy=spec.label,
-                error=str(exc)[:80],
-            )
-            rpc_proxy.mark_proxy_failed(endpoint, spec)
-        elif _is_closed_client_error(exc):
-            # Self-heal: pooled proxy client closed under us (LRU eviction /
-            # TLS teardown). Drop it, recreate once, retry the same request.
-            logger.warning("rpc_client_recreated", endpoint=endpoint[:50], proxy=spec.label)
-            metrics_incr("rpc_client_recreated")
-            _drop_call_client(timeout, spec)
-            return await (await _get_call_client(timeout, proxy=spec)).post(endpoint, json=payload)
-        else:
-            raise
-        client = await _get_call_client(timeout)
-        return await client.post(endpoint, json=payload)
-
-
-# ── RPC Client ─────────────────────────────────────────────────────────
-
-
-class RpcClient:
+class RpcClient(
+    TransportMixin,
+    CallMixin,
+    BatchMixin,
+    BlocksMixin,
+    LogsMixin,
+    LogRangeMixin,
+):
     """Direct RPC client for blockchain calls.
 
     Replaces the backend RpcRouter with a standalone implementation
-    that makes direct HTTP POST calls to RPC endpoints.
+    that makes direct HTTP POST calls to RPC endpoints. The method
+    bodies live in the ``client_*`` sibling modules (transport, call,
+    batch, blocks, logs, log-range, timestamps); this class composes
+    them and preserves the historical import surface.
     """
 
-    def __init__(self) -> None:
-        self._client: httpx.AsyncClient | None = None
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create shared HTTP client."""
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(RPC_TIMEOUT),
-                limits=http_limits(),
-            )
-        return self._client
-
-    async def aclose(self) -> None:
-        """Close the shared HTTP client (idempotent)."""
-        client, self._client = self._client, None
-        if client is not None and not client.is_closed:
-            with contextlib.suppress(Exception):
-                await client.aclose()
-
-    async def call(
-        self,
-        endpoint: str,
-        method: str,
-        params: list[Any] | None = None,
-        timeout: float = RPC_CALL_TIMEOUT,
-    ) -> dict[str, Any] | None:
-        """Make a JSON-RPC call to an endpoint.
-
-        Records per-endpoint usage/cost in the shared RPC usage ledger
-        (which endpoints actually serve data vs. error).
-
-        Args:
-            endpoint: RPC endpoint URL.
-            method: JSON-RPC method (e.g., 'eth_blockNumber').
-            params: Method parameters.
-            timeout: Request timeout in seconds.
-
-        Returns:
-            Parsed JSON response dict, or None on failure.
-        """
-        from lite_indexer.rpc.autotune import autotune_wait
-        from lite_indexer.rpc.autotune import record_call as autotune_record
-        from lite_indexer.rpc.capabilities import archive_guard_reason
-        from lite_indexer.rpc.circuit import circuit_open, record_circuit_failure, record_circuit_success
-        from lite_indexer.rpc.routing import record_rpc_usage
-        from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
-
-        # Quota-degrade gate: ask the ledger whether this call should be
-        # deferred (level 3 parks everything, level 2 blocks heavy methods).
-        # Guarded — a ledger error never blocks RPC. Returns None (the
-        # existing failure shape); a deferred call is never dispatched and
-        # records no quota consumption.
-        reason = _defer_reason_for(endpoint, method)
-        if reason:
-            _warn_deferred(endpoint, method, reason)
-            return None
-
-        # Archive-class fail-closed gate: a known non-archive endpoint must
-        # never serve eth_getLogs/eth_getProof/debug_*/trace_* — it silently
-        # returns wrong/empty data. Returns None (the existing failure shape).
-        archive_reason = archive_guard_reason(endpoint, method)
-        if archive_reason:
-            metrics_incr("rpc_archive_fail_closed")
-            logger.warning(
-                "rpc_archive_fail_closed",
-                endpoint=endpoint[:60],
-                method=method,
-                reason=archive_reason,
-            )
-            return None
-
-        # Circuit breaker gate: a tripped endpoint (5 consecutive transient
-        # failures) is skipped for the open-TTL window; after expiry one
-        # probe passes (half-open) and success resets it.
-        if await circuit_open(endpoint):
-            logger.debug("rpc_circuit_skip", endpoint=endpoint[:50], method=method)
-            return None
-
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": params or [],
-        }
-        # Per-account (provider) cap: queue when the provider's concurrency /
-        # requests-per-second budget is exhausted, and honor the account-level
-        # Retry-After window — providers ban the ACCOUNT, not one URL.
-        account_key = account_key_for_endpoint(endpoint)
-        # Throttles: intelligent per-method pacing, provider (account) gate
-        # ONCE before the retry loop (retries don't re-pace), auto-tune soft
-        # spacing, then the per-identity budget.
-        await throttle_before(endpoint, method)
-        await provider_throttle_before(endpoint)
-        await autotune_wait(endpoint)
-        await _budget_before(endpoint)
-        started = time.perf_counter()
-
-        # Exponential backoff retry for TRANSIENT failures only (timeouts,
-        # connection errors, 5xx, empty responses): 0.1s → 0.2s → 0.4s,
-        # max RPC_RETRY_ATTEMPTS attempts. Non-transient outcomes return
-        # immediately. All attempts failing returns None — the existing
-        # failure shape — and hedging keeps doing its job above.
-        max_attempts = RPC_RETRY_ATTEMPTS
-        for attempt in range(1, max_attempts + 1):
-            transient = False
-            try:
-                # Ledger + in-flight telemetry around the request (best-effort:
-                # record_endpoint_call feeds the quota ledger; incr/decr
-                # in-flight feeds the P2C damped score).
-                _safe_record(record_endpoint_call, endpoint, method)
-                _safe_record(incr_in_flight, endpoint)
-                try:
-                    async with budget_slot(endpoint):
-                        async with provider_concurrency_slot(account_key):
-                            resp = await _post_json(endpoint, payload, timeout)
-                finally:
-                    _safe_record(decr_in_flight, endpoint)
-                _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
-                bytes_received = len(getattr(resp, "content", b"") or b"")
-                record_rpc_response(endpoint, method, resp.status_code, resp.headers)
-                _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
-                record_budget_response(endpoint, resp.status_code)
-
-                # Empty response check — often a transient gateway glitch.
-                body_text = getattr(resp, "text", "")
-                if not body_text or len(body_text) < 5:
-                    logger.debug("rpc_empty_response", endpoint=endpoint[:50], method=method)
-                    record_rpc_usage(endpoint, method, ok=False, error="empty_response")
-                    _safe_record(record_rpc_outcome, endpoint, ok=False)
-                    transient = True
-                else:
-                    resp.raise_for_status()
-
-                    # Malformed JSON protection (msgspec fast path when present)
-                    try:
-                        data = await decode_response_async(resp)
-                    except (json.JSONDecodeError, ValueError) as exc:
-                        logger.debug(
-                            "rpc_malformed_json",
-                            endpoint=endpoint[:50],
-                            method=method,
-                            error=str(exc)[:60],
-                        )
-                        record_rpc_usage(
-                            endpoint, method, ok=False, error="malformed_json", bytes_received=bytes_received
-                        )
-                        _safe_record(record_rpc_outcome, endpoint, ok=False)
-                        return None
-
-                    if not isinstance(data, dict):
-                        # Some RPCs return a bare JSON string/array — treat as
-                        # invalid instead of crashing on data.get(...) (2026-09-20).
-                        logger.warning("rpc_malformed_response", endpoint=endpoint[:50], method=method)
-                        record_rpc_usage(endpoint, method, ok=False, error="malformed_response")
-                        _safe_record(record_rpc_outcome, endpoint, ok=False)
-                        return None
-
-                    ok = bool("error" not in data or data.get("error") is None)
-                    _safe_record(autotune_record, endpoint, ok=ok)
-                    if ok:
-                        record_rpc_usage(endpoint, method, ok=True, bytes_received=bytes_received)
-                        record_endpoint_success(endpoint)
-                        record_budget_success(endpoint)
-                        await record_circuit_success(endpoint)
-                    else:
-                        record_rpc_usage(
-                            endpoint,
-                            method,
-                            ok=False,
-                            error=str(data.get("error", ""))[:120],
-                            bytes_received=bytes_received,
-                        )
-                    _safe_record(record_rpc_outcome, endpoint, ok=ok)
-                    return cast(dict[str, Any], data)
-
-            except httpx.TimeoutException:
-                logger.debug("rpc_timeout", endpoint=endpoint[:50], method=method)
-                record_rpc_usage(endpoint, method, ok=False, error="timeout")
-                _safe_record(record_rpc_outcome, endpoint, ok=False)
-                transient = True
-            except (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as exc:
-                logger.debug("rpc_connection_error", endpoint=endpoint[:50], method=method, error=str(exc)[:60])
-                record_rpc_usage(endpoint, method, ok=False, error="connection_error")
-                _safe_record(record_rpc_outcome, endpoint, ok=False)
-                transient = True
-            except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code
-                logger.debug("rpc_http_error", endpoint=endpoint[:50], method=method, status=status)
-                record_rpc_usage(endpoint, method, ok=False, error=f"http_{status}")
-                # 429 = rate-limit: backoff only, no circuit trip/hard-ban.
-                if status == 429:
-                    record_rate_limit(endpoint)
-                # 403 = provider blacklist: hard-ban the endpoint for an
-                # exponential window so we stop hammering it.
-                elif status == 403:
-                    ban_endpoint(endpoint, reason="http_403")
-                _safe_record(record_rpc_outcome, endpoint, ok=False)
-                # 5xx = upstream hiccup: transient, worth a retry.
-                transient = status >= 500
-            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
-                logger.warning("rpc_call_failed", endpoint=endpoint[:50], method=method, error=str(exc)[:80])
-                record_rpc_usage(endpoint, method, ok=False, error=str(exc)[:120])
-                _safe_record(record_rpc_outcome, endpoint, ok=False)
-                transient = True
-
-            if transient:
-                await record_circuit_failure(endpoint)
-                if attempt < max_attempts:
-                    from lite_indexer.rpc.backoff import exponential_backoff
-
-                    # AWS full jitter: uniform(0, min(cap, base*2**attempt)).
-                    # Explicit Retry-After windows (429) stay exact above.
-                    delay = exponential_backoff(
-                        attempt - 1,
-                        base=RPC_RETRY_BASE_DELAY_S,
-                        cap=RPC_RETRY_MAX_DELAY_S,
-                    )
-                    logger.debug(
-                        "rpc_retry",
-                        endpoint=endpoint[:50],
-                        method=method,
-                        attempt=attempt,
-                        next_delay_s=round(delay, 4),
-                    )
-                    await asyncio.sleep(delay)
-        return None
-
-    async def call_batch(
-        self,
-        endpoint: str,
-        calls: list[tuple[str, list[Any] | None]],
-        *,
-        timeout: float = RPC_CALL_TIMEOUT,
-        fallback: bool = True,
-    ) -> list[dict[str, Any] | None]:
-        """Send N same-shape calls as ONE JSON-RPC array POST.
-
-        Collapsing independent calls into a batch multiplies throughput: a
-        batch counts as ONE HTTP request against the caps (paced once);
-        ledger cost is still recorded per element. Elements return in
-        input order. With ``fallback`` True (default), any batch-level
-        failure transparently re-issues unresolved elements as individual
-        :meth:`call` invocations — never lose data. Callers that cannot
-        afford a per-element fallback storm (non-critical timestamp phase)
-        pass ``fallback=False`` and get None slots. Per-element JSON-RPC
-        errors are always returned verbatim in their slot.
-
-        Args:
-            endpoint: RPC endpoint URL.
-            calls: ``(method, params)`` pairs, max ``RPC_BATCH_MAX`` per POST.
-            timeout: Per-request timeout in seconds.
-            fallback: When False, a failed batch yields None slots.
-
-        Returns:
-            One raw JSON-RPC response dict per input call, or None for an
-            element that could not be resolved.
-        """
-        if not calls:
-            return []
-        results: list[dict[str, Any] | None] = [None] * len(calls)
-        if not RPC_BATCH_ENABLED:
-            if not fallback:
-                return results
-            return await self._call_batch_fallback(endpoint, calls, timeout)
-
-        from lite_indexer.rpc.capabilities import archive_guard_reason
-        from lite_indexer.rpc.circuit import circuit_open
-
-        if await circuit_open(endpoint):
-            logger.debug("rpc_batch_circuit_skip", endpoint=endpoint[:50])
-            return results
-
-        batch_max = max(1, RPC_BATCH_MAX)
-        for start in range(0, len(calls), batch_max):
-            chunk = calls[start : start + batch_max]
-            # Guards are per element: deferred / non-archive items stay None.
-            sendable: list[tuple[int, str, list[Any] | None]] = []
-            for offset, (method, params) in enumerate(chunk):
-                idx = start + offset
-                if _defer_reason_for(endpoint, method):
-                    continue
-                if archive_guard_reason(endpoint, method):
-                    metrics_incr("rpc_archive_fail_closed")
-                    continue
-                sendable.append((idx, method, params))
-            if not sendable:
-                continue
-
-            pace_method = sendable[0][1]
-            payload = [
-                {"jsonrpc": "2.0", "id": i + 1, "method": m, "params": p or []}
-                for i, (_idx, m, p) in enumerate(sendable)
-            ]
-            try:
-                data = await self._post_batch(endpoint, payload, pace_method, timeout)
-            except Exception as exc:  # noqa: BLE001 — batch must degrade, not fail
-                logger.warning("rpc_batch_failed", endpoint=endpoint[:50], error=str(exc)[:80])
-                metrics_incr("rpc_batch_fallback")
-                if fallback:
-                    results = await self._call_batch_fallback(endpoint, calls, timeout, results)
-                continue
-
-            if not isinstance(data, list):
-                metrics_incr("rpc_batch_fallback")
-                if fallback:
-                    results = await self._call_batch_fallback(endpoint, calls, timeout, results)
-                continue
-
-            by_id = {item.get("id"): item for item in data if isinstance(item, dict)}
-            matched = 0
-            for i, (idx, method, _p) in enumerate(sendable):
-                item = by_id.get(i + 1)
-                if isinstance(item, dict):
-                    results[idx] = item
-                    matched += 1
-                _safe_record(record_endpoint_call, endpoint, method)
-                _safe_record(record_rpc_outcome, endpoint, ok=bool(item and item.get("error") is None))
-            metrics_incr("rpc_batch_calls")
-            if matched == 0:
-                metrics_incr("rpc_batch_fallback")
-                if fallback:
-                    results = await self._call_batch_fallback(endpoint, calls, timeout, results)
-        return results
-
-    async def _post_batch(
-        self,
-        endpoint: str,
-        payload: list[dict[str, Any]],
-        method: str,
-        timeout: float,
-    ) -> Any:
-        """POST one JSON-RPC batch array with throttle/cap accounting."""
-        from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
-
-        account_key = account_key_for_endpoint(endpoint)
-        await throttle_before(endpoint, method, max_wait=timeout)
-        await provider_throttle_before(endpoint)
-        await _budget_before(endpoint)
-        async with budget_slot(endpoint):
-            async with provider_concurrency_slot(account_key):
-                resp = await _post_json(endpoint, payload, timeout)
-        record_rpc_response(endpoint, method, resp.status_code, resp.headers)
-        _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
-        record_budget_response(endpoint, resp.status_code)
-        if resp.status_code == 429:
-            record_rate_limit(endpoint)
-            raise httpx.HTTPStatusError("batch rate limited", request=httpx.Request("POST", endpoint), response=resp)
-        resp.raise_for_status()
-        return await decode_response_async(resp)
-
-    async def _call_batch_fallback(
-        self,
-        endpoint: str,
-        calls: list[tuple[str, list[Any] | None]],
-        timeout: float,
-        existing: list[dict[str, Any] | None] | None = None,
-    ) -> list[dict[str, Any] | None]:
-        """Re-issue unresolved batch elements as individual calls.
-
-        Elements already resolved in ``existing`` are left untouched, so a
-        partial batch only pays for the missing elements.
-        """
-        out: list[dict[str, Any] | None] = list(existing) if existing is not None else [None] * len(calls)
-        for i, (method, params) in enumerate(calls):
-            if out[i] is None:
-                out[i] = await self.call(endpoint, method, params, timeout=timeout)
-        return out
-
-    async def eth_block_number(self, endpoint: str) -> int | None:
-        """Get latest block number. Handles empty/malformed responses,
-        connection errors and non-hex results (all return None)."""
-        result = await self.call(endpoint, "eth_blockNumber")
-        if not result or "result" not in result:
-            _safe_record(record_endpoint_tip_failure, endpoint)
-            return None
-        try:
-            height = int(result["result"], 16)
-        except (ValueError, TypeError) as exc:
-            logger.debug("eth_block_number_non_hex", endpoint=endpoint[:50], error=str(exc)[:40])
-            _safe_record(record_endpoint_tip_failure, endpoint)
-            return None
-        _safe_record(record_endpoint_block_height, endpoint, height)
-        return height
-
-    async def eth_get_block_by_number(
-        self,
-        endpoint: str,
-        block_number: int,
-        full_tx: bool = False,
-        *,
-        chain: str | None = None,
-        tip: int | None = None,
-    ) -> dict[str, Any] | None:
-        """Get a block by its number.
-
-        Historical blocks below ``RPC_CACHE_CONFIRMATIONS`` are served from
-        the persistent response cache; tip/near-tip reads are never cached.
-        """
-        from lite_indexer.rpc import respcache
-
-        params = [hex(block_number), full_tx]
-        cached = respcache.get("eth_getBlockByNumber", params, chain=chain, block_number=block_number, tip=tip)
-        if cached is not None and isinstance(cached.get("result"), dict):
-            return cast(dict[str, Any], cached["result"])
-
-        result = await self.call(
-            endpoint,
-            "eth_getBlockByNumber",
-            params,
-            timeout=TIMESTAMP_FETCH_TIMEOUT,
-        )
-        if result and "result" in result:
-            block = cast(dict[str, Any], result["result"])
-            if block:
-                # Feed the staleness gate (skip null blocks — a missing
-                # block would skew the median toward 0).
-                _safe_record(record_endpoint_block_height, endpoint, block_number)
-                block_hash = block.get("hash")
-                respcache.put(
-                    "eth_getBlockByNumber",
-                    params,
-                    result,
-                    chain=chain,
-                    block_number=block_number,
-                    block_hash=str(block_hash) if block_hash else None,
-                    tip=tip,
-                )
-            return block
-        return None
-
-    async def eth_get_transaction_receipt(self, endpoint: str, tx_hash: str) -> dict[str, Any] | None:
-        """Get a transaction receipt.
-
-        Routed to dedicated (API-key) nodes by default — receipts are
-        small, latency-sensitive calls better served by a dedicated node
-        than by a heavily-loaded public tier. See
-        :func:`lite_indexer.rpc.routing.select_endpoint_for_method`.
-
-        Args:
-            endpoint: RPC endpoint URL.
-            tx_hash: 0x-prefixed transaction hash.
-
-        Returns:
-            Receipt dict, or None on failure.
-        """
-        result = await self.call(
-            endpoint,
-            "eth_getTransactionReceipt",
-            [tx_hash],
-            timeout=RPC_CALL_TIMEOUT,
-        )
-        if result and "result" in result:
-            return cast(dict[str, Any], result["result"])
-        return None
-
-    async def eth_call(self, endpoint: str, to: str, data: str) -> str | None:
-        """Execute an eth_call against a contract.
-
-        Args:
-            endpoint: RPC endpoint URL.
-            to: Contract address.
-            data: Hex-encoded call data (selector + args).
-
-        Returns:
-            Hex result string, or None on failure.
-        """
-        result = await self.call(
-            endpoint,
-            "eth_call",
-            [{"to": to, "data": data}, "latest"],
-        )
-        if result and "result" in result:
-            return str(result["result"])
-        return None
-
-    async def get_logs(
-        self,
-        endpoint: str,
-        from_block: int,
-        to_block: int,
-        topic: str,
-        address: str | None = None,
-        max_retries: int = 3,
-        *,
-        chain: str | None = None,
-        tip: int | None = None,
-    ) -> list[dict[str, Any]] | None:
-        """Fetch event logs via eth_getLogs with retry.
-
-        Applies per-provider token bucket rate limiting before each request.
-        Automatically falls back to smaller ranges if the endpoint complains
-        about range size.
-
-        Args:
-            endpoint: RPC endpoint URL.
-            from_block: Start block.
-            to_block: End block.
-            topic: Event topic hash.
-            address: Optional contract address filter.
-            max_retries: Max retry attempts on rate limits.
-            chain: Chain name — required for sampled cross-provider
-                consensus verification (a chain's pool is resolved from
-                it). When omitted the read is returned unverified.
-
-        Returns:
-            List of raw log dicts, or None on failure.
-        """
-        # Quota-degrade gate for eth_getLogs: level 1 defers wide backfill
-        # scans, level 2 defers all, level 3 (parked) defers everything.
-        # RC-1 (2026-09-19): None is the failure shape — [] was read as
-        # "no logs" and callers advanced state over unfetched blocks.
-        reason = _defer_reason_for(endpoint, "eth_getLogs", range_blocks=to_block - from_block)
-        if reason:
-            _warn_deferred(endpoint, "eth_getLogs", reason)
-            return None
-
-        # Archive-class fail-closed gate: eth_getLogs is ARCHIVE-class — a
-        # known non-archive endpoint silently returns wrong/empty logs, so
-        # fail closed (None = failure shape).
-        from lite_indexer.rpc.capabilities import archive_guard_reason
-
-        archive_reason = archive_guard_reason(endpoint, "eth_getLogs")
-        if archive_reason:
-            metrics_incr("rpc_archive_fail_closed")
-            logger.warning(
-                "rpc_archive_fail_closed",
-                endpoint=endpoint[:60],
-                method="eth_getLogs",
-                reason=archive_reason,
-            )
-            return None
-
-        # Persistent response cache: immutable historical ranges (confirmed
-        # past RPC_CACHE_CONFIRMATIONS) are served from L1/L2 without a dial.
-        from lite_indexer.rpc import respcache
-
-        cache_params = [self._logs_filter(from_block, to_block, topic, address)]
-        cached = respcache.get(
-            "eth_getLogs",
-            cache_params,
-            chain=chain,
-            from_block=from_block,
-            to_block=to_block,
-            tip=tip,
-        )
-        if cached is not None and isinstance(cached.get("result"), list):
-            return cast(list[dict[str, Any]], cached["result"])
-
-        def _store_logs(result: list[dict[str, Any]] | None) -> None:
-            if result is None:
-                return
-            respcache.put(
-                "eth_getLogs",
-                cache_params,
-                {"jsonrpc": "2.0", "id": 1, "result": result},
-                chain=chain,
-                from_block=from_block,
-                to_block=to_block,
-                tip=tip,
-            )
-
-        from lite_indexer.rpc.range_split import fetch_logs_split
-
-        async def _once(child_from: int, child_to: int) -> tuple[str, list[dict[str, Any]] | None]:
-            return await self._fetch_logs_range(endpoint, child_from, child_to, topic, address, max_retries)
-
-        async def _many(
-            child_ranges: list[tuple[int, int]],
-        ) -> list[tuple[str, list[dict[str, Any]] | None]]:
-            # Sibling sub-ranges produced by the splitter go in ONE batched
-            # POST (1 request for the request caps), halving the request cost
-            # of an in-call split.
-            return await self._fetch_logs_many(endpoint, child_ranges, topic, address)
-
-        logs = await fetch_logs_split(_once, from_block, to_block, fetch_many=_many)
-
-        # Sampled cross-provider consensus: a critical getLogs range result
-        # is trusted only once a quorum of DISTINCT provider accounts returns
-        # the same content hash; a mismatch FAILS the read (None).
-        from lite_indexer.rpc.consensus import should_sample, verify_across_providers
-
-        if logs is None or not chain or not should_sample():
-            _store_logs(logs)
-            return logs
-
-        try:
-            consensus = await verify_across_providers(
-                self,
-                chain,
-                "eth_getLogs",
-                [self._logs_filter(from_block, to_block, topic, address)],
-                expect_non_empty=bool(logs),
-            )
-        except Exception as exc:  # noqa: BLE001 — verification must never break the read
-            logger.warning("rpc_consensus_error", chain=chain, error=str(exc)[:120])
-            _store_logs(logs)
-            return logs
-        if consensus.mismatch:
-            logger.warning(
-                "getlogs_consensus_mismatch",
-                chain=chain,
-                from_block=from_block,
-                to_block=to_block,
-                agreement=consensus.agreement,
-                total=consensus.total,
-            )
-            return None
-        if consensus.verified and isinstance(consensus.result, list):
-            verified_logs = cast(list[dict[str, Any]], consensus.result)
-            _store_logs(verified_logs)
-            return verified_logs
-        _store_logs(logs)
-        return logs
-
-    @staticmethod
-    def _logs_filter(from_block: int, to_block: int, topic: str, address: str | None) -> dict[str, Any]:
-        """Build one ``eth_getLogs`` filter object for a block range."""
-        filter_params: dict[str, Any] = {
-            "fromBlock": hex(from_block),
-            "toBlock": hex(to_block),
-            "topics": [topic],
-        }
-        if address:
-            filter_params["address"] = address
-        return filter_params
-
-    async def _fetch_logs_many(
-        self,
-        endpoint: str,
-        ranges: list[tuple[int, int]],
-        topic: str,
-        address: str | None,
-    ) -> list[tuple[str, list[dict[str, Any]] | None]]:
-        """Fetch several getLogs ranges in one batch; classify each element."""
-        from lite_indexer.rpc.range_split import classify_logs_error
-
-        calls: list[tuple[str, list[Any] | None]] = [
-            ("eth_getLogs", [self._logs_filter(f, t, topic, address)]) for f, t in ranges
-        ]
-        responses = await self.call_batch(endpoint, calls)
-        out: list[tuple[str, list[dict[str, Any]] | None]] = []
-        for resp in responses:
-            if not isinstance(resp, dict):
-                out.append(("error", None))
-                continue
-            if "result" in resp:
-                result = resp["result"]
-                if isinstance(result, list):
-                    out.append(("ok", result))
-                elif result is None:
-                    out.append(("ok", []))
-                else:
-                    out.append(("error", None))
-            else:
-                out.append((classify_logs_error(resp), None))
-        return out
-
-    async def _fetch_logs_range(
-        self,
-        endpoint: str,
-        from_block: int,
-        to_block: int,
-        topic: str,
-        address: str | None,
-        max_retries: int,
-    ) -> tuple[str, list[dict[str, Any]] | None]:
-        """Fetch ONE ``eth_getLogs`` range and classify the outcome.
-
-        Returns ``("ok", logs)`` for a list/null result, ``("range", None)``
-        when the provider rejected the range/size/result limit (the caller
-        splits and retries in-line), and ``("error", None)`` for every
-        other failure (timeout/429/auth/malformed).
-        """
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "eth_getLogs",
-            "params": [self._logs_filter(from_block, to_block, topic, address)],
-        }
-
-        from lite_indexer.rpc.range_split import classify_logs_error, is_range_error_message
-        from lite_indexer.rpc.throttle import record_rpc_response, throttle_before
-
-        account_key = account_key_for_endpoint(endpoint)
-        # Identity budget + proxy: recorded once per range (retries below do
-        # not re-count against the budget).
-        await _budget_before(endpoint)
-        proxy_spec = rpc_proxy.proxy_for_endpoint(endpoint)
-        for attempt in range(max_retries):
-            # Apply provider rate limiting before request
-            await apply_provider_rate_limit(endpoint)
-            # Intelligent throttle: Retry-After / budget / per-method pacing.
-            await throttle_before(endpoint, "eth_getLogs")
-            # Provider (account) gate: account-level Retry-After / rps budget.
-            await provider_throttle_before(endpoint)
-
-            try:
-                # Ledger + in-flight telemetry around the request (best-effort).
-                _safe_record(record_endpoint_call, endpoint, "eth_getLogs")
-                started = time.perf_counter()
-                _safe_record(incr_in_flight, endpoint)
-                try:
-                    async with budget_slot(endpoint):
-                        async with provider_concurrency_slot(account_key):
-                            # Direct client keeps its own pool; _post_direct
-                            # adds the fallback-only proxy retry. Proxy-primary
-                            # mode routes through _post_json.
-                            if proxy_spec is None:
-                                client = await self._get_client()
-                                resp = await _post_direct(client, endpoint, payload, RPC_TIMEOUT)
-                            else:
-                                resp = await _post_json(endpoint, payload, RPC_TIMEOUT, proxy=proxy_spec)
-                finally:
-                    _safe_record(decr_in_flight, endpoint)
-                _safe_record(record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
-                record_rpc_response(endpoint, "eth_getLogs", resp.status_code, resp.headers)
-                _safe_record(record_provider_response, endpoint, resp.status_code, resp.headers)
-                record_budget_response(endpoint, resp.status_code)
-
-                if resp.status_code == 429:
-                    # Respect an explicit Retry-After EXACTLY; otherwise use
-                    # full-jitter exponential backoff. Rate limits trigger
-                    # backoff ONLY — never the circuit breaker or a hard ban.
-                    from lite_indexer.rpc.backoff import exponential_backoff
-                    from lite_indexer.rpc.throttle import RATE_TRACKER, extract_rate_limit
-
-                    retry_after = extract_rate_limit(resp.headers or {}).get("retry_after")
-                    if retry_after is not None and retry_after > 0:
-                        state = RATE_TRACKER.state_for(endpoint)
-                        backoff_until = state.get("backoff_until", 0.0)
-                        wait = max(0.0, backoff_until - time.time()) if backoff_until else float(retry_after)
-                    else:
-                        wait = exponential_backoff(attempt, base=1.0, cap=float(RATE_LIMIT_WAIT_CAP))
-                    logger.debug(
-                        "rate_limited_retry",
-                        endpoint=endpoint[:40],
-                        attempt=attempt,
-                        wait=round(wait, 1),
-                    )
-                    record_rate_limit(endpoint)
-                    _safe_record(record_rpc_outcome, endpoint, ok=False)
-                    await asyncio.sleep(wait)
-                    continue
-
-                resp.raise_for_status()
-                data = await decode_response_async(resp)
-                if isinstance(data, dict) and "result" in data:
-                    result = data["result"]
-                    if isinstance(result, list):
-                        _safe_record(record_rpc_outcome, endpoint, ok=True)
-                        record_budget_success(endpoint)
-                        return ("ok", result)
-                    # result is null — endpoint works but no logs in range
-                    if result is None:
-                        _safe_record(record_rpc_outcome, endpoint, ok=True)
-                        record_budget_success(endpoint)
-                        return ("ok", [])
-                kind = classify_logs_error(data)
-                _safe_record(record_rpc_outcome, endpoint, ok=False)
-                return (kind, None)
-
-            except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code
-                body = getattr(exc.response, "text", "") or ""
-                logger.debug(
-                    "rpc_http_error",
-                    endpoint=endpoint[:40],
-                    status=status,
-                )
-                if is_range_error_message(body):
-                    # Provider rejected the range over HTTP (400/413, ...):
-                    # let the splitter re-chunk in-line.
-                    _safe_record(record_rpc_outcome, endpoint, ok=False)
-                    return ("range", None)
-                record_endpoint_failure(endpoint)
-                _safe_record(record_rpc_outcome, endpoint, ok=False)
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
-                    continue
-                return ("error", None)
-            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError) as exc:
-                logger.debug(
-                    "rpc_connection_error",
-                    endpoint=endpoint[:40],
-                    error=str(exc)[:60],
-                )
-                record_endpoint_failure(endpoint)
-                metrics_incr("rpc_errors")
-                _safe_record(record_rpc_outcome, endpoint, ok=False)
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
-                    continue
-                return ("error", None)
-            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
-                logger.warning(
-                    "rpc_unexpected_error",
-                    endpoint=endpoint[:40],
-                    error=str(exc)[:60],
-                )
-                _safe_record(record_rpc_outcome, endpoint, ok=False)
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
-                    continue
-                return ("error", None)
-
-        return ("error", None)
-
-
-# ── Block Timestamp Fetching ───────────────────────────────────────────
-
-
-async def fetch_block_timestamps(
-    client: RpcClient,
-    endpoints: list[str],
-    block_numbers: set[int],
-    chain: str = "ethereum",
-    bloom_cache: Any = None,
-    *,
-    deadline_s: float | None = None,
-) -> dict[int, str]:
-    """Fetch timestamps for a set of block numbers, cheaply and non-blocking.
-
-    The timestamp phase is enrichment, never the durable record, so it is
-    designed to be the CHEAPEST possible RPC cost and to never stall a sync
-    cycle (the 2026-09-14 root cause: ~1 ``eth_getBlockByNumber`` per block
-    for a 500-block range, which 429'd, tripped ``all_endpoints_down`` and
-    hung the cycle before the ClickHouse insert).
-
-    Layered guarantees:
-
-    1. **Cache first.** Block timestamps are immutable, so a bounded
-       in-process LRU serves every repeat/overlapping block for free.
-    2. **Bounded fetch.** Cache misses are sampled to at most
-       ``_TS_SAMPLE_MAX_FETCHES`` anchors and sent as JSON-RPC *batches*
-       (one HTTP POST per ``RPC_BATCH_MAX`` elements) with batching's
-       per-element fallback disabled — a failing batch costs zero extra
-       calls instead of one per element.
-    3. **Hard deadline.** The whole fetch is capped by ``deadline_s``
-       (default ``TIMESTAMP_PHASE_DEADLINE_S``); on timeout or error the
-       phase returns what it has and the rest is interpolated.
-    4. **Interpolation.** Cache hits + fetched anchors are linearly
-       interpolated/extrapolated with the chain's average block time, so a
-       short deadline degrades accuracy, never the cycle.
-
-    Args:
-        client: RpcClient instance (or a test double exposing ``call_batch``).
-        endpoints: List of RPC endpoints for the chain.
-        block_numbers: Set of block numbers to resolve.
-        chain: Chain name used to look up the average block time.
-        bloom_cache: Optional :class:`BloomCache` to populate with header
-            logsBloom values (headers are already being fetched).
-        deadline_s: Overall deadline for the RPC portion, in seconds.
-            ``None`` uses ``TIMESTAMP_PHASE_DEADLINE_S``.
-
-    Returns:
-        Dict of {block_number: ISO-8601 timestamp string}. Blocks that could
-        not be resolved or interpolated are simply absent.
-    """
-    if not block_numbers:
-        return {}
-
-    budget = TIMESTAMP_PHASE_DEADLINE_S if deadline_s is None else deadline_s
-
-    # 1. Cache first: only fetch what is not already known (immutable).
-    timestamps: dict[int, str] = {}
-    missing: list[int] = []
-    for bn in sorted(block_numbers):
-        cached = _ts_cache_get(chain, bn)
-        if cached is not None:
-            timestamps[bn] = cached
-        else:
-            missing.append(bn)
-
-    if missing:
-        # 2. Bounded fetch: sample anchors for large sets (interpolate the
-        # rest) and collapse the anchors into JSON-RPC batches.
-        if len(missing) > _TS_SAMPLE_MAX_FETCHES:
-            stride = -(-len(missing) // _TS_SAMPLE_MAX_FETCHES)  # ceil division
-            anchors = set(missing[::stride])
-            anchors.update((missing[0], missing[-1]))
-            fetch_list = sorted(anchors)
-        else:
-            fetch_list = list(missing)
-
-        endpoint = get_best_endpoint(endpoints)
-
-        async def _record_block(block_num: int, block: Any) -> str | None:
-            """Parse a header's timestamp, warm bloom + the timestamp LRU."""
-            if not (block and "timestamp" in block):
-                return None
-            try:
-                ts_int = int(block["timestamp"], 16)
-            except (ValueError, TypeError):
-                return None
-            from datetime import UTC, datetime
-
-            if bloom_cache is not None and block.get("logsBloom"):
-                with contextlib.suppress(Exception):
-                    await bloom_cache.set(chain, block_num, str(block["logsBloom"]))
-            ts = datetime.fromtimestamp(ts_int, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            _ts_cache_put(chain, block_num, ts)
-            return ts
-
-        async def _fetch_anchors() -> None:
-            batch_fn = getattr(client, "call_batch", None)
-            if callable(batch_fn):
-                # ONE JSON-RPC array POST per RPC_BATCH_MAX anchors. The
-                # per-element fallback is intentionally OFF here: a failed
-                # batch must cost zero extra calls (interpolation covers the
-                # gap) rather than explode into one call per anchor.
-                responses = await batch_fn(
-                    endpoint,
-                    [("eth_getBlockByNumber", [hex(bn), False]) for bn in fetch_list],
-                    fallback=False,
-                )
-                for block_num, resp in zip(fetch_list, responses, strict=False):
-                    block = resp.get("result") if isinstance(resp, dict) and "result" in resp else resp
-                    ts = await _record_block(block_num, block)
-                    if ts is not None:
-                        timestamps[block_num] = ts
-                return
-
-            # No batch support (lightweight test double / non-batch client):
-            # bounded concurrency, still under the phase deadline.
-            semaphore = asyncio.Semaphore(GET_LOGS_SEMAPHORE_LIMIT)
-
-            async def _get_ts(block_num: int) -> tuple[int, str | None]:
-                async with semaphore:
-                    try:
-                        block = await client.eth_get_block_by_number(endpoint, block_num)
-                    except (
-                        httpx.HTTPError,
-                        ConnectionError,
-                        OSError,
-                        TimeoutError,
-                        ValueError,
-                        KeyError,
-                        TypeError,
-                    ) as exc:
-                        logger.warning("block_ts_fetch_failed", block=block_num, error=str(exc)[:80])
-                        return block_num, None
-                    return block_num, await _record_block(block_num, block)
-
-            results = await asyncio.gather(*(_get_ts(bn) for bn in fetch_list), return_exceptions=True)
-            for res in results:
-                if isinstance(res, tuple) and res[1] is not None:
-                    timestamps[res[0]] = res[1]
-
-        # 3. Hard deadline. wait_for cancels the fetch (including any in-flight
-        # throttle/budget sleep) so the phase can never outlive the cycle.
-        try:
-            await asyncio.wait_for(_fetch_anchors(), timeout=max(0.0, budget))
-        except TimeoutError:
-            logger.warning(
-                "timestamp_phase_deadline",
-                chain=chain,
-                blocks=len(missing),
-                anchors=len(fetch_list),
-                deadline_s=round(budget, 2),
-            )
-        except Exception as exc:  # noqa: BLE001 — enrichment must never abort the cycle
-            logger.warning(
-                "timestamp_phase_failed",
-                chain=chain,
-                blocks=len(missing),
-                error=str(exc)[:120],
-            )
-
-    # 4. Interpolate unresolved blocks between the known anchors (real
-    # timestamps) and extrapolate outside the anchor range with the chain's
-    # average block time. Anchors include cache hits, so a fully cached
-    # neighbourhood needs no fetch at all.
-    if len(timestamps) < len(block_numbers):
-        from datetime import datetime, timedelta
-
-        avg_block_time = CHAIN_BLOCK_TIMES.get(chain, DEFAULT_BLOCK_TIME)
-        anchor_items = sorted((bn, ts) for bn, ts in timestamps.items())
-        if anchor_items:
-            parsed: list[tuple[int, datetime]] = []
-            for bn, ts_str in anchor_items:
-                try:
-                    parsed.append((bn, datetime.fromisoformat(ts_str.replace("Z", "+00:00"))))
-                except ValueError:
-                    continue
-            for bn in block_numbers:
-                if bn in timestamps:
-                    continue
-                # Find surrounding anchors.
-                prev = next((p for p in reversed(parsed) if p[0] <= bn), None)
-                nxt = next((p for p in parsed if p[0] >= bn), None)
-                if prev and nxt and nxt[0] > prev[0]:
-                    frac = (bn - prev[0]) / (nxt[0] - prev[0])
-                    est_ts = prev[1] + (nxt[1] - prev[1]) * frac
-                elif prev:
-                    offset = avg_block_time * (bn - prev[0])
-                    est_ts = prev[1] + timedelta(seconds=offset)
-                elif nxt:
-                    offset = avg_block_time * (nxt[0] - bn)
-                    est_ts = nxt[1] - timedelta(seconds=offset)
-                else:
-                    continue
-                timestamps[bn] = est_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    return timestamps
+__all__ = [
+    "RpcClient",
+    "fetch_block_timestamps",
+    "clear_timestamp_cache",
+    "_TS_SAMPLE_MAX_FETCHES",
+    "_safe_record",
+    "_budget_before",
+    "_post_direct",
+    "_post_json",
+]
