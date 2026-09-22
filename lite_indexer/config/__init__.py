@@ -11,3 +11,12 @@ from lite_indexer.config.indexing import *  # noqa: F401,F403
 from lite_indexer.config.metrics import *  # noqa: F401,F403
 from lite_indexer.config.rpc import *  # noqa: F401,F403
 from lite_indexer.config.storage import *  # noqa: F401,F403
+from lite_indexer.config.webhooks import (  # noqa: F401
+    WEBHOOK_BACKOFF_SECONDS,
+    WEBHOOK_DB_PATH,
+    WEBHOOK_ENABLED,
+    WEBHOOK_MAX_PER_IP,
+    WEBHOOK_MAX_RETRIES,
+    WEBHOOK_TIMEOUT_SECONDS,
+    WEBHOOK_TOTAL_TIMEOUT_SECONDS,
+)

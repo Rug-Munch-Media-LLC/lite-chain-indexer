@@ -51,8 +51,8 @@ from lite_indexer.config import (
     WEBHOOK_ENABLED,
 )
 from lite_indexer.indexer._maintenance import MaintenanceMixin
-from lite_indexer.indexer._reconcile import ReconcileMixin
 from lite_indexer.indexer._plugins import PluginsMixin
+from lite_indexer.indexer._reconcile import ReconcileMixin
 from lite_indexer.indexer._resource_guards import (
     ClickHouseHealth,
     MemoryGate,
@@ -165,14 +165,12 @@ __all__ = [
 # Sentinel value returned by strategies when a chain reorg is detected
 _REORG_SENTINEL = "__CHAIN_REORG__"
 
-
 # ── Memory / ClickHouse watchdog helpers ────────────────────────────────
 # Extracted into ``lite_indexer/indexer/_resource_guards.py``:
 #   - get_process_rss_mb
 #   - MemoryGate
 #   - ClickHouseHealth
 # Re-exported above so ``from lite_indexer.indexer import ...`` is unchanged.
-
 
 class LiteIndexer(
     MaintenanceMixin,
@@ -481,7 +479,6 @@ class LiteIndexer(
         from lite_indexer.config import CH_TABLE
 
         return CH_TABLE, "block_number"
-
 
     def _fetch_ch_max_block(self) -> int | None:
         """Query ClickHouse for the actual max indexed block for this chain.
