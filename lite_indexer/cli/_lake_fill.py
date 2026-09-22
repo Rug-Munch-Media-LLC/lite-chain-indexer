@@ -34,6 +34,8 @@ def run_fill_solana(args: argparse.Namespace) -> int:
         max_scan_gib=args.max_scan_gib, force_budget=args.force_budget,
         since_ts=getattr(args, "since_ts", None),
     )
+    if getattr(args, "estimate", False):
+        return _print_estimate(dates)
     try:
         counts = backfill_solana_from_bigquery(req)
     except BigQueryQuotaError as exc:
@@ -54,3 +56,24 @@ def run_fill_solana(args: argparse.Namespace) -> int:
     print(json.dumps(summary, indent=2))  # noqa: T201
     return 0
 
+
+
+def _print_estimate(dates: list[str]) -> int:
+    """FREE dryRun pricing: exact bytes the fill would scan, per day."""
+    import os as _os
+
+    from lite_indexer.query.bigquery_cli import bq_accounts
+    from lite_indexer.query.bigquery_rest import estimate_scan_bytes
+    from lite_indexer.query.bigquery_spec import BigQuerySpec
+    from lite_indexer.query.bigquery_tables import build_query
+
+    project, creds = bq_accounts()[0]
+    total = 0
+    for day in dates:
+        spec = BigQuerySpec("token_transfers", chain="solana", dates=[day], limit=50_000)
+        sql, params = build_query(spec)
+        n = estimate_scan_bytes(sql, params, project=project, creds_path=creds)
+        total += n
+        print(json.dumps({"date": day, "scan_gib": round(n / 1024**3, 2)}))  # noqa: T201
+    print(json.dumps({"dates": len(dates), "total_scan_gib": round(total / 1024**3, 2), "transport": _os.environ.get("BIGQUERY_TRANSPORT", "cli")}))  # noqa: T201
+    return 0

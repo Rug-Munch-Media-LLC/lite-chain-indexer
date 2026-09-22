@@ -1,0 +1,78 @@
+"""REST transport tests: one job per query, free pages, dryRun pricing."""
+from typing import Any
+
+import pytest
+
+from lite_indexer.query import bigquery_rest as rest
+from lite_indexer.query.bigquery_common import BigQueryQuotaError
+
+
+@pytest.fixture(autouse=True)
+def _no_real_token() -> Any:
+    rest.set_token_provider(lambda creds_path: "tok")
+    yield
+    rest.set_token_provider(None)
+
+
+def test_estimate_uses_dry_run_and_returns_bytes() -> None:
+    seen: list[dict[str, Any]] = []
+
+    def fake(method: str, url: str, **kw: Any) -> dict[str, Any]:
+        seen.append({"method": method, "url": url, "payload": kw.get("payload")})
+        return {"totalBytesProcessed": "123456789"}
+
+    rest.set_transport(fake)
+    try:
+        n = rest.estimate_scan_bytes("SELECT 1", [("dates", "ARRAY<STRING>", ["2026-09-21"])], project="p")
+    finally:
+        rest.set_transport(None)
+    assert n == 123456789
+    assert seen[0]["payload"]["dryRun"] is True
+    assert seen[0]["payload"]["queryParameters"][0]["parameterType"]["type"] == "ARRAY"
+
+
+def test_stream_query_one_job_free_pages() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake(method: str, url: str, **kw: Any) -> dict[str, Any]:
+        calls.append((method, url))
+        if method == "POST":
+            return {
+                "jobReference": {"jobId": "job1", "location": "US"},
+                "schema": {"fields": [{"name": "slot"}, {"name": "mint"}]},
+                "rows": [{"f": [{"v": "1"}, {"v": "A"}]}],
+                "pageToken": "p2",
+            }
+        assert kw["params"]["pageToken"] == "p2"
+        return {
+            "schema": {"fields": [{"name": "slot"}, {"name": "mint"}]},
+            "rows": [{"f": [{"v": "2"}, {"v": "B"}]}],
+        }
+
+    rest.set_transport(fake)
+    try:
+        pages = list(rest.stream_query("SELECT x", [], project="p"))
+    finally:
+        rest.set_transport(None)
+    assert pages == [[{"slot": "1", "mint": "A"}], [{"slot": "2", "mint": "B"}]]
+    posts = [c for c in calls if c[0] == "POST"]
+    assert len(posts) == 1  # exactly ONE job — pages never re-scan
+    assert any(c[0] == "GET" for c in calls)
+
+
+def test_quota_error_maps_to_exception() -> None:
+    def fake(method: str, url: str, **kw: Any) -> dict[str, Any]:
+        raise BigQueryQuotaError("Quota exceeded: free query bytes scanned")
+
+    rest.set_transport(fake)
+    try:
+        with pytest.raises(BigQueryQuotaError):
+            rest.estimate_scan_bytes("SELECT 1", [], project="p")
+    finally:
+        rest.set_transport(None)
+
+
+def test_param_spec_scalar_passthrough() -> None:
+    spec = rest._param_spec(("limit", "INT64", 1000))
+    assert spec["parameterType"] == {"type": "INT64"}
+    assert spec["parameterValue"] == {"value": "1000"}

@@ -27,6 +27,9 @@ from lite_indexer.ingest.lake_fill_common import (
     _estimated_scan_gib,
     _existing_day_count,
     build_writer,
+    read_full_day,
+    rest_transport,
+    to_writer_event,
     fill_summary,
     parse_since,
     row_ts,
@@ -37,25 +40,6 @@ logger = get_logger(__name__)
 
 _PAGE_ROWS = 50_000  # per-BQ-read page size (solana SQL clamp is 50k)
 FILLABLE_TABLES: tuple[str, ...] = ("token_transfers",)  # only tables with a CH writer
-
-def _to_writer_event(row: dict[str, Any]) -> dict[str, Any]:
-    """Map a BigQuery solana row to the ``write_clickhouse`` event shape."""
-    ts = row.get("block_timestamp")
-    ts_str = ts.isoformat() if isinstance(ts, datetime) else str(ts or "")
-    return {
-        "slot": row.get("slot", 0),
-        "blockTimestamp": ts_str,
-        "signature": row.get("tx_hash", ""),
-        "token_account": row.get("token_account", ""),
-        "mint": row.get("mint", ""),
-        "owner": row.get("owner", ""),
-        "amount_pre": row.get("pre_amount", "0"),
-        "amount_post": row.get("post_amount", "0"),
-        "change": row.get("delta", "0"),
-        "decimals": row.get("decimals", 0),
-        "symbol": row.get("token_symbol", ""),
-        "token_name": row.get("token_name", ""),
-    }
 
 @dataclass
 class SolanaBigQueryFillRequest:
@@ -89,9 +73,10 @@ class _FillCtx:
     req: SolanaBigQueryFillRequest
     since_dt: Any = None
 
-
 def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int:
     """Stream one (date, table) partition; ``sink=None`` counts only (dry run)."""
+    if rest_transport():
+        return read_full_day(ctx, table, day, sink)
     total = 0
     batch: list[dict[str, Any]] = []
     offset = 0
@@ -113,7 +98,7 @@ def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int
             rows = [r for r in rows if row_ts(r) >= ctx.since_dt]
         total += len(rows)
         if sink is not None:
-            batch.extend(_to_writer_event(r) for r in rows)
+            batch.extend(to_writer_event(r) for r in rows)
             while len(batch) >= ctx.req.batch_rows:
                 sink.write_clickhouse(batch[: ctx.req.batch_rows], ctx.ch)
                 batch = batch[ctx.req.batch_rows :]
