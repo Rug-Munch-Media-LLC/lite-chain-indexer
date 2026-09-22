@@ -164,6 +164,12 @@ def _build_solana_query(
     if mints:
         where.append("mint IN UNNEST(@mints)")
         params.append(("mints", "ARRAY<STRING>", [str(m) for m in mints]))
+    if spec.since_ts:
+        where.append("block_timestamp >= @since_ts")
+        params.append(("since_ts", "TIMESTAMP", spec.since_ts))
+    if spec.until_ts:
+        where.append("block_timestamp <= @until_ts")
+        params.append(("until_ts", "TIMESTAMP", spec.until_ts))
     if from_block is not None:
         where.append("block_slot >= @from_slot")
         params.append(("from_slot", "INT64", int(from_block)))

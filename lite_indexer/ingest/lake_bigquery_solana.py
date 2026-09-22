@@ -92,6 +92,7 @@ def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int
             BigQuerySpec(
                 table, chain="solana", dates=[day], limit=_PAGE_ROWS,
                 mints=list(ctx.req.mints) or None, offset=offset or None,
+                since_ts=ctx.req.since_ts, until_ts=ctx.req.until_ts,
             )
         )
         if not rows:

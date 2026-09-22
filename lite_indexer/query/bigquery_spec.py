@@ -17,3 +17,7 @@ class BigQuerySpec:
     limit: int = 100
     mints: list[str] | None = None
     offset: int | None = None
+    # Server-side time bounds (hole fills): rows outside the window
+    # never leave BigQuery — the partition scan is unchanged.
+    since_ts: str | None = None
+    until_ts: str | None = None

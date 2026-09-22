@@ -284,3 +284,17 @@ def test_registry_bigquery_serves_solana() -> None:
     prov = _default_registry()["bigquery"]
     assert ("solana", "token_transfers") in prov.serves
     assert ("solana", "instructions") in prov.serves
+
+
+def test_solana_time_bounds_are_server_side(tmp_path: Any) -> None:
+    runner = FakeRunner()
+    _source(tmp_path, runner).query(
+        BigQuerySpec(
+            "token_transfers", chain="solana", dates=["2026-09-21"],
+            since_ts="2026-09-21T00:00:00+00:00", until_ts="2026-09-21T04:33:17+00:00",
+        )
+    )
+    sql, params = runner.calls[-1]
+    assert "block_timestamp >= @since_ts" in sql and "block_timestamp <= @until_ts" in sql
+    p = {n: t for n, t, _v in params}
+    assert p["since_ts"] == "TIMESTAMP" and p["until_ts"] == "TIMESTAMP"

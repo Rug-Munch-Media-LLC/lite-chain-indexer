@@ -107,6 +107,7 @@ def read_full_day(ctx: Any, table: str, day: str, sink: Any | None) -> int:
     spec = BigQuerySpec(
         table, chain="solana", dates=[day], limit=ctx.req.max_rows,
         mints=list(ctx.req.mints) or None,
+        since_ts=ctx.req.since_ts, until_ts=ctx.req.until_ts,
     )
     sql, params = build_query(spec)
     total = 0
