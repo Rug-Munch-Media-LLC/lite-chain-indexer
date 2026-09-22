@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-
 from lite_indexer.storage.parquet.helpers import (
     _block_range,
     _local_dir,

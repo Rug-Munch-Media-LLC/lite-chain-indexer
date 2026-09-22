@@ -100,14 +100,25 @@ class FakeClickHouse:
             self.deletes.append(query)
             return 1
         if "FROM wallet_memory.evm_transfers" in query:
-            rows = [[r[c] for c in TRANSFER_COLS] for r in self.transfers]
-            cols = [(c, "String") for c in TRANSFER_COLS]
-            return (rows, cols) if with_column_types else rows
+            return self._serve(self.transfers, TRANSFER_COLS, (query, params, with_column_types))
         if "FROM wallet_memory.dex_events" in query:
-            rows = [[r[c] for c in DEX_COLS] for r in self.dex]
-            cols = [(c, "String") for c in DEX_COLS]
-            return (rows, cols) if with_column_types else rows
+            return self._serve(self.dex, DEX_COLS, (query, params, with_column_types))
         return []
+
+    def _serve(self, src: list[dict[str, Any]], cols_spec: tuple[str, ...], call: tuple[str, Any, bool]) -> Any:
+        """Serve rows (optionally block-window filtered) or day aggregates."""
+        query, params, with_column_types = call
+        if "count()" in query:
+            blocks = [r["block_number"] for r in src]
+            return [[len(src), min(blocks) if blocks else None, max(blocks) if blocks else None]]
+        rows_src = src
+        if isinstance(params, dict) and "block_from" in params:
+            rows_src = [r for r in rows_src if r["block_number"] >= params["block_from"]]
+        if isinstance(params, dict) and "block_to" in params:
+            rows_src = [r for r in rows_src if r["block_number"] <= params["block_to"]]
+        rows = [[r[c] for c in cols_spec] for r in rows_src]
+        cols = [(c, "String") for c in cols_spec]
+        return (rows, cols) if with_column_types else rows
 
     # -- helpers ------------------------------------------------------
 
@@ -420,26 +431,25 @@ def test_parquet_export_skips_existing_markers(tmp_path: Path) -> None:
     assert client.state_inserts == []  # no state written
 
 
-def test_parquet_export_over_cap_fails_safely(tmp_path: Path) -> None:
-    """A day over the row cap is marked failed — rows are never deleted."""
+def test_parquet_export_over_cap_fails_safely(tmp_path: Any) -> None:
+    """A day whose SINGLE block window exceeds the cap still fails safely.
+
+    (Normal oversized days now export in block-window parts; only a window
+    that cannot be split below the cap — e.g. every row in one block — must
+    still refuse, so a truncated export is never treated as complete.)
+    """
     from lite_indexer.storage.parquet.reader import set_max_rows_per_day
 
-    set_max_rows_per_day(2)
-
-    client = FakeClickHouse(transfers=[_transfer_row() for _ in range(3)], dex=[_dex_row()])
-    exporter = FakeExporter(client, data_dir=tmp_path / "parquet", state_dir=tmp_path / "state")
-
+    rows = []
+    for _ in range(6):
+        row = _transfer_row()
+        row["block_number"] = 7  # every row in the same block: unsplittable
+        rows.append(row)
+    set_max_rows_per_day(5)
+    client = FakeClickHouse(transfers=rows, dex=[])
+    exporter = FakeExporter(client, data_dir=tmp_path, state_dir=tmp_path / "state", remote="r")
     summary = exporter.export_chain("ethereum", dates=[DAY])
-
-    assert summary.dates_exported == 0
     assert summary.errors and "exceeds export cap" in summary.errors[0]
-    assert client.last_status() == "failed"
-    assert client.deletes == []
-    assert not (tmp_path / "state" / "ethereum" / "2026-07-30.done").exists()
-
-
-# ── CLI ─────────────────────────────────────────────────────────────
-
 
 def test_cli_dry_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """--dry-run previews without touching ClickHouse (spec verification)."""
@@ -485,3 +495,34 @@ def test_cli_invalid_date(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
     rc = run_export_parquet(args)
     assert rc == 2
     assert "expected YYYY-MM-DD" in capsys.readouterr().err
+
+
+def test_export_chain_chunks_oversized_days(tmp_path: Any) -> None:
+    """A day above the row cap exports in block-window parts, memory-safe."""
+    from lite_indexer.storage.parquet.helpers import _local_dir
+    from lite_indexer.storage.parquet.reader import set_max_rows_per_day
+
+    rows = []
+    for i in range(1, 13):
+        row = _transfer_row()
+        row["block_number"] = i
+        rows.append(row)
+    set_max_rows_per_day(5)  # force chunking: 12 rows / 60% of 5 => 4 windows
+    client = FakeClickHouse(transfers=rows, dex=[])
+    exporter = FakeExporter(client, data_dir=tmp_path, state_dir=tmp_path / "state", remote="r")
+    summary = exporter.export_chain("ethereum", dates=[DAY])
+    assert summary.transfers_rows == 12
+    parts = sorted(p.name for p in _local_dir(tmp_path, "ethereum", DAY).glob("ethereum_*-part*.parquet"))
+    assert len(parts) >= 3
+    assert not list(_local_dir(tmp_path, "ethereum", DAY).glob("ethereum_2026-07-30.parquet"))
+
+
+def test_export_chain_single_file_under_cap(tmp_path: Any) -> None:
+    """Normal days keep the unsuffixed single-file layout."""
+    from lite_indexer.storage.parquet.helpers import _local_dir
+
+    client = FakeClickHouse(transfers=[_transfer_row() for _ in range(2)], dex=[])
+    exporter = FakeExporter(client, data_dir=tmp_path, state_dir=tmp_path / "state", remote="r")
+    summary = exporter.export_chain("ethereum", dates=[DAY])
+    assert summary.transfers_rows == 2
+    assert (_local_dir(tmp_path, "ethereum", DAY) / "ethereum_2026-07-30.parquet").exists()

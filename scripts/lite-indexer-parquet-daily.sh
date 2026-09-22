@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-# Make `python3 -m lite_indexer.cli` resolve from any cwd (cron runs
+# Make `python3 -m lite_indexer` resolve from any cwd (cron runs
 # the script with an absolute path and no working directory guarantee).
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$REPO_DIR"
@@ -30,15 +30,24 @@ CHAINS="ethereum bsc polygon arbitrum optimism base avalanche gnosis"
 
 echo "==> lite-indexer parquet daily export ($(date -u +%Y-%m-%dT%H:%M:%SZ)) date=${YESTERDAY}"
 
+FAILED=""
 for chain in $CHAINS; do
     echo "=== Exporting $chain $YESTERDAY ==="
-    python3 -m lite_indexer.cli export-parquet \
+    if ! python3 -m lite_indexer export-parquet \
         --chain "$chain" \
         --date "$YESTERDAY" \
         --upload \
-        --remote "b2-crypt:chain-data/parquet" \
+        --remote "b2-crypt-v2:chain-data/parquet" \
         --delete-after-upload \
-        --publish-snapshot
+        --publish-snapshot; then
+        echo "!!! export failed for $chain — continuing with the rest"
+        FAILED="$FAILED $chain"
+    fi
 done
+
+if [ -n "$FAILED" ]; then
+    echo "==> export complete with failures:$FAILED"
+    exit 1
+fi
 
 echo "==> lite-indexer parquet daily export complete ($(date -u +%Y-%m-%dT%H:%M:%SZ))"

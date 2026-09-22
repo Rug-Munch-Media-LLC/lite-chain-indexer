@@ -36,6 +36,8 @@ def _fetch_day_rows(
     table: str,
     chain: str,
     day: date,
+    *,
+    bounds: tuple[int | None, int | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch all rows for a chain/date from a ClickHouse table.
 
@@ -56,11 +58,23 @@ def _fetch_day_rows(
         ValueError: If the day has more than ``_MAX_ROWS_PER_DAY`` rows.
     """
     cap = _max_rows_per_day()
-    query = f"SELECT * FROM {table} WHERE chain = %(chain)s AND toDate(block_timestamp) = %(day)s LIMIT {cap + 1}"
+    block_from, block_to = bounds if bounds is not None else (None, None)
+    where_bounds = ""
+    query_params: dict[str, Any] = {"chain": chain, "day": day.isoformat()}
+    if block_from is not None:
+        where_bounds += " AND block_number >= %(block_from)s"
+        query_params["block_from"] = int(block_from)
+    if block_to is not None:
+        where_bounds += " AND block_number <= %(block_to)s"
+        query_params["block_to"] = int(block_to)
+    query = (
+        f"SELECT * FROM {table} WHERE chain = %(chain)s AND toDate(block_timestamp) = %(day)s"
+        f"{where_bounds} LIMIT {cap + 1}"
+    )
     try:
         rows, columns = client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             query,
-            {"chain": chain, "day": day.isoformat()},
+            query_params,
             with_column_types=True,
         )
     except Exception as exc:
@@ -77,6 +91,28 @@ def _fetch_day_rows(
 
     col_names = [c[0] for c in columns]
     return [dict(zip(col_names, row, strict=False)) for row in rows]
+
+
+def _day_row_stats(client: Any, table: str, chain: str, day: date) -> tuple[int, int | None, int | None]:
+    """(count, min_block, max_block) for a chain/day; (0, None, None) when empty."""
+    query = (
+        f"SELECT count(), min(block_number), max(block_number) FROM {table} "
+        "WHERE chain = %(chain)s AND toDate(block_timestamp) = %(day)s"
+    )
+    try:
+        rows = client.execute(query, {"chain": chain, "day": day.isoformat()})
+    except Exception as exc:
+        if "doesn't exist" in str(exc) or "UNKNOWN_TABLE" in str(exc):
+            return 0, None, None
+        logger.warning("parquet_count_failed", table=table, chain=chain, error=str(exc)[:120])
+        return 0, None, None
+    if not rows:
+        return 0, None, None
+    first = rows[0]
+    count = int(first[0] or 0)
+    minimum = int(first[1]) if first[1] is not None else None
+    maximum = int(first[2]) if first[2] is not None else None
+    return count, minimum, maximum
 
 
 def _verify_parquet(
@@ -125,4 +161,5 @@ def _verify_parquet(
         return False
 
 
-__all__ = ["_fetch_day_rows", "_verify_parquet"]
+__all__ = ["_day_row_stats",
+    "_fetch_day_rows", "_verify_parquet"]
