@@ -24,6 +24,23 @@ from lite_indexer.rpc import backoff as bo
 from lite_indexer.rpc.backoff import exponential_backoff, full_jitter, set_jitter_seed
 
 
+_PATCHERS: list[Any] = []
+
+
+def _start(patcher: Any) -> Any:
+    """Start a patcher; the module autouse fixture stops it after each test."""
+    _PATCHERS.append(patcher)
+    return patcher.start()
+
+
+@pytest.fixture(autouse=True)
+def _stop_patchers() -> Any:
+    """Stop every patch started via ``_start`` after each test (no leaks)."""
+    yield
+    while _PATCHERS:
+        _PATCHERS.pop().stop()
+
+
 class TestFullJitter:
     def test_within_bounds(self):
         rng = random.Random(0)
@@ -50,7 +67,7 @@ class TestFullJitter:
 
 class TestExponentialBackoff:
     def test_ceiling_capped(self):
-        patch.object(bo, "RPC_BACKOFF_JITTER", False).start()
+        _start(patch.object(bo, "RPC_BACKOFF_JITTER", False))
         assert exponential_backoff(0, base=0.1, cap=1.0) == pytest.approx(0.1)
         assert exponential_backoff(1, base=0.1, cap=1.0) == pytest.approx(0.2)
         assert exponential_backoff(5, base=0.1, cap=1.0) == pytest.approx(1.0)  # capped
@@ -96,12 +113,12 @@ async def _sleeps_for_getlogs(headers: dict[str, str]) -> list[float]:
         return None
 
     http = _FakeHttp(_FakeResp(429, headers))
-    patch.object(rc.asyncio, "sleep", _fake_sleep).start()
-    patch.object(rc, "apply_provider_rate_limit", _noop).start()
-    patch.object(rc, "provider_throttle_before", _noop).start()
-    patch.object(rc, "record_provider_response", lambda *a, **k: None).start()
-    patch.object(rc, "_safe_record", lambda *a, **k: None).start()
-    patch("lite_indexer.rpc.throttle.throttle_before", _noop).start()
+    _start(patch.object(rc.asyncio, "sleep", _fake_sleep))
+    _start(patch.object(rc, "apply_provider_rate_limit", _noop))
+    _start(patch.object(rc, "provider_throttle_before", _noop))
+    _start(patch.object(rc, "record_provider_response", lambda *a, **k: None))
+    _start(patch.object(rc, "_safe_record", lambda *a, **k: None))
+    _start(patch("lite_indexer.rpc.throttle.throttle_before", _noop))
 
     client = rc.RpcClient()
 

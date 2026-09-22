@@ -25,6 +25,22 @@ import pytest
 
 from lite_indexer import metrics
 from lite_indexer.rpc import cache_db, respcache
+_PATCHERS: list[Any] = []
+
+
+def _start(patcher: Any) -> Any:
+    """Start a patcher; the module autouse fixture stops it after each test."""
+    _PATCHERS.append(patcher)
+    return patcher.start()
+
+
+@pytest.fixture(autouse=True)
+def _stop_patchers() -> Any:
+    """Stop every patch started via ``_start`` after each test (no leaks)."""
+    yield
+    while _PATCHERS:
+        _PATCHERS.pop().stop()
+
 
 
 @pytest.fixture(autouse=True)
@@ -212,14 +228,14 @@ class TestFailureSafe:
         async def _get_client() -> _Http:
             return http
 
-        patch.object(rc, "apply_provider_rate_limit", _noop).start()
-        patch.object(rc, "provider_throttle_before", _noop).start()
-        patch.object(rc, "record_provider_response", lambda *a, **k: None).start()
-        patch.object(rc, "_safe_record", lambda *a, **k: None).start()
-        patch.object(rc, "_defer_reason_for", lambda *a, **k: None).start()
-        patch("lite_indexer.rpc.throttle.throttle_before", _noop).start()
-        patch("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None).start()
-        patch("lite_indexer.rpc.consensus.should_sample", lambda: False).start()
+        _start(patch.object(rc, "apply_provider_rate_limit", _noop))
+        _start(patch.object(rc, "provider_throttle_before", _noop))
+        _start(patch.object(rc, "record_provider_response", lambda *a, **k: None))
+        _start(patch.object(rc, "_safe_record", lambda *a, **k: None))
+        _start(patch.object(rc, "_defer_reason_for", lambda *a, **k: None))
+        _start(patch("lite_indexer.rpc.throttle.throttle_before", _noop))
+        _start(patch("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None))
+        _start(patch("lite_indexer.rpc.consensus.should_sample", lambda: False))
 
         client = rc.RpcClient()
         client._get_client = _get_client  # noqa: SLF001 — test seam

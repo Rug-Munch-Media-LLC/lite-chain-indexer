@@ -31,6 +31,22 @@ from lite_indexer.strategies.evm.reorg import (
     rollback_to_block,
 )
 from lite_indexer.strategies.reorg_status import ReorgStatus
+_PATCHERS: list[Any] = []
+
+
+def _start(patcher: Any) -> Any:
+    """Start a patcher; the module autouse fixture stops it after each test."""
+    _PATCHERS.append(patcher)
+    return patcher.start()
+
+
+@pytest.fixture(autouse=True)
+def _stop_patchers() -> Any:
+    """Stop every patch started via ``_start`` after each test (no leaks)."""
+    yield
+    while _PATCHERS:
+        _PATCHERS.pop().stop()
+
 
 HASH_A = "0x" + "a" * 64
 HASH_B = "0x" + "b" * 64
@@ -264,7 +280,7 @@ def test_max_reorg_depth_per_chain() -> None:
 async def test_reorg_stage_no_reorg_returns_no_reorg() -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
+    _start(patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True))
 
     # Tip (200) checkpointed; verify block (188 = 200 - 12) hash matches.
     rpc = FakeRPC({200: HASH_A, 188: HASH_A})
@@ -286,7 +302,7 @@ async def test_reorg_stage_no_reorg_returns_no_reorg() -> None:
 async def test_reorg_stage_detects_and_rolls_back() -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
+    _start(patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True))
 
     # The block that should be deep-confirmed (188) changed its hash: reorg.
     rpc = FakeRPC({200: HASH_A, 188: HASH_B})
@@ -307,7 +323,7 @@ async def test_reorg_stage_lookup_failure_is_unknown_and_does_not_rollback() -> 
     """A checkpoint lookup failure must fail CLOSED: UNKNOWN, no rollback."""
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
+    _start(patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True))
 
     class LookupFailCH(FakeCH):
         def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
@@ -330,7 +346,7 @@ async def test_reorg_stage_no_checkpoint_is_benign_and_proceeds() -> None:
     """No checkpoint yet is benign ('cannot verify yet'), not a halt."""
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
+    _start(patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True))
 
     rpc = FakeRPC({200: HASH_A, 188: HASH_B})
     client = FakeCH()  # no checkpoints seeded
@@ -346,7 +362,7 @@ async def test_reorg_stage_rollback_failure_is_unknown() -> None:
     """A failed rollback surfaces as UNKNOWN — not a successful reorg."""
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
+    _start(patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True))
 
     class RollbackFailCH(FakeCH):
         def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
@@ -369,7 +385,7 @@ async def test_reorg_stage_rollback_failure_is_unknown() -> None:
 async def test_reorg_stage_disabled_returns_no_reorg() -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", False).start()
+    _start(patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", False))
 
     rpc = FakeRPC({200: HASH_A, 188: HASH_B})
     client = FakeCH()
@@ -384,7 +400,7 @@ async def test_reorg_stage_disabled_returns_no_reorg() -> None:
 async def test_reorg_stage_no_ch_client_returns_no_reorg() -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
+    _start(patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True))
     strategy = EVMChainStrategy("ethereum", rpc=FakeRPC({200: HASH_A, 188: HASH_B}))
     outcome = await strategy.reorg_stage(100, 200, None)
     assert outcome.status is ReorgStatus.NO_REORG
@@ -394,7 +410,7 @@ async def test_reorg_stage_no_ch_client_returns_no_reorg() -> None:
 async def test_reorg_stage_no_endpoints_is_unknown() -> None:
     from lite_indexer.strategies.evm import EVMChainStrategy
 
-    patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True).start()
+    _start(patch("lite_indexer.strategies.evm.strategy.REORG_PROTECTION_ENABLED", True))
     strategy = EVMChainStrategy("not-a-real-chain", rpc=FakeRPC({200: HASH_A}))
     outcome = await strategy.reorg_stage(100, 200, FakeCH())
     assert outcome.status is ReorgStatus.UNKNOWN

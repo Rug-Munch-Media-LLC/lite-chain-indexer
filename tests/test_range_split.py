@@ -27,6 +27,22 @@ from lite_indexer.rpc.range_split import (
     merge_logs,
     split_bounds,
 )
+_PATCHERS: list[Any] = []
+
+
+def _start(patcher: Any) -> Any:
+    """Start a patcher; the module autouse fixture stops it after each test."""
+    _PATCHERS.append(patcher)
+    return patcher.start()
+
+
+@pytest.fixture(autouse=True)
+def _stop_patchers() -> Any:
+    """Stop every patch started via ``_start`` after each test (no leaks)."""
+    yield
+    while _PATCHERS:
+        _PATCHERS.pop().stop()
+
 
 
 def _log(block: int, index: int) -> dict[str, Any]:
@@ -200,13 +216,13 @@ async def test_rpcclient_get_logs_splits_in_call():
     async def _noop(*a: Any, **k: Any) -> None:
         return None
 
-    patch.object(rc, "apply_provider_rate_limit", _noop).start()
-    patch.object(rc, "provider_throttle_before", _noop).start()
-    patch.object(rc, "record_provider_response", lambda *a, **k: None).start()
-    patch.object(rc, "_safe_record", lambda *a, **k: None).start()
-    patch("lite_indexer.rpc.throttle.throttle_before", _noop).start()
-    patch("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None).start()
-    patch.object(rc, "_defer_reason_for", lambda *a, **k: None).start()
+    _start(patch.object(rc, "apply_provider_rate_limit", _noop))
+    _start(patch.object(rc, "provider_throttle_before", _noop))
+    _start(patch.object(rc, "record_provider_response", lambda *a, **k: None))
+    _start(patch.object(rc, "_safe_record", lambda *a, **k: None))
+    _start(patch("lite_indexer.rpc.throttle.throttle_before", _noop))
+    _start(patch("lite_indexer.rpc.throttle.record_rpc_response", lambda *a, **k: None))
+    _start(patch.object(rc, "_defer_reason_for", lambda *a, **k: None))
 
     async def _get_client() -> _FakeHttp:
         return http
@@ -216,7 +232,7 @@ async def test_rpcclient_get_logs_splits_in_call():
 
     client = rc.RpcClient()
     client._get_client = _get_client  # noqa: SLF001 — test seam
-    patch.object(rc, "_get_call_client", _get_call_client).start()
+    _start(patch.object(rc, "_get_call_client", _get_call_client))
     result = await client.get_logs("https://archive.example", 0, 15, "0x" + "ab" * 32)
     assert result is not None
     blocks = [int(x["blockNumber"], 16) for x in result]

@@ -24,6 +24,22 @@ import pytest
 from lite_indexer import metrics
 from lite_indexer.rpc import circuit as circuit_mod
 from lite_indexer.rpc import client as rc
+_PATCHERS: list[Any] = []
+
+
+def _start(patcher: Any) -> Any:
+    """Start a patcher; the module autouse fixture stops it after each test."""
+    _PATCHERS.append(patcher)
+    return patcher.start()
+
+
+@pytest.fixture(autouse=True)
+def _stop_patchers() -> Any:
+    """Stop every patch started via ``_start`` after each test (no leaks)."""
+    yield
+    while _PATCHERS:
+        _PATCHERS.pop().stop()
+
 
 
 class _Resp:
@@ -97,7 +113,7 @@ def _wire(http: _Http) -> None:
     async def _get(timeout: float) -> _Http:
         return http
 
-    patch.object(rc, "_get_call_client", _get).start()
+    _start(patch.object(rc, "_get_call_client", _get))
 
 
 @pytest.mark.asyncio
@@ -151,7 +167,7 @@ async def test_batch_failure_falls_back_to_individual():
         individual.append(method)
         return {"result": {"single": method}}
 
-    patch.object(rc.RpcClient, "call", _fake_call).start()
+    _start(patch.object(rc.RpcClient, "call", _fake_call))
     results = await rc.RpcClient().call_batch(
         "https://batch.example",
         [("eth_blockNumber", None), ("eth_chainId", None), ("eth_gasPrice", None)],
@@ -163,7 +179,7 @@ async def test_batch_failure_falls_back_to_individual():
 
 @pytest.mark.asyncio
 async def test_batch_max_chunks_requests():
-    patch.object(rc, "RPC_BATCH_MAX", 2).start()
+    _start(patch.object(rc, "RPC_BATCH_MAX", 2))
     http = _Http()
     _wire(http)
     calls = [("eth_blockNumber", None) for _ in range(5)]
@@ -188,7 +204,7 @@ async def test_batch_failure_without_fallback_leaves_none():
         individual.append(method)
         return {"result": method}
 
-    patch.object(rc.RpcClient, "call", _fake_call).start()
+    _start(patch.object(rc.RpcClient, "call", _fake_call))
     results = await rc.RpcClient().call_batch(
         "https://batch.example",
         [("eth_getBlockByNumber", ["0x1", False]), ("eth_getBlockByNumber", ["0x2", False])],
@@ -202,7 +218,7 @@ async def test_batch_failure_without_fallback_leaves_none():
 
 @pytest.mark.asyncio
 async def test_batch_disabled_uses_individual():
-    patch.object(rc, "RPC_BATCH_ENABLED", False).start()
+    _start(patch.object(rc, "RPC_BATCH_ENABLED", False))
     http = _Http()
     _wire(http)
     individual: list[str] = []
@@ -213,7 +229,7 @@ async def test_batch_disabled_uses_individual():
         individual.append(method)
         return {"result": method}
 
-    patch.object(rc.RpcClient, "call", _fake_call).start()
+    _start(patch.object(rc.RpcClient, "call", _fake_call))
     results = await rc.RpcClient().call_batch(
         "https://batch.example", [("eth_blockNumber", None), ("eth_chainId", None)]
     )
