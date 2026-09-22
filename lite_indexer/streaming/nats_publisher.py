@@ -51,6 +51,8 @@ from lite_indexer.config import (
     NATS_URL,
 )
 from lite_indexer.logging import get_logger
+from lite_indexer.streaming.nats_batch import prepare_batch, send_batch
+from lite_indexer.streaming.nats_circuit import CircuitBreaker as _CircuitBreaker
 from lite_indexer.metrics import incr as metrics_incr
 
 logger = get_logger(__name__)
@@ -60,75 +62,6 @@ class NATSUnavailableError(RuntimeError):
     """Raised internally when the NATS connection is unavailable."""
 
 
-class _CircuitBreaker:
-    """Consecutive-failure circuit breaker with a time-based cooldown.
-
-    States:
-
-      - ``closed``: publishing normally. Each failure increments the
-        counter; reaching ``failure_threshold`` opens the circuit.
-      - ``open``: publishes are dropped without a network attempt until
-        ``cooldown_seconds`` elapses.
-      - ``half_open``: cooldown expired; the next publish is a probe.
-        Success closes the circuit, failure reopens it.
-    """
-
-    def __init__(
-        self,
-        failure_threshold: int,
-        cooldown_seconds: float,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self.failure_threshold = max(1, failure_threshold)
-        self.cooldown_seconds = max(0.0, cooldown_seconds)
-        self._clock = clock
-        self._consecutive_failures = 0
-        self._open_until = 0.0
-
-    @property
-    def consecutive_failures(self) -> int:
-        """Number of consecutive failures recorded (0 when closed)."""
-        return self._consecutive_failures
-
-    @property
-    def state(self) -> str:
-        """One of ``closed``, ``open`` or ``half_open``."""
-        if self._open_until > 0.0:
-            if self._clock() < self._open_until:
-                return "open"
-            # Cooldown expired — the next probe will run on the next
-            # publish; report half-open so callers can observe it.
-            return "half_open"
-        return "closed"
-
-    @property
-    def is_open(self) -> bool:
-        """True when publishes should be dropped without attempting.
-
-        Also transitions an expired open circuit to half-open so the next
-        publish acts as a probe.
-        """
-        if self._open_until == 0.0:
-            return False
-        if self._clock() < self._open_until:
-            return True
-        # Cooldown expired → half-open. Reset so the next publish probes.
-        self._open_until = 0.0
-        self._consecutive_failures = 0
-        return False
-
-    def record_success(self) -> None:
-        """Close the circuit after a successful publish."""
-        self._consecutive_failures = 0
-        self._open_until = 0.0
-
-    def record_failure(self) -> bool:
-        """Record a failure; returns True if this failure opened the circuit."""
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= self.failure_threshold:
-            self._open_until = self._clock() + self.cooldown_seconds
-            return True
-        return False
 
 
 class NATSPublisher:
@@ -171,6 +104,7 @@ class NATSPublisher:
         jetstream_enabled: bool | None = None,
         stream_name: str | None = None,
         connect_timeout: float = 2.0,
+        batch_timeout: float = 10.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._url = url or NATS_URL
@@ -180,6 +114,7 @@ class NATSPublisher:
         self._jetstream_enabled = NATS_JETSTREAM_ENABLED if jetstream_enabled is None else jetstream_enabled
         self._stream_name = stream_name or NATS_STREAM_NAME
         self._connect_timeout = connect_timeout
+        self._batch_timeout = batch_timeout
         self._clock = clock
 
         self._breaker = _CircuitBreaker(
@@ -426,27 +361,62 @@ class NATSPublisher:
         block: int,
         events: list[tuple[str, dict[str, Any]]],
     ) -> int:
-        """Publish a block batch of typed events.
+        """Publish a block batch — pipelined sends, one bounded wait.
+
+        Per-event sequential acks could stall a sync window for minutes on
+        a degraded server (2026-09-22: 14k sequential acks at 2-10s server
+        readloops). Sends are pipelined via :mod:`nats_batch`; best-effort:
+        never raises.
 
         Args:
             chain: Chain name.
             block: Block/slot number (injected into each event payload).
-            events: List of ``(event_type, data)`` tuples. Event types not
-                in :attr:`SUBJECTS` are skipped.
+            events: ``(event_type, data)`` tuples; unknown types are skipped.
 
         Returns:
-            The number of events successfully published.
+            Number of events accepted by NATS.
         """
         if not self.enabled or not events:
             return 0
+        if self._breaker.is_open:
+            logger.debug("nats_circuit_open_drop", chain=chain, event_type="batch")
+            return 0
+        prepared = prepare_batch(chain, block, events, self.subject_for)
+        if not prepared:
+            return 0
 
-        published = 0
-        for event_type, data in events:
-            payload = dict(data)
-            payload.setdefault("block", block)
-            if await self.publish_event(chain, event_type, payload):
-                published += 1
-        return published
+        try:
+            if (self._nc is None or not self._nc.is_connected) and not await self.connect():
+                raise NATSUnavailableError(f"not connected to {self._url}")
+            ok, failed = await send_batch(self._js, self._nc, prepared, timeout=self._batch_timeout)
+        except TimeoutError:
+            logger.warning(
+                "nats_batch_timeout", chain=chain, block=block,
+                events=len(prepared), timeout_s=self._batch_timeout,
+            )
+            metrics_incr("nats_publish_failures", len(prepared))
+            if self._breaker.record_failure():
+                logger.warning(
+                    "nats_circuit_opened",
+                    failures=self._breaker.consecutive_failures,
+                    cooldown_s=self._cooldown_seconds,
+                )
+            return 0
+        except Exception as exc:  # noqa: BLE001 — best-effort fan-out
+            logger.warning("nats_batch_publish_failed", chain=chain, block=block, error=str(exc)[:120])
+            metrics_incr("nats_publish_failures", len(prepared))
+            self._breaker.record_failure()
+            return 0
+
+        if failed:
+            logger.warning("nats_batch_partial", chain=chain, block=block, published=ok, failed=failed)
+            metrics_incr("nats_publish_failures", failed)
+        if ok:
+            self._breaker.record_success()
+            metrics_incr("nats_publishes", ok)
+        else:
+            self._breaker.record_failure()
+        return ok
 
 
 __all__ = ["NATSPublisher", "NATSUnavailableError"]

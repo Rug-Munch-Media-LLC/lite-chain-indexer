@@ -43,6 +43,15 @@ class FakeJetStream:
         self._update_stream_error = update_stream_error
         self._stream_exists = stream_exists
 
+    def publish_async(self, subject: str, payload: bytes) -> Any:
+        """Pipelined publish: record + return an already-completed future."""
+        import asyncio as _asyncio
+
+        self.published.append((subject, payload))
+        fut = _asyncio.get_running_loop().create_future()
+        fut.set_result(None)
+        return fut
+
     async def add_stream(self, **kwargs: Any) -> dict[str, Any]:
         self.add_stream_calls.append(kwargs)
         if self._add_stream_error is not None:
@@ -84,6 +93,11 @@ class FakeNC:
         if self.raise_publish:
             raise ConnectionError("nats server unavailable")
         self.published.append((subject, payload))
+
+    async def flush(self, timeout: float | None = None) -> None:
+        """Batched-send flush: completes immediately for the fake."""
+        if self.raise_publish:
+            raise ConnectionError("nats server unavailable")
 
     async def close(self) -> None:
         self.closed = True
@@ -486,3 +500,50 @@ class TestIndexerNatsWiring:
         ):
             published = await indexer._publish_nats_events("ethereum", 1, [{"tx_hash": "0x1"}], [], [], [])
         assert published == 0
+
+
+class TestStreamBlockBatchPipelining:
+    """The batch must pipeline sends: one bounded wait, never per-event acks."""
+
+    async def test_pipelined_path_completes_when_server_is_healthy(self):
+        fake = FakeNC()
+        publisher = NATSPublisher(enabled=True, jetstream_enabled=False, batch_timeout=0.2)
+        with patch("lite_indexer.streaming.nats_publisher.nats.connect", new=AsyncMock(return_value=fake)):
+            ok = await publisher.stream_block_batch(
+                "solana", 449000000, [("evm_transfer", {"i": i}) for i in range(50)]
+            )
+        assert ok == 50
+        assert len(fake.published) == 50
+
+    async def test_slow_server_times_out_without_stalling(self):
+        class _StuckNC(FakeNC):
+            async def flush(self, timeout: float | None = None) -> None:
+                import asyncio as _asyncio
+
+                await _asyncio.sleep(3600)
+
+        fake = _StuckNC()
+        publisher = NATSPublisher(enabled=True, jetstream_enabled=False, batch_timeout=0.05)
+        with patch("lite_indexer.streaming.nats_publisher.nats.connect", new=AsyncMock(return_value=fake)):
+            ok = await publisher.stream_block_batch("solana", 1, [("evm_transfer", {}) for _ in range(10)])
+        assert ok == 0  # bounded: returns instead of stalling the sync window
+        assert publisher.consecutive_failures == 1
+
+    async def test_partial_js_failures_count_only_successes(self):
+        class _PartialJS(FakeJetStream):
+            def publish_async(self, subject: str, payload: bytes):  # noqa: ANN201
+                import asyncio as _asyncio
+
+                fut = _asyncio.get_running_loop().create_future()
+                if subject.endswith(".transfer"):
+                    fut.set_exception(ConnectionError("flaky"))
+                else:
+                    fut.set_result(None)
+                self.published.append((subject, payload))
+                return fut
+
+        fake = FakeNC(js=_PartialJS())
+        publisher = NATSPublisher(enabled=True, jetstream_enabled=True, batch_timeout=0.5)
+        with patch("lite_indexer.streaming.nats_publisher.nats.connect", new=AsyncMock(return_value=fake)):
+            ok = await publisher.stream_block_batch("solana", 1, [("evm_transfer", {}), ("deployer_event", {})])
+        assert ok == 1
