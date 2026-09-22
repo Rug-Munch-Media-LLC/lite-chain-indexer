@@ -51,9 +51,9 @@ from lite_indexer.config import (
     NATS_URL,
 )
 from lite_indexer.logging import get_logger
+from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.streaming.nats_batch import prepare_batch, send_batch
 from lite_indexer.streaming.nats_circuit import CircuitBreaker as _CircuitBreaker
-from lite_indexer.metrics import incr as metrics_incr
 
 logger = get_logger(__name__)
 
