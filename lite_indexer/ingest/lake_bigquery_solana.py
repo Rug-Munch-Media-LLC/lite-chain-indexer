@@ -58,6 +58,7 @@ class SolanaBigQueryFillRequest:
     max_scan_gib: float = 60.0
     force_budget: bool = False
     since_ts: str | None = None  # surgical resume: drop rows older than this ISO ts
+    until_ts: str | None = None  # surgical hole-fill: drop rows newer than this ISO ts
     # OFFSET paging re-scans the whole partition per page (2026-09-22 quota
     # burn: 5 pages x 49.5 GiB). Until the one-job REST result-paging runner
     # lands, fills are bounded to a single page per day on purpose.
@@ -72,6 +73,7 @@ class _FillCtx:
     ch: Any
     req: SolanaBigQueryFillRequest
     since_dt: Any = None
+    until_dt: Any = None
 
 def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int:
     """Stream one (date, table) partition; ``sink=None`` counts only (dry run)."""
@@ -96,6 +98,8 @@ def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int
             break
         if ctx.since_dt is not None:
             rows = [r for r in rows if row_ts(r) >= ctx.since_dt]
+        if ctx.until_dt is not None:
+            rows = [r for r in rows if row_ts(r) <= ctx.until_dt]
         total += len(rows)
         if sink is not None:
             batch.extend(to_writer_event(r) for r in rows)
@@ -134,7 +138,8 @@ def backfill_solana_from_bigquery(
         return {}
     wh = ch_writer if ch_writer is not None else _default_ch_writer()
     ctx = _FillCtx(
-        src=src, writer=build_writer(), ch=wh, req=req, since_dt=parse_since(req.since_ts)
+        src=src, writer=build_writer(), ch=wh, req=req,
+        since_dt=parse_since(req.since_ts), until_dt=parse_since(req.until_ts),
     )
 
     counts: dict[str, int] = {}

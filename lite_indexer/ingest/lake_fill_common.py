@@ -113,7 +113,10 @@ def read_full_day(ctx: Any, table: str, day: str, sink: Any | None) -> int:
     batch: list[dict[str, Any]] = []
     for page in stream_query(sql, params, project=project, creds_path=creds):
         for raw in page:
-            if ctx.since_dt is not None and row_ts(raw) < ctx.since_dt:
+            ts = row_ts(raw)
+            if ctx.since_dt is not None and ts < ctx.since_dt:
+                continue
+            if ctx.until_dt is not None and ts > ctx.until_dt:
                 continue
             total += 1
             if sink is None:

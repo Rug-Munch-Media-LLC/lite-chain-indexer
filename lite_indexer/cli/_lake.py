@@ -111,6 +111,8 @@ def _add_fill_solana_parser(sub: argparse._SubParsersAction) -> None:
     fill.add_argument("--force-budget", action="store_true", help="Override the scan-budget guard")
     fill.add_argument("--estimate", action="store_true",
                       help="FREE dryRun price-check (REST transport); makes no writes")
+    fill.add_argument("--until-ts", default=None,
+                      help="Drop fetched rows newer than this ISO ts (surgical hole fills)")
     fill.add_argument("--since-ts", default=None,
                       help="Drop fetched rows older than this ISO ts (surgical resume fills)")
     fill.add_argument("--force", action="store_true", help="Write even for dates CH already covers")

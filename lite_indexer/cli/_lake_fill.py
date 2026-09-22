@@ -33,6 +33,7 @@ def run_fill_solana(args: argparse.Namespace) -> int:
         max_rows=args.max_rows, mints=tuple(args.mint), force=args.force,
         max_scan_gib=args.max_scan_gib, force_budget=args.force_budget,
         since_ts=getattr(args, "since_ts", None),
+        until_ts=getattr(args, "until_ts", None),
     )
     if getattr(args, "estimate", False):
         return _print_estimate(dates)

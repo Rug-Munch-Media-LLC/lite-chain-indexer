@@ -247,3 +247,42 @@ def test_since_ts_none_writes_everything(tmp_path: Any) -> None:
         _req(force=True), source=_source(tmp_path, FakeRunner({DAY: rows})), ch_writer=ch
     )
     assert counts[f"solana/{DAY}/token_transfers"] == 5
+
+
+# ── Surgical hole fill (until-ts) ────────────────────────────────────
+
+
+def _iso(ms: int) -> str:
+    from datetime import UTC, datetime
+
+    return datetime.fromtimestamp(ms / 1000, tz=UTC).isoformat()
+
+
+def test_until_ts_drops_newer_rows(tmp_path: Any) -> None:
+    rows = [_raw_row(i) for i in range(25)]
+    base = rows[0]["block_timestamp"]
+    ch = FakeCHWriter()
+    counts = backfill_solana_from_bigquery(
+        _req(until_ts=_iso(base + 3 * 400 + 100), force=True),
+        source=_source(tmp_path, FakeRunner({DAY: rows})),
+        ch_writer=ch,
+    )
+    written = sum(len(b) for b in ch.client_obj.inserts)
+    assert written == counts[f"solana/{DAY}/token_transfers"] == 4
+
+
+def test_since_and_until_bound_a_window(tmp_path: Any) -> None:
+    rows = [_raw_row(i) for i in range(25)]
+    base = rows[0]["block_timestamp"]
+    ch = FakeCHWriter()
+    counts = backfill_solana_from_bigquery(
+        _req(
+            since_ts=_iso(base + 400),
+            until_ts=_iso(base + 3 * 400),
+            force=True,
+        ),
+        source=_source(tmp_path, FakeRunner({DAY: rows})),
+        ch_writer=ch,
+    )
+    written = sum(len(b) for b in ch.client_obj.inserts)
+    assert written == counts[f"solana/{DAY}/token_transfers"] == 3
