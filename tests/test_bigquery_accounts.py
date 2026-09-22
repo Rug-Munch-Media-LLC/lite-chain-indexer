@@ -1,6 +1,5 @@
 """Two-account alternation tests (env pairs + quota swap)."""
 import os
-import subprocess
 from typing import Any
 from unittest.mock import patch
 
@@ -46,7 +45,7 @@ def test_quota_on_primary_swaps_to_alt() -> None:
         return _Proc(0, out='[{"ok": 1}]')
 
     with patch.dict(os.environ, {**PRIMARY, **ALT}, clear=True), \
-            patch.object(subprocess, "run", fake_run):
+            patch("lite_indexer.query.bigquery_cli.subprocess.run", fake_run):
         rows = cli.run_bq("/usr/bin/bq", "SELECT 1", [])
     assert rows == [{"ok": 1}]
     assert len(calls) == 2
@@ -55,6 +54,6 @@ def test_quota_on_primary_swaps_to_alt() -> None:
 
 def test_quota_on_last_account_raises() -> None:
     with patch.dict(os.environ, PRIMARY, clear=True), \
-            patch.object(subprocess, "run", lambda cmd, **kw: _Proc(1, err="Quota exceeded: free query bytes scanned")):
+            patch("lite_indexer.query.bigquery_cli.subprocess.run", lambda cmd, **kw: _Proc(1, err="Quota exceeded: free query bytes scanned")):
         with pytest.raises(BigQueryQuotaError):
             cli.run_bq("/usr/bin/bq", "SELECT 1", [])
