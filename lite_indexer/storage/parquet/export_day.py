@@ -7,8 +7,8 @@ from typing import Any
 
 from lite_indexer.config import CH_DEX_TABLE, CH_TABLE
 from lite_indexer.logging import get_logger
-from lite_indexer.storage.parquet.chunking import DayPlan, fetch_day_kinds, write_kind_parts
-from lite_indexer.storage.parquet.helpers import _block_range, _local_dir, _local_path, _remote_dir, _state_marker
+from lite_indexer.storage.parquet.chunking import DayPlan, fetch_write_day_kinds
+from lite_indexer.storage.parquet.helpers import _local_dir, _local_path, _remote_dir, _state_marker
 from lite_indexer.storage.parquet.reader import _day_row_stats, _fetch_day_rows, _max_rows_per_day
 from lite_indexer.storage.parquet.schema import _STATUS_DELETED, _STATUS_EXPORTING, _STATUS_FAILED, _STATUS_UPLOADED
 
@@ -39,17 +39,23 @@ class ExportDayMixin:
 
         try:
             self._record_state(client, chain, day, status=_STATUS_EXPORTING)
-            kinds_parts = fetch_day_kinds(
-            _fetch_day_rows, _day_row_stats, _KIND_TABLES, DayPlan(chain, day, _max_rows_per_day(), client)
-        )
-            transfer_rows = [r for _suffix, rows in kinds_parts["transfers"] for r in rows]
-            dex_rows = [r for _suffix, rows in kinds_parts["dex"] for r in rows]
+            rows_per_kind, bytes_written, kinds_ok, block_span = fetch_write_day_kinds(
+                _fetch_day_rows,
+                _day_row_stats,
+                _KIND_TABLES,
+                DayPlan(chain, day, _max_rows_per_day(), client),
+                self._write_parquet,
+                self._verify_parquet,
+                lambda kind: _local_path(self.data_dir, chain, day, kind),
+            )
+            transfers_n = rows_per_kind.get("transfers", 0)
+            dex_n = rows_per_kind.get("dex", 0)
         except Exception as exc:
             opts.summary.errors.append(f"{day.isoformat()}: {str(exc)[:100]}")
             self._record_state(client, chain, day, status=_STATUS_FAILED, error_message=str(exc)[:200])
             return
 
-        total_rows = len(transfer_rows) + len(dex_rows)
+        total_rows = transfers_n + dex_n
         if total_rows == 0:
             # No data for this date — archive an empty day. Nothing
             # to write, opts.upload, or opts.delete, so record the terminal
@@ -65,19 +71,9 @@ class ExportDayMixin:
             logger.info("parquet_day_empty", chain=chain, day=day.isoformat())
             return
 
-        # Write + verify each kind.
-        bytes_written = 0
-        kinds_ok: dict[str, bool] = {}
-        for kind, parts in kinds_parts.items():
-            local = _local_path(self.data_dir, chain, day, kind)
-            written, kind_ok = write_kind_parts(self._write_parquet, self._verify_parquet, local, parts)
-            bytes_written += written
-            rows_total = sum(len(rows) for _suffix, rows in parts)
-            if kind == "transfers":
-                opts.summary.transfers_rows += rows_total
-            else:
-                opts.summary.dex_rows += rows_total
-            kinds_ok[kind] = kind_ok
+        # Windows were written + verified as they were fetched (streaming).
+        opts.summary.transfers_rows += transfers_n
+        opts.summary.dex_rows += dex_n
         opts.summary.bytes_written += bytes_written
 
         if not all(kinds_ok.values()):
@@ -88,8 +84,8 @@ class ExportDayMixin:
                 chain,
                 day,
                 status=_STATUS_FAILED,
-                transfers_rows=len(transfer_rows),
-                dex_rows=len(dex_rows),
+                transfers_rows=transfers_n,
+                dex_rows=dex_n,
                 parquet_bytes=bytes_written,
                 error_message=message,
             )
@@ -113,8 +109,8 @@ class ExportDayMixin:
                 chain,
                 day,
                 status=_STATUS_FAILED,
-                transfers_rows=len(transfer_rows),
-                dex_rows=len(dex_rows),
+                transfers_rows=transfers_n,
+                dex_rows=dex_n,
                 parquet_bytes=bytes_written,
                 error_message=message,
             )
@@ -127,8 +123,8 @@ class ExportDayMixin:
             chain,
             day,
             status=_STATUS_UPLOADED,
-            transfers_rows=len(transfer_rows),
-            dex_rows=len(dex_rows),
+            transfers_rows=transfers_n,
+            dex_rows=dex_n,
             parquet_bytes=bytes_written,
         )
 
@@ -153,12 +149,12 @@ class ExportDayMixin:
                     chain,
                     day,
                     status=_STATUS_DELETED,
-                    transfers_rows=len(transfer_rows),
-                    dex_rows=len(dex_rows),
+                    transfers_rows=transfers_n,
+                    dex_rows=dex_n,
                     parquet_bytes=bytes_written,
                 )
 
-        self._mark_exported(marker, day, len(transfer_rows), len(dex_rows))
+        self._mark_exported(marker, day, transfers_n, dex_n)
         opts.summary.dates_exported += 1
         logger.info(
             "parquet_day_exported",
@@ -174,12 +170,12 @@ class ExportDayMixin:
         # location with a manifest so `lite-indexer bootstrap` can
         # discover and replay it. Only for real (non-empty) exports.
         if opts.publish_snapshot and total_rows > 0:
-            start_block, end_block = _block_range(transfer_rows, dex_rows)
+            start_block, end_block = block_span
             if self.publish_snapshot(
                 chain,
                 day,
-                transfers_rows=len(transfer_rows),
-                dex_rows=len(dex_rows),
+                transfers_rows=transfers_n,
+                dex_rows=dex_n,
                 start_block=start_block,
                 end_block=end_block,
                 bucket=opts.snapshot_bucket,

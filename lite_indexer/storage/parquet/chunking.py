@@ -8,12 +8,10 @@ The reader materializes one window in memory; days above the row cap
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
 from typing import Any
-
-import os
 
 #: Rows per block window. Sized for memory: a window's rows are materialized
 #: as dicts AND a pyarrow table (~4-5 KB/row) — 3M-row windows hit ~14 GB and
@@ -61,41 +59,74 @@ def plan_day_chunks(
     return out
 
 
-def fetch_kind_parts(
+def fetch_write_day_kinds(
     fetch: Callable[..., list[dict[str, Any]]],
-    table: str,
-    chain: str,
-    day: Any,
-    chunks: list[tuple[int | None, int | None]],
-) -> list[tuple[str, list[dict[str, Any]]]]:
-    """Fetch each window; single-window days keep the unsuffixed part name."""
-    parts: list[tuple[str, list[dict[str, Any]]]] = []
-    for idx, (block_from, block_to) in enumerate(chunks):
-        suffix = f"part{idx:02d}" if len(chunks) > 1 else ""
-        parts.append((suffix, fetch(table, chain, day, bounds=(block_from, block_to))))
-    return parts
-
-
-def write_kind_parts(
+    stats: Callable[..., tuple[int, int | None, int | None]],
+    tables: tuple[tuple[str, str], ...],
+    plan: DayPlan,
     write: Callable[[list[dict[str, Any]], Any], int],
     verify: Callable[[Any, int, set[str]], bool],
-    base_path: Any,
-    parts: list[tuple[str, list[dict[str, Any]]]],
-) -> tuple[int, bool]:
-    """Write + verify each part; returns (bytes_written, all_ok)."""
+    local_path_for: Callable[[str], Any],
+) -> tuple[dict[str, int], int, dict[str, bool]]:
+    """Fetch and WRITE each block window before fetching the next.
+
+    Streaming matters as much as window sizing. The previous flow collected
+    every window of every kind and then flattened them into a second full copy
+    (``[r for _s, rows in parts for r in rows]``), so a day existed twice in
+    RAM: polygon OOM-killed the export unit at 6.7 GB (2026-09-23) even after
+    the windows were sized down. Here each window is written and released
+    before the next fetch, so the peak is a single window (~250k rows with
+    ``PARQUET_EXPORT_CHUNK_ROWS=250000``).
+
+    Returns:
+        ``(rows_per_kind, bytes_written, ok_per_kind, block_span)`` — counts and
+        the (start, end) block span, but never the rows themselves. The span is
+        accumulated here because ``_block_range()`` used to need the row lists
+        (the snapshot manifest records it); (0, 0) when no row carries a block.
+    """
+    rows_per_kind: dict[str, int] = {}
+    ok_per_kind: dict[str, bool] = {}
     bytes_written = 0
-    ok = True
-    for suffix, rows in parts:
-        if not rows:
-            continue
-        local = base_path
-        if suffix:
-            local = base_path.with_name(f"{base_path.stem}-{suffix}{base_path.suffix}")
-        written = write(rows, local)
-        bytes_written += written
-        if not (written and verify(local, len(rows), set(rows[0].keys()))):
-            ok = False
-    return bytes_written, ok
+    span_start: int | None = None
+    span_end: int | None = None
+    for kind, table in tables:
+        count, min_block, max_block = stats(plan.client, table, plan.chain, plan.day)
+        chunks = plan_day_chunks(count, min_block, max_block, plan.cap)
+        base_path = local_path_for(kind)
+        kind_rows = 0
+        kind_ok = True
+        for idx, (block_from, block_to) in enumerate(chunks):
+            rows = fetch(plan.client, table, plan.chain, plan.day, bounds=(block_from, block_to))
+            if not rows:
+                continue
+            for row in rows:  # span while the window is in hand (mirrors _block_range)
+                raw = row.get("block_number")
+                if raw is None:
+                    continue
+                try:
+                    block = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if span_start is None or block < span_start:
+                    span_start = block
+                if span_end is None or block > span_end:
+                    span_end = block
+            suffix = f"part{idx:02d}" if len(chunks) > 1 else ""
+            local = base_path
+            if suffix:
+                local = base_path.with_name(f"{base_path.stem}-{suffix}{base_path.suffix}")
+            written = write(rows, local)
+            bytes_written += written
+            kind_rows += len(rows)
+            if not (written and verify(local, len(rows), set(rows[0].keys()))):
+                kind_ok = False
+            del rows  # release this window before fetching the next
+        rows_per_kind[kind] = kind_rows
+        ok_per_kind[kind] = kind_ok
+    return rows_per_kind, bytes_written, ok_per_kind, (
+        span_start if span_start is not None else 0,
+        span_end if span_end is not None else 0,
+    )
 
 
 @dataclass(frozen=True)
@@ -108,17 +139,3 @@ class DayPlan:
     client: Any
 
 
-def fetch_day_kinds(
-    fetch: Callable[..., list[dict[str, Any]]],
-    stats: Callable[[str, str, Any], tuple[int, int | None, int | None]],
-    tables: tuple[tuple[str, str], ...],
-    plan: DayPlan,
-) -> dict[str, list[tuple[str, list[dict[str, Any]]]]]:
-    """Plan + fetch every kind's block-window parts for one day."""
-    out: dict[str, list[tuple[str, list[dict[str, Any]]]]] = {}
-    for kind, table in tables:
-        count, min_block, max_block = stats(plan.client, table, plan.chain, plan.day)
-        bound = partial(fetch, plan.client)
-        chunks = plan_day_chunks(count, min_block, max_block, plan.cap)
-        out[kind] = fetch_kind_parts(bound, table, plan.chain, plan.day, chunks)
-    return out
