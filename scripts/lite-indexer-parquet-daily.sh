@@ -37,7 +37,7 @@ for chain in $CHAINS; do
         --chain "$chain" \
         --date "$YESTERDAY" \
         --upload \
-        --remote "b2-crypt-v2:chain-data/parquet" \
+        --remote "rugmunch-b2:rmi-chain-data/parquet" \
         --delete-after-upload \
         --publish-snapshot; then
         echo "!!! export failed for $chain — continuing with the rest"
