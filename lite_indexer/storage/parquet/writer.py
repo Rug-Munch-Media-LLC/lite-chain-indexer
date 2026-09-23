@@ -33,6 +33,7 @@ from lite_indexer.storage.parquet.tooling import which as tool_which
 
 logger = get_logger(__name__)
 
+
 class ParquetExporter(ExportFlowMixin, ExportDayMixin, ExportStateMixin):
     """Export old ClickHouse rows to Parquet and upload them to B2.
 
@@ -62,7 +63,6 @@ class ParquetExporter(ExportFlowMixin, ExportDayMixin, ExportStateMixin):
 
         writer = ClickHouseWriter()
         return writer._connect()  # noqa: SLF001 — reuse the writer's lazy client
-
 
     # ── Parquet writing & verification ──────────────────────────────
 
@@ -231,12 +231,19 @@ class ParquetExporter(ExportFlowMixin, ExportDayMixin, ExportStateMixin):
         tables: dict[str, dict[str, Any]] = {}
         for kind, table_name in (("transfers", "evm_transfers"), ("dex", "dex_events")):
             path = _local_path(self.data_dir, chain, day, kind)
-            if not path.exists():
+            # Chunked exports write `{stem}-partNN{suffix}` (one file per block
+            # window) and never the bare name, so resolve the real files rather
+            # than requiring the unsuffixed one: a day with dex_rows=0 or any
+            # chunked day otherwise published an empty manifest (arbitrum/base,
+            # 2026-09-23: "snapshot_publish_no_files" + exit 1). The single-file
+            # layout still matches the same pattern.
+            files = sorted(local.glob(f"{path.stem}*{path.suffix}"))
+            if not files:
                 continue
             tables[table_name] = {
                 "rows": transfers_rows if kind == "transfers" else dex_rows,
-                "size_bytes": path.stat().st_size,
-                "parquet_files": [path.name],
+                "size_bytes": sum(f.stat().st_size for f in files),
+                "parquet_files": [f.name for f in files],
             }
         if not tables:
             logger.warning("snapshot_publish_no_files", chain=chain, day=day.isoformat())
@@ -269,5 +276,6 @@ class ParquetExporter(ExportFlowMixin, ExportDayMixin, ExportStateMixin):
         else:
             logger.warning("snapshot_publish_failed", chain=chain, date=day.isoformat(), remote=remote)
         return ok
+
 
 __all__ = ["ParquetExporter"]
