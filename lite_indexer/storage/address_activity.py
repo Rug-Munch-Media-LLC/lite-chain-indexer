@@ -246,6 +246,10 @@ def parse_address_activity(tx_data: dict[str, Any], slot: int | None = None) -> 
     ]
 
 
+_ENSURE_AT: dict[str, float] = {}
+_ENSURE_TTL_SECONDS = 6 * 3600
+
+
 def ensure_address_activity_chain_column(ch_client: Any) -> None:
     """Upgrade a pre-015 table with the ``chain`` discriminator (idempotent).
 
@@ -261,11 +265,20 @@ def ensure_address_activity_chain_column(ch_client: Any) -> None:
     operator-facing upgrade); the cross-chain mixin calls this first so
     EVM/TRON ingestion self-heals an un-migrated table.
     """
+    # Memoised 6 h: MODIFY ORDER BY rewrites the sort key of a ~29 GiB table.
+    # Measured 2026-09-23: 22 executions / 3 min from the write path — the
+    # single most expensive DDL in the storm that wedged the host.
+    import time
+
+    now = time.monotonic()
+    if now - _ENSURE_AT.get("chain_column", 0.0) < _ENSURE_TTL_SECONDS:
+        return
     for ddl in (_ADD_CHAIN_COLUMN_DDL, _MODIFY_ORDER_BY_DDL):
         try:
             ch_client.execute(ddl)
         except Exception as exc:  # noqa: BLE001 — table may be absent/fresh
             logger.debug("address_activity_chain_ddl_skip", error=str(exc)[:80])
+    _ENSURE_AT["chain_column"] = time.monotonic()
 
 
 def ensure_address_activity_table(ch_client: Any) -> bool:

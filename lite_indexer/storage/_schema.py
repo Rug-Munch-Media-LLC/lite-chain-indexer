@@ -21,12 +21,46 @@ from lite_indexer.config import (
 from lite_indexer.logging import get_logger
 from lite_indexer.retention import ensure_retention_policies
 
+# Process-level memo: ensure_ttl_policies() runs ~20 DDL statements
+# (column-TTL ALTERs + projections + table TTLs). On the write path this
+# re-ran on EVERY dex batch — measured 2026-09-23 at 218 ALTERs/table/30min,
+# which saturated the ext4 journal. Re-ensure at most every 6 h.
+_TTL_ENSURED_AT: dict[str, float] = {}
+_TTL_REENSURE_SECONDS = 6 * 3600
+
+
+def _ddl_memo(fn):
+    """Run a DDL-issuing routine at most once per ``_TTL_REENSURE_SECONDS``.
+
+    Every ``_ensure_*`` method below issues one or more ALTERs and is called
+    from the per-batch write path. Before this guard each dex/transfer batch
+    re-issued ~20 DDL statements (measured 2026-09-23: 218 ALTERs / table /
+    30 min, incl. MODIFY ORDER BY on a 29 GiB table) which saturated the
+    ext4 journal and wedged dockerd.
+    """
+    import functools
+    import time
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        key = fn.__name__ + ":" + "|".join(str(a)[:40] for a in args)
+        now = time.monotonic()
+        if now - _TTL_ENSURED_AT.get(key, 0.0) < _TTL_REENSURE_SECONDS:
+            return None
+        try:
+            return fn(self, *args, **kwargs)
+        finally:
+            _TTL_ENSURED_AT[key] = time.monotonic()
+
+    return wrapper
+
 logger = get_logger(__name__)
 
 
 class SchemaMixin:
     """Idempotent column/projection/TTL DDL for writer tables."""
 
+    @_ddl_memo
     def _ensure_source_column(self, client: Any, table: str) -> None:
         """Ensure source column exists in ClickHouse table."""
         try:
@@ -49,6 +83,7 @@ class SchemaMixin:
                 return
             logger.debug("source_column_skip", error=str(exc)[:80])
 
+    @_ddl_memo
     def _ensure_raw_payload_column(self, client: Any, table: str) -> None:
         """Ensure raw_payload exists so writers can name it in INSERTs.
 
@@ -78,6 +113,7 @@ class SchemaMixin:
                 return
             logger.debug("raw_payload_column_skip", error=str(exc)[:80])
 
+    @_ddl_memo
     def _ensure_dedup_key_column(self, client: Any, table: str) -> None:
         """Ensure ``tx_log_key`` exists so writers can name it in INSERTs.
 
@@ -111,6 +147,7 @@ class SchemaMixin:
                 return
             logger.debug("dedup_key_column_skip", error=str(exc)[:80])
 
+    @_ddl_memo
     def _ensure_dex_usd_columns(self, client: Any) -> None:
         """Ensure dex_events has price_usd/volume_usd columns.
 
@@ -142,6 +179,7 @@ class SchemaMixin:
                 return
             logger.debug("dex_usd_columns_skip", error=str(exc)[:80])
 
+    @_ddl_memo
     def _ensure_deployer_columns(self, client: Any) -> None:
         """Ensure deployer_events has token0/token1/pair_address/deployer_eoa columns.
 
@@ -176,6 +214,7 @@ class SchemaMixin:
                 return
             logger.debug("deployer_columns_skip", error=str(exc)[:80])
 
+    @_ddl_memo
     def _ensure_solana_owner_column(self, client: Any) -> None:
         """Ensure solana_spl_balance_changes has the owner column.
 
@@ -259,6 +298,7 @@ class SchemaMixin:
                 return
             logger.debug("column_ttl_skip", table=table, column=column, error=str(exc)[:80])
 
+    @_ddl_memo
     def _ensure_summary_projection(self, client: Any, table: str, summary_columns: tuple[str, ...]) -> None:
         """Add a summary projection over the columns scanners actually use.
 
@@ -295,9 +335,19 @@ class SchemaMixin:
         table, column, or lacking privileges degrades to a debug log.
         Called on first write of each cycle when ``CH_TTL_ENABLED``.
 
+        Memoised for ``_TTL_REENSURE_SECONDS`` per process: this issues ~20
+        DDL statements, and running it per insert batch is what caused the
+        2026-09-23 I/O storm (see _TTL_ENSURED_AT above).
+
         Args:
             client: ClickHouse client.
         """
+        import time
+
+        key = "schema"
+        now = time.monotonic()
+        if now - _TTL_ENSURED_AT.get(key, 0.0) < _TTL_REENSURE_SECONDS:
+            return
         # evm_transfers: full precision for 30 days, then degrade
         # token_symbol/token_name (heavy String columns) to defaults.
         days = RETENTION_DAYS.get("evm_transfers", 30)
@@ -330,3 +380,4 @@ class SchemaMixin:
         applied = ensure_retention_policies(client)
         if applied:
             logger.info("retention_ttls_ensured", tables=len(applied))
+        _TTL_ENSURED_AT[key] = now
