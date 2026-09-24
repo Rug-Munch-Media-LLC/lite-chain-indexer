@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 # Max concurrent eth_getTransactionByHash calls while resolving deployer
 # EOAs (keeps RPC overhead low while batching unique tx hashes).
-_DEPLOYER_RPC_CONCURRENCY = 8
+_DEPLOYER_RPC_CONCURRENCY = 16
 
 # How many endpoints to try per tx hash before giving up on it. The
 # previous implementation queried only the single best endpoint — when that

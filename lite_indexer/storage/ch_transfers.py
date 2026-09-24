@@ -192,6 +192,8 @@ class TransfersMixin:
             logger.info("clickhouse_dedup_skipped", chain=chain, skipped=skipped, kept=len(rows))
 
         if not rows:
-            return 0
+            # All events already durable (post-rewind): count as handled so
+            # the caller advances instead of failing the range write.
+            return len(unique)
 
         return _insert_transfers(client, chain, rows)

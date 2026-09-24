@@ -327,7 +327,7 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         start_time: float,
     ) -> dict[str, Any]:
         """Sync one sub-slice (restore handled in finally)."""
-        _timing = os.getenv("SOLANA_TIMING") and self.chain == "solana"  # phase timers
+        _timing = bool(os.getenv("INDEXER_PHASE_TIMING")) or (os.getenv("SOLANA_TIMING") and self.chain == "solana")  # phase timers
         _t_win = time.perf_counter()
         _t_fetch = _t_ch = _t_drains = _t_nats = _t_state = _t_side = 0.0
         # 2a. Graceful ClickHouse pause: probe CH BEFORE fetching events
