@@ -32,6 +32,7 @@ from typing import Any
 import httpx
 
 from lite_indexer.config import STATE_DIR
+from lite_indexer.formatting import format_duration
 from lite_indexer.logging import get_logger, setup_logging
 from lite_indexer.strategies import SUPPORTED_CHAINS, create_strategy
 
@@ -56,18 +57,23 @@ _CHAIN_BLOCK_TIMES = {
     "celo": 5.0,
     "solana": 0.4,
     "tron": 3.0,
+    # Fast-block L2s (2026-09-25): a missing entry defaults to 12s/block and
+    # turns a real block gap into a nonsense "years behind" figure. Every
+    # SUPPORTED_CHAIN must appear here (test_health_block_times_cover_all_chains).
+    "robinhood": 0.25,
+    "hyperliquid": 1.0,
+    "blast": 2.0,
+    "fraxtal": 2.0,
+    "metis": 2.0,
 }
 
 
 class ChainStallTracker:
     """Per-chain progress tracker for the daemon's auto-disable logic.
 
-    A chain is considered stalled when its state file has not advanced
-    for ``stall_seconds`` (default 2h). The daemon calls
-    :meth:`observe` after every sync cycle with the state block before
-    and after the cycle; the tracker returns whether the chain should
-    now be disabled (and remembers the last progress time so a disabled
-    chain re-enables as soon as its state moves again).
+    A chain is stalled when its state file has not advanced for
+    ``stall_seconds`` (default 2h). The daemon calls :meth:`observe` after
+    every sync cycle; a disabled chain re-enables as soon as its state moves.
     """
 
     def __init__(self, stall_seconds: int = 7200) -> None:
@@ -75,12 +81,7 @@ class ChainStallTracker:
         self._last_progress_at = 0.0
         self._disabled = False
 
-    def observe(
-        self,
-        state_before: int | None,
-        state_after: int | None,
-        now: float | None = None,
-    ) -> bool:
+    def observe(self, state_before: int | None, state_after: int | None, now: float | None = None) -> bool:
         """Record one sync cycle's outcome.
 
         Args:
@@ -126,12 +127,10 @@ async def check_chain_lag(
 ) -> dict[str, dict[str, Any]]:
     """Report how far behind each chain's state file is vs the RPC tip.
 
-    Reads each chain's state file (``{STATE_DIR}/lite_{chain}.json``),
-    fetches the current tip via RPC, and reports the block gap plus an
-    estimated seconds-behind figure using the chain's average block time.
-
-    A chain whose state file is missing or stale (not updated recently)
-    is reported with ``status: "no_state"`` or ``status: "stale"``.
+    Reads each chain's state file (``{STATE_DIR}/lite_{chain}.json``), fetches
+    the current tip via RPC, and reports the block gap plus an estimated
+    seconds-behind figure using the chain's average block time. A missing or
+    stale state file is reported as ``status: "no_state"`` / ``"stale"``.
 
     Args:
         chain_names: Optional list of chains to check. If None, checks
@@ -213,17 +212,12 @@ async def check_chain_lag(
         block_time = _CHAIN_BLOCK_TIMES.get(chain, 12.0)
         result["lag_seconds"] = int(lag * block_time)
 
-        # A state file that hasn't been updated in 3 poll intervals is stale
-        # (the daemon may be wedged, e.g. stuck on a blocking CH call).
-        #
-        # The 30-minute floor matches the daemon's state-persistence cadence:
-        # state is written only when a full sync batch completes (BATCH_SIZE
-        # = 1000 blocks), which takes 3-25 min on slow chains with
-        # rate-limited free RPCs. A 5-minute floor false-positived mid-batch,
-        # so the stall watchdog restarted the service and killed the in-flight
-        # batch every cycle (observed 2026-08-05: polygon/ethereum/optimism
-        # genuinely stalled). The watchdog's own NO_ADVANCE signal
-        # (state_age > STALL_MINUTES=30) still catches genuine wedges.
+        # A state file not updated in 3 poll intervals is stale (the daemon
+        # may be wedged, e.g. stuck on a blocking CH call). The 30-minute
+        # floor matches the state-persistence cadence (state is written only
+        # when a full BATCH_SIZE=1000-block batch completes, 3-25 min on slow
+        # free RPCs); a 5-minute floor false-positived mid-batch and made the
+        # watchdog kill in-flight batches every cycle (2026-08-05).
         poll_interval = _CHAIN_BLOCK_TIMES.get(chain, 12.0) * 3 + 30
         if state_age is not None and state_age > max(1800, poll_interval):
             result["status"] = "stale"
@@ -279,10 +273,12 @@ async def print_chain_lag_report(
             lines.append(f"  ✅ {label:20s}  caught up (block={info.get('state_block'):,})")
             ok_count += 1
         elif status == "behind":
-            lag_s = info.get("lag_seconds", 0)
+            age = info.get("state_age_seconds")
+            age_note = f", state {format_duration(age)} old" if age is not None else ""
             lines.append(
                 f"  ⏳ {label:20s}  behind {info.get('lag_blocks', 0):,} blocks "
-                f"(~{lag_s // 60} min, state={info.get('state_block'):,} tip={info.get('tip_block'):,})"
+                f"(~{format_duration(info.get('lag_seconds', 0))}, "
+                f"state={info.get('state_block'):,} tip={info.get('tip_block'):,}{age_note})"
             )
             behind_count += 1
         elif status == "stale":

@@ -151,8 +151,16 @@ class TestClassify:
         """on_chain=0 with nonzero delta → MISMATCH (no divide-by-zero)."""
         status, delta_pct = _classify(delta=500, on_chain=0)
         assert status == "MISMATCH"
-        # Denominator floors at 1 wei: gap = |delta| * 100.
+        # Denominator floors at 1 wei: raw gap = |delta| * 100 = 50_000%.
         assert delta_pct == pytest.approx(50000.0)
+
+    def test_huge_ratio_is_clamped_to_meaningful_ceiling(self) -> None:
+        """A genuinely meaningless ratio clamps at the ceiling, not 1e+28%."""
+        from lite_indexer.formatting import MAX_MEANINGFUL_PCT
+
+        status, delta_pct = _classify(delta=959_365_293_609_401_687_871_519_017, on_chain=0)
+        assert status == "MISMATCH"
+        assert delta_pct == pytest.approx(MAX_MEANINGFUL_PCT)
 
     def test_zero_delta_matches_any_balance(self) -> None:
         status, delta_pct = _classify(delta=0, on_chain=0)

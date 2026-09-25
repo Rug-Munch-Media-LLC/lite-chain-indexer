@@ -1,27 +1,17 @@
 """
 Balance reconciliation (TrueBlocks-style).
 
-Compares computed balances derived from indexed ``evm_transfers`` deltas
-against on-chain state queried via ``eth_getBalance``. This is a
-*data-completeness heuristic*: if the indexer captured every transfer the
-delta between computed and on-chain state should trend to zero; a large
-gap indicates missing or incorrect indexed rows (e.g. a partial backfill,
-a reorg that was not rolled back, or an untracked path such as native
-transfers / fee payments).
+Compares balances derived from indexed ``evm_transfers`` deltas against
+on-chain ``eth_getBalance``. A large gap indicates missing/incorrect indexed
+rows (partial backfill, unrolled reorg, untracked path). Lightweight and
+non-blocking: samples random wallets (default 100/chain), caches results in
+``wallet_memory.reconciliation_results`` (append-only, auditable), and is gated
+by ``RECONCILIATION_ENABLED``. Percentages are clamped human-readably in
+:mod:`lite_indexer.formatting` -- a near-zero denominator must never surface as
+a scientific-notation "percentage".
 
-The reconciliation is deliberately lightweight and non-blocking:
-
-* Only runs on a random sample of wallets (default 100 per chain) — see
-  :func:`run_reconciliation`.
-* Results are cached in ``wallet_memory.reconciliation_results`` so each
-  run is append-only and auditable.
-* Gated by ``RECONCILIATION_ENABLED`` (default on) at the
-  :func:`run_reconciliation` entry point.
-
-Also provides :func:`check_range_completeness` — a periodic durable-store
-row-count check (the indexer compares the ClickHouse row count for a just
-synced range against the events fetched from RPC and backfills when the
-durable store is short by more than the configured percentage).
+Also provides :func:`check_range_completeness` -- the periodic durable-store
+row-count check the indexer uses to rewind a short range.
 """
 
 from __future__ import annotations
@@ -38,6 +28,7 @@ from lite_indexer.config import (
     RECONCILIATION_SAMPLE_SIZE,
     SOLANA_CH_TABLE,
 )
+from lite_indexer.formatting import MAX_MEANINGFUL_PCT, format_pct
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.rpc import get_best_endpoint
@@ -77,7 +68,9 @@ async def ensure_reconciliation_table(ch_client: Any) -> bool:
         True when the table exists (or was created), False otherwise.
     """
     try:
-        ch_client.execute(_RECONCILIATION_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+        ch_client.execute(
+            _RECONCILIATION_DDL
+        )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("reconciliation_table_ensured", table=CH_RECONCILIATION_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -205,18 +198,21 @@ async def _cache_results(
 def _classify(delta: int, on_chain: int) -> tuple[str, float]:
     """Classify a reconciliation result.
 
+    ``delta_pct`` is the relative gap in percent, clamped at
+    :data:`MAX_MEANINGFUL_PCT` (below that a near-zero on-chain balance
+    makes the ratio meaningless — see :func:`format_pct`).
+
     Args:
         delta: computed - on_chain.
         on_chain: On-chain balance.
 
     Returns:
-        (status, delta_pct) where delta_pct is the relative gap in
-        percent (0 when on-chain balance is 0).
+        ``(status, delta_pct)`` -- 0 when ``delta == 0``, else the clamped
+        relative gap in percent.
     """
-    # Guard against divide-by-zero: a zero on-chain balance with a nonzero
-    # delta is an absolute mismatch (100%).
-    denominator = max(abs(on_chain), 1)
-    delta_pct = abs(delta) / denominator * 100.0
+    denominator = max(abs(on_chain), 1)  # floors at 1 wei: no divide-by-zero
+    raw_pct = abs(delta) / denominator * 100.0
+    delta_pct = min(raw_pct, MAX_MEANINGFUL_PCT)
 
     if delta == 0:
         status = "MATCH"
@@ -329,6 +325,7 @@ async def verify_transfer_completeness(
     # Cache results (append-only; never blocks the caller on failure).
     await _cache_results(ch_client, chain, results)
 
+    worst_pct = max((i["delta_pct"] for i in results.values()), default=0.0)
     logger.info(
         "reconciliation_complete",
         chain=chain,
@@ -336,6 +333,7 @@ async def verify_transfer_completeness(
         sample=len(wallets),
         matches=sum(1 for i in results.values() if i["status"] == "MATCH"),
         mismatches=sum(1 for i in results.values() if i["status"] == "MISMATCH"),
+        worst_gap=format_pct(worst_pct),
     )
     return results
 
@@ -485,4 +483,6 @@ __all__ = [
     "run_reconciliation",
     "range_table_for",
     "check_range_completeness",
+    "format_pct",
+    "MAX_MEANINGFUL_PCT",
 ]

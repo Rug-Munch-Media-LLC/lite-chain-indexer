@@ -12,7 +12,20 @@ from pathlib import Path
 from typing import Any
 
 from lite_indexer.storage.clickhouse import ClickHouseWriter
-from lite_indexer.storage.reconciliation import run_reconciliation
+from lite_indexer.storage.reconciliation import format_pct, run_reconciliation
+
+
+def _with_readable_pct(results: dict[str, Any]) -> dict[str, Any]:
+    """Add a ``delta_pct_human`` field to each result (never scientific).
+
+    ``json.dumps`` renders a large float such as ``9.6e+28`` in scientific
+    notation; operators read this output directly, so each result also gets
+    a pre-formatted human string. The numeric ``delta_pct`` is preserved for
+    machine consumers.
+    """
+    for info in results.values():
+        info["delta_pct_human"] = format_pct(info.get("delta_pct", 0.0))
+    return results
 
 
 async def run_reconcile_cli(args: argparse.Namespace) -> int:
@@ -37,6 +50,7 @@ async def run_reconcile_cli(args: argparse.Namespace) -> int:
         ch_client,
         limit=args.sample_size,
     )
+    results = _with_readable_pct(results)
     status = "ok"
     if results and any(i["status"] == "MISMATCH" for i in results.values()):
         status = "mismatches_found"
