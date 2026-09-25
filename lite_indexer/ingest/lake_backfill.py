@@ -55,7 +55,8 @@ class LakeBackfillRequest:
     dates: list[str]
     tables: tuple[str, ...] = TABLES
     dry_run: bool = False
-    batch_rows: int = 5000
+    # 1k rows avoids ClickHouse driver receive timeouts on wide transfer batches.
+    batch_rows: int = 1000
 
 
 def _write_partition(src: Any, wh: Any, chain: str, partition: tuple[str, str], batch_rows: int) -> int:
