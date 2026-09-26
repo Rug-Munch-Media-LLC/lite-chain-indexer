@@ -37,6 +37,7 @@ from lite_indexer.rpc import (
 from lite_indexer.rpc import (
     fetch_block_timestamps as rpc_fetch_block_timestamps,
 )
+from lite_indexer.rpc.tip_capable import get_tip_hash_endpoint
 from lite_indexer.state import PairCache
 from lite_indexer.storage.address_activity import parse_evm_address_activity
 from lite_indexer.strategies.address_activity import CrossChainAddressActivityMixin
@@ -442,9 +443,14 @@ class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
             logger.debug("reorg_no_endpoints", chain=self.chain)
             return ReorgCheck(ReorgStatus.UNKNOWN, error="no endpoints")
 
-        endpoint = get_best_endpoint(endpoints)
-
-        # 1. Checkpoint the batch tip hash.
+        # The tip-hash read must not be handed a tip-incapable endpoint.
+        # get_best_endpoint() ends in a random P2C draw and does not consult
+        # the logs-capability quarantine, so pool order alone is not enough:
+        # hyperliquid's official RPC passes the eth_blockNumber liveness
+        # probe yet refuses every eth_getBlockByNumber (-32005, daily
+        # archived-block budget), which is what stalled the whole chain in
+        # reorg_status_unknown. See lite_indexer/rpc/tip_capable.py.
+        endpoint = get_tip_hash_endpoint(self.chain, endpoints)
         tip_block = await self.rpc.eth_get_block_by_number(endpoint, to_block)
         if not tip_block or not isinstance(tip_block, dict) or not tip_block.get("hash"):
             logger.debug("reorg_tip_hash_missing", chain=self.chain, block=to_block)
