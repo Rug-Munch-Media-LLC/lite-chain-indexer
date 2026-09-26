@@ -32,13 +32,17 @@ from lite_indexer.state import StateHighWater
 class FakeCH:
     """Minimal ClickHouse client double (execute only)."""
 
-    def __init__(self, count_rows: list[tuple[int]] | None = None, max_rows: list[tuple[int]] | None = None) -> None:
+    def __init__(
+        self, count_rows: list[tuple[int]] | None = None, max_rows: list[tuple[int]] | None = None
+    ) -> None:
         self.count_rows = count_rows or []
         self.max_rows = max_rows or []
         self.queries: list[str] = []
 
     def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
         self.queries.append(query)
+        if "min(" in query and "max(" in query:
+            return self.max_rows
         if "count()" in query:
             return self.count_rows
         if "max(" in query:
@@ -107,7 +111,9 @@ class TestStateHighWater:
 
 class TestStateRegressionGuard:
     @pytest.mark.asyncio
-    async def test_recovers_to_ch_max_when_highwater_regressed(self, indexer: LiteIndexer, tmp_path: Path):
+    async def test_recovers_to_ch_max_when_highwater_regressed(
+        self, indexer: LiteIndexer, tmp_path: Path
+    ):
         # High-water mark says 25.6M; state file was clobbered to 93K.
         indexer._highwater.update(25_674_059)
         indexer._ch_writer = FakeWriter(FakeCH(max_rows=[(25_674_000,)]))
@@ -140,7 +146,9 @@ class TestStateRegressionGuard:
         assert summary.get("state_regression") is True
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_highwater_when_ch_unavailable(self, indexer: LiteIndexer, tmp_path: Path):
+    async def test_falls_back_to_highwater_when_ch_unavailable(
+        self, indexer: LiteIndexer, tmp_path: Path
+    ):
         indexer._highwater.update(10_000_000)
         indexer._ch_writer = FakeWriter(FakeCH())  # CH client returns nothing / unavailable
         summary: dict[str, Any] = {"errors": []}
@@ -152,6 +160,19 @@ class TestStateRegressionGuard:
         summary: dict[str, Any] = {"errors": []}
         recovered = await indexer._guard_state_regression({"last_block": 42}, 43, summary)
         assert recovered is None
+
+    @pytest.mark.asyncio
+    async def test_regression_increments_metric(self, indexer: LiteIndexer, tmp_path: Path):
+        from lite_indexer import metrics
+
+        counter = metrics._ALERT_COUNTERS["lite_indexer_state_regression_detected"]  # noqa: SLF001
+        before = float(counter.labels(chain="ethereum")._value.get())  # noqa: SLF001
+        indexer._highwater.update(25_674_059)
+        indexer._ch_writer = FakeWriter(FakeCH(max_rows=[(25_674_000,)]))
+        summary: dict[str, Any] = {"errors": []}
+        await indexer._guard_state_regression({"last_block": 93_193}, 93_194, summary)
+        after = float(counter.labels(chain="ethereum")._value.get())  # noqa: SLF001
+        assert after == before + 1.0
 
 
 # ── 3. Memory watchdog ─────────────────────────────────────────────────
@@ -205,7 +226,9 @@ class TestCgroupMemoryGate:
     def test_parses_v2_cgroup_and_reads_current(self, tmp_path: Path):
         from lite_indexer.indexer._resource_guards import get_cgroup_memory_mb
 
-        root = self._fake_sysfs(tmp_path, "0::/system.slice/lite-indexer.service", 3 * 1024 * 1024 * 1024)
+        root = self._fake_sysfs(
+            tmp_path, "0::/system.slice/lite-indexer.service", 3 * 1024 * 1024 * 1024
+        )
         fake_proc = tmp_path / "cgroup"
         fake_proc.write_text("0::/system.slice/lite-indexer.service\n")
         with (
@@ -294,7 +317,10 @@ class TestPeriodicGC:
         calls: list[int] = []
         with (
             patch("lite_indexer.indexer._maintenance.GC_EVERY_N_CYCLES", 2),
-            patch("lite_indexer.indexer._maintenance.gc.collect", side_effect=lambda: calls.append(1) or 0),
+            patch(
+                "lite_indexer.indexer._maintenance.gc.collect",
+                side_effect=lambda: calls.append(1) or 0,
+            ),
         ):
             indexer._maybe_run_gc()  # cycle 1 — no collect
             indexer._maybe_run_gc()  # cycle 2 — collect
@@ -396,9 +422,13 @@ class TestRangeCompleteness:
         assert "unavailable" in outcome["error"]
 
     def test_reconcile_mismatch_rewinds_state(self, indexer: LiteIndexer, tmp_path: Path):
-        # Make the reconcile fire on the first check.
-        with patch("lite_indexer.indexer._maintenance.DATA_RECONCILIATION_EVERY_N_CYCLES", 1):
-            indexer._ch_writer = FakeWriter(FakeCH(count_rows=[(100,)]))
+        # Make the reconcile fire on the first check; bypass the per-chain
+        # rewind cooldown (it persists to the real DATA_DIR otherwise).
+        with (
+            patch("lite_indexer.indexer._reconcile.DATA_RECONCILIATION_EVERY_N_CYCLES", 1),
+            patch("lite_indexer.indexer._reconcile.rewind_cooldown_ok", return_value=True),
+        ):
+            indexer._ch_writer = FakeWriter(FakeCH(count_rows=[(100,)], max_rows=[(0, 1100, 1, 100)]))
             indexer._cycles_since_reconcile = 0
             summary: dict[str, Any] = {}
             indexer._maybe_reconcile_range(1000, 1100, expected=1000, summary=summary)
@@ -408,8 +438,8 @@ class TestRangeCompleteness:
         assert indexer.state.load().get("last_block") == 999
 
     def test_reconcile_within_tolerance_no_rewind(self, indexer: LiteIndexer, tmp_path: Path):
-        with patch("lite_indexer.indexer._maintenance.DATA_RECONCILIATION_EVERY_N_CYCLES", 1):
-            indexer._ch_writer = FakeWriter(FakeCH(count_rows=[(980,)]))  # 2% short
+        with patch("lite_indexer.indexer._reconcile.DATA_RECONCILIATION_EVERY_N_CYCLES", 1):
+            indexer._ch_writer = FakeWriter(FakeCH(count_rows=[(980,)], max_rows=[(0, 1100, 1, 980)]))  # 2% short
             indexer._cycles_since_reconcile = 0
             summary: dict[str, Any] = {}
             indexer._maybe_reconcile_range(1000, 1100, expected=1000, summary=summary)
