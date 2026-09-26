@@ -156,7 +156,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5.0.0
         with:
           name: coverage-report
           path: |
@@ -304,7 +304,7 @@ jobs:
         with:
           format: cyclonedx-json
           output: sbom.cyclonedx.json
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v5.0.0
         with:
           name: sbom
           path: sbom.cyclonedx.json
@@ -434,10 +434,11 @@ jobs:
           pip install -e ".[dev]" mutmut
       - name: Mutation testing (scoped to indexer core)
         run: mutmut run --paths-to-mutate lite_indexer/indexer/ --test-timeout 20 || echo "Mutation score noted (non-blocking)"
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v5.0.0
         if: always()
         with:
           name: mutation-report
           path: |
             .mutmut-cache/
             html/
+          include-hidden-files: true
