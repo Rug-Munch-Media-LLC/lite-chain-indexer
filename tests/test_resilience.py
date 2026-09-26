@@ -41,6 +41,8 @@ class FakeCH:
 
     def execute(self, query: str, params: Any = None, with_column_types: bool = False) -> Any:
         self.queries.append(query)
+        if "min(" in query and "max(" in query:
+            return self.max_rows
         if "count()" in query:
             return self.count_rows
         if "max(" in query:
@@ -426,7 +428,7 @@ class TestRangeCompleteness:
             patch("lite_indexer.indexer._reconcile.DATA_RECONCILIATION_EVERY_N_CYCLES", 1),
             patch("lite_indexer.indexer._reconcile.rewind_cooldown_ok", return_value=True),
         ):
-            indexer._ch_writer = FakeWriter(FakeCH(count_rows=[(100,)]))
+            indexer._ch_writer = FakeWriter(FakeCH(count_rows=[(100,)], max_rows=[(0, 1100, 1, 100)]))
             indexer._cycles_since_reconcile = 0
             summary: dict[str, Any] = {}
             indexer._maybe_reconcile_range(1000, 1100, expected=1000, summary=summary)
@@ -437,7 +439,7 @@ class TestRangeCompleteness:
 
     def test_reconcile_within_tolerance_no_rewind(self, indexer: LiteIndexer, tmp_path: Path):
         with patch("lite_indexer.indexer._reconcile.DATA_RECONCILIATION_EVERY_N_CYCLES", 1):
-            indexer._ch_writer = FakeWriter(FakeCH(count_rows=[(980,)]))  # 2% short
+            indexer._ch_writer = FakeWriter(FakeCH(count_rows=[(980,)], max_rows=[(0, 1100, 1, 980)]))  # 2% short
             indexer._cycles_since_reconcile = 0
             summary: dict[str, Any] = {}
             indexer._maybe_reconcile_range(1000, 1100, expected=1000, summary=summary)

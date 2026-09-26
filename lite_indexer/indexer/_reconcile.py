@@ -84,17 +84,38 @@ class ReconcileMixin(IndexerMixinBase):
             return
         self._cycles_since_reconcile = 0
 
+        from lite_indexer.indexer._reconcile_window import resolve_reconcile_window
+        from lite_indexer.recovery import query_chain_stats
         from lite_indexer.storage.reconciliation import check_range_completeness
 
+        # Resolve the window against the store's own durable max BEFORE
+        # counting. The sync loop advances the head past this range before
+        # calling us, so the caller's (from_block, to_block) is not by
+        # itself a range the durable store can answer for — counting it
+        # blind produced a 100% "mismatch" on every not-yet-flushed tail.
         try:
             client = self.ch_writer.client()
             if client is None:
                 return
+            stats = query_chain_stats(client, self.chain, chain_type=self._chain_type)
+            durable_max = stats.get("max_block") if stats.get("ok") else None
+            window = resolve_reconcile_window(from_block, to_block, durable_max)
+            if not window["verifiable"]:
+                logger.debug(
+                    "reconcile_window_skipped",
+                    chain=self.chain,
+                    from_block=from_block,
+                    to_block=to_block,
+                    durable_max=durable_max,
+                    reason=window["reason"],
+                )
+                summary["reconcile_skipped"] = window["reason"]
+                return
             outcome = check_range_completeness(
                 self.chain,
                 client,
-                from_block,
-                to_block,
+                window["from_block"],
+                window["to_block"],
                 expected,
                 chain_type=self._chain_type,
             )
@@ -104,9 +125,13 @@ class ReconcileMixin(IndexerMixinBase):
 
         actual = outcome.get("actual", 0)
         discrepancy_pct = float(outcome.get("discrepancy_pct", 0.0))
+        win_from = int(window["from_block"])
+        win_to = int(window["to_block"])
         summary["reconcile_expected"] = expected
         summary["reconcile_actual"] = actual
         summary["reconcile_discrepancy_pct"] = round(discrepancy_pct, 2)
+        if window["clamped"]:
+            summary["reconcile_window_clamped"] = True
         metrics.set_labeled_gauge(
             "lite_indexer_reconciliation_discrepancy_pct",
             round(discrepancy_pct, 2),
@@ -117,8 +142,8 @@ class ReconcileMixin(IndexerMixinBase):
             logger.info(
                 "reconcile_range_ok",
                 chain=self.chain,
-                from_block=from_block,
-                to_block=to_block,
+                from_block=win_from,
+                to_block=win_to,
                 expected=expected,
                 actual=actual,
                 discrepancy_pct=round(discrepancy_pct, 2),
@@ -128,8 +153,8 @@ class ReconcileMixin(IndexerMixinBase):
         logger.warning(
             "reconcile_range_mismatch_backfill",
             chain=self.chain,
-            from_block=from_block,
-            to_block=to_block,
+            from_block=win_from,
+            to_block=win_to,
             expected=expected,
             actual=actual,
             discrepancy_pct=round(discrepancy_pct, 2),
@@ -142,12 +167,12 @@ class ReconcileMixin(IndexerMixinBase):
             logger.warning(
                 "reconcile_rewind_throttled",
                 chain=self.chain,
-                from_block=from_block,
-                to_block=to_block,
+                from_block=win_from,
+                to_block=win_to,
                 discrepancy_pct=round(discrepancy_pct, 2),
                 cooldown_s=DATA_RECONCILIATION_REWIND_COOLDOWN_S,
             )
             summary["reconcile_rewind_throttled"] = True
             return
-        self._record_reconcile_rewind(from_block, to_block)
-        self.state.save(from_block - 1, 0, enabled_events=self._enabled_event_types())
+        self._record_reconcile_rewind(win_from, win_to)
+        self.state.save(win_from - 1, 0, enabled_events=self._enabled_event_types())
