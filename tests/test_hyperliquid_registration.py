@@ -57,8 +57,16 @@ OVERLAY_ONLY_PROVIDERS = (
 
 class TestHyperliquidEndpoints:
     def test_official_endpoint_registered(self):
-        """Official keyless endpoint is first in the active pool."""
-        assert GET_LOGS_ENDPOINTS["hyperliquid"][0] == HYPERLIQUID_ENDPOINT
+        """Official keyless endpoint is in the active pool.
+
+        2026-09-26: it is no longer FIRST. Its daily archived-block budget
+        is exhausted, so it answers eth_blockNumber (liveness probe passes)
+        but refuses every eth_getBlockByNumber with -32005. reorg_stage needs
+        a tip block hash, so a tip-hash-capable endpoint now leads the pool
+        (see tests/test_hyperliquid_tip_hash_endpoint.py).
+        """
+        assert HYPERLIQUID_ENDPOINT in GET_LOGS_ENDPOINTS["hyperliquid"]
+        assert GET_LOGS_ENDPOINTS["hyperliquid"][0] != HYPERLIQUID_ENDPOINT
 
     def test_endpoint_is_in_builtin_public_pool(self):
         """The endpoint ships in the public (pre-overlay) pool, keyless."""
@@ -82,7 +90,7 @@ class TestHyperliquidEndpoints:
         assert len(GET_LOGS_ENDPOINTS["hyperliquid"]) == len(set(GET_LOGS_ENDPOINTS["hyperliquid"]))
 
     def test_last_resort_is_official_active_pool_endpoint(self):
-        assert LAST_RESORT_ENDPOINTS["hyperliquid"] == [HYPERLIQUID_ENDPOINT]
+        assert HYPERLIQUID_ENDPOINT in LAST_RESORT_ENDPOINTS["hyperliquid"]
         assert HYPERLIQUID_ENDPOINT in last_resort_endpoints("hyperliquid")
 
     def test_no_denylisted_provider_in_builtin_pool(self):
@@ -129,8 +137,10 @@ def test_vector_ingestion_is_opt_in_by_default():
     """Lightest-weight/zero-cost: vectors (may use a paid lane) are OFF by default."""
     import lite_indexer.config.indexing as idx
     from lite_indexer.config.indexing import VECTOR_INGESTION_ENABLED
+
     # default (no env override in this process) must be False
     assert isinstance(VECTOR_INGESTION_ENABLED, bool)
     import inspect
+
     src = inspect.getsource(idx)
     assert 'os.environ.get("VECTOR_INGESTION_ENABLED", "0")' in src

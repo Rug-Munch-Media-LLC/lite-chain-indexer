@@ -305,13 +305,42 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         "https://rpc.nodeflare.app/robinhood/public",  # T3 — verified chainId
         "https://robinhood.rpc.blxrbdn.com",  # T3 — chainId only (getLogs 403)
     ],
-    # ── Hyperliquid (2 endpoints, verified 2026-09-13) ────────────────
-    # HyperEVM, chainId 999 (0x3e7), native HYPE. The official keyless RPC
-    # answers eth_chainId + eth_blockNumber and serves topic-only
-    # eth_getLogs → fully indexable (no paid tier needed).
+    # ── Hyperliquid (4 endpoints, verified 2026-09-26) ────────────────
+    # HyperEVM, chainId 999 (0x3e7), native HYPE.
+    # RE-VERIFIED 2026-09-25: the official RPC does NOT serve getLogs.
+    # It answers eth_chainId/eth_blockNumber (so liveness probes pass)
+    # but returns -32602 "invalid block range" to EVERY topic-only
+    # eth_getLogs, at every range tested (5/10/20/40/60/80/100 blocks,
+    # near tip and at the stored head) — HyperEVM exposes no public
+    # getLogs archive. It is kept in the pool because the capability
+    # registry quarantines it automatically (rpc.quarantine), and
+    # because it remains the right endpoint for non-getLogs calls
+    # (eth_blockNumber, reorg verify) — and a second reason, discovered
+    # 2026-09-26: its 3000-blocks/day archived-block budget is EXHAUSTED,
+    # so it answers -32005 "More than 3000 archived blocks queried in one
+    # day" to every eth_getBlockByNumber as well.
+    #
+    # THE FORWARD STALL (2026-09-26) WAS NOT A getLogs PROBLEM. Every
+    # cycle died in reorg_stage (strategies/evm/strategy.py) with
+    # "tip block hash unavailable" → reorg_status_unknown, because
+    # reorg_stage calls get_best_endpoint() and asks that ONE endpoint
+    # for eth_getBlockByNumber. Pocket answers that fine, so the culprit
+    # was the OFFICIAL endpoint the pool kept handing out: it passes the
+    # eth_blockNumber liveness probe (not an archived query) and then
+    # refuses every block-hash call with -32005, so it could never yield
+    # a tip hash. publicnode is promoted to the head of the pool precisely
+    # so reorg_stage is handed an endpoint that RETURNS A TIP BLOCK HASH:
+    # it serves the same getLogs payload and identical block hashes to
+    # pocket at every depth tested (tip-5/-50/-500/-5000/-50000) in ~55ms
+    # vs pocket's ~490ms. pocket is KEPT below it as the second source —
+    # it is RANGE-LIMITED: it serves small ranges (~5-9 blocks) and answers
+    # -31001 "no archival-capable endpoint" for wider spans, so chunking
+    # is what bounds the crawl.
     "hyperliquid": [
-        "https://rpc.hyperliquid.xyz/evm",  # Hyperliquid official EVM RPC — live-verified 2026-09-13
-        "https://hyperliquid.api.pocket.network",  # T1 — Pocket Network — keyless, live-verified getLogs 2026-09-13
+        "https://hyperliquid-rpc.publicnode.com",  # T1 — publicnode (keyless, ~55ms; getLogs ✓ + TIP BLOCK HASH ✓ at every depth, 2026-09-26)
+        "https://hyperliquid.publicnode.com",  # T1 — keyless publicnode canonical host — live-verified eth_chainId 0x3e7 + tip block hash + getLogs 2026-09-26
+        "https://rpc.hyperliquid.xyz/evm",  # official — tip/blockNumber only; getLogs quarantined 2026-09-25 AND daily archive budget exhausted (no block hash, 2026-09-26)
+        "https://hyperliquid.api.pocket.network",  # T2 — Pocket Network — getLogs OK but range-limited to small spans
     ],
 }
 
@@ -320,9 +349,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
 #   arbitrum: 8   optimism: 7   avalanche: 6   fantom: 3
 #   linea: 7   scroll: 6   zksync: 5   mantle: 6
 #   gnosis: 7   celo: 4   blast: 4   fraxtal: 3
-#   metis: 2   robinhood: 5   hyperliquid: 2
+#   metis: 2   robinhood: 5   hyperliquid: 4
 # -------------------------------------------------------
-#   Total builtin public templates: 112 across 19 chains
+#   Total builtin public templates: 114 across 19 chains
 #
 # 2026-09-13: Tenderly keyless public gateway added for the 13 chains with
 #   a public/<net> endpoint (eth_chainId 200, verified here): ethereum/
@@ -559,7 +588,15 @@ LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
     ],
     "celo": ["https://forno.celo.org"],
     "robinhood": ["https://rpc.mainnet.chain.robinhood.com"],
-    "hyperliquid": ["https://rpc.hyperliquid.xyz/evm"],
+    # hyperliquid: publicnode FIRST — the official RPC is the wrong
+    # last-resort here precisely because it can no longer serve a block
+    # hash (daily archived-block budget exhausted, -32005), which is what
+    # reorg_stage needs. Same rule as the main pool: the last-resort list
+    # must contain an endpoint that can actually answer the reorg probe.
+    "hyperliquid": [
+        "https://hyperliquid-rpc.publicnode.com",
+        "https://rpc.hyperliquid.xyz/evm",
+    ],
 }
 
 
