@@ -227,3 +227,15 @@ commit-msg:
   commands:
     commitlint:
       run: commitlint --edit "$1"
+
+post-commit:
+  commands:
+    zoekt-incremental:
+      # Advisory in one sense only: the script owns the exit status. Non-own
+      # repos (the 255 vendored corpus clones) are skipped inside the script.
+      run: |
+        if [ -x standards/scripts/zoekt-incremental.sh ]; then
+          standards/scripts/zoekt-incremental.sh || true
+        elif [ -x ../standards/scripts/zoekt-incremental.sh ]; then
+          ../standards/scripts/zoekt-incremental.sh || true
+        fi
