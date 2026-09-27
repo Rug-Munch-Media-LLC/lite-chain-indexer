@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from lite_indexer.logging import get_logger
+from lite_indexer.rpc import user_agent
 from lite_indexer.util.http import http_limits
 
 if TYPE_CHECKING:
@@ -72,7 +73,11 @@ async def _get_call_client(timeout: float, proxy: rpc_proxy.ProxySpec | None = N
     if client is not None and not client.is_closed:
         _call_clients.move_to_end(key)
         return client
-    kwargs: dict[str, Any] = {"timeout": httpx.Timeout(timeout), "limits": http_limits()}
+    kwargs: dict[str, Any] = {
+        "timeout": httpx.Timeout(timeout),
+        "limits": http_limits(),
+        **user_agent.client_kwargs(),
+    }
     if proxy is not None:
         kwargs["proxy"] = proxy.url
     try:

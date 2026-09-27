@@ -15,6 +15,7 @@ import httpx
 
 import lite_indexer.rpc.client as _facade
 from lite_indexer.logging import get_logger
+from lite_indexer.rpc import status_recorder
 from lite_indexer.rpc.jsonparse import decode_response_async
 
 logger = get_logger(__name__)
@@ -44,9 +45,7 @@ async def _decode_rpc_response(
             method=method,
             error=str(exc)[:60],
         )
-        _facade.record_rpc_usage(
-            endpoint, method, ok=False, error="malformed_json", bytes_received=bytes_received
-        )
+        _facade.record_rpc_usage(endpoint, method, ok=False, error="malformed_json", bytes_received=bytes_received)
         _facade._safe_record(_facade.record_rpc_outcome, endpoint, ok=False)
         return (False, None)
     if not isinstance(data, dict):
@@ -77,6 +76,10 @@ async def _process_call_response(
 
     bytes_received = len(getattr(resp, "content", b"") or b"")
     record_rpc_response(endpoint, method, resp.status_code, resp.headers)
+    # Every completed attempt's status, noted once here. The pool walk reads
+    # it back to tell a 200-with-a-pruned-block from a real refusal, which
+    # is the one distinction the whole 2026-09-26 fix turns on.
+    _facade._safe_record(status_recorder.note_response_status, endpoint, resp.status_code)
     _facade._safe_record(_facade.record_provider_response, endpoint, resp.status_code, resp.headers)
     _facade.record_budget_response(endpoint, resp.status_code)
     transient, data = await _decode_rpc_response(endpoint, method, resp, bytes_received)
@@ -109,12 +112,8 @@ def _handle_call_exception(endpoint: str, method: str, exc: BaseException) -> bo
         _facade.record_rpc_usage(endpoint, method, ok=False, error="timeout")
         _facade._safe_record(_facade.record_rpc_outcome, endpoint, ok=False)
         return True
-    if isinstance(
-        exc, (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError)
-    ):
-        logger.debug(
-            "rpc_connection_error", endpoint=endpoint[:50], method=method, error=str(exc)[:60]
-        )
+    if isinstance(exc, (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError)):
+        logger.debug("rpc_connection_error", endpoint=endpoint[:50], method=method, error=str(exc)[:60])
         _facade.record_rpc_usage(endpoint, method, ok=False, error="connection_error")
         _facade._safe_record(_facade.record_rpc_outcome, endpoint, ok=False)
         return True

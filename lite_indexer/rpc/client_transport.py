@@ -19,6 +19,7 @@ from lite_indexer.config import RPC_TIMEOUT
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.rpc import proxy as rpc_proxy
+from lite_indexer.rpc import user_agent
 from lite_indexer.util.http import http_limits
 
 logger = get_logger(__name__)
@@ -36,6 +37,7 @@ class TransportMixin:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(RPC_TIMEOUT),
                 limits=http_limits(),
+                **user_agent.client_kwargs(),
             )
         return self._client
 
@@ -123,9 +125,7 @@ async def _post_json(
     """
     spec = proxy if proxy is not None else rpc_proxy.proxy_for_endpoint(endpoint)
     if spec is None:
-        return await _facade._post_direct(
-            await _facade._get_call_client(timeout), endpoint, payload, timeout
-        )
+        return await _facade._post_direct(await _facade._get_call_client(timeout), endpoint, payload, timeout)
     try:
         client = await _facade._get_call_client(timeout, proxy=spec)
         return await client.post(endpoint, json=payload)
@@ -144,9 +144,7 @@ async def _post_json(
             logger.warning("rpc_client_recreated", endpoint=endpoint[:50], proxy=spec.label)
             metrics_incr("rpc_client_recreated")
             _facade._drop_call_client(timeout, spec)
-            return await (await _facade._get_call_client(timeout, proxy=spec)).post(
-                endpoint, json=payload
-            )
+            return await (await _facade._get_call_client(timeout, proxy=spec)).post(endpoint, json=payload)
         else:
             raise
         client = await _facade._get_call_client(timeout)

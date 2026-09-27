@@ -21,6 +21,7 @@ from lite_indexer.chains import (
 )
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.rpc import user_agent
 from lite_indexer.rpc.budgets import budget_available
 from lite_indexer.rpc.capabilities import is_logs_capability_failure
 
@@ -230,8 +231,6 @@ async def verify_endpoints_for_chain(
     now = time.time()
 
     # Probe endpoints CONCURRENTLY (bounded). The liveness gate is one
-    # eth_getLogs probe per endpoint; serializing it made a chain's first
-    # verify take minutes even before the capability probes ran.
     probe_sem = semaphore or asyncio.Semaphore(max(1, ENDPOINT_VERIFY_CONCURRENCY))
 
     async def _check(ep: str) -> tuple[str, bool]:
@@ -291,6 +290,7 @@ async def _probe_endpoint(endpoint: str, timeout: float) -> int:
     ``verify_endpoints_for_chain`` remains the authoritative getLogs-level
     check.
 
+    THE PROBE MUST SEND THE SAME HEADERS AS THE REAL CALL.
     Args:
         endpoint: RPC endpoint URL.
         timeout: Probe timeout in seconds.
@@ -301,7 +301,7 @@ async def _probe_endpoint(endpoint: str, timeout: float) -> int:
         failed at the transport level (timeout / connection error).
     """
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout), headers=user_agent.rpc_headers()) as client:
             resp = await client.post(
                 endpoint,
                 json={"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []},

@@ -23,6 +23,8 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from lite_indexer.metrics_chain_lag import CHAIN_LAG_GAUGE_SPECS
+
 try:
     from prometheus_client import REGISTRY, Counter, Gauge, ProcessCollector
 
@@ -161,8 +163,7 @@ def _make_gauge(name: str, labelnames: tuple[str, ...] = ()) -> Any:
     return _PlainGauge()
 
 
-# Counter name → counter object. Populated eagerly for the known names so
-# that a stray typo surfaces early; unknown names are created lazily.
+# Counter name → counter object, eager so a typo surfaces early.
 _COUNTERS: dict[str, Any] = {name: _make_counter(name) for name in _COUNTER_NAMES}
 # Gauge name → gauge object (eager, same typo-surfacing intent).
 _GAUGES: dict[str, Any] = {name: _make_gauge(name) for name in _GAUGE_NAMES}
@@ -187,14 +188,13 @@ _LABELED_GAUGE_SPECS: dict[str, tuple[str, ...]] = {
     "lite_indexer_reconciliation_discrepancy_pct": ("chain",),
     # NATS publisher circuit state (NatsCircuitOpen alert).
     "lite_indexer_nats_circuit_open": ("chain",),
+    **CHAIN_LAG_GAUGE_SPECS,
     # Per-provider quota consumption (degrade-ladder observability).
     "lite_indexer_quota_consumed_pct": ("provider",),
 }
 _LABELED_GAUGES: dict[str, Any] = {name: _make_gauge(name, labels) for name, labels in _LABELED_GAUGE_SPECS.items()}
 
-# Alert-facing counters: {metric name: label names}. Prometheus appends
-# ``_total`` to the exposed sample name, so ``lite_indexer_rpc_failures`` is
-# scraped as ``lite_indexer_rpc_failures_total``.
+# Alert-facing counters. Prometheus appends ``_total`` to the sample name.
 _ALERT_COUNTER_SPECS: dict[str, tuple[str, ...]] = {
     "lite_indexer_rpc_failures": ("chain",),
     "lite_indexer_state_regression_detected": ("chain",),
