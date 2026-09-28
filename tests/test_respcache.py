@@ -16,15 +16,15 @@ Each test gets a fresh temp SQLite DB via the autouse conftest fixture.
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import time
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
 from lite_indexer import metrics
 from lite_indexer.rpc import cache_db, respcache
+
 _PATCHERS: list[Any] = []
 
 

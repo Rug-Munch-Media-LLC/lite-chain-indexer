@@ -15,13 +15,10 @@ Hermetic. Covers:
 
 from __future__ import annotations
 
-from typing import Any
-
-from unittest.mock import patch
-
 import asyncio
 import contextlib
-from unittest.mock import AsyncMock, Mock
+from typing import Any
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 

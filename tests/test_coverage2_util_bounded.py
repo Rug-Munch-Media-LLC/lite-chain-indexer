@@ -18,7 +18,6 @@ from lite_indexer.config import (
 from lite_indexer.util.bounded import BoundedDict, BoundedSet
 from lite_indexer.util.http import http_limits
 
-
 # ── BoundedDict ─────────────────────────────────────────────────────────
 
 

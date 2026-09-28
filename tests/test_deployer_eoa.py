@@ -18,9 +18,8 @@ All ClickHouse/RPC interactions are mocked; no external services needed.
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 

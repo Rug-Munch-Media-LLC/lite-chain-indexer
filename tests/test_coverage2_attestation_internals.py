@@ -27,7 +27,6 @@ from lite_indexer.attestation import (
     node_hash,
 )
 
-
 # ── canonical encoding + hashing ────────────────────────────────────────
 
 

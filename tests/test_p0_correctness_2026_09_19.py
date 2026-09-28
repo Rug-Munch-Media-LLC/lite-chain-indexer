@@ -10,10 +10,9 @@ SEC-1 — historical._lit uses SQL-standard quote doubling (DuckDB executes
 
 from __future__ import annotations
 
-from typing import Any
-
 import time
 from datetime import datetime
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest

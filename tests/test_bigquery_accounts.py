@@ -8,6 +8,7 @@ import pytest
 from lite_indexer.query import bigquery_cli as cli
 from lite_indexer.query.bigquery_common import BigQueryQuotaError
 
+
 @pytest.fixture(autouse=True)
 def _state_tmp(tmp_path: Any) -> Any:
     """Keep the account-registry state file inside the test sandbox."""

@@ -17,9 +17,9 @@ from typing import Any
 import pytest
 
 from lite_indexer.config import RPC_STALE_TIP_BLOCKS
-from lite_indexer.rpc.routing.seams import set_selector
 from lite_indexer.rpc import routing
 from lite_indexer.rpc.routing import health
+from lite_indexer.rpc.routing.seams import set_selector
 
 A = "https://a.stale-test.example"
 B = "https://b.stale-test.example"

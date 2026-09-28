@@ -12,15 +12,12 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 # Test methods intentionally omit return annotations (repo-wide test
 # convention); scope mypy's no-untyped-def to this file only.
 # mypy: disable-error-code="no-untyped-def"
 import os
 from pathlib import Path
-
-import pytest
+from unittest.mock import patch
 
 from lite_indexer.env import load_env_file
 

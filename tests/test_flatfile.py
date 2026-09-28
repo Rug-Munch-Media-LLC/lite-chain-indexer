@@ -24,12 +24,12 @@ import pyarrow.parquet as pq
 import pytest
 
 from lite_indexer.cli import parse_args
-from lite_indexer.ingest.flatfile_seams import set_url_fetcher
 from lite_indexer.ingest.flatfile import (
     ExternalFlatfileSource,
     FlatfileDataset,
     FlatfileSourceError,
 )
+from lite_indexer.ingest.flatfile_seams import set_url_fetcher
 from lite_indexer.snapshot_manifest import MANIFEST_NAME
 
 # ── fixtures ─────────────────────────────────────────────────────────

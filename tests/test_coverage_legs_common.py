@@ -19,7 +19,6 @@ from lite_indexer.query.legs_common import (
     sort_value,
 )
 
-
 # ── table maps ──────────────────────────────────────────────────────────
 
 

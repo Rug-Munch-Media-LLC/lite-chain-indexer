@@ -15,10 +15,8 @@ so the suite is hermetic — no CH_HOST required.
 from __future__ import annotations
 
 import os
-
-from unittest.mock import patch
-
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 

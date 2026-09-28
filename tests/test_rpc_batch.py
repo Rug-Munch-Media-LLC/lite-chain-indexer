@@ -14,16 +14,16 @@ Hermetic — no network, no disk.
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import json
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
 from lite_indexer import metrics
 from lite_indexer.rpc import circuit as circuit_mod
 from lite_indexer.rpc import client as rc
+
 _PATCHERS: list[Any] = []
 
 

@@ -16,7 +16,6 @@ from lite_indexer.config.rpc import (
     resolve_provider_budget,
 )
 
-
 # ── _budget_from_mapping ────────────────────────────────────────────────
 
 

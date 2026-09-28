@@ -16,12 +16,11 @@ cold side reads a temp parquet tree in mount mode.
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 

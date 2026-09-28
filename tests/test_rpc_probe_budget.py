@@ -19,10 +19,9 @@ Hermetic — no network.
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import asyncio
 import time
+from unittest.mock import patch
 
 import pytest
 

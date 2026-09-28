@@ -12,9 +12,9 @@ from datetime import UTC, datetime, timedelta
 
 from lite_indexer.config import DEFAULT_DECIMALS_BY_CHAIN, PRICING_REFRESH_INTERVAL
 from lite_indexer.pricing.cache import (
-    KNOWN_DECIMALS,
     _MAX_SANE_AMOUNT,
     _PRICE_CACHE,
+    KNOWN_DECIMALS,
     _sane_amount,
     compute_swap_usd,
     get_decimals,

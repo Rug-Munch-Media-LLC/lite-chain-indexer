@@ -13,9 +13,8 @@ Hermetic — no network, no disk.
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -27,6 +26,7 @@ from lite_indexer.rpc.range_split import (
     merge_logs,
     split_bounds,
 )
+
 _PATCHERS: list[Any] = []
 
 

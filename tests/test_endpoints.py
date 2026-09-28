@@ -15,15 +15,12 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
-
-import pytest
+from unittest.mock import patch
 
 from lite_indexer.chains._overlay import load_endpoint_overlay, merge_endpoints
 from lite_indexer.chains.endpoints import (
