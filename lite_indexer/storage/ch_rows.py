@@ -30,8 +30,11 @@ _DEPLOYER_RPC_MAX_ENDPOINTS = 3
 # Idempotent-rewind dedup: a re-extracted range must not append duplicates.
 # Before inserting a transfer batch we look up the (block_number, tx_hash,
 # log_index) keys already present for the batch's block window and skip
-# them. The window is bounded so a pathological batch (whole-chain span)
-# falls back to in-batch dedup only instead of scanning the table.
+# them. This is the WIDTH OF ONE WINDOW, not a gate: a wider batch is walked
+# in ceil(span / width) windows (one query each, results unioned) by
+# ch_dedup_windows.iter_block_windows. It must never become a bail-out —
+# returning "nothing exists" for a wide range re-inserts the batch verbatim,
+# which is the large multi-day rewind this guard exists to contain.
 _DEDUP_MAX_BLOCK_SPAN = 50_000
 
 
@@ -56,11 +59,7 @@ async def _resolve_deployer_eoas(chain: str, events: list[dict[str, Any]]) -> di
     Returns:
         Dict mapping tx_hash → lowercased `from` address (EOA).
     """
-    tx_hashes = {
-        e.get("transactionHash", "")
-        for e in events
-        if isinstance(e, dict) and e.get("transactionHash")
-    }
+    tx_hashes = {e.get("transactionHash", "") for e in events if isinstance(e, dict) and e.get("transactionHash")}
     if not tx_hashes:
         return {}
 

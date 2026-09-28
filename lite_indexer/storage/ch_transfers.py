@@ -13,13 +13,16 @@ import lite_indexer.storage.clickhouse as _facade
 from lite_indexer.config import CH_TABLE
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.storage.ch_dedup_windows import (
+    existing_keys_in_windows,
+    iter_block_windows,
+)
 from lite_indexer.storage.ch_errors import (
     ClickHouseUnavailable,
     is_unavailable_error,
     require_client,
 )
 from lite_indexer.storage.ch_rows import (
-    _DEDUP_MAX_BLOCK_SPAN,
     _coerce_int,
     _parse_ts,
     _serialize_raw_payload,
@@ -114,37 +117,30 @@ class TransfersMixin:
     ) -> set[tuple[int, str, int]]:
         """Return the (block_number, tx_hash, log_index) keys already in CH.
 
-        Used by :meth:`write_transfers` to make a re-extracted range
-        idempotent: the ReplacingMergeTree only collapses duplicates at
-        merge time, so an explicit existence check is the immediate guard
-        against a reconciliation rewind compounding the row count.
+        Makes a re-extracted range idempotent: the ReplacingMergeTree only
+        collapses duplicates at merge time, so an explicit existence check
+        is the immediate guard against a rewind compounding the row count.
 
-        Best-effort: any query failure returns an empty set (the insert
-        proceeds — availability beats dedup); the block window is capped
-        at ``_DEDUP_MAX_BLOCK_SPAN`` so a pathological batch never scans
-        the whole chain.
+        The range is WALKED in ``_DEDUP_MAX_BLOCK_SPAN``-sized windows (one
+        query each, results unioned), never abandoned when the span is
+        wide: the earlier bail-out returned an empty set above the cap,
+        which reads as "nothing exists" and re-inserted the whole batch —
+        disabling the guard on exactly the large rewind it exists for. A
+        narrow batch still issues exactly ONE query, so the per-block hot
+        path is unchanged.
         """
         if not keys:
             return set()
         lo = min(k[0] for k in keys)
         hi = max(k[0] for k in keys)
-        if hi - lo > _DEDUP_MAX_BLOCK_SPAN:
-            logger.warning("clickhouse_dedup_span_skipped", chain=chain, span=hi - lo)
-            return set()
-        try:
-            rows = client.execute(
-                f"SELECT block_number, tx_hash, log_index FROM {CH_TABLE} "  # nosemgrep: formatted-sql-query — table is a module constant; values parameterized
-                "WHERE chain = %(chain)s AND block_number BETWEEN %(lo)s AND %(hi)s",
-                {"chain": chain, "lo": lo, "hi": hi},
-            )
-        except Exception as exc:  # noqa: BLE001 — dedup is best-effort
-            logger.debug("clickhouse_dedup_query_failed", chain=chain, error=str(exc)[:100])
-            return set()
-        existing: set[tuple[int, str, int]] = set()
-        for row in rows or []:
-            if not row or len(row) < 3:
-                continue
-            existing.add((_coerce_int(row[0]), str(row[1] or ""), _coerce_int(row[2])))
+        existing, gaps = existing_keys_in_windows(client, chain, lo, hi)
+        windows = sum(1 for _ in iter_block_windows(lo, hi))
+        if windows > 1:
+            metrics_incr("clickhouse_dedup_chunked")
+            logger.warning("clickhouse_dedup_span_chunked", chain=chain, span=hi - lo, windows=windows)
+        if gaps:
+            metrics_incr("clickhouse_dedup_window_gaps", float(gaps))
+            logger.warning("clickhouse_dedup_degraded", chain=chain, gap_windows=gaps, windows=windows)
         return existing
 
     def write_transfers(self, chain: str, events: list[dict[str, Any]]) -> int:
