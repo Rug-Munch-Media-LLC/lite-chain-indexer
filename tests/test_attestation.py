@@ -232,3 +232,24 @@ def test_cli_verify_and_show(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert run_attest_cli(argparse.Namespace(attest_action="verify", manifest=str(bad_path), expected_root=None)) == 2
 
     assert run_attest_cli(argparse.Namespace(attest_action="show", chain="ethereum")) == 0
+
+
+def test_sync_loop_passes_block_hashes_via_options_not_positionally() -> None:
+    """The sync loop must build AttestOptions, not pass hashes positionally.
+
+    Round 4 changed record_range_attestation's 5th positional from
+    ``block_hashes`` to ``options``. A positional call then binds the hash list
+    to ``options`` and ``opts.block_hashes`` is empty, so attestation records a
+    range with no block hashes — silently. mypy caught it; 2,398 tests did not,
+    because every existing test called the function directly. This pins the
+    production call site.
+    """
+    from lite_indexer.attestation_record import AttestOptions
+    from lite_indexer.indexer import _sync_loop
+
+    src = Path(_sync_loop.__file__).read_text()
+    assert "AttestOptions(block_hashes=block_hashes)" in src, "_sync_loop must pass block_hashes through AttestOptions"
+    # And the positional form must be gone: that is the silent-misbind shape.
+    assert "attest_rows,\n                    block_hashes,\n" not in src
+    # The options object carries the hashes the caller collected.
+    assert AttestOptions(block_hashes=["0xab"]).block_hashes == ["0xab"]

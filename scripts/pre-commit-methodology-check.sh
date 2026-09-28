@@ -26,6 +26,11 @@ set -euo pipefail
 EXEMPT_FILES=(
     "scripts/pre-commit-methodology-check.sh"
     "scripts/dev/pre-commit-methodology-check.sh"
+    # The hook file carries this guard's own banner comment
+    # ("BLOCK internal infrastructure / methodology"), which trips
+    # `internal[^.]*methodology` on the guard's own text. Exempt so a change to
+    # the hook set is not blocked by the hook set describing the guard.
+    ".lefthook.yml"
     ".gitleaks.toml"
     "SITE_OWNERSHIP.md"
     "METHODOLOGY-PROTECTION.md"

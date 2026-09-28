@@ -52,6 +52,7 @@ from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrate
 
 logger = get_logger(__name__)
 
+
 class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
     """Sync loop body — extracted from the former god-file.
 
@@ -95,7 +96,12 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         """Record a pushed head and wake the daemon's poll wait early."""
         if self._head_wakeup is not None:
             self._head_wakeup.set()
-        logger.info("ws_head_received", chain=self.chain, block_number=block_number, block_hash=block_hash[:12],)
+        logger.info(
+            "ws_head_received",
+            chain=self.chain,
+            block_number=block_number,
+            block_hash=block_hash[:12],
+        )
 
     async def start_head_pool(self) -> None:
         """Start the EVM webSocket head subscriber (no-op when unconfigured).
@@ -327,7 +333,9 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         start_time: float,
     ) -> dict[str, Any]:
         """Sync one sub-slice (restore handled in finally)."""
-        _timing = bool(os.getenv("INDEXER_PHASE_TIMING")) or (os.getenv("SOLANA_TIMING") and self.chain == "solana")  # phase timers
+        _timing = bool(os.getenv("INDEXER_PHASE_TIMING")) or (
+            os.getenv("SOLANA_TIMING") and self.chain == "solana"
+        )  # phase timers
         _t_win = time.perf_counter()
         _t_fetch = _t_ch = _t_drains = _t_nats = _t_state = _t_side = 0.0
         # 2a. Graceful ClickHouse pause: probe CH BEFORE fetching events
@@ -730,6 +738,7 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         if ATTESTATION_ENABLED and (events or dex_events):
             try:
                 from lite_indexer.attestation import collect_block_hashes, record_range_attestation
+                from lite_indexer.attestation_record import AttestOptions  # noqa: E501
 
                 attest_rows = events + dex_events
                 block_hashes = collect_block_hashes(events, dex_events)
@@ -739,7 +748,7 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
                     from_block,
                     to_block,
                     attest_rows,
-                    block_hashes,
+                    AttestOptions(block_hashes=block_hashes),
                 )
                 if root:
                     summary["attestation_root"] = root
