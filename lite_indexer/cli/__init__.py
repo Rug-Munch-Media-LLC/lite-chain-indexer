@@ -7,9 +7,11 @@ Usage:
     lite-indexer bootstrap --all
 
 The subcommand handlers live in focused sibling modules (``_daemon``,
-``_export``, ``_integrity``, ``_backfill``, ``_bootstrap``, ``_query``);
-this module keeps the entrypoints (``main`` / ``async_main``) and the
-argparse surface identical to the pre-split ``lite_indexer.cli`` module.
+``_export``, ``_integrity``, ``_backfill``, ``_bootstrap``, ``_query``)
+and each subcommand family's argparse surface in a ``_*_parsers`` sibling
+(``add_<family>_parsers(sub)``). This module keeps the entrypoints
+(``main`` / ``async_main``) and the argparse surface identical to the
+pre-split ``lite_indexer.cli`` module.
 """
 
 from __future__ import annotations
@@ -21,20 +23,25 @@ import sys
 from pathlib import Path
 
 from lite_indexer.cli._attest import run_attest_cli
+from lite_indexer.cli._attest_parsers import add_attest_parsers
 from lite_indexer.cli._backfill import run_backfill_dex_prices, run_backfill_whales
+from lite_indexer.cli._backfill_parsers import add_backfill_parsers
 from lite_indexer.cli._bootstrap import run_bootstrap_cli
+from lite_indexer.cli._bootstrap_parsers import add_bootstrap_parsers
 from lite_indexer.cli._daemon import main_daemon
 from lite_indexer.cli._export import run_export_parquet
+from lite_indexer.cli._export_parsers import add_export_parsers
 from lite_indexer.cli._integrity import run_integrity_check_cli, run_reconcile_cli, run_recover_cli
+from lite_indexer.cli._integrity_parsers import add_integrity_parsers
 from lite_indexer.cli._lake import add_lake_parsers, run_lake_command
 from lite_indexer.cli._query import run_query_cli
+from lite_indexer.cli._query_parsers import add_query_parsers
 from lite_indexer.config import (
     BATCH_SIZE,
     DATA_DIR,
     DISK_CAP_BYTES,
     MAX_CONCURRENT_CHAINS,
     PRICING_ENABLED,
-    RECONCILIATION_SAMPLE_SIZE,
 )
 from lite_indexer.indexer import LiteIndexer
 from lite_indexer.logging import get_logger, setup_logging
@@ -168,408 +175,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     sub = parser.add_subparsers(dest="command")
 
-    # ── integrity-check subcommand ──────────────────────────────────
-    # Daily durable-store audit: per-chain min/max/distinct/count from
-    # ClickHouse with a contiguity percentage. Flags chains whose row
-    # counts do not match the expected block span so operators know
-    # before missing data compounds. Intended for a daily cron.
-    integrity_parser = sub.add_parser(
-        "integrity-check",
-        help="Audit per-chain ClickHouse row counts vs expected ranges",
-        description=(
-            "Daily integrity check: for each chain, compare the ClickHouse "
-            "row/range stats (min/max block, distinct blocks, total rows) "
-            "against the expected contiguous span and report a contiguity "
-            "percentage. Chains with gaps or empty stores are flagged."
-        ),
-    )
-    integrity_parser.add_argument(
-        "--chains",
-        type=str,
-        default="ethereum,base,bsc,polygon,arbitrum,optimism,avalanche,linea,scroll,zksync,mantle,gnosis,solana,tron",
-        help="Comma-separated chains to audit (default: all supported)",
-    )
-
-    # ── reconcile subcommand (TrueBlocks-style balance reconciliation) ─
-    # Runs a balance-completeness check on a random sample of wallets
-    # (default 100 per chain) and caches results in
-    # wallet_memory.reconciliation_results. Intended for a daily cron.
-    reconcile_parser = sub.add_parser(
-        "reconcile",
-        help="Run balance reconciliation on a random wallet sample",
-        description=(
-            "TrueBlocks-style reconciliation: compare computed balances "
-            "from indexed evm_transfers deltas against on-chain "
-            "eth_getBalance for a random sample of wallets, then cache "
-            "results in wallet_memory.reconciliation_results. "
-            "Gated by RECONCILIATION_ENABLED (default on)."
-        ),
-    )
-    reconcile_parser.add_argument(
-        "--chain",
-        default="ethereum",
-        choices=sorted(SUPPORTED_CHAINS.keys()),
-        help="Chain to reconcile (default: ethereum)",
-    )
-    reconcile_parser.add_argument(
-        "--sample-size",
-        type=int,
-        default=RECONCILIATION_SAMPLE_SIZE,
-        help=f"Wallets to sample per run (default: {RECONCILIATION_SAMPLE_SIZE})",
-    )
-
-    # ── attest subcommand (on-chain-verifiable index attestations) ───
-    attest_parser = sub.add_parser(
-        "attest",
-        help="Verify / inspect on-chain-verifiable range attestations",
-        description=(
-            "Trustless dataset verification: prove an indexed range is a "
-            "leaf of the persisted Merkle accumulator and (optionally) that "
-            "its committed block hash matches a chain-supplied block hash. "
-            "No provider or producer trust required."
-        ),
-    )
-    attest_sub = attest_parser.add_subparsers(dest="attest_action")
-    attest_verify = attest_sub.add_parser("verify", help="Verify a manifest file")
-    attest_verify.add_argument("manifest", help="Path to a manifest JSON file")
-    attest_verify.add_argument(
-        "--expected-root",
-        default=None,
-        help="Trusted accumulator root (hex) the manifest must match",
-    )
-    attest_show = attest_sub.add_parser("show", help="Show a chain's accumulator state")
-    attest_show.add_argument(
-        "--chain",
-        default="ethereum",
-        choices=sorted(SUPPORTED_CHAINS.keys()),
-        help="Chain whose attestation state to show (default: ethereum)",
-    )
-
-    # ── export-parquet subcommand ────────────────────────────────────
-    export_parser = sub.add_parser(
-        "export-parquet",
-        help="Export ClickHouse rows to Parquet (cold storage tier)",
-        description=(
-            "Export a (chain, date) into per-chain/per-date Parquet files, "
-            "optionally upload them to the B2 permanent tier and delete them "
-            "from ClickHouse only after the upload is verified. "
-            "Idempotent: dates already exported are skipped."
-        ),
-    )
-    export_parser.add_argument(
-        "--chain",
-        default="all",
-        choices=sorted(SUPPORTED_CHAINS.keys()) + ["all"],
-        help="Chain to export or 'all' (default: all)",
-    )
-    export_parser.add_argument(
-        "--date",
-        type=str,
-        default=None,
-        help="Date to export as YYYY-MM-DD (default: yesterday)",
-    )
-    export_parser.add_argument(
-        "--days",
-        type=int,
-        default=None,
-        help="Backfill mode: min row age in days before export (default: PARQUET_COLD_DAYS env or 7). "
-        "Mutually exclusive with --date.",
-    )
-    export_parser.add_argument(
-        "--upload",
-        action="store_true",
-        help="Upload Parquet files to the B2 remote via rclone",
-    )
-    export_parser.add_argument(
-        "--delete-after-upload",
-        dest="delete_after_upload",
-        action="store_true",
-        help="Delete exported rows from ClickHouse only after the upload is verified",
-    )
-    export_parser.add_argument(
-        "--delete",
-        dest="delete_after_upload",
-        action="store_true",
-        help=argparse.SUPPRESS,  # legacy alias for --delete-after-upload
-    )
-    export_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview the export without writing, uploading, or deleting",
-    )
-    export_parser.add_argument(
-        "--remote",
-        type=str,
-        default=None,
-        help="rclone remote root (default: PARQUET_REMOTE env or b2-crypt-v2:chain-data/parquet)",
-    )
-    export_parser.add_argument(
-        "--publish-snapshot",
-        action="store_true",
-        help="Mirror each exported (chain, date) to the bootstrap snapshot "
-        "location with a manifest.json so `lite-indexer bootstrap` can "
-        "discover and replay it",
-    )
-    export_parser.add_argument(
-        "--snapshot-bucket",
-        type=str,
-        default=None,
-        help="rclone remote root for bootstrap snapshots (default: BOOTSTRAP_B2_BUCKET env or b2-crypt:chain-data)",
-    )
-    export_parser.add_argument(
-        "--snapshot-path",
-        type=str,
-        default=None,
-        help="Path prefix inside the snapshot bucket (default: BOOTSTRAP_PARQUET_PATH env or snapshots)",
-    )
-    export_parser.add_argument(
-        "--data-dir",
-        type=str,
-        default=None,
-        help="Data directory for local Parquet output + state (default: DATA_DIR)",
-    )
-    # ── backfill-whales subcommand ───────────────────────────────────
-    # Re-scans recent dex_events and marks whale rows retroactively using
-    # the token_prices USD feed + per-chain raw thresholds + top-0.1%
-    # per-pair amounts. Intended for an operator cron after the whale
-    # feature ships (existing rows all have whale=0).
-    backfill_parser = sub.add_parser(
-        "backfill-whales",
-        help="Re-scan recent dex_events and mark whale rows retroactively",
-        description=(
-            "Recomputes the whale flag for recent dex_events rows using "
-            "token_prices USD values, per-chain raw amount thresholds, and "
-            "the top-0.1% per-pair amount, then issues ALTER TABLE UPDATE "
-            "mutations for the rows that changed. Idempotent — re-running "
-            "is a no-op. Use --dry-run to preview counts without mutating."
-        ),
-    )
-    backfill_parser.add_argument(
-        "--chain",
-        default=None,
-        choices=sorted(SUPPORTED_CHAINS.keys()),
-        help="Restrict to a single chain (default: all chains)",
-    )
-    backfill_parser.add_argument(
-        "--days",
-        type=int,
-        default=90,
-        help="How many days back to scan (default: 90, matches dex_events retention)",
-    )
-    backfill_parser.add_argument(
-        "--limit",
-        type=int,
-        default=500_000,
-        help="Max rows to scan (default: 500000)",
-    )
-    backfill_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview whale_up/whale_down counts without issuing mutations",
-    )
-
-    # ── backfill-dex-prices subcommand ───────────────────────────────
-    # Fills the ~98.8%-zero price_usd column on dex_events retroactively
-    # from the token_prices table. Ingestion writes price_usd=0 when the
-    # price feed had no value yet; this job joins recent zero-price rows
-    # to token_prices and issues ALTER TABLE UPDATE mutations in batches.
-    price_parser = sub.add_parser(
-        "backfill-dex-prices",
-        help="Backfill price_usd/volume_usd on dex_events from token_prices",
-        description=(
-            "Re-scans recent dex_events rows with price_usd = 0, joins "
-            "them against wallet_memory.token_prices, and issues "
-            "ALTER TABLE UPDATE mutations that fill price_usd (token0 "
-            "price) and volume_usd (max-leg notional) for rows that have "
-            "a resolvable price. Idempotent — re-running is a no-op. Use "
-            "--dry-run to preview counts without mutating."
-        ),
-    )
-    price_parser.add_argument(
-        "--chain",
-        default=None,
-        choices=sorted(SUPPORTED_CHAINS.keys()),
-        help="Restrict to a single chain (default: all chains)",
-    )
-    price_parser.add_argument(
-        "--days",
-        type=int,
-        default=90,
-        help="How many days back to scan (default: 90, matches dex_events retention)",
-    )
-    price_parser.add_argument(
-        "--limit",
-        type=int,
-        default=500_000,
-        help="Max rows to scan (default: 500000)",
-    )
-    price_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview updated/unchanged/unpriced counts without issuing mutations",
-    )
-
-    # ── bootstrap subcommand ─────────────────────────────────────────
-    # Replay public B2 parquet snapshots into ClickHouse instead of
-    # re-indexing from genesis over free RPCs (days → minutes). This is
-    # the answer to "your backfill is RPC-bound": download the free public
-    # snapshot, import via ClickHouse file(), verify row counts, and set
-    # the state high-water mark so `lite-indexer daemon` resumes live.
-    bootstrap_parser = sub.add_parser(
-        "bootstrap",
-        help="Bootstrap indexer state from public B2 parquet snapshots",
-        description=(
-            "Replay a public B2 parquet snapshot into ClickHouse instead "
-            "of re-indexing from genesis over free RPCs. Downloads the "
-            "snapshot manifest + parquet files, imports them via "
-            "INSERT INTO ... SELECT * FROM file('*.parquet'), verifies "
-            "row counts against the manifest, and advances the state "
-            "high-water mark so the daemon resumes live from the snapshot "
-            "end block."
-        ),
-    )
-    bootstrap_parser.add_argument(
-        "--chain",
-        default="ethereum",
-        choices=sorted(SUPPORTED_CHAINS.keys()),
-        help="Chain to bootstrap (default: ethereum)",
-    )
-    bootstrap_parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Bootstrap every supported chain",
-    )
-    bootstrap_parser.add_argument(
-        "--list",
-        action="store_true",
-        help="List available snapshots on B2 (no import)",
-    )
-    bootstrap_parser.add_argument(
-        "--from-snapshot",
-        type=str,
-        default="latest",
-        help="Snapshot date to use, YYYY-MM-DD, or 'latest' (default: latest)",
-    )
-    bootstrap_parser.add_argument(
-        "--target-db",
-        type=str,
-        default="wallet_memory",
-        help="ClickHouse database to import into (default: wallet_memory)",
-    )
-    bootstrap_parser.add_argument(
-        "--bucket",
-        type=str,
-        default=None,
-        help="rclone remote root for snapshots (default: BOOTSTRAP_B2_BUCKET env)",
-    )
-    bootstrap_parser.add_argument(
-        "--snapshots-path",
-        type=str,
-        default=None,
-        help="Path prefix inside the bucket (default: BOOTSTRAP_PARQUET_PATH env)",
-    )
-    bootstrap_parser.add_argument(
-        "--rclone-bin",
-        type=str,
-        default=None,
-        help="Path to the rclone binary (default: PARQUET_RCLONE_BIN env or 'rclone')",
-    )
-    bootstrap_parser.add_argument(
-        "--data-dir",
-        type=str,
-        default=None,
-        help="Data directory for state files + download staging (default: DATA_DIR)",
-    )
-    bootstrap_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview the import plan without downloading or writing",
-    )
-    bootstrap_parser.add_argument(
-        "--source",
-        type=str,
-        default=None,
-        help=(
-            "Provider-agnostic external flat-file dataset: a local directory, an "
-            "http(s) base URL, or a pyarrow.fs URL (s3://, gs://). When set, imports "
-            "from it instead of the B2 snapshot (default: LITE_INDEXER_FLATFILE_SOURCE env)"
-        ),
-    )
-    bootstrap_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="With --source: import even when the dataset overlaps the chain high-water",
-    )
-
-    # ── query subcommand (on-demand historical RPC) ──────────────────
-    # Answer a query about ANY block/tx/address historically WITHOUT
-    # indexing the whole chain: the QueryRouter routes to ClickHouse
-    # (indexed) → B2 parquet (cold) → live RPC (on-demand), so the CLI
-    # never says "data not available". Exactly one of --tx / --address /
-    # --block / --deployer must be given.
-    query_parser = sub.add_parser(
-        "query",
-        help="On-demand historical RPC query (no full indexing required)",
-        description=(
-            "Answer a query about ANY block/tx/address historically by "
-            "routing to the best data source: ClickHouse (indexed) → B2 "
-            "parquet (cold) → live RPC (on-demand). Exactly one of "
-            "--tx / --address / --block / --deployer must be given."
-        ),
-    )
-    query_parser.add_argument(
-        "--chain",
-        default="ethereum",
-        choices=sorted(SUPPORTED_CHAINS.keys()),
-        help="Chain to query (default: ethereum)",
-    )
-    query_parser.add_argument(
-        "--tx",
-        type=str,
-        default=None,
-        help="Transaction hash to look up (routed CH → cold → RPC)",
-    )
-    query_parser.add_argument(
-        "--address",
-        type=str,
-        default=None,
-        help="Wallet address for transfer history (routed CH → cold → RPC)",
-    )
-    query_parser.add_argument(
-        "--block",
-        type=int,
-        default=None,
-        help="Block number to fetch (blocks are always live RPC)",
-    )
-    query_parser.add_argument(
-        "--deployer",
-        type=str,
-        default=None,
-        help="Contract address to resolve its deployer (routed CH → cold → RPC)",
-    )
-    query_parser.add_argument(
-        "--from-block",
-        type=int,
-        default=None,
-        help="Inclusive start block for --address queries",
-    )
-    query_parser.add_argument(
-        "--to-block",
-        type=int,
-        default=None,
-        help="Inclusive end block for --address queries",
-    )
-    query_parser.add_argument(
-        "--limit",
-        type=int,
-        default=100,
-        help="Max rows for --address queries (default: 100)",
-    )
-    query_parser.add_argument(
-        "--no-rpc",
-        action="store_true",
-        help="Disable the on-demand RPC fallback (indexed data only)",
-    )
+    # Registration order is load-bearing: it fixes the subparser order that
+    # `--help` prints. Keep it matching the pre-extraction sequence.
+    add_integrity_parsers(sub)
+    add_attest_parsers(sub)
+    add_export_parsers(sub)
+    add_backfill_parsers(sub)
+    add_bootstrap_parsers(sub)
+    add_query_parsers(sub)
     add_lake_parsers(sub)
     return parser.parse_args(argv)
 
