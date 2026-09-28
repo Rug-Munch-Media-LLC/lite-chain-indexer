@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
+from lite_indexer.config.rollback_tables import EVM_ROLLBACK_TABLES
 from lite_indexer.strategies.evm.reorg import (
     MAX_REORG_DEPTH,
     check_reorg,
@@ -85,10 +86,10 @@ class FakeCH:
             stored = self.checkpoints.get(key)
             return [(stored,)] if stored else []
         if query.startswith("DELETE FROM"):
-            # Parse the fork block out of the WHERE clause.
+            # Parse the fork block and the target table out of the statement.
             fork = int(params["fork"])
-            table = "evm_transfers" if "evm_transfers" in query else "dex_events"
-            self.deletes.append((table, fork))
+            table = query.removeprefix("DELETE FROM ").split(" ", 1)[0]
+            self.deletes.append((table.rsplit(".", 1)[-1], fork))
             # Also prune checkpoints above the fork on the checkpoint table.
             if "block_checkpoints" in query:
                 self.checkpoints = {k: v for k, v in self.checkpoints.items() if k[1] <= fork}
@@ -250,9 +251,15 @@ async def test_rollback_to_block_deletes_above_fork() -> None:
 
     deleted = await rollback_to_block("ethereum", 120, client)
 
-    assert deleted == 6  # 3 + 3 from the two data tables
+    # 3 rows per data table; the row count now spans every table the EVM
+    # strategies can write, not just evm_transfers + dex_events.
+    assert deleted == 3 * len(EVM_ROLLBACK_TABLES)
     assert ("evm_transfers", 120) in client.deletes
     assert ("dex_events", 120) in client.deletes
+    # Tables that were written but previously never rolled back.
+    assert ("internal_transfers", 120) in client.deletes
+    assert ("evm_launches", 120) in client.deletes
+    assert ("address_activity", 120) in client.deletes
     # Checkpoints above the fork were pruned; the fork point stays.
     assert client.checkpoints == {("ethereum", 100): HASH_A}
 

@@ -21,11 +21,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from lite_indexer.config import (
-    CH_DEX_TABLE,
-    SOLANA_CH_TABLE,
-)
 from lite_indexer.config.finality import reorg_depth
+from lite_indexer.config.rollback_tables import SOLANA_ROLLBACK_TABLES, delete_above_fork
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
@@ -207,11 +204,13 @@ async def detect_reorg(client: Any, current_slot: int, ch_client: Any) -> ReorgS
 async def rollback_to_slot(ch_client: Any, fork_slot: int) -> int | None:
     """Delete rows above ``fork_slot`` from the Solana indexed tables.
 
-    Removes ``solana_spl_balance_changes`` rows with ``slot > fork_slot``
-    and ``dex_events`` rows with ``chain = 'solana'`` and
-    ``blockNumber > fork_slot`` (the fork slot stays). Also prunes stale
-    checkpoints above the fork so the re-fetched chain is checkpointed
-    fresh.
+    Removes every table listed in
+    :data:`lite_indexer.config.rollback_tables.SOLANA_ROLLBACK_TABLES`
+    with its height column above the fork slot (the fork slot stays) —
+    ``solana_spl_balance_changes``, ``solana_transfers`` and the Solana
+    rows of the shared ``dex_events`` / ``address_activity`` tables. Also
+    prunes stale checkpoints above the fork so the re-fetched chain is
+    checkpointed fresh.
 
     Fail-CLOSED signalling: any DELETE failure logs at ERROR and makes the
     whole rollback report failure (``None``) — the caller must not assume
@@ -224,28 +223,10 @@ async def rollback_to_slot(ch_client: Any, fork_slot: int) -> int | None:
     Returns:
         Total deleted rows, or ``None`` when any DELETE failed.
     """
-    deleted = 0
-    for table, _column, chain_filter in (
-        (SOLANA_CH_TABLE, "slot", False),
-        (CH_DEX_TABLE, "blockNumber", True),
-    ):
-        where = "chain = 'solana' AND blockNumber > %(fork)s" if chain_filter else "slot > %(fork)s"
-        try:
-            result = ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
-                f"DELETE FROM {table} WHERE {where}",
-                {"fork": fork_slot},
-            )
-            if isinstance(result, int):
-                deleted += result
-        except Exception as exc:  # noqa: BLE001 — report failure, do not pretend success
-            logger.error(
-                "solana_reorg_rollback_table_failed",
-                table=table,
-                fork_slot=fork_slot,
-                error=str(exc)[:120],
-            )
-            metrics_incr("reorg_rollback_errors")
-            return None
+    deleted, failed = delete_above_fork(ch_client, SOLANA_ROLLBACK_TABLES, fork_slot, chain="solana")
+    if failed is not None:
+        metrics_incr("reorg_rollback_errors")
+        return None
 
     try:
         ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized

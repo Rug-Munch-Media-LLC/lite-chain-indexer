@@ -19,13 +19,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from lite_indexer.config import (
-    CH_BLOCK_CHECKPOINTS_TABLE,
-    CH_DEX_TABLE,
-    CH_TABLE,
-)
+from lite_indexer.config import CH_BLOCK_CHECKPOINTS_TABLE
 from lite_indexer.config.finality import REORG_DEPTH
 from lite_indexer.config.finality import reorg_depth as _finality_reorg_depth
+from lite_indexer.config.rollback_tables import EVM_ROLLBACK_TABLES, delete_above_fork
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
@@ -221,10 +218,13 @@ async def rollback_to_block(
 ) -> int | None:
     """Delete rows above ``fork_block`` from indexed tables.
 
-    Removes ``evm_transfers`` and ``dex_events`` rows with
-    ``block_number > fork_block`` (the fork point stays). Also prunes
-    stale block checkpoints above the fork so the re-fetched chain is
-    checkpointed fresh.
+    Removes every table listed in
+    :data:`lite_indexer.config.rollback_tables.EVM_ROLLBACK_TABLES` with
+    ``block_number > fork_block`` (the fork point stays) —
+    ``evm_transfers``, ``dex_events``, ``internal_transfers``,
+    ``evm_launches`` and the chain rows of ``address_activity``. Also
+    prunes stale block checkpoints above the fork so the re-fetched chain
+    is checkpointed fresh.
 
     Fail-CLOSED signalling: any DELETE failure logs at ERROR and makes the
     whole rollback report failure (``None``) — the caller must not assume
@@ -239,25 +239,10 @@ async def rollback_to_block(
     Returns:
         Total deleted rows, or ``None`` when any DELETE failed.
     """
-    deleted = 0
-    for table in (CH_TABLE, CH_DEX_TABLE):
-        try:
-            result = ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
-                f"DELETE FROM {table} WHERE chain = %(chain)s AND block_number > %(fork)s",
-                {"chain": chain, "fork": fork_block},
-            )
-            if isinstance(result, int):
-                deleted += result
-        except Exception as exc:  # noqa: BLE001 — report failure, do not pretend success
-            logger.error(
-                "reorg_rollback_table_failed",
-                chain=chain,
-                table=table,
-                fork_block=fork_block,
-                error=str(exc)[:120],
-            )
-            metrics_incr("reorg_rollback_errors")
-            return None
+    deleted, failed = delete_above_fork(ch_client, EVM_ROLLBACK_TABLES, fork_block, chain=chain)
+    if failed is not None:
+        metrics_incr("reorg_rollback_errors")
+        return None
 
     try:
         ch_client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
