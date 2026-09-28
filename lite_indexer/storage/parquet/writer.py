@@ -48,12 +48,12 @@ class ParquetExporter(ExportFlowMixin, ExportDayMixin, ExportStateMixin):
         data_dir: Path = PARQUET_DIR,
         remote: str = PARQUET_REMOTE,
         rclone_bin: str = PARQUET_RCLONE_BIN,
-        state_dir: Path = PARQUET_STATE_DIR,
+        state_dir: Path | None = None,
     ) -> None:
         self.data_dir = data_dir
         self.remote = remote
         self.rclone_bin = rclone_bin
-        self.state_dir = state_dir
+        self.state_dir = PARQUET_STATE_DIR if state_dir is None else state_dir
 
     # ── ClickHouse helpers ──────────────────────────────────────────
 

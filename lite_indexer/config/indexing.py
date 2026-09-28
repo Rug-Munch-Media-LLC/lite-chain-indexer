@@ -10,6 +10,7 @@ from pathlib import Path
 # via EnvironmentFile) BEFORE any os.environ reads below, so every entry
 # point resolves the same ${KEYED_RPC_KEY} / ${KEYED_RPC_KEY_2} / ${SOLANA_PROVIDER_KEY} RPC
 # placeholders. Idempotent and non-destructive (existing env wins).
+from lite_indexer.config.pure_env import disk_cap_gb
 from lite_indexer.env import load_env_file
 
 load_env_file()
@@ -18,9 +19,8 @@ load_env_file()
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/var/data/chain-indexer"))
 STATE_DIR = DATA_DIR / "state"
 
-# Hard disk cap. Env-driven as DISK_CAP_GB (.env.example documents that key):
-# a .env-only operator got the hardcoded 10 GB while production ran 150 GB.
-DISK_CAP_GB: float = float(os.environ.get("DISK_CAP_GB", "10"))
+# Hard disk cap, env-driven as DISK_CAP_GB (documented in .env.example).
+DISK_CAP_GB: float = disk_cap_gb(os.environ.get("DISK_CAP_GB"))
 DISK_CAP_BYTES: int = int(DISK_CAP_GB * 1024**3)
 
 BATCH_SIZE = 1000

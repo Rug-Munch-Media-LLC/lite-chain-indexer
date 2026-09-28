@@ -15,6 +15,7 @@ Extracted 2026-09-21 from biglake_source.py; made provider-aware same day.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from lite_indexer.logging import get_logger
@@ -26,6 +27,19 @@ _MAX_LAKE_ATTEMPTS = 3
 
 #: Provider kinds routed to the BigQuery warehouse backend.
 _GCP_PREFIX = "gcp/"
+
+
+_READ_IMPL: Callable[..., list[dict[str, Any]]] | None = None
+
+
+def set_read_with_rotation(fn: Callable[..., list[dict[str, Any]]] | None) -> None:
+    """Swap the rotation read loop (None restores the real one).
+
+    Injection seam so a test can serve a fixed page without monkeypatching this
+    module. Same pattern as :mod:`lite_indexer.rpc.routing.seams`.
+    """
+    global _READ_IMPL
+    _READ_IMPL = fn
 
 
 def read_with_rotation(
@@ -51,6 +65,8 @@ def read_with_rotation(
         bigquery: Optional BigQuery backend (tests); defaults to a real source.
     """
     router = source._router()
+    if _READ_IMPL is not None:
+        return _READ_IMPL(source, read, table, biglake_table, filters)
     filters = filters or {}
     tried: set[str] = set()
     for _ in range(_MAX_LAKE_ATTEMPTS):

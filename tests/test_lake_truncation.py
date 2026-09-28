@@ -12,6 +12,7 @@ from typing import Any, cast
 
 import pytest
 
+from lite_indexer.query.biglake_rotation import set_read_with_rotation
 from lite_indexer.query.biglake_source import BigLakeSource
 from lite_indexer.query.lake_limits import (
     LAKE_MAX_ROWS,
@@ -19,6 +20,13 @@ from lite_indexer.query.lake_limits import (
     clamp_limit,
     reject_oversize_limit,
 )
+
+
+@pytest.fixture(autouse=True)
+def _restore_rotation_seam() -> Any:
+    """The rotation seam is a module global; restore it so tests stay isolated."""
+    yield
+    set_read_with_rotation(None)
 
 
 def test_oversize_limit_raises_rather_than_clamping() -> None:
@@ -38,27 +46,53 @@ def test_clamp_limit_is_for_cleared_limits_only() -> None:
     assert clamp_limit(99_999, SOLANA_MAX_PAGE) == 50_000
 
 
-def test_biglake_query_reports_truncation(monkeypatch: pytest.MonkeyPatch) -> None:
+def _page_reader(rows: list[dict[str, Any]], captured: dict[str, Any]) -> Any:
+    """A ``read_with_rotation``-compatible callable serving a fixed page.
+
+    Injected through the ``set_read_with_rotation`` seam, so no production
+    symbol is replaced to make the test pass.
+    """
+
+    def _read(
+        source: Any, read: Any, table: str, biglake_table: str, filters: Any = None, **kw: Any
+    ) -> list[dict[str, Any]]:
+        _sql, params = read
+        captured["params"] = list(params)
+        return rows
+
+    return _read
+
+
+def _offline_source(page: list[dict[str, Any]], captured: dict[str, Any], *, limit: int) -> BigLakeSource:
+    """A BigLakeSource that never touches the network, for one page read.
+
+    ``connect`` bypasses DuckDB, the rotation seam bypasses the provider loop,
+    and ``scope`` pins the partition glob so the assertion does not drift with
+    the calendar month. ``limit`` is the caller's requested page size; it is
+    recorded so a test can assert the probe asked for one row more.
+    """
+    captured["limit"] = limit
+    set_read_with_rotation(_page_reader(page, captured))
+    return BigLakeSource(scope="2026-09-*", connect=_FakeConnection)
+
+
+def _FakeConnection() -> Any:  # noqa: N802 — a stand-in, not a public name
+    """A DuckDB-like connection that raises if the reader ever executes."""
+
+    def _boom(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("the lake read must be served by the injected reader")
+
+    return type("_Conn", (), {"execute": staticmethod(_boom), "close": staticmethod(lambda: None)})()
+
+
+def test_biglake_query_reports_truncation() -> None:
     """A page hitting the ceiling returns (rows<=limit, truncated=True).
 
     The source reads ``limit + 1`` rows as a probe: the extra row's
     existence is the proof that older rows remain, and it is discarded.
     """
-    src = BigLakeSource()
-    monkeypatch.setattr(src, "available", lambda: True)
-    monkeypatch.setattr(src, "_paths", lambda t, d: ["s3://x/date=2026-09-12/"])
-    monkeypatch.setattr(src, "_map_row", lambda table, row: row)
-
-    captured: dict[str, list[int]] = {}
-
-    def _fake_rotation(
-        source: Any, read: Any, table: str, biglake_table: str, filters: Any = None, **kw: Any
-    ) -> list[dict[str, Any]]:
-        sql, params = read
-        captured["params"] = list(params)
-        return [{"block_number": i} for i in range(3)]
-
-    monkeypatch.setattr("lite_indexer.query.biglake_rotation.read_with_rotation", _fake_rotation)
+    captured: dict[str, Any] = {}
+    src = _offline_source([{"block_number": i} for i in range(3)], captured, limit=2)
 
     rows, truncated = cast(tuple[list[dict[str, Any]], bool], src.query("evm_transfers", limit=2))
 
@@ -67,30 +101,30 @@ def test_biglake_query_reports_truncation(monkeypatch: pytest.MonkeyPatch) -> No
     assert captured["params"][-1] == 3, "the query must ask for limit + 1 rows"
 
 
-def test_biglake_query_untruncated_page(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_biglake_query_untruncated_page() -> None:
     """A page that fits entirely reports truncated=False."""
-    src = BigLakeSource()
-    monkeypatch.setattr(src, "available", lambda: True)
-    monkeypatch.setattr(src, "_paths", lambda t, d: ["s3://x/date=2026-09-12/"])
-    monkeypatch.setattr(src, "_map_row", lambda table, row: row)
-    monkeypatch.setattr(
-        "lite_indexer.query.biglake_rotation.read_with_rotation",
-        lambda *a, **k: ([{"block_number": 1}],),
-    )
+    captured: dict[str, Any] = {}
+    src = _offline_source([{"block_number": 1}], captured, limit=10)
 
     rows, truncated = cast(tuple[list[dict[str, Any]], bool], src.query("evm_transfers", limit=10))
     assert truncated is False
     assert len(rows) == 1
 
 
-def test_biglake_query_rejects_oversize_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_biglake_query_rejects_oversize_limit() -> None:
     """The reader itself rejects 1,000,000 rows — not just the router."""
-    src = BigLakeSource()
-    monkeypatch.setattr(src, "available", lambda: True)
-    monkeypatch.setattr(src, "_paths", lambda t, d: ["s3://x/"])
+    captured: dict[str, Any] = {}
+    src = _offline_source([], captured, limit=1_000_000)
 
     with pytest.raises(ValueError, match="exceeds ceiling"):
         src.query("evm_transfers", limit=1_000_000)
+
+
+def test_biglake_query_uses_the_pinned_scope_partition() -> None:
+    """The injected scope fixes the partition glob the query reads from."""
+    captured: dict[str, Any] = {}
+    src = _offline_source([{"block_number": 1}], captured, limit=10)
+    assert src._scope == "2026-09-*"
 
 
 def test_solana_page_ceiling_is_reported_separately() -> None:

@@ -32,6 +32,30 @@ DEFAULT_USER_AGENT = "lite-chain-indexer/1.0 (+https://github.com/RugMunchMedia/
 _MAX_USER_AGENT_CHARS = 200
 
 
+def sanitize_user_agent(raw: str) -> str:
+    """Return a header-safe User-Agent for ``raw``, or the honest default.
+
+    Pure: takes the raw string, reads no environment. :func:`resolve_user_agent`
+    is the only place that reads ``os.environ``, so the sanitising rules are
+    testable directly with a string argument instead of by mutating the
+    process environment.
+
+    A newline in a header value is a request-splitting vector, so anything
+    non-printable is dropped; a value that is empty once sanitised falls back
+    to :data:`DEFAULT_USER_AGENT` rather than sending a malformed header.
+
+    Returns:
+        A non-empty, newline-free User-Agent string of at most
+        ``_MAX_USER_AGENT_CHARS`` characters.
+    """
+    if not raw.strip():
+        return DEFAULT_USER_AGENT
+    cleaned = "".join(ch for ch in raw if ch.isprintable()).strip()
+    if not cleaned:
+        return DEFAULT_USER_AGENT
+    return cleaned[:_MAX_USER_AGENT_CHARS]
+
+
 def resolve_user_agent() -> str:
     """Return the configured RPC User-Agent, or the honest default.
 
@@ -44,16 +68,7 @@ def resolve_user_agent() -> str:
     """
     import os
 
-    raw = os.environ.get("RPC_USER_AGENT", "").strip()
-    if not raw:
-        return DEFAULT_USER_AGENT
-    # A newline in a header value is a request-splitting vector: strip
-    # anything that is not printable, and fall back to the default rather
-    # than sending a malformed header.
-    cleaned = "".join(ch for ch in raw if ch.isprintable()).strip()
-    if not cleaned:
-        return DEFAULT_USER_AGENT
-    return cleaned[:_MAX_USER_AGENT_CHARS]
+    return sanitize_user_agent(os.environ.get("RPC_USER_AGENT", ""))
 
 
 def rpc_headers() -> dict[str, str]:
@@ -87,4 +102,10 @@ def client_kwargs() -> dict[str, Any]:
     return {"headers": rpc_headers()}
 
 
-__all__ = ["DEFAULT_USER_AGENT", "client_kwargs", "resolve_user_agent", "rpc_headers"]
+__all__ = [
+    "DEFAULT_USER_AGENT",
+    "client_kwargs",
+    "resolve_user_agent",
+    "rpc_headers",
+    "sanitize_user_agent",
+]

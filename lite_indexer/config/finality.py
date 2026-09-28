@@ -19,7 +19,7 @@ Both are env-overridable per chain via ``LICHAIN_<CHAIN>_REORG_DEPTH`` and
 
 from __future__ import annotations
 
-import os
+import os  # noqa: F401  — read by the *_resolve default path
 
 #: Blocks (EVM) / slots (Solana) a checkpoint must be confirmed against the
 #: current chain before its rows are trusted. Staging compares the stored
@@ -58,33 +58,65 @@ _DEFAULT_DEPTH = 12
 _DEFAULT_HORIZON = 128
 
 
-def _env_override(chain: str, knob: str) -> int | None:
-    """Read ``LICHAIN_<CHAIN>_<knob>`` as a positive int, or None."""
-    raw = os.getenv(f"LICHAIN_{chain.upper()}_{knob}")
+def _positive_int(raw: str | None) -> int | None:
+    """Return ``raw`` as a positive int, or None when unusable.
+
+    Pure: takes the raw string, reads no environment. A value that is absent,
+    non-numeric, or non-positive is not an override — the configured table
+    value stands.
+    """
     if raw is None or not raw.strip().lstrip("-").isdigit():
         return None
     value = int(raw)
     return value if value > 0 else None
 
 
-def reorg_depth(chain: str) -> int:
-    """Blocks/slots a checkpoint must age before it is trusted."""
-    override = _env_override(chain, "REORG_DEPTH")
+def _env_override(chain: str, knob: str) -> int | None:
+    """Read ``LICHAIN_<CHAIN>_<knob>`` as a positive int, or None."""
+    return _positive_int(os.getenv(f"LICHAIN_{chain.upper()}_{knob}"))
+
+
+def _resolve(chain: str, knob: str, table: dict[str, int], default: int, env: dict[str, str] | None) -> int:
+    """Resolve one bound from ``table``, an explicit env mapping, or ``default``.
+
+    Pure: ``env`` is supplied by the caller. ``resolve_env`` is the only
+    function that reads :data:`os.environ`, which is what lets the override
+    and clamp rules be tested with a dict instead of a mutated environment.
+    """
+    raw = (
+        os.environ.get(f"LICHAIN_{chain.upper()}_{knob}") if env is None else env.get(f"LICHAIN_{chain.upper()}_{knob}")
+    )
+    override = _positive_int(raw)
     if override is not None:
         return override
-    return REORG_DEPTH.get(chain, _DEFAULT_DEPTH)
+    return table.get(chain, default)
 
 
-def unfinalized_horizon(chain: str) -> int:
+def reorg_depth(chain: str, env: dict[str, str] | None = None) -> int:
+    """Blocks/slots a checkpoint must age before it is trusted.
+
+    Args:
+        chain: Chain name, matched case-insensitively for the env key.
+        env: Optional explicit env mapping. ``None`` reads
+            :data:`os.environ` (the production path); a test passes a dict.
+    """
+    return _resolve(chain, "REORG_DEPTH", REORG_DEPTH, _DEFAULT_DEPTH, env)
+
+
+def unfinalized_horizon(chain: str, env: dict[str, str] | None = None) -> int:
     """Blocks/slots inside which rows are provisional and not persisted.
 
     Never returns less than :func:`reorg_depth` for the same chain: a row
     may not be refused persistence before the staging path has verified
     it, or the query path would permanently withhold verifiable data.
+
+    Args:
+        chain: Chain name, matched case-insensitively for the env key.
+        env: Optional explicit env mapping. ``None`` reads
+            :data:`os.environ` (the production path); a test passes a dict.
     """
-    override = _env_override(chain, "UNFINALIZED_HORIZON")
-    horizon = override if override is not None else UNFINALIZED_HORIZON.get(chain, _DEFAULT_HORIZON)
-    return max(int(horizon), reorg_depth(chain))
+    horizon = _resolve(chain, "UNFINALIZED_HORIZON", UNFINALIZED_HORIZON, _DEFAULT_HORIZON, env)
+    return max(horizon, reorg_depth(chain, env))
 
 
 __all__ = ["REORG_DEPTH", "UNFINALIZED_HORIZON", "reorg_depth", "unfinalized_horizon"]

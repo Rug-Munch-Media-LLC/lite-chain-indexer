@@ -21,7 +21,6 @@ from typing import Any
 import pytest
 
 from lite_indexer.cli import parse_args, run_export_parquet
-from lite_indexer.storage.parquet import tooling as parquet_tooling
 from lite_indexer.storage.parquet import (
     ParquetExporter,
     _local_dir,
@@ -29,6 +28,7 @@ from lite_indexer.storage.parquet import (
     _remote_dir,
     _remote_path,
 )
+from lite_indexer.storage.parquet import tooling as parquet_tooling
 
 TRANSFER_COLS = [
     "chain",
@@ -189,13 +189,33 @@ DAY = date(2026, 7, 30)
 
 
 @pytest.fixture(autouse=True)
-def _reset_seams() -> Any:
-    """Seam hygiene: real tooling + config cap for every test boundary."""
+def _isolated_state_dir(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """Run every test against a private state dir, not the live one.
+
+    ``ParquetExporter.__init__`` binds ``state_dir`` from the module-global
+    ``writer.PARQUET_STATE_DIR`` at CALL time (not as a def-time default), and
+    the CLI builds its own exporter, so this is the one seam that redirects
+    both. Without it the suite reads — and can write — the production marker
+    directory at ``/var/data/chain-indexer/state/parquet``.
+
+    That is a real order- and host-dependence: on a host that had already
+    exported a date, the marker made ``export_chain`` drop the date and
+    ``test_cli_dry_run`` saw ``dates_attempted == 0`` instead of 1 and
+    failed, while a clean host passed. The hardcoded 2026-07-30 was never
+    the problem — the live marker was.
+
+    Seam hygiene (real tooling + config cap) is restored on the way out too.
+    """
+    from lite_indexer.storage.parquet import writer as parquet_writer
     from lite_indexer.storage.parquet.reader import set_max_rows_per_day
 
+    original = parquet_writer.PARQUET_STATE_DIR
+    private = tmp_path_factory.mktemp("parquet-state")
+    parquet_writer.PARQUET_STATE_DIR = private
     parquet_tooling.set_tool_seams(None, None)
     set_max_rows_per_day(None)
-    yield
+    yield private
+    parquet_writer.PARQUET_STATE_DIR = original
     parquet_tooling.set_tool_seams(None, None)
     set_max_rows_per_day(None)
 
@@ -346,7 +366,6 @@ def test_upload_failure_skips_delete(tmp_path: Path) -> None:
     client = FakeClickHouse(transfers=[_transfer_row()], dex=[_dex_row()])
     exporter = FakeExporter(client, data_dir=tmp_path / "parquet", state_dir=tmp_path / "state")
 
-
     def fake_run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="", stderr="boom")
 
@@ -450,6 +469,7 @@ def test_parquet_export_over_cap_fails_safely(tmp_path: Any) -> None:
     exporter = FakeExporter(client, data_dir=tmp_path, state_dir=tmp_path / "state", remote="r")
     summary = exporter.export_chain("ethereum", dates=[DAY])
     assert summary.errors and "exceeds export cap" in summary.errors[0]
+
 
 def test_cli_dry_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """--dry-run previews without touching ClickHouse (spec verification)."""

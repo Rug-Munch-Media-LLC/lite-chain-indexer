@@ -51,17 +51,27 @@ def test_unfinalized_horizon_is_never_below_reorg_depth() -> None:
     assert finality.unfinalized_horizon("not-a-real-chain") >= finality.reorg_depth("not-a-real-chain")
 
 
-def test_env_override_is_applied_and_positive_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LICHAIN_ETHEREUM_REORG_DEPTH", "24")
-    assert finality.reorg_depth("ethereum") == 24
-    monkeypatch.setenv("LICHAIN_ETHEREUM_REORG_DEPTH", "0")
-    assert finality.reorg_depth("ethereum") == finality.REORG_DEPTH["ethereum"]
-    monkeypatch.setenv("LICHAIN_ETHEREUM_REORG_DEPTH", "not-a-number")
-    assert finality.reorg_depth("ethereum") == finality.REORG_DEPTH["ethereum"]
+def test_env_override_is_applied_and_positive_only() -> None:
+    """LICHAIN_ETHEREUM_REORG_DEPTH=24 wins; 0 and junk fall back to the table."""
+    key = "LICHAIN_ETHEREUM_REORG_DEPTH"
+    assert finality.reorg_depth("ethereum", {key: "24"}) == 24
+    assert finality.reorg_depth("ethereum", {key: "0"}) == finality.REORG_DEPTH["ethereum"]
+    assert finality.reorg_depth("ethereum", {key: "not-a-number"}) == finality.REORG_DEPTH["ethereum"]
 
 
-def test_horizon_override_cannot_undercut_depth(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_env_override_is_scoped_to_its_own_chain() -> None:
+    """An ethereum override must not move polygon's depth."""
+    env = {"LICHAIN_ETHEREUM_REORG_DEPTH": "24"}
+    assert finality.reorg_depth("polygon", env) == finality.REORG_DEPTH["polygon"]
+
+
+def test_horizon_override_cannot_undercut_depth() -> None:
     """A too-small horizon override is clamped back up to the depth."""
-    monkeypatch.setenv("LICHAIN_ETHEREUM_UNFINALIZED_HORIZON", "4")
-    monkeypatch.setenv("LICHAIN_ETHEREUM_REORG_DEPTH", "12")
-    assert finality.unfinalized_horizon("ethereum") == 12
+    env = {"LICHAIN_ETHEREUM_UNFINALIZED_HORIZON": "4", "LICHAIN_ETHEREUM_REORG_DEPTH": "12"}
+    assert finality.unfinalized_horizon("ethereum", env) == 12
+
+
+def test_empty_env_uses_the_configured_table() -> None:
+    """Passing {} must resolve exactly as an unset environment does."""
+    assert finality.reorg_depth("ethereum", {}) == finality.reorg_depth("ethereum")
+    assert finality.unfinalized_horizon("ethereum", {}) == finality.unfinalized_horizon("ethereum")

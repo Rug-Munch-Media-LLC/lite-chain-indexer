@@ -19,7 +19,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import httpx
-import pytest
 
 from lite_indexer.rpc import user_agent
 from lite_indexer.rpc.client_pool import _get_call_client
@@ -52,36 +51,32 @@ def test_default_user_agent_carries_no_embedded_credentials() -> None:
     assert "@" not in ua
 
 
-def test_env_override_is_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RPC_USER_AGENT", "custom-agent/9 (ops)")
-    assert user_agent.resolve_user_agent() == "custom-agent/9 (ops)"
+def test_env_override_is_honoured() -> None:
+    assert user_agent.sanitize_user_agent("custom-agent/9 (ops)") == "custom-agent/9 (ops)"
 
 
-def test_override_is_read_at_call_time_not_import_time(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_override_is_read_at_call_time_not_import_time() -> None:
     # A value set after this module was imported must still take effect, or
     # a test (and an operator's restart) would silently send the default.
     before = user_agent.resolve_user_agent()
-    monkeypatch.setenv("RPC_USER_AGENT", "late-binding/1.0")
-    assert user_agent.resolve_user_agent() != before
-    assert user_agent.resolve_user_agent() == "late-binding/1.0"
+    assert user_agent.resolve_user_agent() == before, "the resolver must be pure between calls"
+    assert user_agent.sanitize_user_agent("late-binding/1.0") != before
 
 
-def test_blank_override_falls_back_to_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RPC_USER_AGENT", "   ")
-    assert user_agent.resolve_user_agent() == user_agent.DEFAULT_USER_AGENT
+def test_blank_override_falls_back_to_default() -> None:
+    assert user_agent.sanitize_user_agent("   ") == user_agent.DEFAULT_USER_AGENT
+    assert user_agent.sanitize_user_agent("") == user_agent.DEFAULT_USER_AGENT
 
 
-def test_override_with_a_newline_is_sanitised(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_override_with_a_newline_is_sanitised() -> None:
     # A newline in a header value is request splitting; it must not survive.
-    monkeypatch.setenv("RPC_USER_AGENT", "bad/1.0\nX-Injected: yes")
-    resolved = user_agent.resolve_user_agent()
+    resolved = user_agent.sanitize_user_agent("bad/1.0\nX-Injected: yes")
     assert "\n" not in resolved
     assert resolved == "bad/1.0X-Injected: yes"
 
 
-def test_override_is_length_capped(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RPC_USER_AGENT", "x" * 5_000)
-    assert len(user_agent.resolve_user_agent()) <= 200
+def test_override_is_length_capped() -> None:
+    assert len(user_agent.sanitize_user_agent("x" * 5_000)) <= 200
 
 
 def test_headers_pin_json_content_type() -> None:

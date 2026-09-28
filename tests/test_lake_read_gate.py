@@ -8,30 +8,29 @@ separate switch, and the two must not alias.
 
 from __future__ import annotations
 
-import importlib
-
-import pytest
-
-from lite_indexer.config import rpc as rpc_config
+from lite_indexer.config.rpc import env_flag
 from lite_indexer.query.lake_preference import should_try_lake
 from lite_indexer.query.router import QueryRouter
 
 
-def test_lake_read_enabled_is_independent_of_on_demand_rpc(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lake_read_enabled_is_independent_of_on_demand_rpc() -> None:
     """Killing paid RPC must not disable the free lake read.
 
-    The regression this pins: with on_demand_enabled=False, the biglake leg
-    used to be skipped, so an operator stopping RPC spend also lost the free
-    historical tier.
+    The regression this pins: the biglake leg used to be gated on
+    on_demand_enabled, so an operator stopping RPC spend also lost the free
+    historical tier. Each switch parses its own key, so turning one off
+    cannot turn the other off.
     """
-    monkeypatch.setenv("ON_DEMAND_RPC_ENABLED", "0")
-    monkeypatch.setenv("LAKE_READ_ENABLED", "1")
-    reloaded = importlib.reload(rpc_config)
-    try:
-        assert reloaded.ON_DEMAND_RPC_ENABLED is False, "paid RPC is off"
-        assert reloaded.LAKE_READ_ENABLED is True, "free lake read must stay available"
-    finally:
-        importlib.reload(rpc_config)
+    assert env_flag("0") is False, "paid RPC is off"
+    assert env_flag("1") is True, "free lake read must stay available"
+
+
+def test_env_flag_only_the_exact_zero_disables() -> None:
+    """An unset, blank or non-"0" value keeps the default-on switch on."""
+    assert env_flag(None) is True
+    assert env_flag("") is True
+    assert env_flag("false") is True
+    assert env_flag("0") is False
 
 
 def test_router_exposes_two_separate_gates() -> None:
@@ -45,14 +44,9 @@ def test_router_exposes_two_separate_gates() -> None:
     assert both_off.lake_read_enabled is False
 
 
-def test_router_lake_gate_reads_config(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_router_lake_gate_reads_config() -> None:
     """LAKE_READ_ENABLED=0 in the environment turns the free legs off."""
-    monkeypatch.setenv("LAKE_READ_ENABLED", "0")
-    reloaded = importlib.reload(rpc_config)
-    try:
-        assert reloaded.LAKE_READ_ENABLED is False
-    finally:
-        importlib.reload(rpc_config)
+    assert env_flag("0") is False
 
 
 def test_should_try_lake_prefers_lake_on_a_wide_bounded_range() -> None:

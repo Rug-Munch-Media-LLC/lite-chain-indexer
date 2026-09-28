@@ -9,9 +9,9 @@ from typing import Any
 
 # Load the shared env file (same file the daemon's systemd unit sources
 # via EnvironmentFile) BEFORE any os.environ reads below, so every entry
-# point resolves the same ${KEYED_RPC_KEY} / ${KEYED_RPC_KEY_2} / ${SOLANA_PROVIDER_KEY} RPC
-# placeholders. Idempotent and non-destructive (existing env wins).
+# point resolves the same ${KEYED_RPC_KEY} / ${KEYED_RPC_KEY_2} / ${SOLANA_PROVIDER_KEY} placeholders.
 from lite_indexer.config.indexing import DATA_DIR
+from lite_indexer.config.pure_env import env_flag
 from lite_indexer.env import load_env_file
 
 load_env_file()
@@ -392,11 +392,11 @@ ENDPOINT_BAN_CAP_SECONDS: int = int(os.environ.get("ENDPOINT_BAN_CAP_SECONDS", "
 # historical block/tx/address query to the best source — ClickHouse (hot) →
 # B2 parquet (cold) → live RPC. It never says "data not available": an
 # unindexed range dials the chain's RPC pool (bounded, cached).
-ON_DEMAND_RPC_ENABLED: bool = os.environ.get("ON_DEMAND_RPC_ENABLED", "1") != "0"
+ON_DEMAND_RPC_ENABLED: bool = env_flag(os.environ.get("ON_DEMAND_RPC_ENABLED"))
 
 # Free external-lake legs (BigLake/S3, Envio, indexed.xyz, SQD). Deliberately
 # NOT ON_DEMAND_RPC_ENABLED — a cost kill-switch must not remove free reads.
-LAKE_READ_ENABLED: bool = os.environ.get("LAKE_READ_ENABLED", "1") != "0"
+LAKE_READ_ENABLED: bool = env_flag(os.environ.get("LAKE_READ_ENABLED"))
 # How long (seconds) fetched RPC results are cached before refetching.
 # Keeps repeated queries for the same tx/address/block off the RPC tier.
 ON_DEMAND_RPC_CACHE_TTL: int = int(os.environ.get("ON_DEMAND_RPC_CACHE_TTL", "3600"))

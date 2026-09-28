@@ -26,6 +26,9 @@ logger = get_logger(__name__)
 
 _READERS = {"transfers": "read_transfers", "traces": "read_traces"}
 
+#: Documented fallback when LAKE_BACKFILL_BATCH_ROWS is unset or unparsable.
+_DEFAULT_BATCH_ROWS = 1000
+
 
 def expand_dates(from_date: str, to_date: str) -> list[str]:
     """Expand an inclusive YYYY-MM-DD range into a list of dates."""
@@ -48,6 +51,23 @@ def _write_batch(writer: Any, chain: str, table: str, batch: list[dict[str, Any]
     return int(write_internal_transfers(client, chain, batch))
 
 
+def _batch_rows_default(raw: str | None) -> int:
+    """Return the lake backfill batch bound for the raw env value.
+
+    Pure: takes the raw string, reads no environment, so the operator-facing
+    bound is testable with a string argument instead of by mutating
+    ``os.environ`` and reloading the module. An unset or unparsable value
+    keeps the 1k default that commit 0e35831 chose for a live stall.
+    """
+    if raw is None or not raw.strip():
+        return _DEFAULT_BATCH_ROWS
+    try:
+        return int(raw)
+    except ValueError as exc:
+        logger.warning("lake_backfill_batch_rows_unparsable", error=str(exc)[:60], raw=str(raw)[:24])
+        return _DEFAULT_BATCH_ROWS
+
+
 @dataclass
 class LakeBackfillRequest:
     """One lake backfill run: chain, dates, tables, batching."""
@@ -61,7 +81,7 @@ class LakeBackfillRequest:
     # bound an operator had to ship a code change to move is now
     # LAKE_BACKFILL_BATCH_ROWS, matching PRICING_BATCH_SIZE and
     # VECTOR_INGESTION_BATCH_SIZE, which are already env-driven.
-    batch_rows: int = int(os.environ.get("LAKE_BACKFILL_BATCH_ROWS", "1000"))
+    batch_rows: int = _batch_rows_default(os.environ.get("LAKE_BACKFILL_BATCH_ROWS"))
 
 
 def _write_partition(src: Any, wh: Any, chain: str, partition: tuple[str, str], batch_rows: int) -> int:
