@@ -234,22 +234,49 @@ def test_cli_verify_and_show(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert run_attest_cli(argparse.Namespace(attest_action="show", chain="ethereum")) == 0
 
 
-def test_sync_loop_passes_block_hashes_via_options_not_positionally() -> None:
-    """The sync loop must build AttestOptions, not pass hashes positionally.
+async def test_attest_range_passes_block_hashes_through_options() -> None:
+    """attest_range must bind block_hashes to AttestOptions, never positionally.
 
     Round 4 changed record_range_attestation's 5th positional from
-    ``block_hashes`` to ``options``. A positional call then binds the hash list
-    to ``options`` and ``opts.block_hashes`` is empty, so attestation records a
-    range with no block hashes — silently. mypy caught it; 2,398 tests did not,
-    because every existing test called the function directly. This pins the
-    production call site.
+    block_hashes to options. A positional call then binds the hash list to
+    options and opts.block_hashes is empty, so attestation records a range
+    with NO block hashes — silently. mypy caught it; 2,398 tests did not,
+    because every existing test called record_range_attestation directly and
+    none exercised the production path. This exercises attest_range, which is
+    what the sync body calls.
     """
-    from lite_indexer.attestation_record import AttestOptions
+    from lite_indexer.indexer import _attest
+
+    seen: dict[str, object] = {}
+
+    def _capture(chain, from_block, to_block, rows, options):
+        seen["options"] = options
+        seen["rows"] = list(rows)
+        return "ab" * 32
+
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(_attest, "ATTESTATION_ENABLED", True)
+        monkey.setattr(_attest, "record_range_attestation", _capture)
+        events = [{"tx_hash": "0xaaa", "blockNumber": 1, "logIndex": 0}]
+        root = await _attest.attest_range("ethereum", 1, 2, events, [])
+    finally:
+        monkey.undo()
+
+    assert root == "ab" * 32
+    # The hashes must be ON the options object, not a stray positional.
+    assert seen["options"] is not None
+    assert getattr(seen["options"], "block_hashes", None) is not None, (
+        "block_hashes must be bound via AttestOptions; a positional binding "
+        "silently records a range with no block hashes"
+    )
+
+
+def test_sync_loop_delegates_attestation_to_the_attest_module() -> None:
+    """The sync body must call attest_range, not inline the write path."""
     from lite_indexer.indexer import _sync_loop
 
     src = Path(_sync_loop.__file__).read_text()
-    assert "AttestOptions(block_hashes=block_hashes)" in src, "_sync_loop must pass block_hashes through AttestOptions"
-    # And the positional form must be gone: that is the silent-misbind shape.
-    assert "attest_rows,\n                    block_hashes,\n" not in src
-    # The options object carries the hashes the caller collected.
-    assert AttestOptions(block_hashes=["0xab"]).block_hashes == ["0xab"]
+    assert "await attest_range(" in src
+    # The positional-misbind shape must not reappear.
+    assert "                    block_hashes,\n" not in src

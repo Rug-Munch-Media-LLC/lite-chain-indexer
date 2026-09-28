@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from lite_indexer.config import ATTESTATION_ENABLED
 from lite_indexer.indexer import _checkpoint
 from lite_indexer.indexer import _sync_loop as sync_loop_mod
 from lite_indexer.indexer._phase_guard import PhaseTimeoutError
@@ -224,17 +225,22 @@ async def test_secondary_phase_failure_after_transfers_completes():
     async def _fake_ch_write(fn: Any, *args: Any, **kwargs: Any) -> int:
         return 1
 
+    # ATTESTATION_ENABLED is read by indexer._attest (the extracted write
+    # path), not by _sync_loop, so it is patched on the module that owns it.
+    from lite_indexer.indexer import _attest as attest_mod
+
     overrides = {
         "guarded_phase": _fake_guarded,
         "run_ch_write": _fake_ch_write,
-        "ATTESTATION_ENABLED": False,
         "BACKFILL_ENABLED": False,
         "REORG_PROTECTION_ENABLED": False,
         "DEX_SKIP_TO_HEAD": False,
     }
     originals = {name: getattr(sync_loop_mod, name) for name in overrides}
+    originals["ATTESTATION_ENABLED"] = attest_mod.ATTESTATION_ENABLED
     for name, value in overrides.items():
         setattr(sync_loop_mod, name, value)
+    attest_mod.ATTESTATION_ENABLED = False
     try:
         host = _RangeHost()
         summary: dict[str, Any] = {"status": "running", "errors": []}
@@ -242,7 +248,10 @@ async def test_secondary_phase_failure_after_transfers_completes():
         result = await body(0, 49, summary, 0.0)
     finally:
         for name, value in originals.items():
-            setattr(sync_loop_mod, name, value)
+            if name == "ATTESTATION_ENABLED":
+                attest_mod.ATTESTATION_ENABLED = bool(value)
+            else:
+                setattr(sync_loop_mod, name, value)
 
     # transfers checkpointed → cycle completes despite the dex timeout
     assert host.state.saved == [(49, 1)]
@@ -258,9 +267,10 @@ async def _run_sync_with_dex(host: _RangeHost) -> dict[str, Any]:
     async def _fake_ch_write(fn: Any, *args: Any, **kwargs: Any) -> int:
         return 1
 
+    from lite_indexer.indexer import _attest as attest_mod
+
     overrides = {
         "run_ch_write": _fake_ch_write,
-        "ATTESTATION_ENABLED": False,
         "BACKFILL_ENABLED": False,
         "REORG_PROTECTION_ENABLED": False,
         "DEX_SKIP_TO_HEAD": False,
@@ -268,6 +278,7 @@ async def _run_sync_with_dex(host: _RangeHost) -> dict[str, Any]:
     originals = {name: getattr(sync_loop_mod, name) for name in overrides}
     for name, value in overrides.items():
         setattr(sync_loop_mod, name, value)
+    attest_mod.ATTESTATION_ENABLED = False
     try:
         summary: dict[str, Any] = {"status": "running", "errors": []}
         body = SyncLoopMixin._sync_range_body.__get__(host, _RangeHost)
@@ -275,6 +286,7 @@ async def _run_sync_with_dex(host: _RangeHost) -> dict[str, Any]:
     finally:
         for name, value in originals.items():
             setattr(sync_loop_mod, name, value)
+        attest_mod.ATTESTATION_ENABLED = ATTESTATION_ENABLED
 
 
 def _dex_deferred_value() -> float:

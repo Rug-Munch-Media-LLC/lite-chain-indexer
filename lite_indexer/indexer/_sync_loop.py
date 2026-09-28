@@ -18,7 +18,6 @@ from typing import Any
 from lite_indexer import metrics
 from lite_indexer.chunks import sync_batch_for_chain
 from lite_indexer.config import (
-    ATTESTATION_ENABLED,
     BACKFILL_ENABLED,
     DEX_SKIP_TO_HEAD,
     DEX_SKIP_TO_HEAD_HOURS,
@@ -28,6 +27,7 @@ from lite_indexer.config import (
     STATE_BACKWARD_PROTECTION,
     STATE_REGRESSION_TOLERANCE_BLOCKS,
 )
+from lite_indexer.indexer._attest import attest_range
 from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.indexer._checkpoint import (
     HARD_ABORT_STATUSES,
@@ -735,25 +735,9 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         _t_state = time.perf_counter() - _t0
 
         # 8-attest. Merkle-leaf attestation of the committed range (best-effort).
-        if ATTESTATION_ENABLED and (events or dex_events):
-            try:
-                from lite_indexer.attestation import collect_block_hashes, record_range_attestation
-                from lite_indexer.attestation_record import AttestOptions  # noqa: E501
-
-                attest_rows = events + dex_events
-                block_hashes = collect_block_hashes(events, dex_events)
-                root = await asyncio.to_thread(
-                    record_range_attestation,
-                    self.chain,
-                    from_block,
-                    to_block,
-                    attest_rows,
-                    AttestOptions(block_hashes=block_hashes),
-                )
-                if root:
-                    summary["attestation_root"] = root
-            except Exception as exc:  # noqa: BLE001 — attestation is best-effort
-                logger.warning("attestation_failed", chain=self.chain, error=str(exc)[:120])
+        root = await attest_range(self.chain, from_block, to_block, events, dex_events)
+        if root:
+            summary["attestation_root"] = root
 
         # Monotonic high-water mark — only ever moves forward. Feeds the
         # backward-state guard on the next load.

@@ -1,6 +1,6 @@
 {
 	"scope": "lite_indexer/",
-	"total": 278,
+	"total": 275,
 	"files": {
 		"lite_indexer/chains/__init__.py": 1,
 		"lite_indexer/cli/_attest_parsers.py": 2,
@@ -26,9 +26,8 @@
 		"lite_indexer/query/legs_portals.py": 3,
 		"lite_indexer/rpc/__init__.py": 5,
 		"lite_indexer/rpc/ban_state.py": 1,
-		"lite_indexer/rpc/batch_chunks.py": 1,
 		"lite_indexer/rpc/client.py": 1,
-		"lite_indexer/rpc/client_batch.py": 15,
+		"lite_indexer/rpc/client_batch.py": 13,
 		"lite_indexer/rpc/client_blocks.py": 8,
 		"lite_indexer/rpc/client_call.py": 10,
 		"lite_indexer/rpc/client_logexc.py": 13,

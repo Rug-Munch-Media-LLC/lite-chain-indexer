@@ -15,7 +15,7 @@ from typing import Any
 def batch_chunks(
     calls: Sequence[tuple[str, list[Any] | None]],
     batch_max: int,
-) -> Iterator[list[tuple[str, list[Any] | None]]]:
+) -> Iterator[tuple[int, list[tuple[str, list[Any] | None]]]]:
     """Split ``calls`` into consecutive slices of at most ``batch_max`` elements.
 
     Order is preserved: element ``i`` of the input lands in exactly one chunk
