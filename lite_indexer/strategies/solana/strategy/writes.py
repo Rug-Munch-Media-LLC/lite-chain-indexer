@@ -3,12 +3,14 @@
 Split out of sync.py so the write contract (timestamp coercion, schema
 mapping) owns one module. Composed into SolanaStrategy as a mixin.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
 
 from lite_indexer.logging import get_logger
+from lite_indexer.strategies.solana.dedup import dedup_balance_events, existing_balance_keys
 from lite_indexer.strategies.solana.timestamps import coerce_event_ts
 
 from ._base import SolanaMixinBase
@@ -50,7 +52,19 @@ class WritesMixin(SolanaMixinBase):
         now = datetime.now(UTC)
         rows: list[tuple[Any, ...]] = []
 
-        for event in events:
+        # Idempotency: collapse in-batch duplicates, then drop keys
+        # already durable. Without this a re-run of the same slot window
+        # double-inserted every balance-change row (this table has no
+        # ReplacingMergeTree dedup key, unlike evm_transfers).
+        unique = dedup_balance_events(events)
+        already = existing_balance_keys(client, list(unique))
+        skipped_in_batch = len(events) - len(unique)
+        skipped_existing = 0
+
+        for key, event in unique.items():
+            if key in already:
+                skipped_existing += 1
+                continue
             raw_ts = event.get("blockTimestamp") or event.get("block_timestamp")
             ts = coerce_event_ts(raw_ts, now)
 
@@ -71,6 +85,18 @@ class WritesMixin(SolanaMixinBase):
                     now,
                 )
             )
+
+        if skipped_in_batch or skipped_existing:
+            logger.info(
+                "solana_dedup_skipped",
+                in_batch=skipped_in_batch,
+                existing=skipped_existing,
+                kept=len(rows),
+            )
+
+        if not rows:
+            # Everything was already durable (post-rewind re-run).
+            return len(unique)
 
         solana_table = "wallet_memory.solana_spl_balance_changes"
 

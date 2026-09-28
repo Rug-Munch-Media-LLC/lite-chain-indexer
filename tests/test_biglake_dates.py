@@ -16,9 +16,7 @@ _TS = {
 
 
 class FakeEnvio:
-    def __init__(
-        self, ts: dict[int, int] | None = None, available: bool = True, fail: bool = False
-    ) -> None:
+    def __init__(self, ts: dict[int, int] | None = None, available: bool = True, fail: bool = False) -> None:
         self.ts = ts if ts is not None else dict(_TS)
         self._available = available
         self.fail = fail
@@ -45,9 +43,15 @@ class FakeEnvio:
 
 
 class FakeBigLake:
-    def __init__(self, rows: list[dict[str, Any]] | None = None, fail: bool = False) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, Any]] | None = None,
+        fail: bool = False,
+        truncated: bool = False,
+    ) -> None:
         self.rows = rows or []
         self.fail = fail
+        self.truncated = truncated
         self.seen_dates: Any = "unset"
 
     def available(self) -> bool:
@@ -67,7 +71,7 @@ class FakeBigLake:
         if self.fail:
             raise RuntimeError("lake down")
         self.seen_dates = dates
-        return self.rows
+        return self.rows, self.truncated
 
 
 def _router(envio: Any = None, biglake: Any = None) -> QueryRouter:
@@ -120,20 +124,35 @@ def test_dates_none_when_envio_unavailable_or_failing() -> None:
 def test_biglake_route_passes_derived_dates() -> None:
     lake = FakeBigLake(rows=[])
     router = _router(biglake=lake)
-    rows = asyncio.run(
+    rows, truncated = asyncio.run(
         router._biglake_route(
             LegRequest("evm_transfers", "ethereum", from_block=100, to_block=200, filters=None, limit=10)
         )
     )
     assert rows == []
+    assert truncated is False
     assert lake.seen_dates == ["2026-09-01", "2026-09-02", "2026-09-03"]
+
+
+def test_biglake_route_surfaces_truncation() -> None:
+    """A capped lake read must be visible, not silently short."""
+    lake = FakeBigLake(rows=[{"a": 1}], truncated=True)
+    router = _router(biglake=lake)
+    rows, truncated = asyncio.run(
+        router._biglake_route(
+            LegRequest("evm_transfers", "ethereum", from_block=100, to_block=200, filters=None, limit=10)
+        )
+    )
+    assert rows == [{"a": 1}]
+    assert truncated is True
 
 
 def test_biglake_route_failure_returns_empty() -> None:
     router = _router(biglake=FakeBigLake(fail=True))
-    rows = asyncio.run(
+    rows, truncated = asyncio.run(
         router._biglake_route(
             LegRequest("evm_transfers", "ethereum", from_block=100, to_block=200, filters=None, limit=10)
         )
     )
     assert rows == []
+    assert truncated is False

@@ -7,6 +7,10 @@ per-endpoint circuit breaker (open after a failure burst) layered on
 top of the classic scoring. 429 rate limits trigger backoff only — they
 do NOT trip the circuit breaker or hard-ban (see
 :func:`record_rate_limit` / :func:`handle_rate_limit`).
+
+Scoring is COST-FIRST (2026-09-28): a cost-class term from
+``rpc/cost_tier_map.py`` outranks list position, so a billable endpoint
+is only ever chosen when it is the last option left.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from lite_indexer.rpc.ban_state import (  # re-exported for pool API compat
     unban_endpoint,
 )
 from lite_indexer.rpc.budgets import budget_available
+from lite_indexer.rpc.capabilities import is_logs_capability_excluded
 
 logger = get_logger(__name__)
 
@@ -48,16 +53,6 @@ BUDGET_EXHAUSTED_PENALTY = 20000
 # absorbs a chain) and uses P2C only as the latency tiebreak within it.
 _SELECTION_COUNTS: dict[str, int] = {}
 
-def _logs_capability_excluded(endpoint: str) -> bool:
-    """Whether ``endpoint`` is permanently unable to serve broad getLogs.
-
-    A capability refusal must not count toward failure streaks / bans /
-    circuit-open (it is a fixed property of the endpoint for the method, not
-    an abuse signal). Lazy import avoids an import cycle.
-    """
-    from lite_indexer.rpc.capabilities import is_logs_capability_excluded
-
-    return is_logs_capability_excluded(endpoint)
 
 def _logs_capability_reprobe_due(endpoint: str) -> bool:
     """Whether a stale capability exclusion may be re-probed.
@@ -70,47 +65,40 @@ def _logs_capability_reprobe_due(endpoint: str) -> bool:
 
     return is_logs_capability_reprobe_due(endpoint)
 
+
 def selection_counts() -> dict[str, int]:
     """Copy of the per-endpoint selection counters (tests/telemetry)."""
     return dict(_SELECTION_COUNTS)
 
+
 def reset_selection_state() -> None:
     """Clear the fairness counters (tests / shutdown)."""
     _SELECTION_COUNTS.clear()
+
 
 # ── Ban / streak state lives in rpc.ban_state (extracted 2026-09-19) ──
 
 # Recent-failure timestamps per endpoint (feeds backoff + scoring).
 _endpoint_failures: dict[str, list[float]] = {}
 
+
 def pool_fully_down(endpoints: list[str]) -> bool:
     """Whether every endpoint in a pool is HARD-banned or circuit-open.
 
-    This is the pool-wide *outage* signal that triggers the desperation
-    probe. Only endpoints that are guaranteed to fail count as down:
-
-      - hard-banned (HTTP 403 / provider blacklist — probing deepens it)
-      - circuit-open (repeated genuine failures)
-
-    A pool whose endpoints are merely 429-streak SOFT-banned is
-    rate-limited, NOT down. Counting those as down stopped the fetch path
-    entirely and left one desperation probe per interval against an
-    already-throttled endpoint — the base/celo catch-up deadlock
-    (2026-09-19). Use :func:`pool_rate_limited` for that state and keep
-    crawling instead.
-
-    Args:
-        endpoints: Pool candidate URLs (may be empty).
-
-    Returns:
-        True when the pool is non-empty and every endpoint is hard-banned
-        or circuit-open.
+    The pool-wide *outage* signal that triggers the desperation probe. Only
+    endpoints guaranteed to fail count: hard-banned (403/blacklist — probing
+    deepens it) or circuit-open (repeated genuine failures). A pool that is
+    merely 429-streak SOFT-banned is rate-limited, NOT down: counting those
+    stopped the fetch path and left one probe per interval against an
+    already-throttled endpoint — the base/celo catch-up deadlock (2026-09-19).
+    Use :func:`pool_rate_limited` for that state.
     """
     if not endpoints:
         return False
     from lite_indexer.rpc.routing.seams import circuit_breaker
 
     return all(is_endpoint_hard_banned(ep) or circuit_breaker().is_open(ep) for ep in endpoints)
+
 
 def pool_rate_limited(endpoints: list[str]) -> bool:
     """Whether the pool is rate-limited (soft-banned throughout) but not down.
@@ -135,6 +123,7 @@ def pool_rate_limited(endpoints: list[str]) -> bool:
     from lite_indexer.rpc.routing.seams import circuit_breaker
 
     return all(is_endpoint_banned(ep) or circuit_breaker().is_open(ep) for ep in endpoints)
+
 
 def least_banned_endpoint(endpoints: list[str]) -> str:
     """Return the endpoint with the lowest combined pool penalty.
@@ -169,6 +158,7 @@ def least_banned_endpoint(endpoints: list[str]) -> str:
     scored.sort(key=lambda x: x[0])
     return scored[0][1]
 
+
 def probe_eligible_endpoints(endpoints: list[str]) -> list[str]:
     """Endpoints the desperation probe is ALLOWED to dial.
 
@@ -199,10 +189,11 @@ def probe_eligible_endpoints(endpoints: list[str]) -> list[str]:
     for ep in endpoints:
         if is_endpoint_hard_banned(ep):
             continue
-        if _logs_capability_excluded(ep) and not _logs_capability_reprobe_due(ep):
+        if is_logs_capability_excluded(ep) and not _logs_capability_reprobe_due(ep):
             continue
         eligible.append(ep)
     return eligible
+
 
 def force_probe_endpoint(endpoint: str) -> bool:
     """Bypass the circuit ban for a single request to ``endpoint``.
@@ -222,6 +213,7 @@ def force_probe_endpoint(endpoint: str) -> bool:
     from lite_indexer.rpc.routing.seams import circuit_breaker
 
     return circuit_breaker().force_probe(endpoint)
+
 
 def desperation_probe_due(endpoints: list[str], now: float | None = None) -> bool:
     """Whether a pool-wide desperation probe may fire for ``endpoints``.
@@ -243,6 +235,7 @@ def desperation_probe_due(endpoints: list[str], now: float | None = None) -> boo
         return False
     return circuit_breaker().desperation_probe_due(endpoints[0], now=now)
 
+
 def mark_desperation_probe(endpoints: list[str], now: float | None = None) -> None:
     """Record that a desperation probe fired for ``endpoints``.
 
@@ -256,7 +249,9 @@ def mark_desperation_probe(endpoints: list[str], now: float | None = None) -> No
         return
     circuit_breaker().mark_desperation_probe(endpoints[0], now=now)
 
+
 # ── Best Endpoint Selection ──────────────────────────────────────────
+
 
 def get_best_endpoint(endpoints: list[str]) -> str:
     """Return the healthiest endpoint with load-balanced rotation.
@@ -278,7 +273,7 @@ def get_best_endpoint(endpoints: list[str]) -> str:
     Fallthrough: if all endpoints are in cooldown, clear and retry the first.
     """
     now = time.time()
-
+    from lite_indexer.rpc.cost_tier_map import cost_penalty
     from lite_indexer.rpc.routing import (
         STALE_ENDPOINT_PENALTY,
         TIP_FAILURE_PENALTY,
@@ -286,7 +281,6 @@ def get_best_endpoint(endpoints: list[str]) -> str:
         stale_endpoints,
     )
     from lite_indexer.rpc.routing.seams import circuit_breaker
-
 
     # Staleness gate: endpoints lagging >3 blocks behind the pool median
     # block height are excluded until they record a fresh height. With no
@@ -298,7 +292,12 @@ def get_best_endpoint(endpoints: list[str]) -> str:
         failures = [t for t in _endpoint_failures.get(ep, []) if now - t < ENDPOINT_COOLDOWN]
         _endpoint_failures[ep] = failures
 
-        penalty = len(failures) * 1000 + i
+        # COST FIRST: the weight exceeds any list position ``i`` can produce,
+        # so a billable endpoint never wins on being early in the pool — only
+        # on being the last option left. Weights stay under MAX_FAILURES *
+        # 1000 (see rpc/cost_tier_map.py), so this reorders the healthy set
+        # and never excludes an endpoint outright.
+        penalty = len(failures) * 1000 + i + cost_penalty(ep)
 
         # Hard ban: a 403/429 endpoint is provider-blacklisted for a
         # while — skip it entirely, not just deprioritized.
@@ -353,6 +352,7 @@ def get_best_endpoint(endpoints: list[str]) -> str:
     # least-used half): no endpoint absorbs a chain.
     return _select_fair(healthy)
 
+
 def _select_fair(healthy: list[str]) -> str:
     """Fair-spread selection: least-used half of the healthy set, P2C tiebreak.
 
@@ -375,7 +375,9 @@ def _select_fair(healthy: list[str]) -> str:
     _SELECTION_COUNTS[chosen] = _SELECTION_COUNTS.get(chosen, 0) + 1
     return chosen
 
+
 # ── Failure Tracking ────────────────────────────────────────────────
+
 
 def record_endpoint_failure(endpoint: str) -> None:
     """Record a failure for this endpoint (feeds backoff + circuit breaker).
@@ -386,7 +388,7 @@ def record_endpoint_failure(endpoint: str) -> None:
     structurally refuse broad ``eth_getLogs``) is ignored entirely: the
     refusal is a permanent method property, not an abuse signal.
     """
-    if _logs_capability_excluded(endpoint):
+    if is_logs_capability_excluded(endpoint):
         logger.debug("endpoint_failure_ignored_logs_capability", endpoint=endpoint[:60])
         return
     _endpoint_failures.setdefault(endpoint, []).append(time.time())
@@ -394,21 +396,16 @@ def record_endpoint_failure(endpoint: str) -> None:
 
     circuit_breaker().record_failure(endpoint)
 
+
 def record_rate_limit(endpoint: str) -> None:
-    """Record a 429 rate limit for backoff WITHOUT tripping the circuit.
+    """Record a 429 for backoff WITHOUT tripping the circuit.
 
     429 means the provider is temporarily throttling us — the correct
-    reaction is backoff: the recent-failure timestamp deprioritizes the
-    endpoint in :func:`get_best_endpoint` scoring and drives the
-    exponential sleep in :func:`apply_endpoint_backoff` /
-    :func:`handle_rate_limit`. It must NOT trip the per-endpoint circuit
-    breaker (which fully skips the endpoint for a cooldown) or hard-ban it
-    (``ENDPOINT_BAN_*`` exponential window) — rate limits are transient and
-    the endpoint usually recovers within seconds; banning it wastes healthy
-    capacity that free-tier providers expect us to retry after backoff.
-
-    Args:
-        endpoint: RPC endpoint URL that returned 429.
+    reaction is backoff: the failure timestamp deprioritizes the endpoint
+    in :func:`get_best_endpoint` scoring and drives the exponential sleep in
+    :func:`apply_endpoint_backoff` / :func:`handle_rate_limit`. It must NOT
+    trip the circuit breaker or hard-ban (both would skip the endpoint
+    entirely and waste healthy capacity after the throttle lifts).
     """
     _endpoint_failures.setdefault(endpoint, []).append(time.time())
     metrics_incr("rpc_rate_limits")
@@ -419,6 +416,7 @@ def record_rate_limit(endpoint: str) -> None:
     # 429 storm. Success anywhere clears the streak (record_endpoint_success).
     record_429_streak(endpoint)
 
+
 def record_endpoint_success(endpoint: str) -> None:
     """Record a success for this endpoint (closes its circuit + unban)."""
     from lite_indexer.rpc.routing.seams import circuit_breaker
@@ -427,12 +425,14 @@ def record_endpoint_success(endpoint: str) -> None:
     unban_endpoint(endpoint)
     clear_429_streak(endpoint)
 
+
 async def apply_endpoint_backoff(url: str) -> None:
     """Apply exponential backoff if this endpoint has recent failures."""
     recent_failures = [t for t in _endpoint_failures.get(url, []) if time.time() - t < ENDPOINT_COOLDOWN]
     if recent_failures:
         backoff = 2 ** len(recent_failures)
         await asyncio.sleep(min(backoff, BACKOFF_CAP))
+
 
 async def handle_rate_limit(url: str) -> None:
     """Handle a 429: backoff only — no circuit trip, no hard ban.

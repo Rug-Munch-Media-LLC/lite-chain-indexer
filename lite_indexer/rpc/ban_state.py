@@ -108,9 +108,9 @@ def ban_endpoint(endpoint: str, reason: str = "") -> None:
     Each consecutive ban doubles the window (capped). A capability-excluded
     endpoint is never banned: the refusal is a permanent method property.
     """
-    from lite_indexer.rpc.pool import _logs_capability_excluded
+    from lite_indexer.rpc.capabilities import is_logs_capability_excluded
 
-    if _logs_capability_excluded(endpoint):
+    if is_logs_capability_excluded(endpoint):
         logger.debug("endpoint_ban_skipped_logs_capability", endpoint=endpoint[:60], reason=reason)
         return
     level = _endpoint_ban_level.get(endpoint, 0)

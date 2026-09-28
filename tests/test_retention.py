@@ -89,8 +89,8 @@ def test_ttl_expression_is_canonical() -> None:
 
 
 def test_migration_013_matches_policy() -> None:
-    """migrations/013_retention_classes.sql must state exactly the policy TTLs."""
-    sql = (Path(__file__).resolve().parents[1] / "migrations" / "013_retention_classes.sql").read_text(encoding="utf-8")
+    """migrations/021_retention_classes.sql must state exactly the policy TTLs."""
+    sql = (Path(__file__).resolve().parents[1] / "migrations" / "021_retention_classes.sql").read_text(encoding="utf-8")
     found = {
         table: (column, int(days))
         for table, column, days in re.findall(
@@ -186,7 +186,7 @@ def test_ensure_retention_probe_failure_returns_empty() -> None:
 
 
 def test_main_skips_when_ch_unavailable(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr("lite_indexer.retention._connect", lambda: None)
+    monkeypatch.setattr("lite_indexer.retention_cli._connect", lambda: None)
     assert main() == 0
     assert "CH unavailable" in capsys.readouterr().out
 
@@ -194,14 +194,14 @@ def test_main_skips_when_ch_unavailable(monkeypatch: pytest.MonkeyPatch, capsys:
 def test_main_fails_on_drift(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     live = {name: f"TTL {rule.time_column} + toIntervalDay({rule.days})" for name, rule in RETENTION_POLICY.items()}
     live["evm_transfers"] = "TTL ingested_at + toIntervalDay(90)"
-    monkeypatch.setattr("lite_indexer.retention._connect", lambda: FakeCH(ddl_by_table=live))
+    monkeypatch.setattr("lite_indexer.retention_cli._connect", lambda: FakeCH(ddl_by_table=live))
     assert main() == 1
     assert "RETENTION DRIFT" in capsys.readouterr().out
 
 
 def test_main_passes_when_matching(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     live = {name: f"TTL {rule.time_column} + toIntervalDay({rule.days})" for name, rule in RETENTION_POLICY.items()}
-    monkeypatch.setattr("lite_indexer.retention._connect", lambda: FakeCH(ddl_by_table=live))
+    monkeypatch.setattr("lite_indexer.retention_cli._connect", lambda: FakeCH(ddl_by_table=live))
     assert main() == 0
     assert "RETENTION OK" in capsys.readouterr().out
 

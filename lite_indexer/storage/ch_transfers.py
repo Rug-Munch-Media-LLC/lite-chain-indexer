@@ -1,8 +1,7 @@
 """ClickHouse transfer writes — idempotent-rewind dedup + insert.
 
-Split out of :mod:`lite_indexer.storage.clickhouse` (2026-09-22) so the
-writer stays under the per-file size ratchet. Config flags that tests
-patch on the facade module are read through it at call time.
+Split out of :mod:`lite_indexer.storage.clickhouse` (2026-09-22) for the
+per-file size ratchet. Facade config flags are read at call time.
 """
 
 from __future__ import annotations
@@ -29,6 +28,7 @@ from lite_indexer.storage.ch_rows import (
 
 logger = get_logger(__name__)
 
+
 def _dedup_transfer_events(
     events: list[dict[str, Any]],
 ) -> dict[tuple[int, str, int], dict[str, Any]]:
@@ -48,6 +48,7 @@ def _dedup_transfer_events(
         )
         unique.setdefault(key, event)
     return unique
+
 
 def _transfer_rows(
     chain: str,
@@ -80,6 +81,7 @@ def _transfer_rows(
         )
     return rows, skipped
 
+
 def _insert_transfers(client: Any, chain: str, rows: list[tuple[Any, ...]]) -> int:
     """Execute the transfer INSERT; fail CLOSED on an outage."""
     try:
@@ -97,10 +99,9 @@ def _insert_transfers(client: Any, chain: str, rows: list[tuple[Any, ...]]) -> i
         metrics_incr("clickhouse_errors")
         logger.error("clickhouse_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
         if is_unavailable_error(exc):
-            raise ClickHouseUnavailable(
-                f"ClickHouse unreachable during transfer insert (chain={chain})"
-            ) from exc
+            raise ClickHouseUnavailable(f"ClickHouse unreachable during transfer insert (chain={chain})") from exc
         return 0
+
 
 class TransfersMixin:
     """``evm_transfers`` writes with idempotent-rewind dedup."""
@@ -192,8 +193,8 @@ class TransfersMixin:
             logger.info("clickhouse_dedup_skipped", chain=chain, skipped=skipped, kept=len(rows))
 
         if not rows:
-            # All events already durable (post-rewind): count as handled so
-            # the caller advances instead of failing the range write.
-            return len(unique)
+            # All durable (post-rewind replay): falsy count == "handled", so the
+            # range advances without falsely claiming a row was written.
+            return 0
 
         return _insert_transfers(client, chain, rows)

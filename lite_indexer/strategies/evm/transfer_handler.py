@@ -72,9 +72,7 @@ from lite_indexer.strategies.evm.range_planning import (
     _rate_limited_rotation,
     _record_adaptive_success,
 )
-
-logger = get_logger(__name__)
-
+from lite_indexer.strategies.evm.truncation_guard import GetlogsPage, reject_truncated_getlogs
 
 logger = get_logger(__name__)
 
@@ -236,19 +234,20 @@ async def _fetch_range(
                 if "result" in data:
                     logs = data["result"]
                     if isinstance(logs, list):
+                        # Silent-truncation guard: a capped public RPC answers
+                        # 200 with a SHORT list and no error — never accept it
+                        # as the complete chunk; record it and rotate.
+                        if reject_truncated_getlogs(
+                            GetlogsPage(logs, from_block, to_block, chain, url, record_endpoint_failure)
+                        ):
+                            last_error = "truncated_getlogs_response"
+                            continue
                         parsed = parse_transfer_logs(logs, chain, from_block, to_block)
                         if best_result is None or len(parsed) > len(best_result):
                             best_result = parsed
-                        # A 200 with a result list means this endpoint
-                        # served the range in full. All endpoints serve
-                        # identical chain data for the same range+topic,
-                        # so stop rotating here. The old guard
-                        # ``len(parsed) == len(logs)`` was unreachable in
-                        # practice because parse_transfer_logs filters
-                        # (removed logs, NFTs, dedup) — so every chunk
-                        # queried ALL endpoints sequentially and busy
-                        # chains (ethereum) blew the 120s sync timeout,
-                        # re-saving block 100 forever.
+                        # The tail check above already proved this endpoint
+                        # covered the range, and all endpoints serve identical
+                        # data for the same range+topic — so stop rotating.
                         break
                     elif isinstance(logs, dict) and "error" in logs:
                         last_error = logs["error"].get("message", str(logs))

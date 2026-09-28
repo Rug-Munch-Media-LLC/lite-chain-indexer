@@ -37,6 +37,8 @@ logger = get_logger(__name__)
 
 # One row per (chain, address, checked_at). MergeTree keeps every sample
 # so historical reconciliation trends are queryable.
+# Schema of record: migrations/023_runtime_ddl_tables.sql (kept as an
+# idempotent self-provision for a fresh dev box).
 _RECONCILIATION_DDL = f"""
 CREATE TABLE IF NOT EXISTS {CH_RECONCILIATION_TABLE} (
     chain LowCardinality(String),
@@ -48,6 +50,8 @@ CREATE TABLE IF NOT EXISTS {CH_RECONCILIATION_TABLE} (
     delta_pct Float64,
     status LowCardinality(String)
 ) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(checked_at)
+TTL checked_at + INTERVAL 90 DAY
 ORDER BY (chain, address, checked_at)
 """
 
@@ -58,14 +62,9 @@ _RECONCILIATION_CONCURRENCY = 5
 async def ensure_reconciliation_table(ch_client: Any) -> bool:
     """Create ``wallet_memory.reconciliation_results`` if missing.
 
-    Idempotent and non-fatal: a missing database or lacking privileges
-    degrades to a debug log (the caller treats it as "caching skipped").
-
-    Args:
-        ch_client: ClickHouse client (anything with ``execute``).
-
-    Returns:
-        True when the table exists (or was created), False otherwise.
+    Idempotent and non-fatal: a missing database or lacking privileges degrades
+    to a debug log (the caller treats it as "caching skipped"). Returns True
+    when the table exists (or was created).
     """
     try:
         ch_client.execute(

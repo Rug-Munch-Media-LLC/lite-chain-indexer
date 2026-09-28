@@ -23,11 +23,11 @@ from lite_indexer.config import (
     DEX_SKIP_TO_HEAD,
     DEX_SKIP_TO_HEAD_HOURS,
     HEAD_BUFFER,
+    REORG_PROTECTION_ENABLED,  # noqa: F401 — patched by tests
     RPC_WS_HEAD_ENABLED,
     STATE_BACKWARD_PROTECTION,
     STATE_REGRESSION_TOLERANCE_BLOCKS,
 )
-from lite_indexer.config import REORG_PROTECTION_ENABLED  # noqa: F401 — patched by tests
 from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.indexer._checkpoint import (
     HARD_ABORT_STATUSES,

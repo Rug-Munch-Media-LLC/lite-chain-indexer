@@ -13,6 +13,7 @@ from typing import Any
 
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.metrics import incr_labeled as metrics_labeled
 from lite_indexer.query.leg_request import LegRequest
 
 logger = get_logger(__name__)
@@ -68,8 +69,10 @@ async def lake_dates(router: Any, chain: str, from_block: int | None, to_block: 
         return None
 
 
-async def biglake_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
+async def biglake_route(router: Any, req: LegRequest) -> tuple[list[dict[str, Any]], bool]:
     """Try the AWS public lake for ranges the indexed tiers could not serve.
+
+    Returns ``(rows, truncated)``.
 
     Derives date partitions for deep block ranges so historical queries
     hit the right files (the lake has no block→date index of its own).
@@ -80,11 +83,11 @@ async def biglake_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     from_block, to_block = req.from_block, req.to_block
     filters, limit = req.filters, req.limit
     if not router.biglake.available():
-        return []
+        return [], False
     address = router._address_from_filters(filters) or router._single_address(filters)
     dates = await router._lake_dates(chain, from_block, to_block)
     try:
-        rows = await asyncio.to_thread(
+        rows, truncated = await asyncio.to_thread(
             router.biglake.query,
             table,
             chain,
@@ -94,10 +97,17 @@ async def biglake_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
             dates=dates,
             limit=limit,
         )
+    except ValueError:
+        raise
     except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
         logger.warning("biglake_route_failed", error=str(exc)[:120])
-        return []
+        return [], False
     filtered = router._filter_rows(table, rows, filters)
     if filtered:
         metrics_incr("biglake_routes")
-    return filtered
+    if truncated:
+        # Surfaced on the leg return so the router result carries it: a
+        # caller must be able to tell "the lake has 40 rows" from "the lake
+        # has 40,000 and I saw 1000".
+        metrics_labeled("biglake_truncated", table=table, limit=str(limit))
+    return filtered, truncated

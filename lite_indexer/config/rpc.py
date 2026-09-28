@@ -383,20 +383,20 @@ RPC_DISCOVERY_INTERVAL: int = int(os.environ.get("RPC_DISCOVERY_INTERVAL", "8640
 # provider for a while; hammering them only deepens the ban. These are
 # banned for an exponentially growing duration (base * 2^ban_count,
 # capped) instead of the plain 300s cooldown used for generic failures.
-# Cap reduced 3600 -> 300 (2026-09-02): public free RPCs reset rate limits
-# every minute; a 1h cap wasted recovery time during the EVM dex_events
-# staleness crisis (517 rate-limit events/hour, 190h+ lag).
+# Cap 3600 -> 300 (2026-09-02): free RPCs reset rate limits every minute, so a
+# 1h cap wasted recovery time during the dex_events staleness crisis.
 ENDPOINT_BAN_BASE_SECONDS: int = int(os.environ.get("ENDPOINT_BAN_BASE_SECONDS", "60"))
 ENDPOINT_BAN_CAP_SECONDS: int = int(os.environ.get("ENDPOINT_BAN_CAP_SECONDS", "300"))
 # ── On-Demand Historical RPC Queries (lite_indexer.query) ───────────────
-# The "no-full-indexing-needed" architecture: the QueryRouter answers
-# queries about ANY block/tx/address historically by routing to the best
-# data source — ClickHouse (indexed, hot) → B2 parquet (cold) → live RPC
-# (on-demand). The system never says "data not available": when the
-# requested range is not indexed, it dials the chain's RPC pool for the
-# exact block/tx in question (bounded, rate-limit-protected, cached).
+# The "no-full-indexing-needed" architecture: the QueryRouter routes any
+# historical block/tx/address query to the best source — ClickHouse (hot) →
+# B2 parquet (cold) → live RPC. It never says "data not available": an
+# unindexed range dials the chain's RPC pool (bounded, cached).
 ON_DEMAND_RPC_ENABLED: bool = os.environ.get("ON_DEMAND_RPC_ENABLED", "1") != "0"
 
+# Free external-lake legs (BigLake/S3, Envio, indexed.xyz, SQD). Deliberately
+# NOT ON_DEMAND_RPC_ENABLED — a cost kill-switch must not remove free reads.
+LAKE_READ_ENABLED: bool = os.environ.get("LAKE_READ_ENABLED", "1") != "0"
 # How long (seconds) fetched RPC results are cached before refetching.
 # Keeps repeated queries for the same tx/address/block off the RPC tier.
 ON_DEMAND_RPC_CACHE_TTL: int = int(os.environ.get("ON_DEMAND_RPC_CACHE_TTL", "3600"))

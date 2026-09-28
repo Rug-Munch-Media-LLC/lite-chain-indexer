@@ -18,10 +18,11 @@ load_env_file()
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/var/data/chain-indexer"))
 STATE_DIR = DATA_DIR / "state"
 
-# Hard disk cap: 10 GB
-DISK_CAP_BYTES = 10 * 1024**3
+# Hard disk cap. Env-driven as DISK_CAP_GB (.env.example documents that key):
+# a .env-only operator got the hardcoded 10 GB while production ran 150 GB.
+DISK_CAP_GB: float = float(os.environ.get("DISK_CAP_GB", "10"))
+DISK_CAP_BYTES: int = int(DISK_CAP_GB * 1024**3)
 
-# Max blocks per batch (eth_getLogs over too-large ranges can timeout)
 BATCH_SIZE = 1000
 
 # Max events per batch (safety limit)
@@ -400,4 +401,3 @@ NATS_STREAM_RETENTION: str = os.environ.get("NATS_STREAM_RETENTION", "limits")
 NATS_STREAM_MAX_AGE_SECONDS: int = int(os.environ.get("NATS_STREAM_MAX_AGE_SECONDS", str(3 * 24 * 60 * 60)))
 NATS_STREAM_MAX_BYTES: int = int(os.environ.get("NATS_STREAM_MAX_BYTES", str(5 * 1024**3)))
 NATS_STREAM_DISCARD: str = os.environ.get("NATS_STREAM_DISCARD", "old")
-

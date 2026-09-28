@@ -74,8 +74,8 @@ from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from lite_indexer.bootstrap import SnapshotBootstrap, build_import_sql
-from lite_indexer.ingest.flatfile_seams import injected_fetcher
 from lite_indexer.config import BOOTSTRAP_CH_FILE_ROOT, FLATFILE_STAGE_DIR
+from lite_indexer.ingest.flatfile_seams import injected_fetcher
 from lite_indexer.logging import get_logger
 from lite_indexer.snapshot_manifest import MANIFEST_NAME, SnapshotManifest, SnapshotTable
 from lite_indexer.strategies import SUPPORTED_CHAINS

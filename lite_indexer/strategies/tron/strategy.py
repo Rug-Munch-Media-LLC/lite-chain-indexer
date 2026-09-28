@@ -25,6 +25,7 @@ from lite_indexer.strategies.address_activity import CrossChainAddressActivityMi
 from lite_indexer.strategies.base import AbstractChainStrategy
 from lite_indexer.util.http import http_limits
 
+from ._event_window import TokenEventWindow
 from .launch import (
     SUNPUMP_CONTRACT,
     SUNSWAP_FACTORY,
@@ -263,16 +264,11 @@ class TronStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
 
         all_events: list[dict[str, Any]] = []
         failures = 0
+        window = TokenEventWindow(from_block=from_block, to_block=to_block, min_ts=min_ts, max_ts=max_ts)
 
         for token in self.tokens:
             try:
-                events, ok = await self._fetch_token_events(
-                    token,
-                    from_block,
-                    to_block,
-                    min_ts,
-                    max_ts,
-                )
+                events, ok = await self._fetch_token_events(token, window)
                 if not ok:
                     failures += 1
                 all_events.extend(events)
@@ -383,10 +379,7 @@ class TronStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
     async def _fetch_token_events(
         self,
         token: dict[str, Any],
-        from_block: int,
-        to_block: int,
-        min_ts: int,
-        max_ts: int,
+        window: TokenEventWindow,
     ) -> tuple[list[dict[str, Any]], bool]:
         """Fetch TRC20 Transfer events for a single token.
 
@@ -401,10 +394,8 @@ class TronStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
 
         Args:
             token: Token metadata dict with 'address' key.
-            from_block: Start block (logging only).
-            to_block: End block (logging only).
-            min_ts: Inclusive start timestamp (ms).
-            max_ts: Inclusive end timestamp (ms).
+            window: Block range (logging only) plus the resolved inclusive
+                millisecond timestamps that TronGrid actually filters on.
 
         Returns:
             Tuple of (parsed event dicts, rpc_ok). rpc_ok is False when
@@ -426,11 +417,11 @@ class TronStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
             result = await tron_get_with_range(
                 client,
                 path,
-                from_block,
-                to_block,
+                window.from_block,
+                window.to_block,
                 cursor,
-                min_block_timestamp=min_ts,
-                max_block_timestamp=max_ts,
+                min_block_timestamp=window.min_ts,
+                max_block_timestamp=window.max_ts,
             )
 
             if not result:

@@ -336,7 +336,11 @@ def detect_bundle(slot_txs: list[dict[str, Any]]) -> BundleEvent | None:
     # Mint(s) created by the create tx; attribute buys to them.
     created = _created_mints(slot_txs[create_index])
     if not created:
-        created = {"*"}  # fallback: attribute fresh buys on any mint [REVIEW]
+        # The create tx minted nothing extractable (raw-byte CPI, per the
+        # _created_mints docstring). Guessing a mint would let anyone who lands
+        # a Jito tip in the same slot as an unrelated token creation produce a
+        # bundle row, so decline instead.
+        return None
 
     buyer_wallets: set[str] = set()
     for tx in slot_txs[create_index + 1 :]:
@@ -429,7 +433,7 @@ def ensure_bundles_table(ch_client: Any) -> bool:
         True when the table exists (or was created), False on failure.
     """
     try:
-        ch_client.execute(_BUNDLES_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+        ch_client.execute(_BUNDLES_DDL)  # nosemgrep: formatted-sql-query — identifiers are constants
         logger.info("solana_bundles_table_ensured", table=_BUNDLES_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -475,27 +479,17 @@ def _insert_bundle(ch_client: Any, bundle: BundleEvent) -> int:
 async def write_bundle(bundle: BundleEvent, ch_writer: Any, nats: Any) -> None:
     """Persist a detected bundle to ClickHouse and publish it to NATS.
 
-    Dependency-injected sink: ``ch_writer`` is anything exposing a
-    ``_connect()`` (the ``ClickHouseWriter`` from
-    ``lite_indexer.storage.clickhouse``) and ``nats`` is anything with an
-    async ``publish_event(chain, event_type, data)`` (the
-    ``NATSPublisher``). Both are best-effort: ClickHouse unavailability
-    or a NATS circuit-open drops the event with a log line, never an
-    exception.
+    Dependency-injected sinks: ``ch_writer`` exposes ``_connect()`` (the
+    ``ClickHouseWriter``), ``nats`` an async ``publish_event(chain, type,
+    data)`` (the ``NATSPublisher``). Both best-effort — a CH outage or a NATS
+    circuit-open drops the event with a log line, never an exception.
 
-    Emits to ``wallet_memory.solana_bundles`` and the NATS subject
-    ``chain.solana.bundle`` (event type ``jito_bundle``).
+    Emits to ``wallet_memory.solana_bundles`` and NATS subject
+    ``chain.solana.bundle`` (type ``jito_bundle``).
 
-    [REVIEW] The NATS subject for the ``jito_bundle`` event type must be
-    registered in ``NATSPublisher.SUBJECTS`` as
-    ``"jito_bundle": "chain.{chain}.bundle"`` — until that mapping is
-    added, ``publish_event`` returns False (unknown event type) and the
-    bundle is only persisted to ClickHouse.
-
-    Args:
-        bundle: The detected bundle event.
-        ch_writer: ClickHouse writer (``_connect()`` → client | None).
-        nats: NATS publisher (``publish_event`` → bool).
+    [REVIEW] ``jito_bundle`` is not yet in ``NATSPublisher.SUBJECTS``, so
+    ``publish_event`` returns False (unknown type) and the bundle is only
+    persisted to ClickHouse until that mapping is added.
     """
     connect = getattr(ch_writer, "_connect", None)
     if callable(connect):

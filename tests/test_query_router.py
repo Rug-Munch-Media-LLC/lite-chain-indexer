@@ -43,11 +43,18 @@ def _no_network_legs() -> Any:
     async def _empty(*_args: Any, **_kw: Any) -> list[Any]:
         return []
 
-    with patch("lite_indexer.query.router.QueryRouter._biglake_route", _empty), \
-            patch("lite_indexer.query.router.QueryRouter._envio_route", _empty), \
-            patch("lite_indexer.query.router.QueryRouter._indexed_route", _empty), \
-            patch("lite_indexer.query.router.QueryRouter._sqd_traces_route", _empty):
+    async def _empty_biglake(*_args: Any, **_kw: Any) -> tuple[list[Any], bool]:
+        # _biglake_route returns (rows, truncated); the other legs return rows.
+        return [], False
+
+    with (
+        patch("lite_indexer.query.router.QueryRouter._biglake_route", _empty_biglake),
+        patch("lite_indexer.query.router.QueryRouter._envio_route", _empty),
+        patch("lite_indexer.query.router.QueryRouter._indexed_route", _empty),
+        patch("lite_indexer.query.router.QueryRouter._sqd_traces_route", _empty),
+    ):
         yield
+
 
 # ── Fakes ───────────────────────────────────────────────────────────────
 

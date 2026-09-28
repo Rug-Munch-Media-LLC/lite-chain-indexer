@@ -1,7 +1,7 @@
 """Hot/cold retention enforcement + drift detection.
 
 Single source of truth is :data:`lite_indexer.config.RETENTION_POLICY`
-(mirrored by ``migrations/013_retention_classes.sql`` and documented in
+(mirrored by ``migrations/021_retention_classes.sql`` and documented in
 ``docs/CLICKHOUSE_RETENTION.md``).
 
 * :func:`ensure_retention_policies` — idempotently applies the table-level
@@ -21,7 +21,6 @@ Run ``python3 -m lite_indexer.retention`` or
 
 from __future__ import annotations
 
-import os
 import re
 import sys
 from collections.abc import Mapping
@@ -199,49 +198,22 @@ def format_report(rows: list[DriftRow]) -> str:
     return "\n".join(lines)
 
 
-def _connect() -> Any | None:
-    """Build a ClickHouse client, or None when the driver is unavailable."""
-    try:
-        from clickhouse_driver import Client as CHClient
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("retention_clickhouse_import_failed", error=str(exc)[:80])
-        return None
-    try:
-        return CHClient(
-            host=os.environ.get("CLICKHOUSE_HOST", "127.0.0.1"),
-            port=int(os.environ.get("CLICKHOUSE_PORT", "9000")),
-            user=os.environ.get("CLICKHOUSE_USER", "default"),
-            password=os.environ.get("CLICKHOUSE_PASSWORD", ""),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("retention_clickhouse_client_failed", error=str(exc)[:80])
-        return None
+# CLI half — the process entry point lives in retention_cli (size ratchet);
+# re-exported so ``from lite_indexer.retention import main`` keeps working.
+from lite_indexer.retention_cli import _connect, main  # noqa: E402
+
+__all__ = [
+    "DriftRow",
+    "_connect",
+    "ensure_retention_policies",
+    "evaluate_drift",
+    "fetch_live_ttls",
+    "format_report",
+    "main",
+    "parse_live_ttl",
+    "ttl_expression",
+]
 
 
-def main() -> int:
-    """Run the retention drift check. Returns the process exit code."""
-    client = _connect()
-    if client is None:
-        print("CH unavailable — retention drift check skipped (exit 0)")  # noqa: T201
-        return 0
-    try:
-        live = fetch_live_ttls(client)
-    except Exception as exc:  # noqa: BLE001
-        print(f"CH unavailable — retention drift check skipped (exit 0): {str(exc)[:200]}")  # noqa: T201
-        return 0
-    rows = evaluate_drift(live)
-    print(format_report(rows))  # noqa: T201
-    drift = [row for row in rows if not row.ok]
-    if drift:
-        print(  # noqa: T201
-            f"\nRETENTION DRIFT: {len(drift)} table(s) diverge from the policy — "
-            "apply migrations/013_retention_classes.sql (see docs/CLICKHOUSE_RETENTION.md)."
-        )
-        return 1
-    present = sum(1 for row in rows if row.status != "absent")
-    print(f"\nRETENTION OK — {present}/{len(rows)} policy tables present and matching.")  # noqa: T201
-    return 0
-
-
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - module entry point
     sys.exit(main())

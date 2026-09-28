@@ -1,0 +1,39 @@
+-- 019_evm_transfers_dedup_key.sql
+-- ==========================================================================
+-- !!! INVALID / SUPERSEDED — DO NOT APPLY (kept for history only) !!!
+--
+-- ClickHouse 26.7 rejects this file with Code 36 (BAD_ARGUMENTS): `MODIFY
+-- ORDER BY` cannot append an EXISTING column (tx_hash) to the sorting key —
+-- only newly added columns with no default expression may be appended.
+-- Superseded by migrations/022_evm_transfers_dedup_key_v2.sql (adds a new
+-- no-default `tx_log_key String` column and appends THAT to the ORDER BY).
+-- Verified on CH 26.7.1.1315 on 2026-09-19; the failed ALTER aborted safely
+-- and is safe to have been attempted. Do NOT retry this file.
+-- ==========================================================================
+-- ---------------------------------------------------------------------------
+-- Idempotent rewind for wallet_memory.evm_transfers (the TRON/EVM transfer
+-- store). Reconciliation rewinds re-extract a [from_block, to_block] range;
+-- the writer is append-only, so an unchanged range used to be inserted again
+-- and the ClickHouse row count compounded (the 9700%→9800% TRON divergence).
+--
+-- evm_transfers is already ReplacingMergeTree, but replacement is applied at
+-- MERGE time, so exact re-inserts are visible to count() until a merge runs.
+-- This migration extends the dedup/sorting key from
+--   (chain, block_number, log_index)
+-- to
+--   (chain, block_number, log_index, tx_hash)
+-- so the full dedup key is (chain, block_number, tx_hash, log_index).
+--
+-- APPEND-ONLY KEY CHANGE: ClickHouse permits adding columns to the end of a
+-- MergeTree sorting key via MODIFY ORDER BY (existing prefix preserved), so
+-- this is a metadata-only change — no table rebuild, no data rewrite.
+-- The application layer additionally skips already-present keys before
+-- INSERT (ClickHouseWriter._existing_transfer_keys) so rewind is idempotent
+-- immediately, without waiting for a background merge.
+--
+-- Apply while the indexer is stopped:
+--   clickhouse-client --multiquery < migrations/021_evm_transfers_dedup_key.sql
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE wallet_memory.evm_transfers
+    MODIFY ORDER BY (chain, block_number, log_index, tx_hash);

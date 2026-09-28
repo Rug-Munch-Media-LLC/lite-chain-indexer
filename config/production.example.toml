@@ -1,0 +1,75 @@
+# Production provider budget map — EXAMPLE, no secrets, safe to commit.
+#
+# WHY THIS FILE NOW EXISTS (2026-09-28)
+#   The real budgets lived only in a root-only systemd `Environment=` line.
+#   That made them invisible to code review and erased by any rebuild of the
+#   unit from this repo, which is why a fresh clone came up UNLIMITED
+#   (RPC_PROVIDER_DAILY_BUDGET defaulted to 0). This file is the checked-in
+#   record of the SHAPE of that configuration. Values here are placeholders;
+#   the operator's real numbers still belong in the private env overlay, not
+#   in git. What is checked in is the structure and the policy, so a reviewer
+#   can see the caps exist and a fresh clone has something to copy.
+#
+#   Nothing in this file is read at runtime. To apply it, copy the relevant
+#   JSON object into the matching env var (see the footer) — the same
+#   provider -> {rps, max_concurrency, daily_budget} shape the parser in
+#   lite_indexer/config/rpc.py expects.
+#
+# ── Per-provider / per-account budgets ─────────────────────────────────
+# Every field is optional; a missing field falls back to the generic default
+# (RPC_PROVIDER_RPS / RPC_PROVIDER_MAX_CONCURRENCY / RPC_PROVIDER_DAILY_BUDGET).
+#   rps             requests/sec ceiling          (0 = unlimited)
+#   max_concurrency in-flight requests            (0 = unlimited)
+#   daily_budget    requests per UTC day          (0 = unlimited)  <-- a REQUEST COUNT, not USD
+#   preemptive_pct  cool the account at this % of daily_budget (default 80)
+#
+# The identity key is the provider ACCOUNT id: a registrable domain, or a
+# name from KNOWN_ACCOUNT_IDS when several keys belong to one account. N keys
+# of one account share ONE daily_budget (extra keys buy rate, never quota).
+#
+# Hostnames below are REDACTED. `<host>` is a placeholder, never a real
+# provider host — the public tree names no provider and stores no endpoint.
+#
+[providers]
+# ── Free public endpoints (no key, no billing) ──────────────────────────
+# The workhorses. Everything defaults here; a keyed endpoint is an
+# escalation, not a default.
+"free-<host-a>" = { rps = 3, max_concurrency = 2, daily_budget = 100000 }
+"free-<host-b>" = { rps = 3, max_concurrency = 2, daily_budget = 100000 }
+"free-<host-c>" = { rps = 5, max_concurrency = 3, daily_budget = 100000 }
+
+# ── Keyed / freemium: a key exists, so the provider meters us. Not
+#    necessarily billable. Declared "freemium" so it is never mistaken for
+#    free, and never routed to by default. ───────────────────────────────
+"freemium-<host-d>" = { rps = 10, max_concurrency = 4, daily_budget = 200000 }
+
+# ── Paid: BILLABLE. Costs real money per request. Never a default target;
+#    reachable only via escalation AND an entry in RPC_SPILLOVER_ALLOWED. ──
+"paid-<host-e>" = { rps = 20, max_concurrency = 6, daily_budget = 500000 }
+"paid-<host-f>" = { rps = 20, max_concurrency = 6, daily_budget = 500000 }
+
+# ── Endpoint-level override (wins over the provider entry) ─────────────
+# Use for a single endpoint whose real quota differs from its account's.
+# [endpoints]
+# "https://<host>/<path>" = { rps = 2, daily_budget = 50000 }
+
+# ── Global daily cap ────────────────────────────────────────────────────
+# Applies to every account that has no explicit map entry, via
+# DEFAULT_PROVIDER_BUDGET. 100_000 requests/account/UTC-day, NOT unlimited.
+# At 80% the account is pre-emptively cooled + rpc_budget_daily_approaching
+# fires; at 100% it is unavailable for the rest of the UTC day +
+# rpc_budget_daily_exhausted fires, and traffic fails closed rather than
+# continuing to bill. 0 restores unlimited, and requires typing it on purpose.
+#
+# global_daily_budget = 100000
+
+# ── Applying this to a live deployment ──────────────────────────────────
+# The loader reads JSON from the environment, not TOML. Serialize the maps
+# above and export:
+#
+#   RPC_PROVIDER_BUDGETS='{"free-<host-a>":{"rps":3,"max_concurrency":2,"daily_budget":100000}}'
+#   RPC_ENDPOINT_BUDGETS='{"https://<host>/<path>":{"rps":2,"daily_budget":50000}}'
+#   RPC_PROVIDER_DAILY_BUDGET=100000
+#
+# Malformed JSON degrades to the safe default (an empty map / the global
+# cap) rather than raising, so a typo can never widen spending.

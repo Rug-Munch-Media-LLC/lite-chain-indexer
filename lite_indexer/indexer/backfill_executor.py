@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from lite_indexer.config import TRANSFER_EVENT_TOPIC
 from lite_indexer.indexer.backfill import BackfillChunk, BackfillExecutor
+from lite_indexer.indexer.guarded_write import write_with_guard
 from lite_indexer.logging import get_logger
 
 if TYPE_CHECKING:
@@ -74,7 +75,15 @@ def build_evm_backfill_executor(host: EvmBackfillHost) -> BackfillExecutor:
         events = parse_transfer_logs(logs, chunk.chain, chunk.from_block, chunk.to_block)
         if not events:
             return True
-        return bool(host.strategy.write_clickhouse(events, host.ch_writer))
+        return bool(
+            await write_with_guard(
+                host.strategy,
+                host.ch_writer,
+                events,
+                chunk.from_block,
+                chunk.to_block,
+            )
+        )
 
     return _execute
 
@@ -124,7 +133,15 @@ def build_tron_backfill_executor(host: NonEvmBackfillHost) -> BackfillExecutor:
             return False
         if not events:
             return True
-        return bool(host.strategy.write_clickhouse(events, host.ch_writer))
+        return bool(
+            await write_with_guard(
+                host.strategy,
+                host.ch_writer,
+                events,
+                chunk.from_block,
+                chunk.to_block,
+            )
+        )
 
     return _execute
 

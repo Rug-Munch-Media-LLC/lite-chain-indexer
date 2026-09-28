@@ -11,6 +11,7 @@ Progress is logged per (chain, date, table) under ``lake_backfill_progress``.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date as _date
 from datetime import timedelta
@@ -55,8 +56,12 @@ class LakeBackfillRequest:
     dates: list[str]
     tables: tuple[str, ...] = TABLES
     dry_run: bool = False
-    # 1k rows avoids ClickHouse driver receive timeouts on wide transfer batches.
-    batch_rows: int = 1000
+    # 1k rows avoids ClickHouse driver receive timeouts on wide transfer
+    # batches (commit 0e35831 lowered 5000 -> 1000 for a live stall). The
+    # bound an operator had to ship a code change to move is now
+    # LAKE_BACKFILL_BATCH_ROWS, matching PRICING_BATCH_SIZE and
+    # VECTOR_INGESTION_BATCH_SIZE, which are already env-driven.
+    batch_rows: int = int(os.environ.get("LAKE_BACKFILL_BATCH_ROWS", "1000"))
 
 
 def _write_partition(src: Any, wh: Any, chain: str, partition: tuple[str, str], batch_rows: int) -> int:

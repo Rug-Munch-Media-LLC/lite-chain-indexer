@@ -50,6 +50,7 @@ from lite_indexer.config import (
     BACKFILL_WINDOW_MIN_REMAINING,
     STATE_DIR,
 )
+from lite_indexer.indexer._chunk_runner import ChunkRunner
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.rpc.freemium import select_freemium_endpoint_for_chain
@@ -468,20 +469,13 @@ class BackfillQueue:
 # ── Worker ──────────────────────────────────────────────────────────────
 
 
-async def _run_chunk(
-    queue: BackfillQueue,
-    chunk: BackfillChunk,
-    endpoint: str,
-    executor: BackfillExecutor,
-    semaphore: asyncio.Semaphore,
-    stats: dict[str, int],
-) -> None:
+async def _run_chunk(runner: ChunkRunner, chunk: BackfillChunk, endpoint: str) -> None:
     """Run one chunk under the concurrency bound and record the outcome."""
-    async with semaphore:
-        queue.mark_in_flight(chunk.key)
+    async with runner.semaphore:
+        runner.queue.mark_in_flight(chunk.key)
         try:
             async with provider_concurrency_slot(provider_id_for_endpoint(endpoint)):
-                ok = await executor(chunk, endpoint)
+                ok = await runner.executor(chunk, endpoint)
         except Exception as exc:  # noqa: BLE001 — a failed chunk is retried, never dropped
             logger.warning(
                 "backfill_exception",
@@ -492,11 +486,11 @@ async def _run_chunk(
             )
             ok = False
         if ok:
-            queue.mark_done(chunk.key)
-            stats["completed"] += 1
+            runner.queue.mark_done(chunk.key)
+            runner.stats["completed"] += 1
         else:
-            queue.mark_failed(chunk.key)
-            stats["failed"] += 1
+            runner.queue.mark_failed(chunk.key)
+            runner.stats["failed"] += 1
 
 
 def _resolve_runnable(
@@ -586,9 +580,8 @@ async def drain_backfill_queue(
 
     semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
     stats["dispatched"] = len(runnable)
-    await asyncio.gather(
-        *(_run_chunk(queue, chunk, endpoint, executor, semaphore, stats) for chunk, endpoint in runnable)
-    )
+    runner = ChunkRunner(queue=queue, executor=executor, semaphore=semaphore, stats=stats)
+    await asyncio.gather(*(_run_chunk(runner, chunk, endpoint) for chunk, endpoint in runnable))
     return stats
 
 

@@ -30,7 +30,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from lite_indexer.config import ON_DEMAND_RPC_ENABLED, ON_DEMAND_RPC_MAX_BLOCK_RANGE
+from lite_indexer.config import (
+    LAKE_READ_ENABLED,
+    ON_DEMAND_RPC_ENABLED,
+    ON_DEMAND_RPC_MAX_BLOCK_RANGE,
+)
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.query import (
@@ -44,8 +48,12 @@ from lite_indexer.query import (
 from lite_indexer.query.address_backfill import AddressBackfill
 from lite_indexer.query.biglake_source import BigLakeSource
 from lite_indexer.query.cache import QueryCache
+from lite_indexer.query.deployer_lookup import get_deployer_info
 from lite_indexer.query.envio_source import EnvioSource
 from lite_indexer.query.indexed_source import IndexedXyzSource
+from lite_indexer.query.lake_limits import reject_oversize_limit
+from lite_indexer.query.lake_preference import should_try_lake
+from lite_indexer.query.leg_gates import leg_enabled
 from lite_indexer.query.leg_request import LegRequest
 from lite_indexer.query.legs_common import ROW_KEYS, SORT_COLS, sort_value
 from lite_indexer.query.rpc_fetcher import RPCFetcher
@@ -83,8 +91,12 @@ class QueryRouter:
         client_factory: Optional zero-arg callable returning a ClickHouse
             client lazily (used by the API so constructing the router does
             not force a connection at startup).
-        on_demand_enabled: Gate for the RPC leg
-            (``ON_DEMAND_RPC_ENABLED``, default True).
+        on_demand_enabled: Gate for the PAID RPC leg only
+            (``ON_DEMAND_RPC_ENABLED``). Stops RPC spend, nothing else.
+        lake_read_enabled: Gate for the FREE external-lake legs (BigLake,
+            Envio, indexed.xyz, SQD) — ``LAKE_READ_ENABLED``, independent of
+            ``on_demand_enabled`` so a cost kill-switch never removes free
+            historical reads.
         max_block_range: Cap on on-demand RPC block windows.
         limit_default: Default row cap for range queries.
     """
@@ -103,6 +115,7 @@ class QueryRouter:
         sqd: SQDSource | None = None,
         client_factory: Any | None = None,
         on_demand_enabled: bool = ON_DEMAND_RPC_ENABLED,
+        lake_read_enabled: bool = LAKE_READ_ENABLED,
         max_block_range: int = ON_DEMAND_RPC_MAX_BLOCK_RANGE,
         limit_default: int = 100,
     ) -> None:
@@ -117,6 +130,11 @@ class QueryRouter:
         self.indexed = indexed if indexed is not None else IndexedXyzSource()
         self.sqd = sqd if sqd is not None else SQDSource()
         self.on_demand_enabled = bool(on_demand_enabled)
+        self.lake_read_enabled = bool(lake_read_enabled)
+        # True when the last _route_query hit a lake page ceiling. query()
+        # returns list[dict] and is public API, so truncation is reported
+        # here and via the biglake_truncated metric, not by widening it.
+        self.last_read_truncated = False
         self.max_block_range = int(max_block_range)
         self.limit_default = int(limit_default)
 
@@ -197,6 +215,16 @@ class QueryRouter:
             return False
         return False
 
+    def _should_try_lake(
+        self,
+        ch_rows: list[dict[str, Any]],
+        cold_rows: list[dict[str, Any]],
+        from_block: int | None,
+        to_block: int | None,
+    ) -> bool:
+        """Whether the free lake should be read for this range."""
+        return should_try_lake(ch_rows, cold_rows, from_block, to_block)
+
     # ── Filter helpers ───────────────────────────────────────────────
 
     @staticmethod
@@ -258,43 +286,44 @@ class QueryRouter:
             Merged rows as dicts, newest first.
         """
         self._check_table(table)
-        limit = max(1, min(int(limit), 1000))
+        # Reject, never silently clamp: a caller asking for 1,000,000 rows
+        # used to get the 1000 newest with no signal the result was short.
+        limit = reject_oversize_limit(limit)
         req = LegRequest(
-            table=table, chain=chain, from_block=from_block,
-            to_block=to_block, filters=filters, limit=limit,
+            table=table,
+            chain=chain,
+            from_block=from_block,
+            to_block=to_block,
+            filters=filters,
+            limit=limit,
         )
 
         ch_rows = self._query_ch(req)
         cold_rows = self._query_cold(req)
         merged = self._merge_rows(table, ch_rows, cold_rows, limit=limit)
 
+        # Consult the free lake whenever the cold tier is empty and the
+        # range is bounded — NOT only when the RPC-fallback predicate is
+        # already true. That predicate returns False for a bounded WIDE
+        # range, which is exactly the range the lake holds and RPC would
+        # refuse or charge for.
         biglake_rows: list[dict[str, Any]] = []
-        if (
-            use_rpc
-            and self.on_demand_enabled
-            and self._needs_rpc_fallback(table, ch_rows, cold_rows, from_block, to_block, limit)
-        ):
-            biglake_rows = await self._biglake_route(req)
+        if leg_enabled(self, "biglake", use_rpc) and self._should_try_lake(ch_rows, cold_rows, from_block, to_block):
+            biglake_rows, self.last_read_truncated = await self._biglake_route(req)
             if biglake_rows:
                 merged = self._merge_rows(table, ch_rows, cold_rows, biglake_rows, limit=limit)
 
         envio_rows: list[dict[str, Any]] = []
-        if (
-            use_rpc
-            and self.on_demand_enabled
-            and self._needs_rpc_fallback(table, ch_rows, cold_rows + biglake_rows, from_block, to_block, limit)
+        if leg_enabled(self, "envio", use_rpc) and self._needs_rpc_fallback(
+            table, ch_rows, cold_rows + biglake_rows, from_block, to_block, limit
         ):
             envio_rows = await self._envio_route(req)
             if envio_rows:
                 merged = self._merge_rows(table, ch_rows, cold_rows, biglake_rows, envio_rows, limit=limit)
 
         indexed_rows: list[dict[str, Any]] = []
-        if (
-            use_rpc
-            and self.on_demand_enabled
-            and self._needs_rpc_fallback(
-                table, ch_rows, cold_rows + biglake_rows + envio_rows, from_block, to_block, limit
-            )
+        if leg_enabled(self, "indexed", use_rpc) and self._needs_rpc_fallback(
+            table, ch_rows, cold_rows + biglake_rows + envio_rows, from_block, to_block, limit
         ):
             indexed_rows = await self._indexed_route(req)
             if indexed_rows:
@@ -303,17 +332,13 @@ class QueryRouter:
                 )
 
         sqd_rows: list[dict[str, Any]] = []
-        if (
-            use_rpc
-            and self.on_demand_enabled
-            and self._needs_rpc_fallback(
-                table,
-                ch_rows,
-                cold_rows + biglake_rows + envio_rows + indexed_rows,
-                from_block,
-                to_block,
-                limit,
-            )
+        if leg_enabled(self, "sqd", use_rpc) and self._needs_rpc_fallback(
+            table,
+            ch_rows,
+            cold_rows + biglake_rows + envio_rows + indexed_rows,
+            from_block,
+            to_block,
+            limit,
         ):
             sqd_rows = await self._sqd_traces_route(req)
             if sqd_rows:
@@ -328,17 +353,13 @@ class QueryRouter:
                     limit=limit,
                 )
 
-        if (
-            use_rpc
-            and self.on_demand_enabled
-            and self._needs_rpc_fallback(
-                table,
-                ch_rows,
-                cold_rows + biglake_rows + envio_rows + indexed_rows + sqd_rows,
-                from_block,
-                to_block,
-                limit,
-            )
+        if leg_enabled(self, "rpc", use_rpc) and self._needs_rpc_fallback(
+            table,
+            ch_rows,
+            cold_rows + biglake_rows + envio_rows + indexed_rows + sqd_rows,
+            from_block,
+            to_block,
+            limit,
         ):
             metrics_incr("ondemand_rpc_routes")
             rpc_rows = await self._rpc_route(req)
@@ -447,58 +468,10 @@ class QueryRouter:
     async def get_deployer_info(self, chain: str, address: str) -> dict[str, Any] | None:
         """Get deployer info for a contract. Routes: CH → Cold → RPC.
 
-        Matches ``deployer_events`` by pair/token/deployer address. When
-        the indexed store has a row whose EOA was never resolved, the row's
-        tx hash is passed to the RPC leg as the creation-tx hint so
-        ``eth_getTransactionByHash`` can resolve the deployer on demand.
-
-        Args:
-            chain: Chain name.
-            address: Contract / pair / deployer address.
-
-        Returns:
-            A deployer row (``deployer_events`` shape), or None when not
-            found on any tier.
+        Delegates to :func:`query.deployer_lookup.get_deployer_info` (extracted
+        for the size ratchet). See that function for the full contract.
         """
-        addr = str(address or "").strip().lower()
-        if not addr:
-            return None
-        rows = await self._route_query(
-            "deployer_events",
-            chain,
-            filters=[
-                {"col": "pair_address", "value": addr},
-                {"col": "token_address", "value": addr},
-                {"col": "deployer_eoa", "value": addr},
-            ],
-            limit=5,
-            use_rpc=False,
-        )
-        if rows:
-            best = next((r for r in rows if r.get("deployer")), None)
-            if best is not None:
-                return best
-            hint = rows[0].get("tx_hash") or None
-        else:
-            hint = None
-
-        if not self.on_demand_enabled:
-            return rows[0] if rows else None
-
-        cache_key = ("deployer", chain, addr)
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            return dict(cached)
-        try:
-            result = await self.rpc.fetch_deployer(chain, addr, creation_tx=hint)
-        except Exception as exc:  # noqa: BLE001 — RPC is best-effort
-            metrics_incr("ondemand_rpc_errors")
-            logger.warning("ondemand_deployer_failed", chain=chain, address=addr, error=str(exc)[:100])
-            return rows[0] if rows else None
-        if result:
-            self.cache.set(cache_key, result)
-            return result
-        return rows[0] if rows else None
+        return await get_deployer_info(self, chain, address)
 
 
 __all__ = ["QueryRouter"]

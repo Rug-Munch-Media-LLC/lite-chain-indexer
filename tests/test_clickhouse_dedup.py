@@ -86,25 +86,31 @@ def test_tx_log_key_distinguishes_same_log_index_different_tx(monkeypatch) -> No
     assert keys == {"100:0xaa:0", "100:0xbb:0"}
 
 
-def test_migration_018_declares_dedup_key_contract() -> None:
-    """Schema contract: migration 018 appends tx_log_key to the sorting key.
+def test_migration_dedup_key_contract() -> None:
+    """Schema contract: the dedup migration appends tx_log_key to the sort key.
 
-    Guards against a regression to migration 017's invalid form (appending the
-    EXISTING tx_hash column), which ClickHouse 26.7 rejects with Code 36.
+    Guards against a regression to the invalid form (appending the EXISTING
+    tx_hash column), which ClickHouse 26.7 rejects with Code 36. Located by
+    pattern, not number, so the migration set can be renumbered freely.
     """
     from pathlib import Path
 
     mig = Path(__file__).resolve().parents[1] / "migrations"
-    text = (mig / "018_evm_transfers_dedup_key_v2.sql").read_text()
+    v2 = sorted(mig.glob("*_evm_transfers_dedup_key_v2.sql"))
+    assert v2, "dedup_key_v2 migration is missing"
+    text = v2[0].read_text()
     assert "MODIFY ORDER BY (chain, block_number, log_index, tx_log_key)" in text
     # CH 26.7 accepts a new key column only when it is ADDed in the same ALTER.
     # The runtime fallback may pre-create tx_log_key, so the migration MUST
     # DROP-then-ADD (a bare `ADD COLUMN IF NOT EXISTS` leaves it existing and
-    # the MODIFY ORDER BY then fails with Code 36 — the 017 failure mode).
+    # the MODIFY ORDER BY then fails with Code 36 — the original failure mode).
     assert "DROP COLUMN IF EXISTS tx_log_key" in text
     assert "ADD COLUMN tx_log_key String" in text
-    old = (mig / "017_evm_transfers_dedup_key.sql").read_text()
-    assert "INVALID" in old and "SUPERSEDED" in old and "DO NOT APPLY" in old
+    old = sorted(mig.glob("*_evm_transfers_dedup_key.sql"))
+    old = [p for p in old if "v2" not in p.name]
+    assert old, "the superseded dedup_key migration should be kept for history"
+    old_text = old[0].read_text()
+    assert "INVALID" in old_text and "SUPERSEDED" in old_text and "DO NOT APPLY" in old_text
 
 
 def test_write_transfers_dedups_identical_events_in_batch(monkeypatch) -> None:

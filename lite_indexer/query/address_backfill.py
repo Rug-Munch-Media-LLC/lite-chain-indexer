@@ -8,17 +8,17 @@ never re-fetched.
 
 Provider order (all free tiers, keys from env, never hardcoded):
 
-1. ``SOLANA_PUBLIC_RPC``         — official public node (keyless)
-2. ``SOLANA_PUBLIC_RPC_FALLBACK``— publicnode (keyless)
-3. KeyedProvider                       — ``${KEYED_RPC_KEY}`` when set
-4. SolanaProvider                        — ``${SOLANA_PROVIDER_KEY}`` when set
+1. ``SOLANA_PUBLIC_RPC``          — official public node (keyless)
+2. ``SOLANA_PUBLIC_RPC_FALLBACK`` — publicnode (keyless)
+3. KeyedProvider                  — ``${KEYED_RPC_KEY}`` when set
+4. SolanaProvider                 — ``${SOLANA_PROVIDER_KEY}`` when set
 
-The first provider that returns a signature list answers; a provider that
-errors (HTTP error / JSON-RPC error / timeout) falls through to the next.
-When every ``getSignaturesForAddress`` provider returns an empty history and
-a SolanaProvider key is configured, the SolanaProvider-only ``getTransactionsForAddress``
-(``filters.tokenAccounts = "all"``) is tried — it is the one method that
-retains *closed* account history (via an optional enhanced-history provider).
+The first provider returning a signature list answers; one that errors (HTTP /
+JSON-RPC / timeout) falls through to the next.
+When every ``getSignaturesForAddress`` provider returns an empty history and a
+SolanaProvider key is set, the SolanaProvider-only ``getTransactionsForAddress``
+(``filters.tokenAccounts = "all"``) is tried — the one method that retains
+*closed* account history.
 
 Never-re-fetch guard
 --------------------
@@ -76,6 +76,9 @@ _TX_OPTIONS: dict[str, Any] = {
     "commitment": "finalized",
 }
 
+# Schema of record: migrations/023_runtime_ddl_tables.sql. Deliberately NO TTL:
+# one row per (chain, address) IS the current state, so expiring it would make
+# the lazy backfill re-fetch forever.
 _BACKFILL_STATE_DDL = f"""
 CREATE TABLE IF NOT EXISTS {CH_ADDRESS_BACKFILL_STATE_TABLE} (
     address String CODEC(ZSTD(3)),
@@ -144,8 +147,8 @@ class HttpRpcTransport:
 def default_solana_providers() -> list[tuple[str, str]]:
     """Return the ordered (name, url) free-provider fallback list.
 
-    ``${ENV_VAR}`` placeholders are expanded; templates whose key is unset
-    are dropped (never dialled). Public nodes always come first.
+    ``${ENV_VAR}`` placeholders are expanded; an unset key is dropped (never
+    dialled). Public nodes always come first.
     """
     candidates = [
         ("public", SOLANA_PUBLIC_RPC),
@@ -182,11 +185,10 @@ class AddressBackfill:
 
     Args:
         ch_client: A ClickHouse client (anything with ``execute``).
-        ch_client_factory: Zero-arg callable resolving a client lazily
-            (used by the query router / API so no connection is forced).
+        ch_client_factory: Zero-arg callable resolving a client lazily (the
+            query router / API use it so no connection is forced).
         transport: Injectable JSON-RPC transport (defaults to HTTP).
-        providers: Ordered ``(name, url)`` fallback list (defaults to
-            :func:`default_solana_providers`).
+        providers: Ordered ``(name, url)`` fallback list.
         max_signatures: Signature cap per backfill.
         max_tx: Transaction fetch cap per backfill.
         concurrency: Concurrent ``getTransaction`` calls.
@@ -479,12 +481,7 @@ class AddressBackfill:
         result.signatures = len(sig_infos)
         result.rows_written = written
         logger.info(
-            "address_backfill_done",
-            chain=chain,
-            address=addr[:12],
-            provider=final_provider,
-            signatures=len(sig_infos),
-            rows=written,
+            "address_backfill_done", chain=chain, address=addr[:12], provider=final_provider, rows=written
         )
         return result
 

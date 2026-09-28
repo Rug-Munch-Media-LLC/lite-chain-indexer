@@ -4,6 +4,7 @@ Split out of transfers.py so each extraction path owns one module. Used by
 ``SolanaStrategy`` via mixin composition; the signature-walk path lives in
 ``transfers.py``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,17 +14,17 @@ from typing import Any
 
 from lite_indexer.logging import get_logger
 from lite_indexer.strategies.solana.models import (
-    SOLANA_BLOCK_MAX_PER_SYNC,
     SOLANA_TX_CONCURRENCY,
 )
 from lite_indexer.strategies.solana.parsing import is_vote_transaction
-from lite_indexer.strategies.solana.stride import base_stride, next_sample_stride
+from lite_indexer.strategies.solana.stride import window_slots
 from lite_indexer.strategies.solana.swaps import parse_solana_swap_events
 from lite_indexer.strategies.solana.timestamps import iso_from_epoch
 
 from ._base import SolanaMixinBase
 
 logger = get_logger(__name__)
+
 
 class TransfersBlockwiseMixin(SolanaMixinBase):
     """getBlock-per-slot transfer extraction for deep catch-up windows."""
@@ -66,8 +67,7 @@ class TransfersBlockwiseMixin(SolanaMixinBase):
                     "signature": tx.get("transaction", {}).get("signatures", [""])[0],
                     "mint": mint,
                     "owner": b.get("owner") or "",
-                    "token_account": b.get("address")
-                    or str(key[2]),  # accountIndex is an int — CH String column
+                    "token_account": b.get("address") or str(key[2]),  # accountIndex is an int — CH String column
                     "amount_pre": str(pre_amt),
                     "amount_post": str(post_amt),
                     "change": str(delta),
@@ -101,8 +101,9 @@ class TransfersBlockwiseMixin(SolanaMixinBase):
         n_txs = 0
         fetch_times: list[float] = []
         parse_times: list[float] = []
-        # 2026-09-01: process the FULL window in SOLANA_BLOCK_MAX_PER_SYNC
-        # 2026-09-01: process the FULL window in SOLANA_BLOCK_MAX_PER_SYNC chunks (the old code capped at 200 slots, silently dropping the rest of a 1000-slot daemon window).
+        # COMPLETENESS: every slot in the window is fetched. The window
+        # depth (window_slots) is the only throughput knob — a slow RPC
+        # narrows the window, it never subsamples it.
         slots = list(range(from_slot, to_slot + 1))
         semaphore = asyncio.Semaphore(SOLANA_TX_CONCURRENCY)
 
@@ -155,17 +156,9 @@ class TransfersBlockwiseMixin(SolanaMixinBase):
             parse_times.append(time.perf_counter() - _t_parse)
             return events
 
-        # Sampled coverage (adaptive stride: escalates when per-block RPC
-        # latency is high so a window still fits the chain's rate).
-        base = base_stride()
-        stride = next_sample_stride(
-            getattr(self, "_sample_stride", None),
-            float(getattr(self, "_sample_mean_fetch_s", 0.0) or 0.0),
-            base,
-        )
-        tasks = [_fetch_one_block(slot) for slot in slots if slot % stride == 0]
-        # Bounded batches: 200-slot chunks with a gather per chunk.
-        chunk_size = SOLANA_BLOCK_MAX_PER_SYNC
+        # Bounded batches so a deep window cannot open unbounded sockets.
+        chunk_size = window_slots()
+        tasks = [_fetch_one_block(slot) for slot in slots]
         for i in range(0, len(tasks), chunk_size):
             chunk = tasks[i : i + chunk_size]
             results = await asyncio.gather(*chunk, return_exceptions=True)
@@ -174,18 +167,11 @@ class TransfersBlockwiseMixin(SolanaMixinBase):
                     all_events.extend(r)
         mean_fetch = (sum(fetch_times) / len(fetch_times)) if fetch_times else 0.0
         self._sample_mean_fetch_s = mean_fetch
-        self._sample_stride = next_sample_stride(stride, mean_fetch, base)
         if os.getenv("SOLANA_TIMING"):
             logger.info(
                 "solana_blockwise_concurrency",
                 tx_concurrency=SOLANA_TX_CONCURRENCY,
-                chunk_size=SOLANA_BLOCK_MAX_PER_SYNC,
-            )
-            logger.info(
-                "solana_sample_stride",
-                stride=stride,
-                next_stride=self._sample_stride,
-                mean_fetch_s=round(mean_fetch, 2),
+                chunk_size=chunk_size,
             )
             logger.info(
                 "solana_blockwise_timing",

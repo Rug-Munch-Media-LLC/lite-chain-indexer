@@ -102,10 +102,23 @@ def test_address_filter_sql_uses_padded_tail(tmp_path: Any) -> None:
     assert _params(params)["address"] == "a" * 40
 
 
-def test_limit_is_parameterized_and_clamped(tmp_path: Any) -> None:
+def test_oversize_limit_is_rejected_not_silently_clamped(tmp_path: Any) -> None:
+    """An oversize limit must fail loudly, not return a short answer as success.
+
+    Silently clamping 99999 to 1000 gave callers plausible-but-truncated
+    results that looked like a full page. The lake now refuses and tells the
+    caller to page explicitly.
+    """
     runner = FakeRunner()
-    _source(tmp_path, runner).query(BigQuerySpec("transactions", limit=99999, dates=["2026-09-12"]))
-    assert _params(runner.calls[-1][1])["limit"] == 1000
+    with pytest.raises(ValueError, match="exceeds ceiling"):
+        _source(tmp_path, runner).query(BigQuerySpec("transactions", limit=99999, dates=["2026-09-12"]))
+    assert runner.calls == [], "a rejected limit must not reach the warehouse"
+
+
+def test_limit_within_ceiling_is_parameterized(tmp_path: Any) -> None:
+    runner = FakeRunner()
+    _source(tmp_path, runner).query(BigQuerySpec("transactions", limit=500, dates=["2026-09-12"]))
+    assert _params(runner.calls[-1][1])["limit"] == 500
 
 
 def test_invalid_date_rejected(tmp_path: Any) -> None:
@@ -173,6 +186,8 @@ def test_registry_bigquery_quota_fields() -> None:
     assert prov.daily_requests == 1000
     assert prov.daily_bytes == 1099511627776  # 1 TiB/month allowance
     assert ("eth", "token_transfers") in prov.serves
+
+
 # ── Solana mapping + query builder ───────────────────────────────────
 
 
@@ -188,9 +203,9 @@ def test_solana_token_transfers_sql(tmp_path: Any) -> None:
 
 def test_solana_instructions_sql_address_in_accounts(tmp_path: Any) -> None:
     runner = FakeRunner()
-    _source(tmp_path, runner).query(BigQuerySpec(
-        "instructions", chain="solana", address="Base58Addr", dates=["2026-09-20"]
-    ))
+    _source(tmp_path, runner).query(
+        BigQuerySpec("instructions", chain="solana", address="Base58Addr", dates=["2026-09-20"])
+    )
     sql, params = runner.calls[-1]
     assert "`bigquery-public-data.crypto_solana_mainnet_us.Instructions`" in sql
     assert "@address IN UNNEST(accounts)" in sql
@@ -199,7 +214,9 @@ def test_solana_instructions_sql_address_in_accounts(tmp_path: Any) -> None:
 
 def test_solana_slot_bounds_sql(tmp_path: Any) -> None:
     runner = FakeRunner()
-    _source(tmp_path, runner).query(BigQuerySpec("token_transfers", chain="solana", from_block=100, to_block=200, dates=["2026-09-12"]))
+    _source(tmp_path, runner).query(
+        BigQuerySpec("token_transfers", chain="solana", from_block=100, to_block=200, dates=["2026-09-12"])
+    )
     sql, params = runner.calls[-1]
     assert "block_slot >= @from_slot" in sql and "block_slot <= @to_slot" in sql
     assert _params(params)["from_slot"] == 100
@@ -229,7 +246,9 @@ def test_solana_token_transfer_row_mapping(tmp_path: Any) -> None:
         "destination": "DST",
         "transfer_type": "1",
     }
-    out = _source(tmp_path, FakeRunner([row])).query(BigQuerySpec("token_transfers", chain="solana", dates=["2026-09-12"]))
+    out = _source(tmp_path, FakeRunner([row])).query(
+        BigQuerySpec("token_transfers", chain="solana", dates=["2026-09-12"])
+    )
     r = out[0]
     assert r["chain"] == "solana"
     assert r["slot"] == 300_000_001
@@ -290,8 +309,11 @@ def test_solana_time_bounds_are_server_side(tmp_path: Any) -> None:
     runner = FakeRunner()
     _source(tmp_path, runner).query(
         BigQuerySpec(
-            "token_transfers", chain="solana", dates=["2026-09-21"],
-            since_ts="2026-09-21T00:00:00+00:00", until_ts="2026-09-21T04:33:17+00:00",
+            "token_transfers",
+            chain="solana",
+            dates=["2026-09-21"],
+            since_ts="2026-09-21T00:00:00+00:00",
+            until_ts="2026-09-21T04:33:17+00:00",
         )
     )
     sql, params = runner.calls[-1]

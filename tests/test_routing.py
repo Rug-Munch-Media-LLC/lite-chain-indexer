@@ -236,8 +236,11 @@ class TestRpcUsageTracker:
         assert tracker.snapshot() == {}
 
     def test_module_tracker_and_wrappers(self):
-        # Convenience wrappers operate on the shared module tracker.
-        before = len(USAGE_TRACKER.snapshot())
+        # Convenience wrappers operate on the shared module tracker. Start
+        # from a known-empty ledger: USAGE_TRACKER is module-global, so a
+        # prior test file that records usage would otherwise leak in and make
+        # this order-dependent.
+        USAGE_TRACKER.reset()
         try:
             record_rpc_usage("https://module-test.example", "eth_blockNumber", ok=True)
             assert USAGE_TRACKER.usage_for("https://module-test.example") is not None
@@ -245,7 +248,7 @@ class TestRpcUsageTracker:
             assert "https://module-test.example" in snapshot
         finally:
             USAGE_TRACKER.reset()
-        assert before == 0 or before == len(USAGE_TRACKER.snapshot())
+        assert USAGE_TRACKER.snapshot() == {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

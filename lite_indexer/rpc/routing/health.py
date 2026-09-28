@@ -315,7 +315,6 @@ class EndpointLatency:
         ``lite_indexer.rpc.routing`` package at call time so that
         monkeypatching / reloading the package takes effect here.
         """
-        from lite_indexer.rpc import routing as _rt
 
         damping = damping_value()
         base = self.ewma_ms * (1.0 + self.in_flight)

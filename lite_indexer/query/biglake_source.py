@@ -42,6 +42,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from lite_indexer.logging import get_logger
+from lite_indexer.query.biglake_read import build_lake_query, lake_filters, probe_truncated
+from lite_indexer.query.lake_limits import reject_oversize_limit
 from lite_indexer.query.lake_row_utils import _norm_addr, _num_str  # re-exported for tests
 
 logger = get_logger(__name__)
@@ -164,7 +166,7 @@ class BigLakeSource:
         address: str | None = None,
         dates: Sequence[str] | None = None,
         limit: int = 100,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Read rows from the lake in the warehouse row shape.
 
         Args:
@@ -177,45 +179,40 @@ class BigLakeSource:
             limit: Row cap (1..1000).
 
         Returns:
-            Rows normalized to the warehouse column shape; empty list when
-            the tier is disabled, the chain/table is unsupported, or the
-            read fails.
+            ``(rows, truncated)`` normalized to the warehouse column shape.
+            ``truncated`` is True when the read hit the page ceiling and
+            older rows definitely exist. Empty rows when the tier is
+            disabled, the chain/table is unsupported, or the read fails.
+
+        Raises:
+            ValueError: When ``limit`` exceeds :data:`LAKE_MAX_ROWS`.
         """
         if chain != "ethereum" or table not in self.TABLE_MAP:
-            return []
+            return [], False
         if not self.available():
-            return []
+            return [], False
+        page = reject_oversize_limit(limit)
         dates = self._validate_dates(dates)
         biglake_table = self.TABLE_MAP[table]
-
-        where: list[str] = []
-        params: list[Any] = []
-        if from_block is not None:
-            where.append("block_number >= ?")
-            params.append(int(from_block))
-        if to_block is not None:
-            where.append("block_number <= ?")
-            params.append(int(to_block))
-        if address:
-            addr = str(address).strip().lower()
-            addr40 = addr[2:] if addr.startswith("0x") else addr
-            # AWS v1.0 stores from/to as 32-byte left-padded hex (log topics);
-            # compare the trailing 20-byte address only.
-            where.append("(lower(right(from_address, 40)) = ? OR lower(right(to_address, 40)) = ?)")
-            params.extend([addr40, addr40])
-
-        paths = self._paths(biglake_table, dates)
-        path_literals = "[" + ", ".join(f"'{p}'" for p in paths) + "]"
-        sql = (
-            f"SELECT * FROM read_parquet({path_literals}, hive_partitioning=true, union_by_name=true)"
-            + (f" WHERE {' AND '.join(where)}" if where else "")
-            + " ORDER BY block_number DESC LIMIT ?"
+        sql, params = build_lake_query(
+            self._paths(biglake_table, dates),
+            from_block=from_block,
+            to_block=to_block,
+            address=address,
+            limit=page,
         )
-        params.append(max(1, min(int(limit), 1000)))
 
         from lite_indexer.query.biglake_rotation import read_with_rotation
-        filters = {"address": address, "from_block": from_block, "to_block": to_block, "dates": dates, "limit": limit}
-        return read_with_rotation(self, (sql, params), table, biglake_table, filters)
+
+        filters = lake_filters(
+            address=address,
+            from_block=from_block,
+            to_block=to_block,
+            dates=dates,
+            limit=page,
+        )
+        rows = read_with_rotation(self, (sql, params), table, biglake_table, filters)
+        return probe_truncated(rows, page, table)
 
     def _read_raw(self, sql: str, params: list[Any]) -> tuple[list[str], list[tuple[Any, ...]]]:
         """Execute the lake SQL and return (columns, raw rows)."""
@@ -273,22 +270,15 @@ def _cmd_transfers(args: argparse.Namespace) -> int:
     if not src.available():
         print("biglake unavailable (duckdb missing or BIGLAKE_ENABLED=0)", file=sys.stderr)  # noqa: T201
         return 1
-    out: dict[str, Any] = {
-        "evm_transfers": src.query(
-            "evm_transfers",
-            address=args.address,
-            dates=args.dates,
-            limit=args.limit,
-        ),
-    }
-    if args.traces:
-        out["internal_transfers"] = src.query(
-            "internal_transfers",
-            address=args.address,
-            dates=args.dates,
-            limit=args.limit,
-        )
-    print(json.dumps(out, default=str, indent=2))  # noqa: T201
+    out: dict[str, Any] = {}
+    truncated: dict[str, bool] = {}
+    for logical in ("evm_transfers", "internal_transfers"):
+        if logical == "internal_transfers" and not args.traces:
+            continue
+        rows, cut = src.query(logical, address=args.address, dates=args.dates, limit=args.limit)
+        out[logical] = rows
+        truncated[logical] = cut
+    print(json.dumps({"rows": out, "truncated": truncated}, default=str, indent=2))  # noqa: T201
     return 0
 
 

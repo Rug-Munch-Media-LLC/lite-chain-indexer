@@ -61,11 +61,17 @@ def _source(rows: list[tuple[Any, ...]], cols: list[str]) -> tuple[BigLakeSource
     return BigLakeSource(connect=lambda: fake), fake
 
 
+def _rows(src: BigLakeSource, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    """``query`` now returns ``(rows, truncated)``; most assertions want rows."""
+    rows, _truncated = src.query(*args, **kwargs)
+    return rows
+
+
 def test_disabled_source_returns_empty() -> None:
     src, fake = _source([], TRANSFER_COLS)
     src = BigLakeSource(enabled=False, connect=lambda: fake)
     assert src.available() is False
-    assert src.query("evm_transfers") == []
+    assert _rows(src, "evm_transfers") == []
     assert fake.calls == []
 
 
@@ -81,7 +87,7 @@ def test_evm_transfers_row_mapping() -> None:
         "2026-09-12T19:05:47",
     )
     src, _ = _source([row], TRANSFER_COLS)
-    out = src.query("evm_transfers", dates=["2026-09-12"])
+    out = _rows(src, "evm_transfers", dates=["2026-09-12"])
     assert len(out) == 1
     r = out[0]
     assert r["chain"] == "ethereum"
@@ -109,7 +115,7 @@ def test_traces_row_mapping() -> None:
         "0x12345678deadbeef",
     )
     src, _ = _source([row], TRACE_COLS)
-    out = src.query("internal_transfers", dates=["2026-09-12"])
+    out = _rows(src, "internal_transfers", dates=["2026-09-12"])
     r = out[0]
     assert r["trace_address"] == "0.1"
     assert r["value_wei"] == "12345"
@@ -121,7 +127,7 @@ def test_traces_row_mapping() -> None:
 
 def test_address_filter_is_case_insensitive_or() -> None:
     src, fake = _source([], TRANSFER_COLS)
-    src.query("evm_transfers", address="0xAbC", dates=["2026-09-12"])
+    _rows(src, "evm_transfers", address="0xAbC", dates=["2026-09-12"])
     sql, params = fake.calls[-1]
     assert "from_address" in sql and "OR" in sql
     # AWS stores addresses 32-byte left-padded; the filter compares the
@@ -132,7 +138,7 @@ def test_address_filter_is_case_insensitive_or() -> None:
 
 def test_block_range_params() -> None:
     src, fake = _source([], TRANSFER_COLS)
-    src.query("evm_transfers", from_block=100, to_block=200, dates=["2026-09-12"])
+    _rows(src, "evm_transfers", from_block=100, to_block=200, dates=["2026-09-12"])
     sql, params = fake.calls[-1]
     assert "block_number >= ?" in sql and "block_number <= ?" in sql
     assert params[:2] == [100, 200]
@@ -140,15 +146,15 @@ def test_block_range_params() -> None:
 
 def test_unsupported_table_and_chain_return_empty() -> None:
     src, fake = _source([], TRANSFER_COLS)
-    assert src.query("dex_events") == []
-    assert src.query("evm_transfers", chain="base") == []
+    assert _rows(src, "dex_events") == []
+    assert _rows(src, "evm_transfers", chain="base") == []
     assert fake.calls == []
 
 
 def test_invalid_date_rejected() -> None:
     src, _ = _source([], TRANSFER_COLS)
     with pytest.raises(ValueError):
-        src.query("evm_transfers", dates=["2026-09-12; DROP TABLE x"])
+        _rows(src, "evm_transfers", dates=["2026-09-12; DROP TABLE x"])
 
 
 def test_num_str_edge_cases() -> None:
@@ -213,7 +219,7 @@ def test_rotation_falls_through_on_failure(tmp_path: Any) -> None:
     router = RecordingRouter(registry=_two_providers(), usage_path=tmp_path / "u.json")
     conn = FlakyConnection()
     src = BigLakeSource(connect=lambda: conn, router=router)
-    out = src.query("evm_transfers", dates=["2026-09-12"])
+    out = _rows(src, "evm_transfers", dates=["2026-09-12"])
     assert router.selected == ["p1", "p2"]
     assert router.failures == ["p1"]
     assert router.successes == ["p2"]
@@ -226,7 +232,7 @@ def test_quota_refused_provider_skipped(tmp_path: Any) -> None:
     router = RecordingRouter(registry={"p1": p1}, usage_path=tmp_path / "u.json")
     conn = FlakyConnection()
     src = BigLakeSource(connect=lambda: conn, router=router)
-    assert src.query("evm_transfers", dates=["2026-09-12"]) == []
+    assert _rows(src, "evm_transfers", dates=["2026-09-12"]) == []
     assert router.selected == []
     assert conn.n == 0  # never touched the connection
 
@@ -237,7 +243,7 @@ def test_cooldown_provider_skipped(tmp_path: Any) -> None:
     router.report_failure("p1", error="warmup")  # puts p1 into cooldown
     conn = FlakyConnection()
     src = BigLakeSource(connect=lambda: conn, router=router)
-    assert src.query("evm_transfers", dates=["2026-09-12"]) == []
+    assert _rows(src, "evm_transfers", dates=["2026-09-12"]) == []
     assert router.selected == []
     assert conn.n == 0
 
@@ -247,7 +253,7 @@ def test_success_reporting_updates_usage(tmp_path: Any) -> None:
     router = RecordingRouter(registry={"p1": p1}, usage_path=tmp_path / "u.json")
     row = ("0xTOKEN", "0xAAA", "0xBBB", 1.0, "0xHASH", 1, 100, "t")
     src = BigLakeSource(connect=lambda: FakeConnection([row], TRANSFER_COLS), router=router)
-    out = src.query("evm_transfers", dates=["2026-09-12"])
+    out = _rows(src, "evm_transfers", dates=["2026-09-12"])
     assert len(out) == 1
     assert router.successes == ["p1"]
     assert router.failures == []
@@ -257,6 +263,6 @@ def test_success_reporting_updates_usage(tmp_path: Any) -> None:
 def test_empty_read_falls_through_then_exhausts(tmp_path: Any) -> None:
     router = RecordingRouter(registry=_two_providers(), usage_path=tmp_path / "u.json")
     src = BigLakeSource(connect=lambda: FakeConnection([], TRANSFER_COLS), router=router)
-    assert src.query("evm_transfers", dates=["2026-09-12"]) == []
+    assert _rows(src, "evm_transfers", dates=["2026-09-12"]) == []
     assert router.selected == ["p1", "p2"]
     assert router.successes == ["p1", "p2"]  # empty reads are successes, not failures

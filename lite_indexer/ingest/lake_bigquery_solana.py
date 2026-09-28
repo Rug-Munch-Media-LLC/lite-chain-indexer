@@ -16,24 +16,22 @@ skipped unless ``force`` is set.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
-from lite_indexer.logging import get_logger
-from lite_indexer.query.bigquery_source import BigQuerySource
-from lite_indexer.query.bigquery_spec import BigQuerySpec
-from lite_indexer.query.bigquery_common import BigQueryQuotaError
 from lite_indexer.ingest.lake_fill_common import (
     _estimated_scan_gib,
     _existing_day_count,
     build_writer,
+    parse_since,
     read_full_day,
     rest_transport,
-    to_writer_event,
-    fill_summary,
-    parse_since,
     row_ts,
+    to_writer_event,
 )
+from lite_indexer.logging import get_logger
+from lite_indexer.query.bigquery_common import BigQueryQuotaError
+from lite_indexer.query.bigquery_source import BigQuerySource
+from lite_indexer.query.bigquery_spec import BigQuerySpec
 from lite_indexer.storage.clickhouse import ClickHouseUnavailable
 
 logger = get_logger(__name__)

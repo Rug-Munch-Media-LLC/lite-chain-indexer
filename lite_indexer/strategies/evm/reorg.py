@@ -24,6 +24,8 @@ from lite_indexer.config import (
     CH_DEX_TABLE,
     CH_TABLE,
 )
+from lite_indexer.config.finality import REORG_DEPTH
+from lite_indexer.config.finality import reorg_depth as _finality_reorg_depth
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
@@ -31,21 +33,10 @@ from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
 logger = get_logger(__name__)
 
 # How many blocks back a checkpoint must be confirmed before we trust the
-# hash. Per-chain confirmation depths: block times vary (Polygon 2s, BSC
-# 3s, Ethereum 12s), so fast chains need a deeper safety margin.
-MAX_REORG_DEPTH: dict[str, int] = {
-    "ethereum": 12,
-    "polygon": 32,
-    "bsc": 12,
-    "arbitrum": 12,
-    "optimism": 12,
-    "base": 12,
-    "avalanche": 12,
-    "gnosis": 12,
-}
-
-# Fallback depth for EVM chains not listed above.
-_DEFAULT_DEPTH = 12
+# hash. Canonical values live in ``config.finality`` (one source shared
+# with the query path and the Solana staging path) — re-exported here
+# because ``tests/test_reorg.py`` and the strategy docstrings name it.
+MAX_REORG_DEPTH: dict[str, int] = dict(REORG_DEPTH)
 
 # One row per (chain, block_number). ReplacingMergeTree keeps only the
 # latest hash per block so re-checkpointing the same block is a no-op.
@@ -61,8 +52,12 @@ ORDER BY (chain, block_number)
 
 
 def reorg_depth(chain: str) -> int:
-    """Return the confirmation depth for a chain (fallback: 12)."""
-    return MAX_REORG_DEPTH.get(chain, _DEFAULT_DEPTH)
+    """Return the confirmation depth for a chain (env-overridable).
+
+    Reads ``config.finality.reorg_depth`` so the live staging path, the
+    on-demand query path and the Solana path can never disagree.
+    """
+    return _finality_reorg_depth(chain)
 
 
 async def ensure_checkpoint_table(ch_client: Any) -> bool:

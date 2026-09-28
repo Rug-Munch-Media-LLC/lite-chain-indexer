@@ -54,6 +54,7 @@ from lite_indexer.config import (
     TIP_CACHE_MAX,
     TRANSFER_EVENT_TOPIC,
 )
+from lite_indexer.config.finality import UNFINALIZED_HORIZON, unfinalized_horizon
 from lite_indexer.dex.transfers import parse_transfer_logs
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
@@ -89,22 +90,13 @@ _STAGING_PREFIX = "staging"
 # Reorg window per chain — rows at or inside this unfinalized horizon are
 # served live-only and never written to the lake (they can still be
 # reorganized). EVM ~128 blocks, Solana ~32 slots, Tron ~19.
-_REORG_HORIZON: dict[str, int] = {
-    "ethereum": 128,
-    "polygon": 128,
-    "bsc": 128,
-    "arbitrum": 128,
-    "optimism": 128,
-    "base": 128,
-    "avalanche": 128,
-    "gnosis": 128,
-    "solana": 32,
-    "tron": 19,
-}
-
-# Fallback horizon for chains not listed above (assume EVM-like block
-# times until proven otherwise).
-_DEFAULT_REORG_HORIZON = 128
+# Reorg window per chain — rows at or inside this unfinalized horizon are
+# served live-only and never written to the lake (they can still be
+# reorganized). Canonical values live in ``config.finality`` so this path
+# and the live staging paths can never disagree; ``unfinalized_horizon``
+# also clamps the horizon to at least the chain's reorg depth, so a row is
+# never withheld from the lake before staging has verified it.
+_REORG_HORIZON: dict[str, int] = dict(UNFINALIZED_HORIZON)
 
 # How long a resolved chain tip is reused before re-probing
 # ``eth_blockNumber`` — keeps the finality gate from adding one cheap call
@@ -277,7 +269,7 @@ class RPCFetcher:
     @staticmethod
     def _reorg_horizon(chain: str) -> int:
         """Return the unfinalized reorg window for ``chain`` (blocks/slots)."""
-        return _REORG_HORIZON.get(chain, _DEFAULT_REORG_HORIZON)
+        return unfinalized_horizon(chain)
 
     @staticmethod
     def _row_block(row: dict[str, Any]) -> int:

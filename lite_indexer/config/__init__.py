@@ -10,6 +10,13 @@ from lite_indexer.config.chains import *  # noqa: F401,F403
 from lite_indexer.config.indexing import *  # noqa: F401,F403
 from lite_indexer.config.metrics import *  # noqa: F401,F403
 from lite_indexer.config.rpc import *  # noqa: F401,F403
+from lite_indexer.config.rpc_cost import (  # noqa: F401
+    COST_TIERS,
+    RPC_COST_TIER_UNKNOWN,
+    RPC_COST_TIERS,
+    RPC_SPILLOVER_ALLOWED,
+    parse_cost_tiers,
+)
 from lite_indexer.config.storage import *  # noqa: F401,F403
 from lite_indexer.config.webhooks import (  # noqa: F401
     WEBHOOK_BACKOFF_SECONDS,

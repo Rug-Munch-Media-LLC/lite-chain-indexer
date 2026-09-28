@@ -46,7 +46,7 @@ CH_TRACE_TABLE: str = "wallet_memory.internal_transfers"
 
 # Address-activity keystone table — every transaction an address touched
 # (free-RPC SolanaProvider getSignaturesForAddress parity). One row per
-# (address, tx_signature); provisioned by migrations/014_address_activity.sql.
+# (address, tx_signature); provisioned by migrations/016_address_activity.sql.
 CH_ADDRESS_ACTIVITY_TABLE: str = os.environ.get("CH_ADDRESS_ACTIVITY_TABLE") or "wallet_memory.address_activity"
 
 # ── Cross-Chain Table References ───────────────────────────────────────
@@ -137,7 +137,7 @@ class RetentionRule:
 # Lean hot window in ClickHouse; everything older lives permanently as B2
 # Parquet and is queried in place via s3(). Archive-before-drop is
 # mandatory — a TTL must never outrun the archive pipeline. Keep this map in
-# lock-step with migrations/013_retention_classes.sql, the runtime DDLs
+# lock-step with migrations/021_retention_classes.sql, the runtime DDLs
 # (which read this dict), and tests/test_retention.py.
 RETENTION_POLICY: dict[str, RetentionRule] = {
     "evm_transfers": RetentionRule("evm_transfers", 30, "block_timestamp"),

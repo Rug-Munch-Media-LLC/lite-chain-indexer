@@ -25,6 +25,7 @@ from lite_indexer.config import (
     CH_DEX_TABLE,
     SOLANA_CH_TABLE,
 )
+from lite_indexer.config.finality import reorg_depth
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
@@ -33,7 +34,9 @@ logger = get_logger(__name__)
 
 # How many slots back a checkpoint must be confirmed before we trust the
 # blockhash. Solana slots are ~400ms, so 32 slots ≈ 13s of safety margin.
-SOLANA_REORG_DEPTH = 32
+# Canonical value lives in ``config.finality`` so the staging and on-demand
+# query paths cannot disagree (historical name kept — sync.py names it).
+SOLANA_REORG_DEPTH = reorg_depth("solana")
 
 # Checkpoint table: one row per slot. ReplacingMergeTree keeps only the
 # latest blockhash per slot so re-checkpointing is a no-op.
@@ -50,16 +53,11 @@ ORDER BY (slot)
 
 
 async def ensure_checkpoint_table(ch_client: Any) -> bool:
-    """Create ``wallet_memory.solana_checkpoints`` if it does not exist.
+    """Create ``wallet_memory.solana_checkpoints`` if absent.
 
     Idempotent and non-fatal: a missing database or lacking privileges
-    degrades to a debug log (reorg staging skips that cycle).
-
-    Args:
-        ch_client: ClickHouse client (anything with ``execute``).
-
-    Returns:
-        True when the table exists (or was created), False otherwise.
+    degrades to a debug log (reorg staging skips that cycle). Returns True
+    when the table exists (or was created).
     """
     try:
         ch_client.execute(

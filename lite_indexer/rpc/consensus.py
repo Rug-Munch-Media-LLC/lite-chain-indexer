@@ -518,7 +518,7 @@ def _select_distinct_endpoints(
         except Exception as exc:  # noqa: BLE001 — selection fallback is first candidate
             logger.debug("rpc_consensus_select_fallback", chain=chain, method=method, error=str(exc)[:80])
             pick = candidates[0]
-        if pick not in candidates:
+        if pick is None or pick not in candidates:
             pick = candidates[0]
         selected.append(pick)
         used_accounts.add(account_key_for_endpoint(pick))

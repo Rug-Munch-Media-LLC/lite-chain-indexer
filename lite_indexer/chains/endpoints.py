@@ -35,6 +35,14 @@ from lite_indexer.logging import get_logger
 
 from ._overlay import load_endpoint_overlay, merge_endpoints, ws_head_endpoints
 
+# Expected chain-id table lives in chains/chain_ids (shrink-only size ratchet);
+# re-exported here because it is part of this module's public surface.
+from .chain_ids import EXPECTED_CHAIN_IDS  # noqa: F401
+
+# Last-resort pool data lives in chains/last_resort_pool (size ratchet);
+# the accessor below stays here because callers monkeypatch it.
+from .last_resort_pool import LAST_RESORT_ENDPOINTS
+
 # Load the shared env file BEFORE module-level placeholder resolution below,
 # so every import path sees the same environment. Idempotent + non-destructive.
 load_env_file()
@@ -454,34 +462,6 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
 # activate those endpoints.
 
 
-# ── Expected chainId map ────────────────────────────────────────────
-# Canonical EIP-155 ids per chain name. The probe script
-# (scripts/probe-rpc-endpoints.py) hard-rejects any endpoint answering
-# with a different id — a wrong chainId means impostor/misconfigured
-# endpoint regardless of latency. Solana/Tron use non-EVM probes.
-EXPECTED_CHAIN_IDS: dict[str, str] = {
-    "ethereum": "0x1",
-    "base": "0x2105",
-    "bsc": "0x38",
-    "polygon": "0x89",
-    "arbitrum": "0xa4b1",
-    "optimism": "0xa",
-    "avalanche": "0xa86a",
-    "fantom": "0xfa",
-    "linea": "0xe708",
-    "scroll": "0x82750",
-    "zksync": "0x144",
-    "mantle": "0x1388",
-    "gnosis": "0x64",
-    "celo": "0xa4ec",
-    "blast": "0x13e31",  # 81457 — verified 2026-09-01
-    "fraxtal": "0xfc",  # 252 — verified 2026-09-01
-    "metis": "0x440",  # 1088 — verified 2026-09-01
-    "robinhood": "0x1237",  # 4663 — old spec chainId 78600 was Vanguard
-    "hyperliquid": "0x3e7",  # 999 — HyperEVM (live-verified 2026-09-13)
-}
-
-
 def _resolve_endpoint_url(url: str) -> str:
     """Resolve ${ENV_VAR} placeholders in an endpoint URL.
 
@@ -541,64 +521,6 @@ GET_LOGS_ENDPOINTS = {chain: _resolved_endpoints(urls) for chain, urls in GET_LO
 WS_HEAD_ENDPOINTS: dict[str, list[str]] = {
     chain: ws_head_endpoints(chain, _ENDPOINT_OVERLAY) for chain in BUILTIN_ENDPOINTS
 }
-
-# ── Last-Resort Endpoints ───────────────────────────────────────────────
-# Known-good endpoints tried when every endpoint in the active pool fails
-# for a chain. These are the most battle-tested public providers from the
-# fallback only — the regular pool's health scoring / bans / circuit
-# breakers still apply; the last-resort list exists so a total pool wipe
-# (e.g. an outage taking out every tier at once) still has a shot at
-# serving the range instead of raising RpcFetchFailedError immediately.
-LAST_RESORT_ENDPOINTS: dict[str, list[str]] = {
-    "ethereum": [
-        "https://eth.api.onfinality.io/public",
-        "https://eth-pokt.nodies.app",
-        "https://rpc.mevblocker.io",
-        "https://rpc.flashbots.net",
-    ],
-    "base": [
-        "https://base.gateway.tenderly.co",
-        "https://mainnet.base.org",
-    ],
-    "bsc": [
-        "https://rpc-bsc.48.club",
-        "https://bsc-dataseed.binance.org",
-        "https://bsc-dataseed1.defibit.io",
-    ],
-    "polygon": [
-        "https://polygon.gateway.tenderly.co",
-        "https://polygon-mainnet.gateway.tatum.io",
-        "https://rpc-mainnet.matic.quiknode.pro",
-    ],
-    "arbitrum": [
-        "https://arbitrum.gateway.tenderly.co",
-        "https://arb1.arbitrum.io/rpc",
-    ],
-    "optimism": [
-        "https://optimism.gateway.tenderly.co",
-        "https://mainnet.optimism.io",
-    ],
-    "avalanche": ["https://api.avax.network/ext/bc/C/rpc"],
-    "fantom": ["https://rpc.fantom.network"],
-    "zksync": ["https://mainnet.era.zksync.io"],
-    "mantle": ["https://rpc.mantle.xyz"],
-    "gnosis": [
-        "https://rpc.gnosischain.com",
-        "https://gnosis.gateway.tenderly.co",
-    ],
-    "celo": ["https://forno.celo.org"],
-    "robinhood": ["https://rpc.mainnet.chain.robinhood.com"],
-    # hyperliquid: publicnode FIRST — the official RPC is the wrong
-    # last-resort here precisely because it can no longer serve a block
-    # hash (daily archived-block budget exhausted, -32005), which is what
-    # reorg_stage needs. Same rule as the main pool: the last-resort list
-    # must contain an endpoint that can actually answer the reorg probe.
-    "hyperliquid": [
-        "https://hyperliquid-rpc.publicnode.com",
-        "https://rpc.hyperliquid.xyz/evm",
-    ],
-}
-
 
 def last_resort_endpoints(chain: str) -> list[str]:
     """Return the known-good last-resort endpoints for a chain.

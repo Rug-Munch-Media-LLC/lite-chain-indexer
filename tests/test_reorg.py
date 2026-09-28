@@ -15,9 +15,8 @@ Uses a fake ClickHouse client and a fake RPC so the suite is hermetic.
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -31,6 +30,7 @@ from lite_indexer.strategies.evm.reorg import (
     rollback_to_block,
 )
 from lite_indexer.strategies.reorg_status import ReorgStatus
+
 _PATCHERS: list[Any] = []
 
 
@@ -97,11 +97,23 @@ class FakeCH:
 
 
 class FakeRPC:
-    """RPC double returning configurable block hashes by number."""
+    """RPC double returning configurable block hashes by number.
+
+    Models both block-read entry points: ``eth_get_block_by_number`` and the
+    ``_with_status`` variant the reorg pool-walk uses (the 2026-09-26 fix
+    needs the HTTP status to tell a pruned result from a refusal).
+    """
 
     def __init__(self, hashes: dict[int, str] | None = None) -> None:
         self.hashes = hashes or {}
         self.requests: list[int] = []
+
+    def _block(self, block_number: int) -> dict[str, Any] | None:
+        self.requests.append(block_number)
+        block_hash = self.hashes.get(block_number)
+        if block_hash is None:
+            return None
+        return {"number": hex(block_number), "hash": block_hash}
 
     async def eth_get_block_by_number(
         self,
@@ -109,11 +121,17 @@ class FakeRPC:
         block_number: int,
         full_tx: bool = False,
     ) -> dict[str, Any] | None:
-        self.requests.append(block_number)
-        block_hash = self.hashes.get(block_number)
-        if block_hash is None:
-            return None
-        return {"number": hex(block_number), "hash": block_hash}
+        return self._block(block_number)
+
+    async def eth_get_block_by_number_with_status(
+        self,
+        endpoint: str,
+        block_number: int,
+        full_tx: bool = False,
+        *,
+        chain: str | None = None,
+    ) -> tuple[dict[str, Any] | None, int | None]:
+        return self._block(block_number), 200
 
 
 # ═══════════════════════════════════════════════════════════════════════════

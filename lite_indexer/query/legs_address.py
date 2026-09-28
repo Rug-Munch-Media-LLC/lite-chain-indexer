@@ -14,6 +14,7 @@ from lite_indexer.config import CH_ADDRESS_ACTIVITY_TABLE
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.query.address_backfill import AddressBackfill, BackfillResult
+from lite_indexer.query.lake_limits import reject_oversize_limit
 
 logger = get_logger(__name__)
 
@@ -90,7 +91,11 @@ async def get_address_activity(
     addr = str(address or "").strip()
     if not addr:
         return []
-    capped = max(1, min(int(limit or router.limit_default), 1000))
+    # Reject an oversize limit instead of clamping to 1000: clamping here
+    # returned the newest 1000 rows as if they were the whole answer. This
+    # is a local ClickHouse read, but the failure mode is identical to the
+    # lake legs, so it gets the same treatment.
+    capped = reject_oversize_limit(limit or router.limit_default)
     rows = await asyncio.to_thread(router._query_address_activity, chain, addr, capped)
     if rows or not router.on_demand_enabled:
         return rows

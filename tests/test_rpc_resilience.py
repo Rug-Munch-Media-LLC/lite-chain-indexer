@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
+import lite_indexer.rpc.ban_state as ban_state_mod
 from lite_indexer.rpc.pool import (
     ban_endpoint,
     desperation_probe_due,
@@ -56,7 +57,7 @@ class _PredicateBreaker:
         return bool(self._predicate(endpoint))
 
 
-class _breaker_seam:
+class _BreakerSeam:
     """Context manager injecting a breaker via the routing seam."""
 
     def __init__(self, breaker: Any) -> None:
@@ -97,7 +98,6 @@ def clock():
 @pytest.fixture(autouse=True)
 def _clean_pool():
     """Reset pool state between tests so bans/failures never leak."""
-    import lite_indexer.rpc.ban_state as ban_state_mod
 
     with (
         patch("lite_indexer.rpc.pool._endpoint_failures", {}),
@@ -169,7 +169,7 @@ class TestPoolWideOutage:
         breaker.record_failure(a)
         breaker.record_failure(b)
         breaker.record_failure(b)
-        with _breaker_seam(_PredicateBreaker(lambda ep: ep in (a, b))):
+        with _BreakerSeam(_PredicateBreaker(lambda ep: ep in (a, b))):
             assert pool_fully_down([a, b]) is True
 
     def test_rate_limited_pool_fetch_attempts_and_advances(self, clock: _Clock):
@@ -233,7 +233,9 @@ class TestPoolWideOutage:
         from lite_indexer.strategies.evm import range_planning as rp
 
         narrow, wide = "https://narrow.invalid", "https://wide.invalid"
-        with patch("lite_indexer.strategies.evm.range_planning.get_max_block_range", lambda ep: 10 if ep == narrow else 100):
+        with patch(
+            "lite_indexer.strategies.evm.range_planning.get_max_block_range", lambda ep: 10 if ep == narrow else 100
+        ):
             assert rp._prefer_wide_range([narrow, wide], 100) == [wide, narrow]
             assert rp._prefer_wide_range([narrow, wide], 10) == [narrow, wide]
 
@@ -299,7 +301,7 @@ class TestPoolWideOutage:
         open_ok = "https://open.invalid"
         with patch("lite_indexer.config.ENDPOINT_BAN_BASE_SECONDS", 3600):
             ban_endpoint(banned, reason="http_403")
-        with _breaker_seam(_PredicateBreaker(lambda ep: ep == open_ok)):
+        with _BreakerSeam(_PredicateBreaker(lambda ep: ep == open_ok)):
             eligible = probe_eligible_endpoints([banned, open_ok])
         assert eligible == [open_ok]
 
@@ -309,7 +311,7 @@ class TestPoolWideOutage:
         incapable = "https://incapable.invalid"
         good = "https://good.invalid"
         with patch(
-            "lite_indexer.rpc.capabilities.is_logs_capability_excluded",
+            "lite_indexer.rpc.pool.is_logs_capability_excluded",
             lambda ep: ep == incapable,
         ):
             assert probe_eligible_endpoints([incapable, good]) == [good]
@@ -404,7 +406,6 @@ class TestPoolWideOutage:
         ep = "https://streaky.invalid"
         for _ in range(6):
             record_rate_limit(ep)
-        import lite_indexer.rpc.ban_state as ban_state_mod
 
         ban_s = ban_state_mod._endpoint_bans[ep] - clock.now
         assert ban_s == pytest.approx(300.0)
@@ -448,7 +449,7 @@ class TestEndpointRecovery:
         """pool.force_probe_endpoint bypasses the shared breaker for one call."""
         ep = "https://wrapped.invalid"
         breaker = RpcCircuitBreaker(failure_threshold=2)
-        with _breaker_seam(breaker):
+        with _BreakerSeam(breaker):
             breaker.record_failure(ep)
             breaker.record_failure(ep)
             assert force_probe_endpoint(ep) is True
@@ -511,7 +512,7 @@ class TestSingleEndpointFailure:
         breaker = RpcCircuitBreaker(failure_threshold=2)
         breaker.record_failure(broken)
         breaker.record_failure(broken)
-        with _breaker_seam(_PredicateBreaker(lambda ep: ep == broken)):
+        with _BreakerSeam(_PredicateBreaker(lambda ep: ep == broken)):
             for _ in range(20):
                 assert get_best_endpoint([healthy, broken]) == healthy
 

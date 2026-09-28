@@ -24,6 +24,8 @@ from lite_indexer.rpc import (
     record_endpoint_failure,
 )
 from lite_indexer.state import PairCache
+from lite_indexer.strategies.evm._getlogs_body import build_getlogs_body
+from lite_indexer.strategies.evm.log_budget import is_truncated_log_response
 
 logger = get_logger(__name__)
 
@@ -71,17 +73,7 @@ async def fetch_topic(
     endpoints = get_endpoints_for_range(endpoints, to_block - from_block)
 
     async def _fetch_one_range(range_start: int, range_end: int) -> list[dict[str, Any]] | None:
-        filter_params = {
-            "fromBlock": hex(range_start),
-            "toBlock": hex(range_end),
-            "topics": [topic],
-        }
-        body = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "eth_getLogs",
-            "params": [filter_params],
-        }
+        body = build_getlogs_body(topic, range_start, range_end)
 
         start_idx = endpoints.index(get_best_endpoint(endpoints))
         rotated = endpoints[start_idx:] + endpoints[:start_idx]
@@ -119,6 +111,21 @@ async def fetch_topic(
                     if isinstance(data, dict) and "result" in data:
                         logs = data["result"]
                         if isinstance(logs, list):
+                            # Silent-truncation guard: a capped public RPC
+                            # answers 200 with a SHORT list and no error.
+                            # Rotate rather than accept it as complete.
+                            if is_truncated_log_response(logs, range_start, range_end):
+                                record_endpoint_failure(url)
+                                logger.warning(
+                                    "dex_getlogs_truncated",
+                                    chain=chain,
+                                    label=label,
+                                    endpoint=url[:50],
+                                    returned=len(logs),
+                                    from_block=range_start,
+                                    to_block=range_end,
+                                )
+                                continue
                             parsed = parse_swap_logs(
                                 logs,
                                 chain,
@@ -129,13 +136,14 @@ async def fetch_topic(
                             )
                             if best_result is None or len(parsed) > len(best_result):
                                 best_result = parsed
-                            # A 200 with a result list means this endpoint
-                            # served the range in full; all endpoints serve
-                            # identical chain data. The old guard
-                            # ``len(parsed) == len(logs)`` was unreachable
-                            # because parse_swap_logs filters non-Swap logs,
-                            # so every chunk queried ALL endpoints (5×
-                            # RPC cost, 5× latency on busy chains).
+                            # The response covers the range tail, so this
+                            # endpoint served the range in full; all
+                            # endpoints serve identical chain data. The old
+                            # guard ``len(parsed) == len(logs)`` was
+                            # unreachable because parse_swap_logs filters
+                            # non-Swap logs, so every chunk queried ALL
+                            # endpoints (5x RPC cost, 5x latency on busy
+                            # chains).
                             break
                 elif resp.status_code == 429:
                     await handle_rate_limit(url)
