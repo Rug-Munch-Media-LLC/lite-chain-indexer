@@ -22,6 +22,8 @@ import api.app
 import api.config
 import api.routers.labels
 import api.write_guard
+from api.app import client_ip_from_headers
+from api.write_guard import write_auth_decision
 
 
 def write_guard() -> ModuleType:
@@ -36,6 +38,7 @@ def write_guard() -> ModuleType:
 
 
 def test_refuses_to_start_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard wires the pure policy to the import-time config and raises."""
     monkeypatch.setenv("LABEL_API_TOKEN", "")
     monkeypatch.setenv("API_ALLOW_UNAUTHENTICATED_WRITE", "0")
     monkeypatch.setenv("LABEL_API_WRITE_ENABLED", "1")
@@ -45,26 +48,33 @@ def test_refuses_to_start_without_token(monkeypatch: pytest.MonkeyPatch) -> None
     assert "LABEL_API_TOKEN" in str(excinfo.value)
 
 
-def test_starts_with_token_set(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LABEL_API_TOKEN", "a-real-secret")
-    monkeypatch.setenv("API_ALLOW_UNAUTHENTICATED_WRITE", "0")
-    write_guard().assert_write_auth_configured()  # must not raise
+# ── The policy as a pure function (no env, no reload, no monkeypatch) ────
+# The decision below is a string function, so it is tested directly. The
+# reload-based tests above prove the import-time wiring reaches it; these
+# prove the policy itself, which is where the actual rule lives.
 
 
-def test_dev_escape_permits_start(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LABEL_API_TOKEN", "")
-    monkeypatch.setenv("API_ALLOW_UNAUTHENTICATED_WRITE", "1")
-    write_guard().assert_write_auth_configured()  # must not raise
+def test_policy_refuses_when_no_token_and_no_escape() -> None:
+    assert write_auth_decision(token="", dev_escape="0", write_enabled="1") is True
 
 
-def test_escape_value_other_than_one_keeps_guard_armed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only the exact value "1" opens the dev escape — not "true"/"yes"."""
-    monkeypatch.setenv("LABEL_API_TOKEN", "")
-    monkeypatch.setenv("API_ALLOW_UNAUTHENTICATED_WRITE", "true")
-    monkeypatch.setenv("LABEL_API_WRITE_ENABLED", "1")
-    guard = write_guard()
-    with pytest.raises(guard.WriteAuthConfigError):
-        guard.assert_write_auth_configured()
+def test_policy_starts_when_token_set() -> None:
+    assert write_auth_decision(token="s3cret", dev_escape="0", write_enabled="1") is False
+
+
+def test_policy_starts_only_for_exact_escape_one() -> None:
+    assert write_auth_decision(token="", dev_escape="1", write_enabled="1") is False
+
+
+@pytest.mark.parametrize("escape", ["0", "true", "yes", "TRUE", "", " 1"])
+def test_policy_keeps_guard_armed_for_any_other_escape(escape: str) -> None:
+    """Only the exact string "1" opens the escape — not "true"/"yes"/" 1"."""
+    assert write_auth_decision(token="", dev_escape=escape, write_enabled="1") is True
+
+
+def test_policy_ignores_a_disabled_write_route() -> None:
+    """A kill-switched write endpoint is a different posture, not an error."""
+    assert write_auth_decision(token="", dev_escape="0", write_enabled="") is False
 
 
 def test_no_default_token_is_ever_synthesized(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,33 +85,39 @@ def test_no_default_token_is_ever_synthesized(monkeypatch: pytest.MonkeyPatch) -
 
 
 class TestClientIpTrust:
-    """The per-IP rate-limit key must not be client-controlled."""
+    """The per-IP rate-limit key must not be client-controlled.
 
-    class _Req:
-        def __init__(self, peer: str, xff: str | None) -> None:
-            self.client = type("C", (), {"host": peer})()
-            self.headers = {"x-forwarded-for": xff} if xff else {}
+    The hop-counting rule is a pure function, so these pass plain strings
+    rather than monkeypatching the module global — same coverage, no
+    module-state mutation, and therefore order-independent.
+    """
 
-    def test_ignores_xff_when_no_proxy_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(api.app, "TRUSTED_PROXY_HOPS", 0)
-        req = self._Req("10.0.0.5", "1.2.3.4")
-        assert api.app._client_ip(req) == "10.0.0.5"
+    def test_ignores_xff_when_no_proxy_configured(self) -> None:
+        assert client_ip_from_headers("10.0.0.5", "1.2.3.4", 0) == "10.0.0.5"
 
-    def test_uses_rightmost_hop_with_one_trusted_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(api.app, "TRUSTED_PROXY_HOPS", 1)
+    def test_uses_rightmost_hop_with_one_trusted_proxy(self) -> None:
         # nginx appended the real peer; the leftmost entry is the forged one.
-        req = self._Req("127.0.0.1", "6.6.6.6, 10.0.0.5")
-        assert api.app._client_ip(req) == "10.0.0.5"
+        assert client_ip_from_headers("127.0.0.1", "6.6.6.6, 10.0.0.5", 1) == "10.0.0.5"
 
-    def test_too_many_hops_falls_back_to_socket_peer(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(api.app, "TRUSTED_PROXY_HOPS", 1)
-        # Two entries with only one trusted proxy — the extra is spoofed.
-        req = self._Req("127.0.0.1", "9.9.9.9, 8.8.8.8")
-        assert api.app._client_ip(req) == "8.8.8.8"
+    def test_too_few_hops_falls_back_to_socket_peer(self) -> None:
+        # One entry but two trusted proxies — the chain is untrustworthy.
+        assert client_ip_from_headers("127.0.0.1", "9.9.9.9", 2) == "127.0.0.1"
 
-    def test_no_xff_header_uses_socket_peer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_extra_leading_hops_are_forged(self) -> None:
+        # Two entries, one trusted proxy: the extra leading one is spoofed, so
+        # we still take the rightmost — never the leftmost.
+        assert client_ip_from_headers("127.0.0.1", "9.9.9.9, 8.8.8.8", 1) == "8.8.8.8"
+
+    def test_no_xff_header_uses_socket_peer(self) -> None:
+        assert client_ip_from_headers("127.0.0.1", "", 1) == "127.0.0.1"
+
+    def test_wire_format_still_reads_xff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_client_ip delegates to the pure function, so the wiring holds."""
         monkeypatch.setattr(api.app, "TRUSTED_PROXY_HOPS", 1)
-        assert api.app._client_ip(self._Req("127.0.0.1", None)) == "127.0.0.1"
+        req = type(
+            "R", (), {"client": type("C", (), {"host": "127.0.0.1"})(), "headers": {"x-forwarded-for": "1.1.1.1"}}
+        )()
+        assert api.app._client_ip(req) == "1.1.1.1"  # type: ignore[arg-type]
 
 
 def test_legacy_leftmost_read_is_gone() -> None:

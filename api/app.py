@@ -66,11 +66,28 @@ def _client_ip(request: Request) -> str:
     client = request.client
     if not client:
         return "unknown"
-    peer = client.host or "unknown"
-    hops = TRUSTED_PROXY_HOPS
+    return client_ip_from_headers(
+        client.host or "unknown", request.headers.get("x-forwarded-for", ""), TRUSTED_PROXY_HOPS
+    )
+
+
+def client_ip_from_headers(peer: str, forwarded: str, hops: int) -> str:
+    """Pure: resolve the rate-limit key. Split from :func:`_client_ip`.
+
+    Testable with plain strings, so the hop-counting rule needs no
+    monkeypatched module global.
+
+    Args:
+        peer: The socket peer address.
+        forwarded: The raw ``X-Forwarded-For`` header value, if any.
+        hops: Number of trusted proxies in front of this app.
+
+    Returns:
+        The socket peer when no proxy is trusted or the chain is too long;
+        otherwise the rightmost trusted hop.
+    """
     if hops <= 0:
         return peer
-    forwarded = request.headers.get("x-forwarded-for", "")
     chain = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
     if len(chain) < hops:
         return peer
