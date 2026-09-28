@@ -7,7 +7,10 @@ definition instead of three.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+from lite_indexer.config import STATE_DIR
 
 
 def resolve_state_dir(explicit: Path | str | None) -> Path:
@@ -26,11 +29,15 @@ def resolve_state_dir(explicit: Path | str | None) -> Path:
     """
     if explicit is not None:
         return Path(explicit)
-    # Read through the state module so patching ``lite_indexer.state.STATE_DIR``
-    # still redirects the directory — the documented patch point for this repo.
-    from lite_indexer import state as _state
-
-    return Path(_state.STATE_DIR)
+    # Read through the ALREADY-IMPORTED state module so patching
+    # ``lite_indexer.state.STATE_DIR`` still redirects the directory (the
+    # documented patch point, used by 5 test files). A sys.modules lookup is
+    # used deliberately: `from lite_indexer import state` would execute
+    # lite_indexer/__init__.py, which imports the indexer, which imports this
+    # module back — a cycle the import-boundaries gate correctly rejects.
+    mod = sys.modules.get("lite_indexer.state")
+    default = getattr(mod, "STATE_DIR", STATE_DIR) if mod is not None else STATE_DIR
+    return Path(default)
 
 
 __all__ = ["StateDirMixin", "resolve_state_dir"]
@@ -43,21 +50,6 @@ class StateDirMixin:
     pin its directory. The mixin does it once, so ``state.py`` gains no
     constructor lines per class and stays under its shrink-only ratchet.
     """
-
-    def _init_state_pair(self, state_dir: Path | str | None) -> tuple[object, object]:
-        """Build the two state stores this owner needs, on one directory.
-
-        Args:
-            state_dir: Caller-supplied directory, or ``None`` for the default.
-
-        Returns:
-            ``(StateManager, StateHighWater)`` pinned to the same directory.
-        """
-        from lite_indexer.state import StateHighWater
-        from lite_indexer.state_manager import StateManager
-
-        resolved = self._init_state_dir(state_dir)
-        return StateManager(self.chain, resolved), StateHighWater(self.chain, resolved)
 
     def _init_state_dir(self, state_dir: Path | str | None) -> Path:
         """Resolve and store this object's state directory.

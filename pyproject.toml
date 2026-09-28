@@ -125,6 +125,11 @@ warn_unreachable = true
 warn_unused_ignores = true
 no_implicit_optional = true
 check_untyped_defs = true
+# examples/plugins/*/plugin.py are standalone example plugins, each a
+# top-level module named `plugin`. mypy cannot type-check three of the same
+# name in one run ("Duplicate module named plugin"), and they are not part of
+# the importable package. ruff still lints them.
+exclude = ["^examples/"]
 
 # Pre-existing: pyarrow stubs do not re-export fs.S3FileSystem/FileSelector/FileType
 # and some pyarrow.parquet functions are untyped — genuine third-party stub debt,
