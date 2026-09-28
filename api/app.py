@@ -32,7 +32,7 @@ from api.config import (
 )
 from api.db import get_historical
 from api.graphql import graphql_router
-from api.routers import address, deployers, launches, search, stats, system, transfers, whales
+from api.routers import address, deployers, launches, search, stats, system, transfers, wallet_graph, whales
 from api.routers import labels as labels_router
 from api.routers import query as query_router
 from api.write_guard import assert_write_auth_configured
@@ -150,6 +150,7 @@ def create_app() -> FastAPI:
     app.include_router(launches.router)
     app.include_router(stats.router)
     app.include_router(search.router)
+    app.include_router(wallet_graph.router)
 
     # Label graph — the canonical home of wallet labels (entity
     # resolution + the label-growth write path). Reads are public;
