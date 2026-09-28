@@ -338,7 +338,7 @@ class ExternalFlatfileSource:
         if injected is not None:
             return injected(url)
         try:
-            with urlopen(url, timeout=60) as response:  # noqa: S310 — scheme validated to http(s)
+            with urlopen(url, timeout=60) as response:  # nosec B310
                 data: bytes = response.read()
             return data
         except (HTTPError, URLError, OSError) as exc:

@@ -143,3 +143,34 @@ markers = [
 
 [tool.fleet-gates]
 scan-roots = ["lite_indexer"]
+
+# bandit runs as a pre-push gate (`.lefthook.yml`: `bandit -r . -ll`).
+# Without these exclusions it walked `.venv-ci` — a 947 MB virtualenv holding
+# 6,610 of the repo's 7,213 Python files — and reported ~23,000 findings from
+# vendored third-party site-packages. That is 92% of the scan spent on code
+# nobody here writes, and it buries the findings in our own 600 files.
+# `.gitignore` covers `.venv*`; this makes the scanner agree with it.
+[tool.bandit]
+exclude_dirs = [
+    ".venv",
+    ".venv-*",
+    "venv",
+    "env",  # top-level dir only; a bare "env" glob also eats lite_indexer/query/envio_source.py
+    "build",
+    "dist",
+    "node_modules",
+    ".serena",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "htmlcov",
+    "*.egg-info",
+]
+
+# B413 flags `from Crypto.Hash import keccak` as the dead `pycrypto` package.
+# That import path is shared: `pycryptodome` took it over, is actively
+# maintained, and is the package actually installed here (3.23.0). The
+# blacklist entry predates that handover, so the finding is a false positive
+# on maintained, pinned code. Suppressed per-site with `# nosec B413` and a
+# written reason rather than globally here, so a real `pycrypto` import is
+# still caught if one ever appears.

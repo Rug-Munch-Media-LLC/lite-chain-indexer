@@ -131,7 +131,7 @@ class EnvioSource:
         body = json.dumps(payload).encode()
         req = Request(url, data=body, headers={"Content-Type": "application/json"})
         try:
-            with urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed https endpoints
+            with urlopen(req, timeout=timeout) as resp:  # noqa: S310  # nosec B310: url is https + allowlisted cid
                 return json.loads(resp.read().decode())  # type: ignore[no-any-return]
         except HTTPError as exc:
             if exc.code == 429:

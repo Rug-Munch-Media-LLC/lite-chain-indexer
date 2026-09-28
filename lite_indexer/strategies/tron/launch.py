@@ -82,7 +82,7 @@ def _selector(signature: str) -> str:
         Selector hex string, or "" when pycryptodome is unavailable.
     """
     try:
-        from Crypto.Hash import keccak
+        from Crypto.Hash import keccak  # nosec B413
     except ImportError:  # pragma: no cover - environment dependent
         return ""
     hasher = keccak.new(digest_bits=256)

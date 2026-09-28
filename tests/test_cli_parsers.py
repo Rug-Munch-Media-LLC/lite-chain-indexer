@@ -132,5 +132,6 @@ def test_root_help_exits_zero_and_lists_every_subcommand() -> None:
 
 def test_attest_action_subcommands_parse() -> None:
     """The nested attest verify/show actions still parse their own flags."""
-    assert parse_args(["attest", "verify", "/tmp/m.json"]).attest_action == "verify"
+    # bandit B108: argv only, never opened
+    assert parse_args(["attest", "verify", "/tmp/m.json"]).attest_action == "verify"  # nosec B108
     assert parse_args(["attest", "show", "--chain", "base"]).attest_action == "show"

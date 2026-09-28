@@ -160,7 +160,8 @@ def test_endpoint_serves_alert_metrics() -> None:
     assert metrics_server.start_metrics_server(host="127.0.0.1", port=0) is True
     address = metrics_server._server.server_address
     port = address[1]
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as response:  # noqa: S310
+    # bandit B310: loopback to the test's own server  # noqa: S310
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as response:  # nosec B310
         body = response.read().decode("utf-8")
     assert "lite_indexer_state_last_block" in body
     assert "process_resident_memory_bytes" in body

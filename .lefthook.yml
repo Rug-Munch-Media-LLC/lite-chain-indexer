@@ -145,9 +145,26 @@ pre-push:
       run: mypy . --ignore-missing-imports
 
     # -- Python security scan (PYTHON repos) ------------------
+    # -x: without this, `-r .` walked .venv-ci — a 947 MB virtualenv holding
+    #     6,610 of the repo's 7,213 Python files — and reported ~23,000
+    #     findings from vendored site-packages, burying the ~600 files we own.
+    #     Mirrors the .gitignore and the [tool.bandit] block in pyproject.toml
+    #     (bandit 1.9.4 does not read that block, so it is restated here).
+    # -s B608: hardcoded_sql_expressions. 99 findings, every one an f-string
+    #     interpolating a module-constant table name or an internally-derived
+    #     fragment (CH_TABLE, chain_sql, column, page_limit) with values bound
+    #     as parameters. The only user-supplied SQL, POST /api/v1/query, is
+    #     gated by api/security.py:validate_readonly — a 20-table allowlist that
+    #     blocks non-allowlisted tables, write keywords, and UNION escapes
+    #     (verified, not assumed). SQL discipline here is enforced by that
+    #     validator and the `# nosemgrep: formatted-sql-query` convention, so
+    #     scanning for it again costs 99 annotations and finds nothing.
     bandit:
       glob: "*.py"
-      run: bandit -r . -ll
+      run: >-
+        bandit -r . -ll
+        -x .venv,.venv-*,venv,./*/env,./env,build,dist,node_modules,.serena,.mypy_cache,.pytest_cache,.ruff_cache,htmlcov
+        -s B608
 
     # -- Python dep freshness (PYTHON repos) ------------------
     deptry:

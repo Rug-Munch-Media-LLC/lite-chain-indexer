@@ -59,7 +59,8 @@ def _api_url() -> str:
 
 def fetch_nodes(api: str, key: str) -> list[dict]:
     req = urllib.request.Request(api, headers={"Authorization": f"Bearer {key}", "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    # bandit B310: operator-supplied fleet API base, https enforced by the caller
+    with urllib.request.urlopen(req, timeout=15) as resp:  # nosec B310
         data = json.load(resp)
     return list(data.get("results", []))
 

@@ -69,5 +69,6 @@ class UniswapV3PositionsPlugin(BasePlugin):
 
     def _output_dir(self, ctx: PluginContext) -> Path:
         """Return the per-plugin data directory."""
-        base = Path(ctx.data_dir) if ctx.data_dir else Path("/tmp")
+        # bandit B108: example plugin fallback
+        base = Path(ctx.data_dir) if ctx.data_dir else Path("/tmp")  # nosec B108
         return base / "plugin-data" / self.name

@@ -265,7 +265,7 @@ PLUGIN_ENABLED: bool = os.environ.get("PLUGIN_ENABLED", "1") != "0"
 #   {INDEXER_DEMAND_DIR}/{chain}/deployer
 # The indexer polls these files each sync cycle and enables the requested
 # event type for that chain. A file touch avoids cross-service imports.
-INDEXER_DEMAND_DIR: Path = Path(os.environ.get("INDEXER_DEMAND_DIR", "/tmp/indexer-demand"))
+INDEXER_DEMAND_DIR: Path = Path(os.environ.get("INDEXER_DEMAND_DIR", "/tmp/indexer-demand"))  # nosec B108
 # ── Whale Detection ───────────────────────────────────────────────────
 # A DEX swap is a "whale" when:
 #   1. USD notional of either leg >= WHALE_THRESHOLD_USD (requires a price

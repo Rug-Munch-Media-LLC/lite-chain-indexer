@@ -307,7 +307,7 @@ def _cmd_backfill(args: argparse.Namespace) -> int:
             rc = 2
             continue
         for d in dates:
-            outdir = f"/tmp/biglake/eth/{biglake_table}/date={d}"
+            outdir = f"/tmp/biglake/eth/{biglake_table}/date={d}"  # nosec B108
             os.makedirs(outdir, exist_ok=True)
             outfile = f"{outdir}/data.parquet"
             print(f"export {biglake_table} {d} → {outfile}")  # noqa: T201

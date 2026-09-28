@@ -208,7 +208,7 @@ def event_topic(signature: str) -> str:
     keccak implementation is unavailable.
     """
     try:
-        from Crypto.Hash import keccak
+        from Crypto.Hash import keccak  # nosec B413
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise PluginValidationError(
             "keccak256 is unavailable: install the 'bloom' extra (pycryptodome) to use plugins with event topics"

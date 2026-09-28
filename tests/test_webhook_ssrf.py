@@ -87,7 +87,8 @@ class TestResolveAndCheck:
             "192.168.1.1",  # RFC1918
             "169.254.169.254",  # link-local (cloud metadata)
             "100.64.0.1",  # CGNAT
-            "0.0.0.0",  # unspecified
+            # bandit B104: unspecified, in the SSRF deny-list under test, not a bind
+            "0.0.0.0",  # nosec B104
             "::1",  # IPv6 loopback
             "fe80::1",  # IPv6 link-local
             "fc00::1",  # IPv6 unique-local

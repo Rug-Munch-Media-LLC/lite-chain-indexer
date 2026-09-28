@@ -167,7 +167,7 @@ def _load_keccak() -> _KeccakFunc:
     Preference: pycryptodome → pysha3 → eth-hash → pure-Python fallback.
     """
     try:  # pycryptodome
-        from Crypto.Hash import keccak
+        from Crypto.Hash import keccak  # nosec B413
 
         def _via_crypto(data: bytes) -> bytes:
             h = keccak.new(digest_bits=256)
