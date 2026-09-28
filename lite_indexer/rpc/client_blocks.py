@@ -76,7 +76,7 @@ class BlocksMixin:
         if cached is not None and isinstance(cached.get("result"), dict):
             return cast(dict[str, Any], cached["result"]), 200
 
-        status_recorder.begin(endpoint)
+        status_recorder.begin_response_status(endpoint)
         result = await self.call(
             endpoint,
             "eth_getBlockByNumber",
