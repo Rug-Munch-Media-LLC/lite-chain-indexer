@@ -12,11 +12,19 @@ logger = get_logger(__name__)
 
 
 def add_lake_parsers(sub: argparse._SubParsersAction) -> None:
-    """Register the lake family subparsers (lake-backfill, lake-gaps, sqd-fill)."""
+    """Register the maintenance family subparsers.
+
+    The lake/sqd/fill group plus ``orphan-sweep``: both are read-first
+    maintenance commands an operator runs by hand, and grouping them keeps
+    ``cli/__init__.py`` (shrink-only) at one registration call.
+    """
     _add_backfill_parser(sub)
     _add_gaps_parser(sub)
     _add_sqd_parser(sub)
     _add_fill_solana_parser(sub)
+    from lite_indexer.cli._orphan_sweep import add_orphan_sweep_parser
+
+    add_orphan_sweep_parser(sub)
 
 
 def _add_sqd_parser(sub: argparse._SubParsersAction) -> None:
@@ -123,6 +131,10 @@ def _add_fill_solana_parser(sub: argparse._SubParsersAction) -> None:
 
 def run_lake_command(args: argparse.Namespace) -> int:
     """Dispatch the lake family subcommands."""
+    if args.command == "orphan-sweep":
+        from lite_indexer.cli._orphan_sweep import run_orphan_sweep
+
+        return run_orphan_sweep(args)
     if args.command == "sqd-fill":
         return run_sqd_fill(args)
     if args.command == "fill-solana":
