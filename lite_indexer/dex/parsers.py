@@ -11,7 +11,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from lite_indexer.config import MAX_EVENTS_PER_BATCH, PAIR_CREATED_TOPIC, POOL_CREATED_TOPIC, SWAP_V2_TOPIC
+from lite_indexer.config import (
+    MAX_EVENTS_PER_BATCH,
+    PAIR_CREATED_TOPIC,
+    POOL_CREATED_TOPIC,
+    SWAP_V2_TOPIC,
+)
 from lite_indexer.logging import get_logger
 
 from .v2 import parse_pair_created_v2, parse_swap_v2

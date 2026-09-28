@@ -14,7 +14,7 @@ import httpx
 from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range
 from lite_indexer.chunks import CHUNK_PARALLELISM, chunk_range, merge_chunked_results
 from lite_indexer.config import CHUNK_SIZE_EVM, RPC_TIMEOUT
-from lite_indexer.dex import parse_swap_logs
+from lite_indexer.dex import parse_dex_logs
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
     apply_endpoint_backoff,
@@ -48,11 +48,13 @@ async def fetch_topic(
 
     Splits the range into ``chunk_size``-wide chunks and fetches each
     with one ``eth_getLogs`` call, up to :data:`CHUNK_PARALLELISM` at a
-    time, then merges and de-duplicates the results.
+    time, then merges and de-duplicates the results. One topic per call:
+    the filter is ``topics: [topic]``, so a swap leg, a V2 LP leg and a
+    V3 LP leg are three separate calls over the same block range.
 
     Args:
         topic: Event topic hash.
-        label: Human label for logging ("v2" or "v3").
+        label: Human label for logging ("v2", "v3", "lp_v2", ...).
         chain: Chain name.
         from_block: Start block (inclusive).
         to_block: End block (inclusive).
@@ -61,7 +63,8 @@ async def fetch_topic(
         chunk_size: Max blocks per eth_getLogs chunk.
 
     Returns:
-        List of parsed swap event dicts, or ``None`` on total leg failure.
+        List of parsed event dicts (swap or LP, per ``topic``), or
+        ``None`` on total leg failure.
     """
     endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
     if not endpoints:
@@ -119,7 +122,7 @@ async def fetch_topic(
                     if isinstance(data, dict) and "result" in data:
                         logs = data["result"]
                         if isinstance(logs, list):
-                            parsed = parse_swap_logs(
+                            parsed = parse_dex_logs(
                                 logs,
                                 chain,
                                 range_start,
