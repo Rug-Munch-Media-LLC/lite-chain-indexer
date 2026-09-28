@@ -16,7 +16,15 @@ from typing import Any, cast
 import httpx
 
 from lite_indexer.chains import GET_LOGS_ENDPOINTS
-from lite_indexer.config import CHUNK_SIZE_EVM, SWAP_V2_TOPIC, SWAP_V3_TOPIC
+from lite_indexer.config import (
+    BURN_V2_TOPIC,
+    BURN_V3_TOPIC,
+    CHUNK_SIZE_EVM,
+    MINT_V2_TOPIC,
+    MINT_V3_TOPIC,
+    SWAP_V2_TOPIC,
+    SWAP_V3_TOPIC,
+)
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
     RpcClient,
@@ -28,6 +36,16 @@ from lite_indexer.strategies.evm.dex_topic import fetch_topic
 from lite_indexer.strategies.pool_resolver import batch_resolve_pool_tokens
 
 logger = get_logger(__name__)
+
+# LP (Mint/Burn) legs, fetched alongside the swap legs. The tuple is
+# (topic, label); each is one eth_getLogs pass over the same range.
+# Four extra topic legs per block range: 2 swap -> 6 total.
+_LP_TOPIC_LEGS: tuple[tuple[str, str], ...] = (
+    (MINT_V2_TOPIC, "lp_v2_mint"),
+    (BURN_V2_TOPIC, "lp_v2_burn"),
+    (MINT_V3_TOPIC, "lp_v3_mint"),
+    (BURN_V3_TOPIC, "lp_v3_burn"),
+)
 
 
 async def fetch_swap_events(
@@ -41,10 +59,12 @@ async def fetch_swap_events(
     batch_size: int,
     chunk_size: int = CHUNK_SIZE_EVM,
 ) -> list[dict[str, Any]] | None:
-    """Fetch DEX Swap events (V2 + V3) via eth_getLogs.
+    """Fetch DEX Swap (V2 + V3) and LP Mint/Burn events via eth_getLogs.
 
     First fetches PairCreated events from known factories to build a
-    pair→(token0, token1) mapping, then fetches swap events.
+    pair→(token0, token1) mapping, then fetches swap events plus the
+    four LP legs (V2 Mint/Burn, V3 Mint/Burn) and batch-resolves
+    unknown pools via eth_call fallback.
 
     Error handling:
     - Chain reorg: from_block > to_block returns ["__CHAIN_REORG__"]
@@ -63,10 +83,11 @@ async def fetch_swap_events(
         chunk_size: Max blocks per eth_getLogs chunk (default: EVM chunk).
 
     Returns:
-        List of parsed swap event dicts with token0/token1 resolved,
-        ["__CHAIN_REORG__"] on reorg, or ``None`` on total dex-leg
-        failure (pair mapping unavailable, or any V2/V3 chunk failed).
-        ``None`` must NOT be treated as "no swaps" — the caller defers.
+        List of parsed event dicts (swaps + LP legs) with token0/token1
+        resolved, ["__CHAIN_REORG__"] on reorg, or ``None`` on total
+        dex-leg failure (pair mapping unavailable, or any topic leg
+        failed). ``None`` must NOT be treated as "no activity" — the
+        caller defers.
     """
     # Chain reorg detection
     if detect_reorg(from_block, to_block):
@@ -109,27 +130,44 @@ async def fetch_swap_events(
         pair_cache=pair_cache,
         chunk_size=chunk_size,
     )
-    v2_results, v3_results = await asyncio.gather(v2_task, v3_task)
+    lp_tasks = [
+        fetch_topic(
+            topic,
+            label,
+            chain,
+            from_block,
+            to_block,
+            client=client,
+            pair_cache=pair_cache,
+            chunk_size=chunk_size,
+        )
+        for topic, label in _LP_TOPIC_LEGS
+    ]
+    # One gather for every leg: a single partial-failure signal, and no
+    # sequential phase where swaps land but LP legs are still in flight.
+    leg_results = await asyncio.gather(v2_task, v3_task, *lp_tasks)
 
-    # Total failure: either topic leg could not be fetched completely.
-    if v2_results is None or v3_results is None:
+    # Total failure: any topic leg that could not be fetched completely.
+    if any(results is None for results in leg_results):
         logger.warning(
             "dex_fetch_total_failure",
             chain=chain,
             from_block=from_block,
             to_block=to_block,
-            v2_failed=v2_results is None,
-            v3_failed=v3_results is None,
+            v2_failed=leg_results[0] is None,
+            v3_failed=leg_results[1] is None,
+            failed_legs=sum(1 for r in leg_results if r is None),
         )
         return None
     # Merge and deduplicate
     seen_keys: set[str] = set()
     merged: list[dict[str, Any]] = []
-    for evt in v2_results + v3_results:
-        key = f"{evt['transactionHash']}:{evt['logIndex']}"
-        if key not in seen_keys:
-            seen_keys.add(key)
-            merged.append(evt)
+    for results in leg_results:
+        for evt in results or []:
+            key = f"{evt['transactionHash']}:{evt['logIndex']}"
+            if key not in seen_keys:
+                seen_keys.add(key)
+                merged.append(evt)
 
     # Batch-resolve unknown pools via eth_call fallback
     unknown_pairs: set[str] = set()

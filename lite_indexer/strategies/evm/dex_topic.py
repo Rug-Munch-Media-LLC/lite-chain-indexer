@@ -6,7 +6,6 @@ Extracted 2026-09-21: chunked eth_getLogs topic fetch + its response helper.
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 
 import httpx
@@ -14,7 +13,7 @@ import httpx
 from lite_indexer.chains import GET_LOGS_ENDPOINTS, get_endpoints_for_range
 from lite_indexer.chunks import CHUNK_PARALLELISM, chunk_range, merge_chunked_results
 from lite_indexer.config import CHUNK_SIZE_EVM, RPC_TIMEOUT
-from lite_indexer.dex import parse_swap_logs
+from lite_indexer.dex.log_context import LogDecodeContext
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
     apply_endpoint_backoff,
@@ -25,7 +24,7 @@ from lite_indexer.rpc import (
 )
 from lite_indexer.state import PairCache
 from lite_indexer.strategies.evm._getlogs_body import build_getlogs_body
-from lite_indexer.strategies.evm.log_budget import is_truncated_log_response
+from lite_indexer.strategies.evm.topic_decode import decode_topic_page
 
 logger = get_logger(__name__)
 
@@ -50,11 +49,13 @@ async def fetch_topic(
 
     Splits the range into ``chunk_size``-wide chunks and fetches each
     with one ``eth_getLogs`` call, up to :data:`CHUNK_PARALLELISM` at a
-    time, then merges and de-duplicates the results.
+    time, then merges and de-duplicates the results. One topic per call:
+    the filter is ``topics: [topic]``, so a swap leg, a V2 LP leg and a
+    V3 LP leg are three separate calls over the same block range.
 
     Args:
         topic: Event topic hash.
-        label: Human label for logging ("v2" or "v3").
+        label: Human label for logging ("v2", "v3", "lp_v2", ...).
         chain: Chain name.
         from_block: Start block (inclusive).
         to_block: End block (inclusive).
@@ -63,7 +64,8 @@ async def fetch_topic(
         chunk_size: Max blocks per eth_getLogs chunk.
 
     Returns:
-        List of parsed swap event dicts, or ``None`` on total leg failure.
+        List of parsed event dicts (swap or LP, per ``topic``), or
+        ``None`` on total leg failure.
     """
     endpoints = GET_LOGS_ENDPOINTS.get(chain, [])
     if not endpoints:
@@ -98,53 +100,27 @@ async def fetch_topic(
                     resp_text = await asyncio.wait_for(
                         asyncio.to_thread(_read_response_text, resp), timeout=attempt_deadline
                     )
-                    if not resp_text or len(resp_text) < 10:
+                    page_ctx = LogDecodeContext(
+                        chain=chain,
+                        from_block=range_start,
+                        to_block=range_end,
+                        topic=topic,
+                        pair_tokens=pair_cache.all,
+                    )
+                    page = decode_topic_page(resp_text, page_ctx, label, url)
+                    if page is None:
                         record_endpoint_failure(url)
                         continue
-
-                    try:
-                        data = json.loads(resp_text)
-                    except (json.JSONDecodeError, ValueError):
-                        record_endpoint_failure(url)
-                        continue
-
-                    if isinstance(data, dict) and "result" in data:
-                        logs = data["result"]
-                        if isinstance(logs, list):
-                            # Silent-truncation guard: a capped public RPC
-                            # answers 200 with a SHORT list and no error.
-                            # Rotate rather than accept it as complete.
-                            if is_truncated_log_response(logs, range_start, range_end):
-                                record_endpoint_failure(url)
-                                logger.warning(
-                                    "dex_getlogs_truncated",
-                                    chain=chain,
-                                    label=label,
-                                    endpoint=url[:50],
-                                    returned=len(logs),
-                                    from_block=range_start,
-                                    to_block=range_end,
-                                )
-                                continue
-                            parsed = parse_swap_logs(
-                                logs,
-                                chain,
-                                range_start,
-                                range_end,
-                                topic,
-                                pair_cache.all,
-                            )
-                            if best_result is None or len(parsed) > len(best_result):
-                                best_result = parsed
-                            # The response covers the range tail, so this
-                            # endpoint served the range in full; all
-                            # endpoints serve identical chain data. The old
-                            # guard ``len(parsed) == len(logs)`` was
-                            # unreachable because parse_swap_logs filters
-                            # non-Swap logs, so every chunk queried ALL
-                            # endpoints (5x RPC cost, 5x latency on busy
-                            # chains).
-                            break
+                    # The response covers the range tail, so this
+                    # endpoint served the range in full; all endpoints
+                    # serve identical chain data. The old guard
+                    # ``len(parsed) == len(logs)`` was unreachable
+                    # because the decoder filters non-Swap logs, so
+                    # every chunk queried ALL endpoints (5x RPC cost,
+                    # 5x latency on busy chains).
+                    if best_result is None or len(page) > len(best_result):
+                        best_result = page
+                    break
                 elif resp.status_code == 429:
                     await handle_rate_limit(url)
                     continue

@@ -42,13 +42,9 @@ def _insert_dex(client: Any, chain: str, rows: list[tuple[Any, ...]]) -> int:
         return len(rows)
     except Exception as exc:
         metrics_incr("clickhouse_errors")
-        logger.error(
-            "dex_clickhouse_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150]
-        )
+        logger.error("dex_clickhouse_insert_failed", chain=chain, rows=len(rows), error=str(exc)[:150])
         if is_unavailable_error(exc):
-            raise ClickHouseUnavailable(
-                f"ClickHouse unreachable during dex insert (chain={chain})"
-            ) from exc
+            raise ClickHouseUnavailable(f"ClickHouse unreachable during dex insert (chain={chain})") from exc
         return 0
 
 
@@ -58,10 +54,19 @@ def _dex_row(
     numeric_amounts: bool,
     now: datetime,
 ) -> tuple[Any, ...]:
-    """Build one dex_events INSERT row (schema-adaptive amount columns)."""
+    """Build one dex_events INSERT row (schema-adaptive amount columns).
+
+    ``type`` is DERIVED from the event payload, never hardcoded. The
+    decoders (lite_indexer.dex) already set it — ``swap`` for swap legs,
+    ``add_liquidity`` / ``remove_liquidity`` for LP Mint/Burn legs — and
+    the value is passed through verbatim so a new event kind never needs
+    a writer change. ``swap`` remains only as the fallback for a payload
+    with no explicit type, preserving the pre-2026-09-28 behaviour for
+    callers that build rows by hand.
+    """
     version = event.get("dex_type", "v2")
-    amt0 = event.get("amount0In", "0") or "0"
-    amt1 = event.get("amount1In", "0") or "0"
+    amt0 = event.get("amount0", "0") or "0"
+    amt1 = event.get("amount1", "0") or "0"
 
     def _amount(value: Any) -> Any:
         if numeric_amounts:
@@ -74,7 +79,7 @@ def _dex_row(
         return "" if value is None else str(value)
 
     return (
-        "swap",
+        str(event.get("type") or "swap"),
         chain,
         event["blockNumber"],
         _parse_ts(event.get("blockTimestamp", ""), now),

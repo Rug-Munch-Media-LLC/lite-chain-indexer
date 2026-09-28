@@ -1,6 +1,6 @@
 {
 	"scope": "lite_indexer/",
-	"total": 275,
+	"total": 264,
 	"files": {
 		"lite_indexer/chains/__init__.py": 1,
 		"lite_indexer/cli/_attest_parsers.py": 2,
@@ -11,7 +11,6 @@
 		"lite_indexer/cli/_integrity_parsers.py": 3,
 		"lite_indexer/cli/_lake.py": 5,
 		"lite_indexer/cli/_query_parsers.py": 2,
-		"lite_indexer/indexer/__init__.py": 1,
 		"lite_indexer/indexer/_reorg_phase.py": 11,
 		"lite_indexer/indexer/_zero_write.py": 1,
 		"lite_indexer/indexer/backfill_executor.py": 2,
@@ -39,14 +38,11 @@
 		"lite_indexer/rpc/client_timestamps.py": 2,
 		"lite_indexer/rpc/client_transport.py": 12,
 		"lite_indexer/rpc/client_ts_fetch.py": 1,
-		"lite_indexer/rpc/cost_tier.py": 3,
-		"lite_indexer/rpc/cost_tier_map.py": 1,
 		"lite_indexer/rpc/ledger_persist.py": 6,
 		"lite_indexer/rpc/pool.py": 2,
 		"lite_indexer/rpc/routing/balancer.py": 1,
 		"lite_indexer/rpc/routing/health.py": 1,
 		"lite_indexer/rpc/routing/selector.py": 1,
-		"lite_indexer/rpc/spillover.py": 1,
 		"lite_indexer/rpc/verify.py": 1,
 		"lite_indexer/storage/address_activity.py": 1,
 		"lite_indexer/storage/ch_deployer.py": 6,
@@ -65,9 +61,6 @@
 		"lite_indexer/strategies/evm/strategy.py": 1,
 		"lite_indexer/strategies/solana/strategy/transfers.py": 2,
 		"lite_indexer/strategies/tron/deployer.py": 1,
-		"lite_indexer/webhooks/delivery/__init__.py": 3,
-		"lite_indexer/webhooks/router.py": 1,
-		"lite_indexer/webhooks/ssrf.py": 2,
-		"lite_indexer/webhooks/storage.py": 1
+		"lite_indexer/webhooks/ssrf.py": 2
 	}
 }

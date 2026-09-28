@@ -20,6 +20,8 @@ from lite_indexer.config import (
 )
 
 from .common import parse_block_number, parse_log_index, unpad_address
+from .lp import lp_event_type, parse_lp_log
+from .lp_logs import parse_dex_logs, parse_lp_logs
 from .parsers import parse_pair_created_logs, parse_swap_logs
 from .transfers import parse_transfer_logs
 from .v2 import parse_pair_created_v2, parse_swap_v2
@@ -30,6 +32,10 @@ __all__ = [
     "parse_block_number",
     "parse_log_index",
     "parse_pair_created_logs",
+    "parse_dex_logs",
+    "parse_lp_logs",
+    "parse_lp_log",
+    "lp_event_type",
     "parse_swap_logs",
     "parse_transfer_logs",
     "parse_pair_created_v2",

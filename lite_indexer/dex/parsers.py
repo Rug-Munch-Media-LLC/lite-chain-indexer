@@ -11,9 +11,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from lite_indexer.config import MAX_EVENTS_PER_BATCH, PAIR_CREATED_TOPIC, POOL_CREATED_TOPIC, SWAP_V2_TOPIC
+from lite_indexer.config import (
+    MAX_EVENTS_PER_BATCH,
+    PAIR_CREATED_TOPIC,
+    POOL_CREATED_TOPIC,
+    SWAP_V2_TOPIC,
+)
 from lite_indexer.logging import get_logger
 
+from .log_context import LogDecodeContext
 from .v2 import parse_pair_created_v2, parse_swap_v2
 from .v3 import parse_pool_created_v3, parse_swap_v3
 
@@ -70,14 +76,7 @@ def parse_pair_created_logs(
     return pair_tokens, deployer_events
 
 
-def parse_swap_logs(
-    logs: list[dict[str, Any]],
-    chain: str,
-    from_block: int,
-    to_block: int,
-    topic: str,
-    pair_tokens: dict[str, tuple[str, str]],
-) -> list[dict[str, Any]]:
+def parse_swap_logs(logs: list[dict[str, Any]], ctx: LogDecodeContext) -> list[dict[str, Any]]:
     """Parse raw eth_getLogs results for swap events (V2 or V3).
 
     V2 (Uniswap V2 style):
@@ -90,16 +89,16 @@ def parse_swap_logs(
 
     Args:
         logs: Raw eth_getLogs results.
-        chain: Chain name.
-        from_block: Minimum block number filter.
-        to_block: Maximum block number filter.
-        topic: Event topic (V2 or V3 swap).
-        pair_tokens: Dict mapping pair address to (token0, token1).
+        ctx.chain: Chain name.
+        ctx.from_block: Minimum block number filter.
+        ctx.to_block: Maximum block number filter.
+        ctx.topic: Event ctx.topic (V2 or V3 swap).
+        ctx.pair_tokens: Dict mapping pair address to (token0, token1).
 
     Returns:
         List of parsed swap event dicts.
     """
-    is_v2 = topic == SWAP_V2_TOPIC
+    is_v2 = ctx.topic == SWAP_V2_TOPIC
     events: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
     duplicates = 0
@@ -113,9 +112,9 @@ def parse_swap_logs(
             continue
 
         if is_v2:
-            event = parse_swap_v2(log, chain, from_block, to_block, pair_tokens)
+            event = parse_swap_v2(log, ctx.chain, ctx.from_block, ctx.to_block, ctx.pair_tokens)
         else:
-            event = parse_swap_v3(log, chain, from_block, to_block, pair_tokens)
+            event = parse_swap_v3(log, ctx.chain, ctx.from_block, ctx.to_block, ctx.pair_tokens)
 
         if event is None:
             continue
@@ -133,6 +132,6 @@ def parse_swap_logs(
             break
 
     if duplicates:
-        logger.debug("swap_dedup_removed", chain=chain, count=duplicates)
+        logger.debug("swap_dedup_removed", chain=ctx.chain, count=duplicates)
 
     return events

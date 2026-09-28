@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from lite_indexer.dex.log_context import LogDecodeContext
+
 # ── Parse/Decoder Tests ──────────────────────────────────────────────
 
 
@@ -152,7 +154,7 @@ class TestParseSwapLogs:
             }
         ]
 
-        events = parse_swap_logs(logs, "ethereum", 0x100000, 0x100000, SWAP_V2_TOPIC, pair_tokens)
+        events = parse_swap_logs(logs, _ctx("ethereum", 0x100000, 0x100000, SWAP_V2_TOPIC, pair_tokens))
         assert len(events) == 1
         assert events[0]["dex_type"] == "v2"
         assert events[0]["token0"] == "0xtoken0"
@@ -174,7 +176,7 @@ class TestParseSwapLogs:
             }
         ]
 
-        events = parse_swap_logs(logs, "ethereum", 0x100000, 0x100000, SWAP_V2_TOPIC, {})
+        events = parse_swap_logs(logs, _ctx("ethereum", 0x100000, 0x100000, SWAP_V2_TOPIC, {}))
         assert len(events) == 1
         assert events[0]["token0"] == ""
         assert events[0]["token1"] == ""
@@ -317,3 +319,20 @@ class TestConfig:
 
         assert DISK_CAP_BYTES > 0
         assert 0 < BATCH_SIZE <= 10000
+
+
+def _ctx(
+    chain: str,
+    from_block: int,
+    to_block: int,
+    topic: str,
+    pair_tokens: dict[str, tuple[str, str]],
+) -> LogDecodeContext:
+    """Decode context for one fetch — the decoders take this, not five args."""
+    return LogDecodeContext(
+        chain=chain,
+        from_block=from_block,
+        to_block=to_block,
+        topic=topic,
+        pair_tokens=pair_tokens,
+    )
