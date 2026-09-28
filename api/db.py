@@ -110,23 +110,34 @@ _query_router: Any | None = None
 _query_router_init = False
 
 
-def get_historical() -> Any | None:
+def get_historical(client_factory: Any | None = None, enabled: bool | None = None) -> Any | None:
     """Return the shared :class:`HistoricalAccess` (None when disabled).
 
     Constructed lazily on first use — no ClickHouse connection is forced
     at app creation (the access layer resolves its client on demand).
+
+    Args:
+        client_factory: How the access layer obtains its ClickHouse client.
+            ``None`` uses the module-level :func:`get_client` (the
+            production path).
+        enabled: Whether Transparent Historical Access is on. ``None`` uses
+            the configured ``HISTORICAL_ACCESS_ENABLED``.
     """
     global _historical, _historical_init
+    # An explicit ``enabled=False`` short-circuits BEFORE the init latch, so a
+    # caller that disables the layer is never handed a previously built
+    # singleton. Latching first would make the answer depend on which caller
+    # ran first — an order-dependent global.
+    if not (HISTORICAL_ACCESS_ENABLED if enabled is None else enabled):
+        return None
     if _historical_init:
         return _historical
     _historical_init = True
-    if not HISTORICAL_ACCESS_ENABLED:
-        return None
     try:
         from lite_indexer.storage.historical import HistoricalAccess
 
         _historical = HistoricalAccess(
-            client_factory=get_client,
+            client_factory=client_factory or get_client,
             b2_bucket=HISTORICAL_PARQUET_REMOTE,
         )
     except Exception:  # noqa: BLE001 — THA is optional
@@ -195,7 +206,12 @@ def _query_settings(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     return settings
 
 
-def query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def query(
+    sql: str,
+    params: dict[str, Any] | None = None,
+    historical: Any | None = None,
+    client: Any | None = None,
+) -> list[dict[str, Any]]:
     """Execute a read-only SELECT and return rows as dicts.
 
     When Transparent Historical Access is enabled, single-table SELECTs
@@ -206,21 +222,33 @@ def query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]
     Raises:
         clickhouse_driver.errors.ServerException: on ClickHouse errors
             (invalid SQL, timeout, access denied).
+
+    Args:
+        sql: The SELECT to run.
+        params: Named query parameters.
+        historical: Access layer to route through. ``None`` resolves the
+            shared one (the production path).
+        client: ClickHouse client for the hot path. ``None`` uses the
+            thread-local :func:`get_client`.
     """
-    historical = get_historical()
-    if historical is not None:
-        rewritten = historical.maybe_rewrite_view(sql)
+    access = get_historical() if historical is None else historical
+    if access is not None:
+        rewritten = access.maybe_rewrite_view(sql)
         if rewritten != sql:
-            return _query_clickhouse(rewritten, params)
-        routed = historical.query_sql(sql, params or {})
+            return _query_clickhouse(rewritten, params, client)
+        routed = access.query_sql(sql, params or {})
         if routed is not None:
             return cast(list[dict[str, Any]], routed)
-    return _query_clickhouse(sql, params)
+    return _query_clickhouse(sql, params, client)
 
 
-def _query_clickhouse(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def _query_clickhouse(
+    sql: str,
+    params: dict[str, Any] | None = None,
+    client: Any | None = None,
+) -> list[dict[str, Any]]:
     """Execute SQL against ClickHouse and return rows as dicts."""
-    rows, column_types = get_client().execute(
+    rows, column_types = (get_client() if client is None else client).execute(
         sql,
         params or {},
         with_column_types=True,

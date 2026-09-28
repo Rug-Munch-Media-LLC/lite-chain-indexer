@@ -262,8 +262,8 @@ class TestColdStore:
 
         with patch("subprocess.run", fake_rclone):
             rows = store.query(
-            "evm_transfers",
-            "ethereum",
+                "evm_transfers",
+                "ethereum",
                 from_time=datetime(2026, 6, 30, tzinfo=UTC),
                 to_time=datetime(2026, 6, 30, 23, 59, tzinfo=UTC),
             )
@@ -595,15 +595,11 @@ class TestApiWiring:
         import api.db as db
 
         fake = FakeCH(hot_rows=[_hot_row(200, "0xhot")], views=["evm_transfers_historical"])
-        with (
-            patch.object(db, "get_client", lambda: fake),
-            patch.object(db, "HISTORICAL_ACCESS_ENABLED", True),
-            patch.object(db, "_historical_init", False),
-            patch.object(db, "_historical", None),
-        ):
-            rows = db.query(
-                "SELECT chain, block_number, tx_hash FROM wallet_memory.evm_transfers WHERE chain = 'ethereum' LIMIT 10"
-            )
+        rows = db.query(
+            "SELECT chain, block_number, tx_hash FROM wallet_memory.evm_transfers WHERE chain = 'ethereum' LIMIT 10",
+            historical=HistoricalAccess(ch_client=fake),
+            client=fake,
+        )
         executed_sqls = [s for s, _ in fake.executed]
         assert any("wallet_memory.evm_transfers_historical" in s for s in executed_sqls)
         assert rows and rows[0]["tx_hash"] == "0xhot"
@@ -612,13 +608,11 @@ class TestApiWiring:
         import api.db as db
 
         fake = FakeCH(hot_rows=[_hot_row()], views=["evm_transfers_historical"])
-        with (
-            patch.object(db, "get_client", lambda: fake),
-            patch.object(db, "HISTORICAL_ACCESS_ENABLED", True),
-            patch.object(db, "_historical_init", False),
-            patch.object(db, "_historical", None),
-        ):
-            rows = db.query("SELECT chain FROM wallet_memory.wallet_labels LIMIT 1")
+        rows = db.query(
+            "SELECT chain FROM wallet_memory.wallet_labels LIMIT 1",
+            historical=HistoricalAccess(ch_client=fake),
+            client=fake,
+        )
         executed_sqls = [s for s, _ in fake.executed]
         # original SQL passed through unchanged (no view rewrite)
         assert any("SELECT chain FROM wallet_memory.wallet_labels LIMIT 1" in s for s in executed_sqls)
@@ -628,14 +622,16 @@ class TestApiWiring:
     def test_disabled_skips_historical(self):
         import api.db as db
 
+        # Historical access disabled → db.query must not build the access
+        # layer at all, and must not touch its view probes.
+        assert db.get_historical(enabled=False) is None
+
         fake = FakeCH(hot_rows=[_hot_row()], views=["evm_transfers_historical"])
-        with (
-            patch.object(db, "get_client", lambda: fake),
-            patch.object(db, "HISTORICAL_ACCESS_ENABLED", False),
-            patch.object(db, "_historical_init", False),
-            patch.object(db, "_historical", None),
-        ):
-            db.query("SELECT chain FROM wallet_memory.evm_transfers WHERE chain = 'ethereum' LIMIT 10")
+        db.query(
+            "SELECT chain FROM wallet_memory.evm_transfers WHERE chain = 'ethereum' LIMIT 10",
+            historical=None,
+            client=fake,
+        )
         executed_sqls = [s for s, _ in fake.executed]
         assert not any("_historical" in s for s in executed_sqls)
         assert not any("system.tables" in s for s in executed_sqls)

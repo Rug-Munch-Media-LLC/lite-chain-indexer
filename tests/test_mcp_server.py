@@ -26,6 +26,8 @@ def _write(path: Path, payload: dict) -> Path:
 @pytest.fixture
 def state(tmp_path: Path) -> Path:
     """Point the server at an isolated state dir + throttle/ledger files."""
+    # Module-level config the FastMCP server reads directly; the seams
+    # (client / attestation) are passed as arguments instead.
     with (
         patch.object(mcp_server.cfg, "STATE_DIR", tmp_path),
         patch.object(mcp_server.cfg, "DATA_DIR", tmp_path),
@@ -108,9 +110,8 @@ def test_recent_transfers_evm_shape_and_clamp(state: Path) -> None:
             )
         ],
     )
-    with patch.object(mcp_server, "_client", lambda: fake):
-        address = "0x" + "a" * 40
-        out = mcp_server.lci_recent_transfers("ethereum", address=address, limit=5000)
+    address = "0x" + "a" * 40
+    out = mcp_server.lci_recent_transfers("ethereum", address=address, limit=5000, client=fake)
     assert out["status"] == "ok"
     assert out["limit"] == 100  # clamped
     assert out["rows"][0]["tx_hash"] == "0xdead"
@@ -123,8 +124,7 @@ def test_recent_transfers_evm_shape_and_clamp(state: Path) -> None:
 def test_recent_transfers_solana_uses_solana_table(state: Path) -> None:
     _write(state / "lite_solana.json", {"last_block": 9})
     fake = FakeCH(rows=[], columns=[(name, "String") for name in ("slot", "signature")])
-    with patch.object(mcp_server, "_client", lambda: fake):
-        out = mcp_server.lci_recent_transfers("solana")
+    out = mcp_server.lci_recent_transfers("solana", client=fake)
     assert out["status"] == "ok"
     query, params = fake.calls[0]
     assert "solana_transfers" in query
@@ -141,11 +141,10 @@ def test_recent_transfers_rejects_bad_input(state: Path) -> None:
 def test_recent_transfers_unreachable_clickhouse_masks_secret(state: Path) -> None:
     _write(state / "lite_ethereum.json", {"last_block": 1})
 
-    def boom() -> FakeCH:
+    def unreachable() -> FakeCH:
         raise RuntimeError("connect failed https://rpc.example.org/v2/SUPERSECRETKEY123456789?apikey=SECRETVALUE")
 
-    with patch.object(mcp_server, "_client", boom):
-        out = mcp_server.lci_recent_transfers("ethereum")
+    out = mcp_server.lci_recent_transfers("ethereum", client=unreachable)
     assert out["status"] == "unavailable"
     assert out["rows"] == []
     dumped = json.dumps(out)
@@ -172,31 +171,26 @@ def test_rpc_health_without_throttle_file_is_unavailable(state: Path) -> None:
 
 
 def test_attest_verify_disabled(state: Path) -> None:
-    with patch.object(mcp_server.cfg, "ATTESTATION_ENABLED", False):
-        assert mcp_server.lci_attest_verify("whatever.json")["status"] == "disabled"
+    assert mcp_server.lci_attest_verify("whatever.json", enabled=False)["status"] == "disabled"
 
 
 def test_attest_verify_rejects_path_outside_root(state: Path) -> None:
     outside = _write(state / "evil.json", {})
-    with (
-        patch.object(mcp_server.cfg, "ATTESTATION_ENABLED", True),
-        patch.object(mcp_server.cfg, "ATTESTATION_DIR", state / "attestations"),
-    ):
-        assert mcp_server.lci_attest_verify(str(outside))["status"] == "error"
+    out = mcp_server.lci_attest_verify(str(outside), enabled=True, attestation_dir=state / "attestations")
+    assert out["status"] == "error"
 
 
 def test_attest_verify_valid_manifest(state: Path) -> None:
     root = state / "attestations"
-    with (
-        patch.object(mcp_server.cfg, "ATTESTATION_ENABLED", True),
-        patch.object(mcp_server.cfg, "ATTESTATION_DIR", root),
-        patch.object(att, "ATTESTATION_ENABLED", True),
-    ):
-        written = att.record_range_attestation(
-            "ethereum", 1, 10, [{"tx_hash": "0xabc"}], ["0x" + "a" * 64], state_dir=root
-        )
-        assert written is not None
-        out = mcp_server.lci_attest_verify(str(root / "ethereum-1-10.json"))
+    written = att.record_range_attestation(
+        "ethereum",
+        1,
+        10,
+        [{"tx_hash": "0xabc"}],
+        options=att.AttestOptions(state_dir=root, enabled=True, block_hashes=["0x" + "a" * 64]),
+    )
+    assert written is not None
+    out = mcp_server.lci_attest_verify(str(root / "ethereum-1-10.json"), enabled=True, attestation_dir=root)
     assert out["status"] == "ok"
     assert out["chain"] == "ethereum"
     assert out["from_block"] == 1 and out["to_block"] == 10

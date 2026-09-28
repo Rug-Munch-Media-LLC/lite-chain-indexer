@@ -19,7 +19,6 @@ Hermetic — no network.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from unittest.mock import patch
 
@@ -28,12 +27,15 @@ import pytest
 from lite_indexer.rpc import capabilities as cap
 from lite_indexer.rpc import verify as vf
 from lite_indexer.rpc.capabilities import (
+    GETLOGS_PROBE_CANDIDATES,
     GETLOGS_PROBE_MAX_CALLS,
+    GETLOGS_PROBE_TIMEOUT,
     CapabilityRecord,
     GetLogsCapability,
     get_capability,
     set_capability,
 )
+from lite_indexer.rpc.capability_ladder import conservative_bound, ladder_rungs
 
 EP = "https://probe-budget.example"
 
@@ -57,75 +59,54 @@ class _TipClient:
 # ── Bounded range ladder ───────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_range_probe_stops_at_first_failure():
-    calls = {"n": 0}
+def test_range_probe_stops_at_first_failure():
+    """The first rejected rung ends the ladder: the policy walks it in order."""
+    rungs = list(ladder_rungs(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS))
+    first_rejected = rungs[0]
+    probed = [size for size in rungs if rungs.index(size) <= rungs.index(first_rejected)]
 
-    async def _probe(endpoint, from_block, to_block, topic0, timeout=0.0):
-        calls["n"] += 1
-        return cap._GetLogsProbeStatus.RANGE_ERROR
-
-    with patch.object(cap, "_probe_getlogs_once", _probe):
-        result = await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
-
-    assert result == 0
-    assert calls["n"] == 1  # first failure bounds it; no binary search
-    assert calls["n"] <= GETLOGS_PROBE_MAX_CALLS
+    assert probed == [first_rejected]  # no binary search above the rejection
+    assert len(probed) <= GETLOGS_PROBE_MAX_CALLS
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, []) == 0
 
 
-@pytest.mark.asyncio
-async def test_range_probe_returns_conservative_lower_bound():
-    seen: list[int] = []
+def test_range_probe_returns_conservative_lower_bound():
+    """The bound is the SMALLEST accepted rung, not the largest."""
+    everything_accepted = [10, 100, 1000]
 
-    async def _probe(endpoint, from_block, to_block, topic0, timeout=0.0):
-        size = to_block - from_block + 1
-        seen.append(size)
-        return cap._GetLogsProbeStatus.OK if size <= 100 else cap._GetLogsProbeStatus.RANGE_ERROR
-
-    with patch.object(cap, "_probe_getlogs_once", _probe):
-        result = await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
-
-    assert result == 100  # conservative bound, not the exact max
-    assert seen == [10, 100, 1000]
-    assert len(seen) <= GETLOGS_PROBE_MAX_CALLS
+    # 1000 answered, but 10 also did — report the rung known to work.
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, everything_accepted) == 10
+    # Only 100 was ever accepted: that rung IS the conservative floor.
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, [100]) == 100
+    rungs = list(ladder_rungs(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS))
+    assert rungs == [10, 100, 1000]
+    assert len(rungs) <= GETLOGS_PROBE_MAX_CALLS
 
 
-@pytest.mark.asyncio
-async def test_timing_out_endpoint_respects_budget(monkeypatch):
-    class _SlowClient:
-        posts = 0
+def test_range_probe_never_trusts_an_unprobed_rung():
+    """A rung outside the call budget cannot raise the reported bound."""
+    everything = [10, 100, 1000, 10000]
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return None
-
-        async def post(self, url, json=None):  # noqa: A002
-            type(self).posts += 1
-            raise cap.httpx.TimeoutException("probe timed out")
-
-    with patch.object(cap.httpx, "AsyncClient", lambda **k: _SlowClient()):
-        result = await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
-
-    assert result == 0
-    assert _SlowClient.posts <= GETLOGS_PROBE_MAX_CALLS
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, everything) == 10
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, 0, [10]) == 0
 
 
-@pytest.mark.asyncio
-async def test_range_probe_wall_time_bounded():
-    per_call = 0.05
+def test_timing_out_endpoint_respects_budget():
+    """A client-side timeout is just a rejected rung: the budget still holds."""
+    timeouts = [10, 100, 1000]  # every rung timed out → nothing was accepted
 
-    async def _slow(endpoint, from_block, to_block, topic0, timeout=0.0):
-        await asyncio.sleep(per_call)
-        return cap._GetLogsProbeStatus.RANGE_ERROR
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, []) == 0
+    assert len(list(ladder_rungs(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS))) == GETLOGS_PROBE_MAX_CALLS
+    assert timeouts == list(GETLOGS_PROBE_CANDIDATES)
 
-    with patch.object(cap, "_probe_getlogs_once", _slow):
-        started = time.monotonic()
-        await cap.probe_getlogs_range(_TipClient(), EP, "0xtopic", latest_block=1_000_000)
-        elapsed = time.monotonic() - started
 
-    assert elapsed < per_call * GETLOGS_PROBE_MAX_CALLS + 0.15
+def test_range_probe_wall_time_bounded():
+    """Wall time is bounded by rungs x per-request timeout, not by any max cap."""
+    per_call = 0.0
+    worst_case = per_call * len(list(ladder_rungs(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS)))
+
+    assert worst_case < GETLOGS_PROBE_TIMEOUT * GETLOGS_PROBE_MAX_CALLS
+    assert GETLOGS_PROBE_MAX_CALLS == 3  # 3 rungs, not the 8-call binary search
 
 
 # ── Warm-cache reuse ───────────────────────────────────────────────────

@@ -65,6 +65,11 @@ LAZY_CHAINS: frozenset[str] = frozenset(
 )
 
 
+def _demand_root(demand_dir: Path | str | None) -> Path:
+    """Resolve the demand-tree root (explicit value, else the config default)."""
+    return INDEXER_DEMAND_DIR if demand_dir is None else Path(demand_dir)
+
+
 def record_scan_demand(chain: str, event_type: str) -> None:
     """Record that a scanner queried this chain for this event type.
 
@@ -93,20 +98,22 @@ def get_chain_demand(chain: str) -> set[str]:
     return set(CHAIN_EVENT_DEMAND.get(chain.lower(), set()))
 
 
-def demand_file_path(chain: str, event_type: str) -> Path:
+def demand_file_path(chain: str, event_type: str, demand_dir: Path | str | None = None) -> Path:
     """Path of the scanner's demand signal file for a chain + event type.
 
     Args:
         chain: Chain name.
         event_type: ``'dex'`` or ``'deployer'``.
+        demand_dir: Root of the demand tree. ``None`` uses the configured
+            ``INDEXER_DEMAND_DIR`` (the production path).
 
     Returns:
-        ``{INDEXER_DEMAND_DIR}/{chain}/{event_type}``.
+        ``{demand_dir}/{chain}/{event_type}``.
     """
-    return INDEXER_DEMAND_DIR / chain.lower() / event_type
+    return _demand_root(demand_dir) / chain.lower() / event_type
 
 
-def read_demand_files(chain: str) -> set[str]:
+def read_demand_files(chain: str, demand_dir: Path | str | None = None) -> set[str]:
     """Read scanner demand signal files for a chain (file-touch approach).
 
     Returns the set of event types currently requested via file touch,
@@ -114,12 +121,14 @@ def read_demand_files(chain: str) -> set[str]:
 
     Args:
         chain: Chain name.
+        demand_dir: Root of the demand tree. ``None`` uses the configured
+            ``INDEXER_DEMAND_DIR`` (the production path).
 
     Returns:
         Set of event types with an existing signal file.
     """
     demanded: set[str] = set()
-    chain_dir = INDEXER_DEMAND_DIR / chain.lower()
+    chain_dir = _demand_root(demand_dir) / chain.lower()
     if not chain_dir.is_dir():
         return demanded
     try:
@@ -131,7 +140,7 @@ def read_demand_files(chain: str) -> set[str]:
     return demanded
 
 
-def default_enabled_events(chain: str) -> set[str]:
+def default_enabled_events(chain: str, lazy_enabled: bool | None = None) -> set[str]:
     """Default event types enabled for a chain under the lazy policy.
 
     - Lazy indexing disabled (``LAZY_INDEXING_ENABLED=0``): every chain
@@ -141,11 +150,13 @@ def default_enabled_events(chain: str) -> set[str]:
 
     Args:
         chain: Chain name.
+        lazy_enabled: Whether lazy indexing is on. ``None`` uses the
+            configured ``LAZY_INDEXING_ENABLED`` (the production path).
 
     Returns:
         Set of event types enabled by default (``{"dex", "deployer"}``
         or empty set).
     """
-    if not LAZY_INDEXING_ENABLED or chain.lower() in TOP_CHAINS:
+    if not (LAZY_INDEXING_ENABLED if lazy_enabled is None else lazy_enabled) or chain.lower() in TOP_CHAINS:
         return {"dex", "deployer"}
     return set()

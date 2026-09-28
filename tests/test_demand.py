@@ -73,82 +73,73 @@ class TestDemandFiles:
         from lite_indexer.chains import demand as demand_mod
 
         demand_dir = tmp_path / "indexer-demand"
-        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", demand_dir):
-            assert demand_mod.read_demand_files("scroll") == set()
+        assert demand_mod.read_demand_files("scroll", demand_dir) == set()
 
-            (demand_dir / "scroll").mkdir(parents=True)
-            (demand_dir / "scroll" / "dex").touch()
-            assert demand_mod.read_demand_files("scroll") == {"dex"}
-            assert demand_mod.read_demand_files("SCROLL") == {"dex"}
+        (demand_dir / "scroll").mkdir(parents=True)
+        (demand_dir / "scroll" / "dex").touch()
+        assert demand_mod.read_demand_files("scroll", demand_dir) == {"dex"}
+        assert demand_mod.read_demand_files("SCROLL", demand_dir) == {"dex"}
 
-            (demand_dir / "scroll" / "deployer").touch()
-            assert demand_mod.read_demand_files("scroll") == {"dex", "deployer"}
+        (demand_dir / "scroll" / "deployer").touch()
+        assert demand_mod.read_demand_files("scroll", demand_dir) == {"dex", "deployer"}
 
     def test_demand_file_path(self, tmp_path: Path):
         from lite_indexer.chains import demand as demand_mod
 
         demand_dir = tmp_path / "indexer-demand"
-        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", demand_dir):
-            assert demand_mod.demand_file_path("Scroll", "dex") == demand_dir / "scroll" / "dex"
+        assert demand_mod.demand_file_path("Scroll", "dex", demand_dir) == demand_dir / "scroll" / "dex"
 
     def test_read_demand_missing_dir_ok(self, tmp_path: Path):
         from lite_indexer.chains import demand as demand_mod
 
-        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", tmp_path / "does-not-exist"):
-            assert demand_mod.read_demand_files("scroll") == set()
+        assert demand_mod.read_demand_files("scroll", tmp_path / "does-not-exist") == set()
 
     def test_read_demand_files_ignores_directories(self, tmp_path: Path):
         """A directory named 'dex' is NOT a demand signal (only files count)."""
         from lite_indexer.chains import demand as demand_mod
 
         demand_dir = tmp_path / "indexer-demand"
-        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", demand_dir):
-            (demand_dir / "scroll").mkdir(parents=True)
-            (demand_dir / "scroll" / "dex").mkdir()  # directory, not a file
+        (demand_dir / "scroll").mkdir(parents=True)
+        (demand_dir / "scroll" / "dex").mkdir()  # directory, not a file
 
-            assert demand_mod.read_demand_files("scroll") == set()
+        assert demand_mod.read_demand_files("scroll", demand_dir) == set()
 
-            (demand_dir / "scroll" / "deployer").touch()
-            assert demand_mod.read_demand_files("scroll") == {"deployer"}
+        (demand_dir / "scroll" / "deployer").touch()
+        assert demand_mod.read_demand_files("scroll", demand_dir) == {"deployer"}
 
 
 class TestDefaultEnabledEvents:
     """Default event types per chain under the lazy policy."""
 
-    def test_top_chain_always_enabled(self, monkeypatch):
+    def test_top_chain_always_enabled(self):
         from lite_indexer.chains import demand as demand_mod
 
-        monkeypatch.setattr(demand_mod, "LAZY_INDEXING_ENABLED", True)
         for chain in ("ethereum", "bsc", "polygon", "arbitrum", "base", "solana"):
-            assert demand_mod.default_enabled_events(chain) == {"dex", "deployer"}, chain
+            assert demand_mod.default_enabled_events(chain, True) == {"dex", "deployer"}, chain
 
-    def test_long_tail_transfers_only(self, monkeypatch):
+    def test_long_tail_transfers_only(self):
         from lite_indexer.chains import demand as demand_mod
 
-        monkeypatch.setattr(demand_mod, "LAZY_INDEXING_ENABLED", True)
         for chain in ("scroll", "mantle", "linea", "fantom", "avalanche", "gnosis"):
-            assert demand_mod.default_enabled_events(chain) == set(), chain
+            assert demand_mod.default_enabled_events(chain, True) == set(), chain
 
-    def test_lazy_disabled_legacy_behavior(self, monkeypatch):
+    def test_lazy_disabled_legacy_behavior(self):
         from lite_indexer.chains import demand as demand_mod
 
-        monkeypatch.setattr(demand_mod, "LAZY_INDEXING_ENABLED", False)
-        assert demand_mod.default_enabled_events("scroll") == {"dex", "deployer"}
-        assert demand_mod.default_enabled_events("ethereum") == {"dex", "deployer"}
+        assert demand_mod.default_enabled_events("scroll", False) == {"dex", "deployer"}
+        assert demand_mod.default_enabled_events("ethereum", False) == {"dex", "deployer"}
 
-    def test_default_enabled_events_case_insensitive_chain(self, monkeypatch):
+    def test_default_enabled_events_case_insensitive_chain(self):
         from lite_indexer.chains import demand as demand_mod
 
-        monkeypatch.setattr(demand_mod, "LAZY_INDEXING_ENABLED", True)
-        assert demand_mod.default_enabled_events("Ethereum") == {"dex", "deployer"}
-        assert demand_mod.default_enabled_events("SCROLL") == set()
+        assert demand_mod.default_enabled_events("Ethereum", True) == {"dex", "deployer"}
+        assert demand_mod.default_enabled_events("SCROLL", True) == set()
 
-    def test_default_enabled_events_unknown_chain_is_lazy(self, monkeypatch):
+    def test_default_enabled_events_unknown_chain_is_lazy(self):
         from lite_indexer.chains import demand as demand_mod
 
-        monkeypatch.setattr(demand_mod, "LAZY_INDEXING_ENABLED", True)
         # A chain not in TOP_CHAINS is treated as long-tail (transfers only).
-        assert demand_mod.default_enabled_events("newchain") == set()
+        assert demand_mod.default_enabled_events("newchain", True) == set()
 
     def test_top_chains_and_lazy_chains_are_known(self):
         from lite_indexer.chains.demand import LAZY_CHAINS, TOP_CHAINS
@@ -166,18 +157,26 @@ class TestDefaultEnabledEvents:
 
 @pytest.fixture()
 def _indexer_env(tmp_path: Path):
-    """Point STATE_DIR + demand dir at tmp so LiteIndexer construction is hermetic."""
-    from lite_indexer import state as state_mod
+    """Hermetic state directory for LiteIndexer construction."""
+    return tmp_path
 
-    with patch.object(state_mod, "STATE_DIR", tmp_path / "state"):
-        yield tmp_path
+
+def _indexer(chain: str, tmp_path: Path, **kw) -> LiteIndexer:
+    """LiteIndexer wired to per-test state and demand directories."""
+    return LiteIndexer(
+        chain=chain,
+        data_dir=tmp_path,
+        state_dir=tmp_path / "state",
+        demand_dir=tmp_path / "indexer-demand",
+        **kw,
+    )
 
 
 class TestLazyIndexingRefresh:
     """LiteIndexer._refresh_demand_enabled() lazy gating."""
 
     def test_top_chain_enabled_by_default(self, _indexer_env, tmp_path: Path):
-        indexer = LiteIndexer(chain="ethereum", lazy_indexing=True, data_dir=tmp_path)
+        indexer = _indexer("ethereum", tmp_path, lazy_indexing=True)
         assert indexer.dex_enabled is False
         assert indexer.deployers_enabled is False
 
@@ -187,7 +186,7 @@ class TestLazyIndexingRefresh:
         assert indexer.deployers_enabled is True
 
     def test_long_tail_stays_transfers_only_without_demand(self, _indexer_env, tmp_path: Path):
-        indexer = LiteIndexer(chain="scroll", lazy_indexing=True, data_dir=tmp_path)
+        indexer = _indexer("scroll", tmp_path, lazy_indexing=True)
         indexer._refresh_demand_enabled()
         assert indexer.dex_enabled is False
         assert indexer.deployers_enabled is False
@@ -196,12 +195,11 @@ class TestLazyIndexingRefresh:
         from lite_indexer.chains import demand as demand_mod
 
         demand_dir = tmp_path / "indexer-demand"
-        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", demand_dir):
-            (demand_dir / "scroll").mkdir(parents=True)
-            (demand_dir / "scroll" / "dex").touch()
+        (demand_dir / "scroll").mkdir(parents=True)
+        (demand_dir / "scroll" / "dex").touch()
 
-            indexer = LiteIndexer(chain="scroll", lazy_indexing=True, data_dir=tmp_path)
-            indexer._refresh_demand_enabled()
+        indexer = _indexer("scroll", tmp_path, lazy_indexing=True)
+        indexer._refresh_demand_enabled()
 
         assert indexer.dex_enabled is True
         assert indexer.deployers_enabled is False
@@ -211,27 +209,25 @@ class TestLazyIndexingRefresh:
         # First run: demand enables dex, state persists it
         from lite_indexer.chains import demand as demand_mod
 
-        indexer = LiteIndexer(chain="mantle", lazy_indexing=True, data_dir=tmp_path)
+        indexer = _indexer("mantle", tmp_path, lazy_indexing=True)
         indexer.dex_enabled = True
         indexer.state.save(100, 0, enabled_events=indexer._enabled_event_types())
 
         # New process: no demand files, but state says dex was enabled
         demand_mod.CHAIN_EVENT_DEMAND.clear()
-        fresh = LiteIndexer(chain="mantle", lazy_indexing=True, data_dir=tmp_path)
+        fresh = _indexer("mantle", tmp_path, lazy_indexing=True)
         assert fresh._persisted_enabled_events == {"dex"}
         fresh._refresh_demand_enabled()
         assert fresh.dex_enabled is True
 
     def test_lazy_disabled_is_noop(self, _indexer_env, tmp_path: Path):
-        from lite_indexer.chains import demand as demand_mod
 
         demand_dir = tmp_path / "indexer-demand"
-        with patch.object(demand_mod, "INDEXER_DEMAND_DIR", demand_dir):
-            (demand_dir / "scroll").mkdir(parents=True)
-            (demand_dir / "scroll" / "dex").touch()
+        (demand_dir / "scroll").mkdir(parents=True)
+        (demand_dir / "scroll" / "dex").touch()
 
-            indexer = LiteIndexer(chain="scroll", lazy_indexing=False, data_dir=tmp_path)
-            indexer._refresh_demand_enabled()
+        indexer = _indexer("scroll", tmp_path, lazy_indexing=False)
+        indexer._refresh_demand_enabled()
 
         # Legacy: CLI flags are the authority, demand files ignored
         assert indexer.dex_enabled is False
@@ -244,7 +240,7 @@ class TestStatePersistence:
     def test_save_and_load_enabled_events(self, _indexer_env, tmp_path: Path):
         from lite_indexer.state import StateManager
 
-        manager = StateManager("scroll")
+        manager = StateManager("scroll", tmp_path / "state")
         manager.save(100, 50, enabled_events=["dex", "deployer"])
         state = manager.load()
         # StateManager.save sorts the enabled set for deterministic writes
@@ -253,7 +249,7 @@ class TestStatePersistence:
     def test_save_without_enabled_events(self, _indexer_env, tmp_path: Path):
         from lite_indexer.state import StateManager
 
-        manager = StateManager("scroll")
+        manager = StateManager("scroll", tmp_path / "state")
         manager.save(100, 50)
         state = manager.load()
         assert "enabled_events" not in state

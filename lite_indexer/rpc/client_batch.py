@@ -16,6 +16,7 @@ import lite_indexer.rpc.client as _facade
 from lite_indexer.config import RPC_CALL_TIMEOUT
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
+from lite_indexer.rpc.batch_chunks import batch_chunks
 from lite_indexer.rpc.jsonparse import decode_response_async
 
 logger = get_logger(__name__)
@@ -76,6 +77,7 @@ class BatchMixin:
         *,
         timeout: float = RPC_CALL_TIMEOUT,
         fallback: bool = True,
+        enabled: bool | None = None,
     ) -> list[dict[str, Any] | None]:
         """Send N same-shape calls as ONE JSON-RPC array POST.
 
@@ -94,6 +96,8 @@ class BatchMixin:
             calls: ``(method, params)`` pairs, max ``RPC_BATCH_MAX`` per POST.
             timeout: Per-request timeout in seconds.
             fallback: When False, a failed batch yields None slots.
+            enabled: Whether batching is on. ``None`` uses the configured
+                ``RPC_BATCH_ENABLED`` (the production path).
 
         Returns:
             One raw JSON-RPC response dict per input call, or None for an
@@ -102,7 +106,7 @@ class BatchMixin:
         if not calls:
             return []
         results: list[dict[str, Any] | None] = [None] * len(calls)
-        if not _facade.RPC_BATCH_ENABLED:
+        if not (_facade.RPC_BATCH_ENABLED if enabled is None else enabled):
             if not fallback:
                 return results
             return await self._call_batch_fallback(endpoint, calls, timeout)
@@ -113,9 +117,7 @@ class BatchMixin:
             logger.debug("rpc_batch_circuit_skip", endpoint=endpoint[:50])
             return results
 
-        batch_max = max(1, _facade.RPC_BATCH_MAX)
-        for start in range(0, len(calls), batch_max):
-            chunk = calls[start : start + batch_max]
+        for start, chunk in batch_chunks(calls, _facade.RPC_BATCH_MAX):
             sendable = await _batch_sendable(endpoint, start, chunk)
             if not sendable:
                 continue

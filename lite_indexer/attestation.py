@@ -45,9 +45,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from lite_indexer.config import ATTESTATION_DIR, ATTESTATION_ENABLED
+from lite_indexer.config import ATTESTATION_DIR
 from lite_indexer.logging import get_logger
-from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.state import atomic_write_json
 
 logger = get_logger(__name__)
@@ -400,44 +399,11 @@ def verify_chunk(rows: Iterable[Mapping[str, Any]], manifest: Mapping[str, Any])
 # ── Sync-path integration helper ───────────────────────────────────────
 
 
-def record_range_attestation(
-    chain: str,
-    from_block: int,
-    to_block: int,
-    rows: Iterable[Mapping[str, Any]],
-    block_hashes: Sequence[str] | None = None,
-    *,
-    state_dir: Path | str | None = None,
-    write_manifest_file: bool = True,
-) -> str | None:
-    """Append a committed range to the chain's attestation accumulator.
 
-    Write-only/observe: a no-op when ``ATTESTATION_ENABLED`` is off, and any
-    failure is logged and swallowed (the sync path must never be blocked or
-    aborted by attestation). Returns the new root hex, or ``None``.
-    """
-    if not ATTESTATION_ENABLED:
-        return None
-    try:
-        digest = hash_rows(rows)
-        attestor = RangeAttestor(chain, state_dir=state_dir)
-        root = attestor.append_range(from_block, to_block, list(block_hashes or []), digest)
-        if write_manifest_file:
-            attestor.write_manifest(from_block, to_block)
-        metrics_incr("attestations_appended")
-        logger.info(
-            "attestation_appended",
-            chain=chain,
-            from_block=from_block,
-            to_block=to_block,
-            root=root[:16],
-            leaf_count=attestor.leaf_count,
-        )
-        return root
-    except Exception as exc:  # noqa: BLE001 — attestation is best-effort
-        logger.warning("attestation_failed", chain=chain, error=str(exc)[:120])
-        return None
-
+# Re-exported so callers keep one import surface (the implementation lives in
+# attestation_record so this module stays under its shrink-only ratchet).
+from lite_indexer.attestation_record import AttestOptions as AttestOptions  # noqa: E402,F401
+from lite_indexer.attestation_record import record_range_attestation  # noqa: E402
 
 __all__ = [
     "EMPTY_ROOT",

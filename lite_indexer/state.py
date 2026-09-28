@@ -21,6 +21,7 @@ from typing import Any, cast
 from lite_indexer.config import PAIR_CACHE_MAX
 from lite_indexer.config import STATE_DIR as STATE_DIR
 from lite_indexer.logging import get_logger
+from lite_indexer.state_dir import StateDirMixin
 from lite_indexer.util.bounded import BoundedDict
 
 logger = get_logger(__name__)
@@ -67,18 +68,18 @@ def atomic_write_json(path: Path, payload: dict[str, Any] | str) -> None:
             tmp.unlink()
 
 
-class StateManager:
+class StateManager(StateDirMixin):
     """Persistent state management for LiteIndexer.
 
     Thread-safe for cron usage because every run reads/writes its own state file
     with file locking.
     """
 
-    def __init__(self, chain: str) -> None:
-        self.chain = chain
+    def __init__(self, chain: str, state_dir: Path | str | None = None) -> None:
+        self.chain, _ = chain, self._init_state_dir(state_dir)
 
     def _state_path(self) -> Path:
-        return STATE_DIR / f"lite_{self.chain}.json"
+        return self.state_dir / f"lite_{self.chain}.json"
 
     def load(self) -> dict[str, Any]:
         """Load last indexed block from state file."""
@@ -116,7 +117,7 @@ class StateManager:
                 DEX/deployer stay enabled across restarts once demand is
                 observed.
         """
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
         state: dict[str, Any] = {
             "last_block": last_block,
             "last_timestamp": datetime.now(UTC).isoformat(),
@@ -140,7 +141,7 @@ class StateManager:
             logger.error("state_save_failed", chain=self.chain, error=str(exc))
 
 
-class StateHighWater:
+class StateHighWater(StateDirMixin):
     """Monotonic per-chain high-water mark (backward-state guard).
 
     The regular state file (``lite_{chain}.json``) is written by the
@@ -155,11 +156,11 @@ class StateHighWater:
     recover from the ClickHouse max block instead of re-indexing from 0.
     """
 
-    def __init__(self, chain: str) -> None:
-        self.chain = chain
+    def __init__(self, chain: str, state_dir: Path | str | None = None) -> None:
+        self.chain, _ = chain, self._init_state_dir(state_dir)
 
     def _path(self) -> Path:
-        return STATE_DIR / f"highwater_{self.chain}.json"
+        return self.state_dir / f"highwater_{self.chain}.json"
 
     def load(self) -> int | None:
         """Return the highest last_block ever recorded, or None."""
@@ -184,7 +185,7 @@ class StateHighWater:
         if current is not None and last_block <= current:
             return
         try:
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            self.state_dir.mkdir(parents=True, exist_ok=True)
             path = self._path()
             payload = {
                 "last_block": last_block,
@@ -197,22 +198,21 @@ class StateHighWater:
             logger.warning("highwater_save_failed", chain=self.chain, error=str(exc)[:80])
 
 
-class PairCache:
+class PairCache(StateDirMixin):
     """Persistent pair→(token0, token1) cache.
 
     Built from PairCreated/PoolCreated events and eth_call fallback.
     Survives restarts so token resolution is never lost.
     """
 
-    def __init__(self, chain: str) -> None:
-        self.chain = chain
-        # Bounded (2026-09-13): pair keys grow without limit over a
-        # daemon's lifetime; LRU-evict the oldest at PAIR_CACHE_MAX.
+    def __init__(self, chain: str, state_dir: Path | str | None = None) -> None:
+        self.chain, _ = chain, self._init_state_dir(state_dir)
+        # Bounded (2026-09-13): pair keys grow without limit; LRU-evict oldest.
         self._pairs: BoundedDict[str, tuple[str, str]] = BoundedDict(PAIR_CACHE_MAX)
         self._load()
 
     def _cache_path(self) -> Path:
-        return STATE_DIR / f"pair_tokens_{self.chain}.json"
+        return self.state_dir / f"pair_tokens_{self.chain}.json"
 
     def _load(self) -> None:
         """Load persisted pair→tokens mapping from disk."""

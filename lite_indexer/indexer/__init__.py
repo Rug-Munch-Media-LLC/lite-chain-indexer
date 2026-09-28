@@ -172,6 +172,7 @@ _REORG_SENTINEL = "__CHAIN_REORG__"
 #   - ClickHouseHealth
 # Re-exported above so ``from lite_indexer.indexer import ...`` is unchanged.
 
+
 class LiteIndexer(
     MaintenanceMixin,
     ReconcileMixin,
@@ -213,13 +214,10 @@ class LiteIndexer(
         ndjson_enabled: bool | None = None,
         lazy_indexing: bool | None = None,
         traces_enabled: bool | None = None,
-        vector_ingestion: bool | None = None,
-        nats_enabled: bool | None = None,
-        webhook_enabled: bool | None = None,
+        vector_ingestion: bool | None = None, nats_enabled: bool | None = None, webhook_enabled: bool | None = None,
+        state_dir: Path | str | None = None, demand_dir: Path | str | None = None,
     ) -> None:
-        self.chain = chain
-        self.batch_size = batch_size
-        self.disk_cap = disk_cap
+        self.chain, self.batch_size, self.disk_cap = chain, batch_size, disk_cap
         self.dex_enabled = False
         self.deployers_enabled = False
         # Internal-transfer trace collection (optional, TRACE_ENABLED /
@@ -290,11 +288,12 @@ class LiteIndexer(
         self.chunk_size = chunk_size if chunk_size and chunk_size > 0 else chunk_size_for_chain(chain)
 
         # State manager (generic — works for all chain types)
-        self.state = StateManager(chain)
+        self.state = StateManager(chain, state_dir)
         # Monotonic high-water mark for the backward-state guard
         # (STATE_BACKWARD_PROTECTION). Updated after every successful
         # forward sync; consulted on load to detect state regressions.
-        self._highwater = StateHighWater(chain)
+        self._highwater = StateHighWater(chain, state_dir)
+        self.demand_dir = demand_dir
         # Per-indexer cycle counter for periodic GC + data reconciliation.
         self._cycles_since_gc = 0
         self._cycles_since_reconcile = 0
@@ -444,11 +443,11 @@ class LiteIndexer(
         if not self.lazy_indexing_enabled:
             return
 
-        for event_type in default_enabled_events(self.chain):
+        for event_type in default_enabled_events(self.chain, self.lazy_indexing_enabled):
             self._enable_event_type(event_type)
         for event_type in self._persisted_enabled_events:
             self._enable_event_type(event_type)
-        for event_type in read_demand_files(self.chain):
+        for event_type in read_demand_files(self.chain, self.demand_dir):
             record_scan_demand(self.chain, event_type)
             self._enable_event_type(event_type)
         demand = get_chain_demand(self.chain)

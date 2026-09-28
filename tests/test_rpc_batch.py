@@ -23,6 +23,7 @@ import pytest
 from lite_indexer import metrics
 from lite_indexer.rpc import circuit as circuit_mod
 from lite_indexer.rpc import client as rc
+from lite_indexer.rpc.batch_chunks import batch_chunks
 
 _PATCHERS: list[Any] = []
 
@@ -179,15 +180,27 @@ async def test_batch_failure_falls_back_to_individual():
 
 @pytest.mark.asyncio
 async def test_batch_max_chunks_requests():
-    _start(patch.object(rc, "RPC_BATCH_MAX", 2))
     http = _Http()
     _wire(http)
     calls = [("eth_blockNumber", None) for _ in range(5)]
-    results = await rc.RpcClient().call_batch("https://batch.example", calls)
+    # Pure plan: 5 calls at RPC_BATCH_MAX=2 → 2 + 2 + 1.
+    assert [len(c) for _s, c in batch_chunks(calls, 2)] == [2, 2, 1]
+    with patch.object(rc, "RPC_BATCH_MAX", 2):
+        results = await rc.RpcClient().call_batch("https://batch.example", calls)
 
     assert [len(p) for p in http.posts] == [2, 2, 1]
     assert len(results) == 5
     assert metrics.get("rpc_batch_calls") == 3.0
+
+
+def test_batch_chunks_preserve_order_and_clamp_width():
+    """Order is preserved and a bad width degrades to one call per request."""
+    calls = [(f"m{i}", None) for i in range(5)]
+
+    assert [c[0] for _s, chunk in batch_chunks(calls, 2) for c in chunk] == ["m0", "m1", "m2", "m3", "m4"]
+    assert [s for s, _c in batch_chunks(calls, 2)] == [0, 2, 4], "chunk offsets must stitch results back"
+    assert [len(c) for _s, c in batch_chunks(calls, 99)] == [5]
+    assert [len(c) for _s, c in batch_chunks(calls, 0)] == [1, 1, 1, 1, 1]
 
 
 @pytest.mark.asyncio
@@ -218,7 +231,6 @@ async def test_batch_failure_without_fallback_leaves_none():
 
 @pytest.mark.asyncio
 async def test_batch_disabled_uses_individual():
-    _start(patch.object(rc, "RPC_BATCH_ENABLED", False))
     http = _Http()
     _wire(http)
     individual: list[str] = []
@@ -231,7 +243,7 @@ async def test_batch_disabled_uses_individual():
 
     _start(patch.object(rc.RpcClient, "call", _fake_call))
     results = await rc.RpcClient().call_batch(
-        "https://batch.example", [("eth_blockNumber", None), ("eth_chainId", None)]
+        "https://batch.example", [("eth_blockNumber", None), ("eth_chainId", None)], enabled=False
     )
     assert individual == ["eth_blockNumber", "eth_chainId"]
     assert len(results) == 2

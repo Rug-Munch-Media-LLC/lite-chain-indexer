@@ -28,7 +28,6 @@ async def test_state_skips_on_failure(tmp_path, monkeypatch):
     from lite_indexer.indexer import LiteIndexer
     from lite_indexer.rpc.verify import EndpointVerifyResult
 
-    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
 
     indexer = LiteIndexer(chain="ethereum", data_dir=tmp_path)
     indexer.state.save(42, 0)  # seed: last indexed block = 42
@@ -61,7 +60,6 @@ async def test_deployers_with_dex(tmp_path, monkeypatch):
     """Deployer events must still be captured when DEX indexing is enabled."""
     from lite_indexer.indexer import LiteIndexer
 
-    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
 
     indexer = LiteIndexer(
         chain="ethereum",
@@ -127,7 +125,6 @@ async def test_dex_write_zero_aborts_and_rewinds_state(tmp_path, monkeypatch):
     """
     from lite_indexer.indexer import LiteIndexer
 
-    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
 
     indexer = LiteIndexer(
         chain="ethereum",
@@ -174,7 +171,6 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
     """After a reorg triggers head-start recovery, a successful sync clears it."""
     from lite_indexer.indexer import LiteIndexer
 
-    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
 
     indexer = LiteIndexer(
         chain="ethereum",
@@ -228,12 +224,9 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_verified_endpoints_applied(tmp_path, monkeypatch):
     """The endpoints swapped in during verification are used for fetching."""
+    import lite_indexer.chains as chains_mod
     from lite_indexer.indexer import LiteIndexer
     from lite_indexer.rpc.verify import EndpointVerifyResult
-
-    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
-
-    import lite_indexer.chains as chains_mod
 
     original_endpoints = list(chains_mod.GET_LOGS_ENDPOINTS["ethereum"])
     verified = ["https://verified-a.example", "https://verified-b.example"]
@@ -533,7 +526,6 @@ def test_checkpoint_recovery(tmp_path, monkeypatch):
     from lite_indexer.recovery import recover_chain_state
     from lite_indexer.state import StateHighWater, StateManager
 
-    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
 
     # Stats query returns min=0 max=2000; gap scan (stride 1000) finds the
     # sampled block at 1000 missing → hole spans 1000..1999
@@ -545,7 +537,7 @@ def test_checkpoint_recovery(tmp_path, monkeypatch):
     )
 
     # Seed a stale (regressed) state file
-    StateManager("ethereum").save(42, 0, source="seed")
+    StateManager("ethereum", tmp_path / "state").save(42, 0, source="seed")
 
     report = recover_chain_state(ch, "ethereum", "evm", state_dir=tmp_path / "state")
     assert report["ok"] is True
@@ -553,13 +545,13 @@ def test_checkpoint_recovery(tmp_path, monkeypatch):
     assert report["recovered_to"] == 2000
     assert report["missing_ranges"] == [(1000, 1999)]
     # State file + high-water mark now point at the CH max
-    assert StateManager("ethereum").load()["last_block"] == 2000
-    assert StateHighWater("ethereum").load() == 2000
+    assert StateManager("ethereum", tmp_path / "state").load()["last_block"] == 2000
+    assert StateHighWater("ethereum", tmp_path / "state").load() == 2000
 
     # backfill=True rewinds below the first gap so the next sync re-fetches it
     report = recover_chain_state(ch, "ethereum", "evm", state_dir=tmp_path / "state", backfill=True)
     assert report["backfill_from"] == 1000
-    assert StateManager("ethereum").load()["last_block"] == 999
+    assert StateManager("ethereum", tmp_path / "state").load()["last_block"] == 999
 
     # CH unavailable → clean failure, no state write
     ch_dead = _FakeCH([(lambda sql: True, RuntimeError("clickhouse down"))])
@@ -613,7 +605,6 @@ async def test_concurrent_chain_sync(tmp_path, monkeypatch):
     """Two chains syncing concurrently keep independent state and summaries."""
     from lite_indexer.indexer import LiteIndexer
 
-    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
 
     def make_indexer(chain: str, to_block: int) -> LiteIndexer:
         indexer = LiteIndexer(
@@ -668,7 +659,6 @@ async def test_reorg_unknown_halts_state_advance(tmp_path, monkeypatch):
     from lite_indexer.indexer import LiteIndexer
     from lite_indexer.strategies.reorg_status import ReorgCheck, ReorgStatus
 
-    monkeypatch.setattr("lite_indexer.state.STATE_DIR", tmp_path / "state")
     monkeypatch.setattr("lite_indexer.indexer._sync_loop.REORG_PROTECTION_ENABLED", True)
 
     indexer = LiteIndexer(

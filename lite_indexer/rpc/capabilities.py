@@ -67,6 +67,7 @@ from lite_indexer.rpc.capability_classify import (
 from lite_indexer.rpc.capability_classify import (
     is_logs_capability_failure as is_logs_capability_failure,
 )
+from lite_indexer.rpc.capability_ladder import conservative_bound, ladder_rungs
 from lite_indexer.rpc.gates import provider_gates
 
 if TYPE_CHECKING:  # pragma: no cover — annotation-only, avoids import cycle
@@ -579,36 +580,35 @@ async def probe_getlogs_range(
         anchor = 1
 
     calls = 0
-    last_good = 0
-    for size in GETLOGS_PROBE_CANDIDATES:
-        if calls >= GETLOGS_PROBE_MAX_CALLS:
-            break
+    accepted: list[int] = []
+    for size in ladder_rungs(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS):
         calls += 1
         from_block = max(1, anchor - size + 1)
         status = await _probe_getlogs_once(endpoint, from_block, anchor, topic0, timeout=timeout)
         if status == _GetLogsProbeStatus.OK:
-            last_good = size
+            accepted.append(size)
             continue
-        # First failure bounds the range — keep the last accepted rung as a
-        # conservative lower bound and stop spending calls.
+        # First failure bounds the range — keep accepted rungs, stop spending.
+        bound = conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, accepted)
         logger.debug(
             "capability_getlogs_range_bounded",
             endpoint=endpoint[:60],
-            max_range=last_good,
+            max_range=bound,
             failed_at=size,
             calls=calls,
         )
-        return last_good
+        return bound
 
     # No failure observed within the budget — every probed candidate was
-    # accepted, so the last accepted rung is the (possibly capped) ceiling.
+    # accepted; the smallest accepted rung is the conservative ceiling.
+    bound = conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, accepted)
     logger.debug(
         "capability_getlogs_range_ceiling",
         endpoint=endpoint[:60],
-        max_range=last_good,
+        max_range=bound,
         calls=calls,
     )
-    return last_good
+    return bound
 
 
 async def probe_block_receipts(

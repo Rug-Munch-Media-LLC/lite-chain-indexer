@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ from lite_indexer.attestation import (
     verify_chunk,
     verify_manifest,
 )
+from lite_indexer.attestation_record import AttestOptions  # noqa: F401
 from lite_indexer.cli._attest import run_attest_cli
 
 
@@ -178,8 +180,7 @@ def test_verify_chunk_matches_and_mismatches(tmp_path: Path) -> None:
         500,
         509,
         rows,
-        ["0x" + "ab" * 32],
-        state_dir=tmp_path,
+        options=AttestOptions(state_dir=tmp_path, block_hashes=["0x" + "ab" * 32]),
     )
     assert root is not None
     manifest = json.loads((tmp_path / "ethereum-500-509.json").read_text())
@@ -197,8 +198,8 @@ def test_verify_chunk_matches_and_mismatches(tmp_path: Path) -> None:
 
 
 def test_disabled_recording_is_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(attestation, "ATTESTATION_ENABLED", False)
-    assert record_range_attestation("ethereum", 1, 2, _rows(1), state_dir=tmp_path) is None
+    monkeypatch.setattr(sys.modules["lite_indexer.attestation_record"], "ATTESTATION_ENABLED", False)
+    assert record_range_attestation("ethereum", 1, 2, _rows(1), options=AttestOptions(state_dir=tmp_path)) is None
     assert not list(tmp_path.glob("*.json"))
 
 
@@ -217,7 +218,7 @@ def test_collect_block_hashes_dedupes_and_lowercases() -> None:
 
 def test_cli_verify_and_show(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(attestation, "ATTESTATION_DIR", tmp_path)
-    record_range_attestation("ethereum", 100, 109, _rows(10, 100), state_dir=tmp_path)
+    record_range_attestation("ethereum", 100, 109, _rows(10, 100), options=AttestOptions(state_dir=tmp_path))
 
     manifest_path = tmp_path / "ethereum-100-109.json"
     assert (
