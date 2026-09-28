@@ -36,12 +36,13 @@ from .launch import (
 )
 from .models import TRC20_TOKENS, TRON_MAX_BLOCK_RANGE
 from .parsing import ms_to_iso_utc, parse_tron_transfer_event
+from .reorg_stage import TronReorgStageMixin
 from .rpc import tron_get, tron_get_with_range, tron_post
 
 logger = get_logger(__name__)
 
 
-class TronStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
+class TronStrategy(TronReorgStageMixin, CrossChainAddressActivityMixin, AbstractChainStrategy):
     """Strategy for Tron — indexes TRC20 Transfer events via TronGrid.
 
     TRC20 is ERC20-compatible. Transfer events are fetched via TronGrid's

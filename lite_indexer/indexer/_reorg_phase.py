@@ -13,10 +13,16 @@ from typing import Any
 
 from lite_indexer import metrics
 from lite_indexer.logging import get_logger
-from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy
+from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrategy
 from lite_indexer.strategies.reorg_status import ReorgStatus
 
 logger = get_logger(__name__)
+
+# Strategies that carry a ``reorg_stage`` implementation. Tron joined this
+# tuple when its blockID checkpointing landed (``strategies/tron/reorg.py``);
+# before that it was silently excluded here, so ``tron_launches`` was written
+# with no rollback path even though the shared rollback list could purge it.
+_REORG_STAGED_STRATEGIES = (EVMChainStrategy, SolanaStrategy, TronStrategy)
 
 
 def _protection_enabled() -> bool:
@@ -46,7 +52,7 @@ class ReorgPhaseMixin:
         Returns the summary when the range must abort (unknown status) or
         roll back (fork detected); returns None to continue the cycle.
         """
-        if not (_protection_enabled() and isinstance(self.strategy, (EVMChainStrategy, SolanaStrategy))):
+        if not (_protection_enabled() and isinstance(self.strategy, _REORG_STAGED_STRATEGIES)):
             return None
         try:
             ch_client = self.ch_writer.client()

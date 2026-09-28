@@ -88,6 +88,25 @@ SOLANA_ROLLBACK_TABLES: tuple[RollbackTarget, ...] = (
     RollbackTarget(CH_ADDRESS_ACTIVITY_TABLE, "slot", chain_scoped=True),
 )
 
+# Tron-family tables. ``tron_launches`` was the orphan farm round 2 flagged for
+# a decision: written by ``strategies/tron/launch.write_launch`` keyed on
+# ``block_number`` (migrations/010_tron_launch.sql) with no rollback path at
+# all. TRC20 transfers land in the SHARED ``evm_transfers`` table and Tron
+# address-activity rows in the shared ``address_activity`` table (which stores
+# every chain's height in ``slot`` — Tron block numbers included, see
+# ``storage/address_activity_crosschain.parse_tron_address_activity``), so
+# those two are chain-scoped here.
+#
+# ``internal_transfers`` / ``dex_events`` are deliberately ABSENT: the Tron
+# strategy has no ``supports_dex`` path and no trace writer, so a Tron fork
+# can never orphan their rows, and including them would make a Tron rollback
+# delete other chains' shared rows if it ever false-positived.
+TRON_ROLLBACK_TABLES: tuple[RollbackTarget, ...] = (
+    RollbackTarget("wallet_memory.tron_launches", "block_number", chain_scoped=True),
+    RollbackTarget(CH_TABLE, "block_number", chain_scoped=True),
+    RollbackTarget(CH_ADDRESS_ACTIVITY_TABLE, "slot", chain_scoped=True),
+)
+
 
 def delete_above_fork(
     ch_client: Any,
@@ -145,5 +164,6 @@ __all__ = [
     "EVM_ROLLBACK_TABLES",
     "RollbackTarget",
     "SOLANA_ROLLBACK_TABLES",
+    "TRON_ROLLBACK_TABLES",
     "delete_above_fork",
 ]
