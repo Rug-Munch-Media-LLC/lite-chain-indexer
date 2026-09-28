@@ -113,9 +113,29 @@ python3 scripts/check-monkeypatch.py --update-baseline
 `--update-baseline` only ever removes or shrinks entries. Review the diff —
 a baseline that *grew* is a bug in the change, not the gate.
 
-## Suite chunking (OOM guard)
+## Suite chunking
 
 The full pytest suite is run as **two deterministic halves** of `tests/test_*.py`
-(`test_traces.py` and `test_critical_paths.py` run solo) because a monolithic
-run gets OOM-killed on the 10 GiB heavy-run cage. Coverage accumulates with
-`--cov-append`; the `--cov-fail-under` floor applies on the final chunk only.
+because a monolithic run gets OOM-killed on the 10 GiB heavy-run cage. Coverage
+accumulates with `--cov-append`; the `--cov-fail-under` floor applies on the
+final chunk only.
+
+**No test file is excluded.** `test_traces.py` and `test_critical_paths.py`
+used to be filtered out of every run with a `grep -vE` in both workflows and
+from the coverage ratchet, on the stated grounds that they were
+"OOM-killed on the 10G cage". That was re-measured on 2026-09-28 and it is
+**not true** — they are the two slowest files in the tree, not memory hogs:
+
+| file | tests | wall time | cgroup `memory.peak` | verdict |
+|------|-------|-----------|----------------------|---------|
+| `tests/test_traces.py` | 35 | 4m28s | far below `MemoryMax=10G` | passes |
+| `tests/test_critical_paths.py` | 15 | 8m26s | far below `MemoryMax=10G` | passes |
+
+So they now run in their own step with an explicit 30-minute cap, and they
+count toward the 74% coverage floor like every other file. To reproduce the
+measurement:
+
+```bash
+heavy-run pytest tests/test_traces.py -q        # ~4.5 min
+heavy-run pytest tests/test_critical_paths.py -q # ~8.5 min
+```

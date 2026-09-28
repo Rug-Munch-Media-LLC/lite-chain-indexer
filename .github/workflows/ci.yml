@@ -45,14 +45,27 @@ jobs:
         # RATCHET: the floor only ever RISES. Measured 75% on 2026-09-22
         # (1890 passed); 74% is the rounded-down floor with a small margin.
         # Raise it as coverage improves — never lower it. See docs/CI-GATES.md.
+        # No file is excluded: test_traces.py and test_critical_paths.py now
+        # contribute their coverage here, so the floor reflects the whole suite.
         run: |
-          FILES=$(ls tests/test_*.py | grep -vE 'test_(traces|critical_paths)\.py')
+          FILES=$(ls tests/test_*.py)
           HALF=$(( $(echo "$FILES" | wc -l) / 2 ))
           pytest $(echo "$FILES" | head -$HALF | tr '\n' ' ') -q --tb=short \
             --cov=lite_indexer --cov-report=term --cov-fail-under=0
           pytest $(echo "$FILES" | tail -n +$((HALF+1)) | tr '\n' ' ') -q --tb=short \
             --cov=lite_indexer --cov-report=term --cov-report=xml:coverage.xml \
             --cov-append --cov-fail-under=74
+
+      # ── Slow end-to-end paths (dedicated step, NOT chunked) ─────────
+      # Measured on the 10 GiB batch.slice cage (16 vCPU Talos, 2026-09-28),
+      # pytest <file> -q: test_traces.py 4m28s, test_critical_paths.py 8m26s.
+      # Both PASS; peak memory stayed far below MemoryMax=10G, so the old
+      # "OOM-killed on the 10G cage" note was never true of them.
+      # The 30-minute cap is ~2.5x the slowest observed wall time, so a real
+      # hang fails fast instead of burning the runner for the default 6h.
+      - name: Run slow end-to-end paths (traces + critical_paths)
+        timeout-minutes: 30
+        run: pytest tests/test_traces.py tests/test_critical_paths.py -q --tb=short
 
       - name: Check import
         run: python -c "from lite_indexer import LiteIndexer; print('Package import OK')"
