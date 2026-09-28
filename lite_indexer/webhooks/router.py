@@ -10,8 +10,11 @@ Endpoints:
 
 Security:
 
-* Registration is per-IP rate limited (``WEBHOOK_MAX_PER_IP``, applied
-  in ``api/app.py`` where the slowapi ``Limiter`` lives).
+* All three management routes require the ``WEBHOOK_API_KEY`` shared
+  secret (``X-API-Key``), fail-closed — see ``lite_indexer/webhooks/auth.py``.
+* Registration is additionally per-IP rate limited
+  (``WEBHOOK_MAX_PER_IP``, applied in ``api/app.py`` where the slowapi
+  ``Limiter`` lives).
 * URLs must be ``https`` (rejected with 422 otherwise).
 * Subjects must be non-empty, whitespace-free NATS patterns.
 
@@ -28,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from lite_indexer.config import WEBHOOK_MAX_PER_IP
-from lite_indexer.webhooks.auth import require_webhook_api_key
+from lite_indexer.webhooks.auth import require_registration_auth, require_webhook_api_key
 from lite_indexer.webhooks.delivery import WebhookDelivery
 from lite_indexer.webhooks.models import DeliveryAttempt, WebhookSubscription
 from lite_indexer.webhooks.ssrf import is_safe_webhook_url
@@ -129,6 +132,7 @@ def get_store() -> WebhookStore:
     response_model=WebhookOut,
     status_code=201,
     summary="Register a webhook",
+    dependencies=[Depends(require_registration_auth)],
 )
 async def register_webhook(request: Request, body: WebhookRegisterRequest) -> WebhookOut:
     """Register a new webhook subscription.

@@ -613,8 +613,11 @@ def api_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
         "lite_indexer.webhooks.ssrf._default_resolver",
         lambda host, port, *a, **k: [(socket.AF_INET, None, None, "", ("93.184.216.34", 0))],
     )
-    # Auth gate: force dev mode (unset key) regardless of the host env.
-    _setattr("lite_indexer.webhooks.auth.WEBHOOKS_API_KEY", None)
+    # Auth gate: force the documented dev escape (unset key) so the API
+    # suite can register without a secret. Fail-closed behaviour is
+    # asserted in tests/test_webhook_ssrf.py::TestApiKeyGate.
+    _setattr("lite_indexer.webhooks.auth.WEBHOOK_API_KEY", "")
+    _setattr("lite_indexer.webhooks.auth.ALLOW_UNAUTHENTICATED_WRITE", True)
 
     app = create_app()
     with TestClient(app) as c:

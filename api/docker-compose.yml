@@ -33,6 +33,16 @@ services:
       CH_API_PASSWORD: ${CH_API_PASSWORD:-}
       CH_API_DATABASE: ${CH_API_DATABASE:-wallet_memory}
       API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-100}
+      # Write-surface auth. The API REFUSES TO START without these (the
+      # label write and webhook management routes are fail-closed). Provide
+      # real secrets via the environment / .env — there is no default token.
+      # API_ALLOW_UNAUTHENTICATED_WRITE=1 is the documented local-dev
+      # escape only; never set it here.
+      LABEL_API_TOKEN: ${LABEL_API_TOKEN:?LABEL_API_TOKEN must be set (required for POST /api/v1/labels)}
+      WEBHOOK_API_KEY: ${WEBHOOK_API_KEY:?WEBHOOK_API_KEY must be set (required for the /api/v1/webhooks management routes)}
+      # Number of trusted proxies in front of the API. 0 = use the socket
+      # peer and never read a client-supplied X-Forwarded-For.
+      API_TRUSTED_PROXY_HOPS: ${API_TRUSTED_PROXY_HOPS:-0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/health', timeout=4)"]

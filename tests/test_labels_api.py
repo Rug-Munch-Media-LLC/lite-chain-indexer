@@ -26,6 +26,10 @@ _TS = datetime(2026, 9, 1, 12, 0, 0)
 @pytest.fixture()
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     """TestClient with the label router's reads/writes stubbed."""
+    # The app is fail-closed: no token, no start. Arm the documented dev
+    # escape so the read/write suite runs; the guard itself is asserted in
+    # tests/test_write_auth.py.
+    monkeypatch.setenv("API_ALLOW_UNAUTHENTICATED_WRITE", "1")
     app = create_app()
     captured: dict[str, Any] = {"sql": [], "params": [], "inserted": []}
 
@@ -172,3 +176,31 @@ def test_post_labels_token_guard(client: TestClient, monkeypatch: pytest.MonkeyP
         headers={"Authorization": "Bearer s3cret-token"},
     )
     assert ok.status_code == 201
+
+
+def test_post_labels_unset_token_is_refused_not_open(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The defect: an unset token used to mean "open". Now it means 503.
+
+    This is the point of the change — the default deployment (fresh clone,
+    env var never set) must not expose an unauthenticated write into the
+    entity-label graph.
+    """
+    monkeypatch.setattr("api.routers.labels.LABEL_API_TOKEN", "")
+    monkeypatch.setattr("api.routers.labels.API_ALLOW_UNAUTHENTICATED_WRITE", False)
+    resp = client.post(
+        "/api/v1/labels",
+        json={"labels": [{"address": "0x" + "c" * 40, "chain": "ethereum"}]},
+    )
+    assert resp.status_code == 503
+    assert "LABEL_API_TOKEN" in resp.json()["detail"]
+
+
+def test_post_labels_open_only_under_dev_escape(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The single documented escape: API_ALLOW_UNAUTHENTICATED_WRITE=1."""
+    monkeypatch.setattr("api.routers.labels.LABEL_API_TOKEN", "")
+    monkeypatch.setattr("api.routers.labels.API_ALLOW_UNAUTHENTICATED_WRITE", True)
+    resp = client.post(
+        "/api/v1/labels",
+        json={"labels": [{"address": "0x" + "d" * 40, "chain": "ethereum"}]},
+    )
+    assert resp.status_code == 201

@@ -25,6 +25,7 @@ def _mp(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Alias for the monkeypatch fixture — the ratchet counts bare fixture usages."""
     return monkeypatch
 
+
 # ── Live-infra isolation: NATS ──────────────────────────────────────────────
 # NATS_ENABLED is captured at IMPORT time (lite_indexer/config.py) and a real
 # NATS server listens on this host (127.0.0.1:4222). Without forcing it off,
@@ -39,6 +40,13 @@ os.environ["NATS_ENABLED"] = "0"
 # stable test value so every module import below resolves it. This line MUST
 # stay above every lite_indexer import (same as NATS_ENABLED above).
 os.environ["NODEREAL_KEY"] = "test-key-123"
+
+# The API's write surface is FAIL-CLOSED (api/write_guard.py): importing
+# api.app builds the app, which refuses to start with a write route mounted
+# and no secret. Set the documented dev escape so any test module that
+# imports api.app at collection time can be collected at all. The
+# fail-closed behaviour itself is asserted in tests/test_write_auth.py.
+os.environ.setdefault("API_ALLOW_UNAUTHENTICATED_WRITE", "1")
 
 from lite_indexer.rpc.throttle import RPCRateTracker  # noqa: E402
 

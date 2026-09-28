@@ -7,8 +7,10 @@ Covers:
   unspecified) and the port rule (443 or >= 1024 only).
 * Registration rejects private targets; public hosts pass.
 * DNS-rebinding: public at register, private at send → blocked at send.
-* ``WEBHOOKS_API_KEY`` gate on DELETE and GET logs (401 when set and
-  missing/wrong; passes with the right key; open when unset).
+* ``WEBHOOK_API_KEY`` gate on POST/DELETE and GET logs — 401 when set and
+  missing/wrong, passes with the right key, and **503 when unset** (the
+  routes are fail-closed; only the explicit
+  ``API_ALLOW_UNAUTHENTICATED_WRITE=1`` dev escape leaves them open).
 
 Resolvers are injected via the ``ssrf._default_resolver`` seam — no
 monkeypatching of call sites.
@@ -142,7 +144,11 @@ def api_client(tmp_path, monkeypatch: pytest.MonkeyPatch):
     _setattr("lite_indexer.webhooks.router._delivery", delivery)
     _setattr("lite_indexer.webhooks.router._store", store)
     _setattr("lite_indexer.webhooks.ssrf._default_resolver", _literal_resolver)
-    _setattr("lite_indexer.webhooks.auth.WEBHOOKS_API_KEY", None)
+    # Auth gate: force the documented dev escape so the SSRF suite can
+    # register without a secret. The fail-closed behaviour is asserted
+    # explicitly in TestApiKeyGate.
+    _setattr("lite_indexer.webhooks.auth.WEBHOOK_API_KEY", "")
+    _setattr("lite_indexer.webhooks.auth.ALLOW_UNAUTHENTICATED_WRITE", True)
 
     app = create_app()
     with TestClient(app) as c:
@@ -209,21 +215,46 @@ class TestSendTimeRebind:
 
 
 class TestApiKeyGate:
-    def _register(self, client: TestClient) -> str:
-        return client.post(
-            "/api/v1/webhooks",
-            json={"url": "https://hook.example.com/ev", "subjects": ["chain.ethereum.transfer"]},
-        ).json()["id"]
+    _BODY = {"url": "https://hook.example.com/ev", "subjects": ["chain.ethereum.transfer"]}
 
-    def test_key_required_when_set(self, api_client: TestClient, monkeypatch: pytest.MonkeyPatch):
-        _setattr("lite_indexer.webhooks.auth.WEBHOOKS_API_KEY", "sekrit")
-        sub_id = self._register(api_client)
+    def _register(self, client: TestClient) -> str:
+        return client.post("/api/v1/webhooks", json=self._BODY).json()["id"]
+
+    def _register_authed(self, client: TestClient, key: str) -> str:
+        return client.post("/api/v1/webhooks", json=self._BODY, headers={"X-API-Key": key}).json()["id"]
+
+    def test_key_required_when_set(self, api_client: TestClient):
+        _setattr("lite_indexer.webhooks.auth.WEBHOOK_API_KEY", "sekrit")
+        sub_id = self._register_authed(api_client, "sekrit")
         assert api_client.delete(f"/api/v1/webhooks/{sub_id}").status_code == 401
         assert api_client.get(f"/api/v1/webhooks/{sub_id}/logs").status_code == 401
         assert api_client.delete(f"/api/v1/webhooks/{sub_id}", headers={"X-API-Key": "wrong"}).status_code == 401
         assert api_client.get(f"/api/v1/webhooks/{sub_id}/logs", headers={"X-API-Key": "sekrit"}).status_code == 200
         assert api_client.delete(f"/api/v1/webhooks/{sub_id}", headers={"X-API-Key": "sekrit"}).status_code == 204
 
-    def test_open_when_unset(self, api_client: TestClient):
+    def test_registration_refused_without_key(self, api_client: TestClient):
+        """Registration is a write: unset key must refuse, not serve."""
+        _setattr("lite_indexer.webhooks.auth.WEBHOOK_API_KEY", "")
+        _setattr("lite_indexer.webhooks.auth.ALLOW_UNAUTHENTICATED_WRITE", False)
+        resp = api_client.post("/api/v1/webhooks", json=self._BODY)
+        assert resp.status_code == 503
+        assert "WEBHOOK_API_KEY" in resp.json()["detail"]
+
+    def test_registration_refused_with_wrong_key(self, api_client: TestClient):
+        _setattr("lite_indexer.webhooks.auth.WEBHOOK_API_KEY", "sekrit")
+        assert api_client.post("/api/v1/webhooks", json=self._BODY).status_code == 401
+
+    def test_delete_refused_when_unset(self, api_client: TestClient):
+        """Previously open-when-unset. Now 503 naming the env var."""
+        sub_id = self._register(api_client)
+        _setattr("lite_indexer.webhooks.auth.WEBHOOK_API_KEY", "")
+        _setattr("lite_indexer.webhooks.auth.ALLOW_UNAUTHENTICATED_WRITE", False)
+        resp = api_client.delete(f"/api/v1/webhooks/{sub_id}")
+        assert resp.status_code == 503
+        assert "WEBHOOK_API_KEY" in resp.json()["detail"]
+
+    def test_open_only_under_dev_escape(self, api_client: TestClient):
+        """The single documented escape: API_ALLOW_UNAUTHENTICATED_WRITE=1."""
+        _setattr("lite_indexer.webhooks.auth.ALLOW_UNAUTHENTICATED_WRITE", True)
         sub_id = self._register(api_client)
         assert api_client.delete(f"/api/v1/webhooks/{sub_id}").status_code == 204

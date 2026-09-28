@@ -24,19 +24,23 @@ leave the API — every response is a Pydantic model.
 from __future__ import annotations
 
 import secrets
-from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
-from api.config import LABEL_API_TOKEN, LABEL_API_WRITE_ENABLED
+from api.config import (
+    API_ALLOW_UNAUTHENTICATED_WRITE,
+    LABEL_API_TOKEN,
+    LABEL_API_WRITE_ENABLED,
+)
 from api.db import query
+from api.label_rows import to_label_out
 from api.label_store import insert_entity_labels
 from api.schemas import (
     EntityLabelBatchCreate,
-    EntityLabelOut,
     EntityLabelWriteResult,
     EntityResolutionOut,
 )
+from api.write_guard import DEV_ESCAPE_ENV
 
 router = APIRouter(prefix="/api/v1/labels", tags=["labels"])
 
@@ -62,15 +66,28 @@ def _normalize_address(address: str) -> str:
 
 
 def require_write_auth(authorization: str | None = Header(default=None)) -> None:
-    """Guard the label write endpoint with an optional shared-secret bearer token.
+    """Guard the label write endpoint with a shared-secret bearer token.
 
-    When ``LABEL_API_TOKEN`` is unset the endpoint is open (the API is not
-    internet-exposed for writes). When set, a matching
-    ``Authorization: Bearer <token>`` header is required. Comparison is
-    constant-time.
+    Fail-closed: an unset ``LABEL_API_TOKEN`` is a misconfiguration, not an
+    invitation. The request is refused with 503 naming the env var instead
+    of being served unauthenticated. The only way to run without a secret
+    is the explicit ``API_ALLOW_UNAUTHENTICATED_WRITE=1`` dev escape, which
+    is checked at startup by :func:`api.write_guard.assert_write_auth_configured`
+    — so an unset token can never mean "open" by accident.
+
+    When the token IS set, a matching ``Authorization: Bearer <token>``
+    header is required. Comparison is constant-time.
     """
     if not LABEL_API_TOKEN:
-        return
+        if API_ALLOW_UNAUTHENTICATED_WRITE:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "label write API is misconfigured: LABEL_API_TOKEN is unset. "
+                f"Set it, or set {DEV_ESCAPE_ENV}=1 for local development."
+            ),
+        )
     expected = f"Bearer {LABEL_API_TOKEN}"
     if not authorization or not secrets.compare_digest(authorization, expected):
         raise HTTPException(
@@ -120,7 +137,7 @@ def get_address_label(
     )
     rows = query(sql, params)
 
-    labels = [_to_label(row) for row in rows]
+    labels = [to_label_out(row) for row in rows]
     if not labels:
         return EntityResolutionOut(address=normalized, chain=chain, resolved=False, labels=[])
 
@@ -166,22 +183,6 @@ def post_labels(payload: EntityLabelBatchCreate) -> EntityLabelWriteResult:
         )
     addresses = sorted({str(row["address"]).strip().lower() for row in rows if row.get("address")})
     return EntityLabelWriteResult(inserted=inserted, addresses=addresses)
-
-
-def _to_label(row: dict[str, Any]) -> EntityLabelOut:
-    """Map one ClickHouse row to the public Pydantic label model."""
-    first_seen = row.get("first_seen")
-    return EntityLabelOut(
-        address=str(row.get("address", "")),
-        chain=str(row.get("chain_id", "")),
-        entity_type=str(row.get("entity_type") or "unknown"),
-        label_type=str(row.get("label_type") or "unknown"),
-        name=str(row.get("name") or ""),
-        source=str(row.get("source") or ""),
-        provenance=str(row.get("provenance") or ""),
-        confidence=float(row.get("confidence") or 0.0),
-        first_seen=str(first_seen).replace(" ", "T") + "Z" if first_seen else None,
-    )
 
 
 __all__ = ["router"]

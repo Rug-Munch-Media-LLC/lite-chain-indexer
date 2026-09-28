@@ -1,4 +1,5 @@
 """Webhook delivery configuration (split from config/indexing)."""
+
 from __future__ import annotations
 
 import os
@@ -26,3 +27,18 @@ WEBHOOK_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 4.0, 16.0)
 
 # Per-IP cap on webhook registrations (API layer).
 WEBHOOK_MAX_PER_IP: int = int(os.environ.get("WEBHOOK_MAX_PER_IP", "10"))
+
+# ── Webhook API auth (fail-closed) ──────────────────────────────────────
+# Shared secret guarding the webhook MANAGEMENT routes. Registration used
+# to be completely unauthenticated, which handed any caller a live SSRF
+# egress (the indexer POSTs signed events to whatever URL is registered).
+# Registration is now gated on the same secret as delete/logs. Unset is a
+# misconfiguration, not an invitation — see api/webhook_auth.py, where the
+# dev escape is API_ALLOW_UNAUTHENTICATED_WRITE (one flag for the whole
+# write surface) and WEBHOOK_API_KEY unset keeps registration reachable
+# only under that escape.
+WEBHOOK_API_KEY: str = os.environ.get("WEBHOOK_API_KEY") or ""
+
+# Allow the unauthenticated local dev loop (no secrets at all). Off by
+# default; never set on a shared deployment.
+ALLOW_UNAUTHENTICATED_WRITE: bool = os.environ.get("API_ALLOW_UNAUTHENTICATED_WRITE") == "1"

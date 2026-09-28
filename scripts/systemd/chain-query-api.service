@@ -19,12 +19,27 @@
 #   CH_API_USER=chain_api
 #   CH_API_PASSWORD=<from secrets manager>
 #   CH_API_DATABASE=wallet_memory
+#   LABEL_API_TOKEN=<from secrets manager>
+#   WEBHOOK_API_KEY=<from secrets manager>
+#   API_TRUSTED_PROXY_HOPS=1
 #   CHAIN_API_BIND=127.0.0.1
 #   CHAIN_API_PORT=8100
 #   EOF
 #   chmod 600 /etc/lite-chain-indexer/api.env
 #   systemctl daemon-reload
 #   systemctl enable --now chain-query-api
+#
+# LABEL_API_TOKEN and WEBHOOK_API_KEY are REQUIRED: the label write
+# endpoint and the webhook management routes are fail-closed and the
+# service will not start without them. There is no default token. The
+# only escape is API_ALLOW_UNAUTHENTICATED_WRITE=1, which is for the
+# local dev loop and must not appear in this file. See api/write_guard.py
+# and lite_indexer/webhooks/auth.py.
+#
+# API_TRUSTED_PROXY_HOPS: 0 (default) uses the socket peer and never
+# reads a client-supplied X-Forwarded-For. Set 1 when exactly one
+# trusted proxy (nginx/cloudflared) fronts this service, so the per-IP
+# rate limit is not applied to 127.0.0.1 for every caller.
 #
 [Unit]
 Description=Chain Query API — read-only REST+GraphQL over the ClickHouse warehouse

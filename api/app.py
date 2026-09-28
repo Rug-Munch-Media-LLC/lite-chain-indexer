@@ -21,17 +21,24 @@ from prometheus_client import Counter
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
 
 from api import __version__
-from api.config import API_TITLE, API_VERSION, RATE_LIMIT_KEY_PREFIX, RATE_LIMIT_PER_MINUTE
+from api.config import (
+    API_TITLE,
+    API_VERSION,
+    RATE_LIMIT_KEY_PREFIX,
+    RATE_LIMIT_PER_MINUTE,
+    TRUSTED_PROXY_HOPS,
+)
 from api.db import get_historical
 from api.graphql import graphql_router
 from api.routers import address, deployers, launches, search, stats, system, transfers, whales
 from api.routers import labels as labels_router
 from api.routers import query as query_router
+from api.write_guard import assert_write_auth_configured
 from lite_indexer.config import WEBHOOK_MAX_PER_IP
 from lite_indexer.webhooks import router as webhooks
+from lite_indexer.webhooks.auth import assert_webhook_auth_configured
 
 REQUEST_COUNT = Counter(
     "chain_api_requests_total",
@@ -41,19 +48,33 @@ REQUEST_COUNT = Counter(
 
 
 def _client_ip(request: Request) -> str:
-    """Resolve the real client IP from proxy headers (nginx/Cloudflare).
+    """Resolve the real client IP for the per-IP rate limit.
 
-    ``slowapi``'s default ``get_remote_address`` uses the socket address,
-    which behind nginx is always 127.0.0.1. Use the first hop of
-    X-Forwarded-For instead (nginx sets/forwards it).
+    The LEFTMOST X-Forwarded-For entry is the client-supplied value, so
+    trusting it lets any caller mint a fresh bucket per request and bypass
+    the limit entirely. The correct hop is the LAST one: each proxy in the
+    chain appends the address it actually observed, so the rightmost entry
+    is only trustworthy if every hop is ours.
+
+    ``TRUSTED_PROXY_HOPS`` says how many trusted proxies sit in front of
+    this app. We count back that many entries; if a caller supplied more
+    hops than we have proxies, the extra leading entries are forged and we
+    fall back to the socket peer. With no trusted proxy configured the
+    default is 0 — the socket address — so a client-supplied header is
+    never read unless an operator opts in.
     """
+    client = request.client
+    if not client:
+        return "unknown"
+    peer = client.host or "unknown"
+    hops = TRUSTED_PROXY_HOPS
+    if hops <= 0:
+        return peer
     forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    real = request.headers.get("x-real-ip")
-    if real:
-        return real.strip()
-    return get_remote_address(request)
+    chain = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+    if len(chain) < hops:
+        return peer
+    return chain[-hops]
 
 
 limiter = Limiter(
@@ -67,6 +88,11 @@ limiter = Limiter(
 
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
+    # Fail closed BEFORE any route is mounted: a write route with no
+    # auth secret is a misconfiguration, not a default. Refuses to start.
+    assert_write_auth_configured()
+    assert_webhook_auth_configured()
+
     app = FastAPI(
         title=API_TITLE,
         version=API_VERSION,
