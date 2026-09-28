@@ -34,6 +34,8 @@ from lite_indexer.strategies.solana.reorg import (
     rollback_to_slot,
 )
 from lite_indexer.strategies.solana.rpc import rpc_call
+from lite_indexer.strategies.solana.strategy.launchpad_rewind import rewind_launchpad_state
+from lite_indexer.strategies.solana.strategy.version_mismatch import is_version_mismatch
 from lite_indexer.util.http import http_limits
 
 from ._base import SolanaMixinBase
@@ -330,21 +332,7 @@ class SyncMixin(SolanaMixinBase):
         """
         result = await self._rpc_call(method, params)
 
-        def _version_mismatch(res: Any) -> bool:
-            """True when the RPC rejected the call over the tx-version cap.
-
-            2026-09-21 measured: endpoints answer a v0 cap with -32015 in
-            ~0.5s, and the pool then burns retries/rotation on it. Treating
-            the error payload as a version mismatch lets us flip the cap
-            immediately instead of waiting for the pool to give up.
-            """
-            if not isinstance(res, dict):
-                return False
-            err = res.get("error") or {}
-            msg = f"{err.get('code', '')} {err.get('message', '')}".lower()
-            return "transaction version" in msg or "-32015" in msg
-
-        if result is not None and not _version_mismatch(result):
+        if result is not None and not is_version_mismatch(result):
             return result
         if len(params) > 1 and isinstance(params[1], dict) and "maxSupportedTransactionVersion" in params[1]:
             opts = dict(params[1])
@@ -585,7 +573,16 @@ class SyncMixin(SolanaMixinBase):
         if deleted is None:
             logger.error("reorg_rollback_failed", chain=self.chain, fork_slot=check.fork_block)
             return ReorgCheck(ReorgStatus.UNKNOWN, fork_block=check.fork_block, error="rollback failed")
+        # Rewind the launchpad cursor + seen-mints AFTER a successful rollback,
+        # so the caller's re-fetch rescans the orphaned range instead of
+        # restarting past the fork. Only then is solana_launches rollback-safe.
+        released = rewind_launchpad_state(self, check.fork_block)
+        logger.info(
+            "solana_launchpad_rewound",
+            chain=self.chain,
+            fork_slot=check.fork_block,
+            seen_mints_released=released,
+        )
         return check
 
     # ── ClickHouse Write ─────────────────────────────────────────────
-

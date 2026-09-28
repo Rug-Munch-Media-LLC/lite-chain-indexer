@@ -81,9 +81,20 @@ EVM_ROLLBACK_TABLES += (RollbackTarget(CH_ADDRESS_ACTIVITY_TABLE, "slot", chain_
 # Solana-family tables: ``solana_spl_balance_changes`` and
 # ``solana_transfers`` are keyed by ``slot``; ``dex_events`` is shared with
 # EVM and is therefore chain-scoped.
+#
+# ``solana_launches`` joined this list when the launchpad watcher's writer
+# state started rewinding on a reorg
+# (``strategies/solana/strategy/launchpad_rewind.py``, called from
+# ``strategy/sync.py``): a rollback previously deleted nothing that a
+# re-fetch rebuilt, because the watcher resumed past the fork. It does now —
+# ``poll_launchpad_blocks`` re-scans the orphaned range and re-buffers the
+# mints, so the rows are reconstructed. ``solana_bundles`` stays OUT: its
+# evidence is not re-derivable from a partial signature walk, see
+# ``strategies/solana/reorg_launch_reconstruct.py``.
 SOLANA_ROLLBACK_TABLES: tuple[RollbackTarget, ...] = (
     RollbackTarget("wallet_memory.solana_spl_balance_changes", "slot", chain_scoped=False),
     RollbackTarget("wallet_memory.solana_transfers", "slot", chain_scoped=False),
+    RollbackTarget("wallet_memory.solana_launches", "slot", chain_scoped=False),
     RollbackTarget(CH_DEX_TABLE, "block_number", chain_scoped=True),
     RollbackTarget(CH_ADDRESS_ACTIVITY_TABLE, "slot", chain_scoped=True),
 )

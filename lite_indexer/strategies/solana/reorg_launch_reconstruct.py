@@ -1,32 +1,47 @@
-"""Why the Solana launch/bundle tables are deliberately ABSENT from the rollback.
+"""Why ``wallet_memory.solana_bundles`` is still ABSENT from the rollback.
 
-``wallet_memory.solana_launches`` and ``wallet_memory.solana_bundles`` are
-written on the live sync path at a slot height, so a reorg CAN orphan them.
-They are still not in ``SOLANA_ROLLBACK_TABLES``, because a rollback is only
-safe when a re-fetch of the orphaned range rebuilds the same rows. For these
-two tables it demonstrably does NOT — each has a reorg-fatal writer state that
-lives in memory and is never rewound. Rolling them back would delete rows that
-nothing ever rebuilds, which is silent data loss, the exact failure the
-rollback list exists to prevent.
+Round 3 excluded BOTH ``solana_launches`` and ``solana_bundles`` because the
+launchpad watcher's writer state (``_launchpad_last_slot`` and
+``_launchpad_seen_mints``) survived a reorg: the re-fetch restarted past the
+fork and never rescanned the orphaned range. Both now rewind
+(``strategies/solana/strategy/launchpad_rewind.rewind_launchpad_state``, called
+from ``strategy/sync.py`` step 4), so the cursor argument is GONE and
+``solana_launches`` is rollback-eligible and listed in
+``SOLANA_ROLLBACK_TABLES``.
+
+``solana_bundles`` stays excluded on a different, independent ground: its
+writer has no replay path at all. ``detect_bundle`` runs only over the
+per-slot tx set that ``_fetch_mint_transfers`` happens to collect while
+walking a TRACKED mint's signatures
+(``strategy/transfers.py:376-389``), and the collection is partial by
+construction: ``getSignaturesForAddress`` returns signatures for ONE address,
+so a buy from a wallet that is not a tracked mint is never fetched, and a tip
+transfer to a Jito tip account (bundles.py ``find_tip_transfer``) is a plain
+SOL transfer that the mint walk does not enumerate. The bundle predicate
+needs the create tx, the fresh buyers AND the tip transfer in the SAME slot in
+execution order; the fetch path reconstructs an arbitrary subset of that
+slot, so re-running the scan can legitimately produce no bundle. A cursor
+rewind makes the range get SCANNED; it cannot make the evidence RECOVERABLE.
 
 The decision lives in a module (not a test comment) because it has to stay
-true as the writers move. ``solana_reorg_launch_exclusions`` is the canonical
-exclusion list; ``reorg_launch_writers`` are the writers that prove the
-exclusions, and ``describe_reorg_exclusion`` turns one table into a
-machine-checkable reason.
+true as the writers move. ``solana_bundles`` is the canonical exclusion;
+``describe_reorg_exclusion`` turns it into a machine-checkable reason and
+``reorg_launch_writers`` records the state a future fix would have to change.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-SOLANA_LAUNCHES_TABLE = "wallet_memory.solana_launches"
 SOLANA_BUNDLES_TABLE = "wallet_memory.solana_bundles"
 
-# The two distinct reasons. Same outcome (never roll back), different cause:
-# a re-fetch is driven by a cursor/seen-set that survived the reorg, so the
-# orphaned range is skipped instead of replayed.
-CURSOR_NEVER_REWOUND = "writer-cursor-not-rewound"
+#: Now rollback-eligible (round 4): the launchpad cursor and seen-mints are
+#: rewound, so a re-fetch rebuilds the rows. Kept as a name so callers and
+#: tests can refer to the table they are asserting about.
+SOLANA_LAUNCHES_TABLE = "wallet_memory.solana_launches"
+
+# The remaining reason: not "the cursor survived" but "there is nothing to
+# replay from" — the evidence a bundle row is built from is not queryable.
 NO_REPLAY_PATH = "no-replay-path"
 
 
@@ -49,33 +64,26 @@ class ReorgLaunchExclusion:
     evidence: str
 
 
-# Owner of the launchpad writer state both Solana exclusions turn on.
+# Owner of the launchpad writer state — kept as the module that would have to
+# change for a bundle replay path to exist.
 _LAUNCHPAD_WRITER_OWNER = "lite_indexer.strategies.solana.strategy.sync"
 
 
-# CANONICAL EXCLUSION LIST. Read by the sync path's reorg check and asserted
-# against the live DDL + the real writer state by the test suite.
+# CANONICAL EXCLUSION LIST. Read by the test suite, which asserts it against
+# the live DDL and the real writer state.
 SOLANA_REORG_LAUNCH_EXCLUSIONS: tuple[ReorgLaunchExclusion, ...] = (
-    ReorgLaunchExclusion(
-        table=SOLANA_LAUNCHES_TABLE,
-        height_column="slot",
-        reason=CURSOR_NEVER_REWOUND,
-        writer_owner=_LAUNCHPAD_WRITER_OWNER,
-        evidence=(
-            "lite_indexer/strategies/solana/strategy/sync.py:179"
-            " (poll_launchpad_blocks: start = max(start, _launchpad_last_slot + 1))"
-            " with sync.py:216-217 (_launchpad_seen_mints.add / _last_launch_events.append)"
-        ),
-    ),
     ReorgLaunchExclusion(
         table=SOLANA_BUNDLES_TABLE,
         height_column="slot",
         reason=NO_REPLAY_PATH,
         writer_owner=_LAUNCHPAD_WRITER_OWNER,
         evidence=(
-            "lite_indexer/strategies/solana/strategy/transfers.py:383-388"
-            " (detect_bundle runs only over slot_txs gathered from _fetch_mint_transfers)"
-            " with transfers.py:70-85 (mint list comes from _discover_new_tokens + tracked_tokens)"
+            "lite_indexer/strategies/solana/strategy/transfers.py:376-389"
+            " (detect_bundle runs over slot_txs gathered only from"
+            " _fetch_mint_transfers' getSignaturesForAddress walk over a"
+            " TRACKED mint, so the slot's buyer/tip transfers are never"
+            " enumerated) with bundles.py:296-330 (the predicate needs the"
+            " create tx, fresh buyers AND the last-tx tip transfer)"
         ),
     ),
 )
@@ -83,7 +91,7 @@ SOLANA_REORG_LAUNCH_EXCLUSIONS: tuple[ReorgLaunchExclusion, ...] = (
 
 @dataclass(frozen=True)
 class ReorgLaunchWriter:
-    """In-memory writer state that a reorg must rewind to replay a range.
+    """In-memory writer state a reorg must rewind to replay a range.
 
     Attributes:
         owner: Module-qualified name of the strategy that owns the state.
@@ -96,18 +104,19 @@ class ReorgLaunchWriter:
     reset_on_reorg: bool
 
 
-# The writer state that makes a post-rollback re-fetch non-replaying. If any
-# entry stops being true, its table's exclusion is no longer justified.
+# The writer state, now rewound. Recorded as a contract, not as an exclusion
+# justification: if a future change stops rewinding either attribute, a
+# rollback-eligible table becomes unsafe again and the suite fails.
 reorg_launch_writers: tuple[ReorgLaunchWriter, ...] = (
     ReorgLaunchWriter(
-        owner="lite_indexer.strategies.solana.strategy.sync",
+        owner="lite_indexer.strategies.solana.strategy.launchpad_rewind",
         attribute="_launchpad_last_slot",
-        reset_on_reorg=False,
+        reset_on_reorg=True,
     ),
     ReorgLaunchWriter(
-        owner="lite_indexer.strategies.solana.strategy.sync",
+        owner="lite_indexer.strategies.solana.strategy.launchpad_rewind",
         attribute="_launchpad_seen_mints",
-        reset_on_reorg=False,
+        reset_on_reorg=True,
     ),
 )
 
@@ -132,7 +141,6 @@ def describe_reorg_exclusion(table: str) -> ReorgLaunchExclusion:
 
 
 __all__ = [
-    "CURSOR_NEVER_REWOUND",
     "NO_REPLAY_PATH",
     "ReorgLaunchExclusion",
     "ReorgLaunchWriter",

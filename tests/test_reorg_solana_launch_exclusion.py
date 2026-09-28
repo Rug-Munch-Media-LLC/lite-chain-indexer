@@ -31,6 +31,7 @@ import pytest
 
 from lite_indexer.config.rollback_tables import SOLANA_ROLLBACK_TABLES
 from lite_indexer.strategies.solana.reorg_launch_reconstruct import (
+    NO_REPLAY_PATH,
     SOLANA_BUNDLES_TABLE,
     SOLANA_LAUNCHES_TABLE,
     SOLANA_REORG_LAUNCH_EXCLUSIONS,
@@ -40,7 +41,7 @@ from lite_indexer.strategies.solana.reorg_launch_reconstruct import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED_TABLES = (SOLANA_LAUNCHES_TABLE, SOLANA_BUNDLES_TABLE)
+EXCLUDED_TABLES = (SOLANA_BUNDLES_TABLE,)
 
 # Strategy modules holding the launchpad writer state, and the cursor itself.
 STRATEGY_INIT = "lite_indexer/strategies/solana/strategy/__init__.py"
@@ -50,8 +51,8 @@ LAUNCHPAD_CURSOR = "_launchpad_last_slot"
 # The migration that creates each excluded table, and the height column the
 # rollback would have to filter on.
 DDL_SOURCE: dict[str, tuple[str, str]] = {
-    SOLANA_LAUNCHES_TABLE: ("migrations/009_solana_launch.sql", "slot"),
     SOLANA_BUNDLES_TABLE: ("migrations/011_jito_bundles.sql", "slot"),
+    SOLANA_LAUNCHES_TABLE: ("migrations/009_solana_launch.sql", "slot"),
 }
 
 _COLUMN_DECL = re.compile(r"^\s{4}(\w+)\s+\w")
@@ -148,12 +149,13 @@ def test_excluded_height_column_matches_the_migration_ddl() -> None:
     """
     for table, (rel_path, expected) in DDL_SOURCE.items():
         columns = _declared_columns(rel_path, table)
-        exclusion = describe_reorg_exclusion(table)
+        exclusion = describe_reorg_exclusion(table) if table in EXCLUDED_TABLES else None
 
         assert expected in columns, f"{table} lost its height column {expected!r} in {rel_path}: {columns}"
-        assert exclusion.height_column == expected, (
-            f"{table} records height column {exclusion.height_column!r} but the DDL declares {expected!r}"
-        )
+        if table in EXCLUDED_TABLES:
+            assert exclusion.height_column == expected, (
+                f"{table} records height column {exclusion.height_column!r} but the DDL declares {expected!r}"
+            )
 
 
 def test_excluded_tables_are_not_in_the_rollback_list() -> None:
@@ -170,6 +172,12 @@ def test_excluded_tables_are_not_in_the_rollback_list() -> None:
             f"{table} is in the rollback list, but its writer state is not rewound on a reorg — "
             "a rollback would delete rows no re-fetch rebuilds"
         )
+    # Round 4 inverted this: the launchpad cursor is rewound, so a re-fetch
+    # rebuilds the launches rows and the table joined the rollback list.
+    assert SOLANA_LAUNCHES_TABLE in covered, (
+        "solana_launches is rollback-eligible now that the launchpad cursor rewinds; "
+        "if the rewind is gone, remove it from SOLANA_ROLLBACK_TABLES again"
+    )
 
 
 def test_every_excluded_table_has_a_non_rewinding_writer() -> None:
@@ -180,16 +188,13 @@ def test_every_excluded_table_has_a_non_rewinding_writer() -> None:
     to be revisited rather than left to rot.
     """
     for exclusion in SOLANA_REORG_LAUNCH_EXCLUSIONS:
-        owners = [w for w in reorg_launch_writers if w.owner == exclusion.writer_owner]
-
-        assert owners, f"{exclusion.table} claims {exclusion.reason} but records no writer state"
-        assert not any(w.reset_on_reorg for w in owners), (
-            f"{exclusion.table} is excluded as {exclusion.reason!r}, but its writer state now rewinds on "
-            "reorg — the re-fetch WOULD rebuild the rows and the exclusion must be re-decided"
+        assert exclusion.reason == NO_REPLAY_PATH, (
+            f"{exclusion.table} is excluded as {exclusion.reason!r}; the cursor is rewound now, so "
+            "no-replay-path is the only remaining honest justification"
         )
 
 
-def test_launchpad_cursor_is_written_only_by_init_and_the_watcher() -> None:
+def test_launchpad_cursor_is_rewound_on_reorg() -> None:
     """``_launchpad_last_slot`` is only written by ``__init__`` and the watcher.
 
     The pin that bites. A reorg must not rewind this cursor: the post-rollback
@@ -198,13 +203,10 @@ def test_launchpad_cursor_is_written_only_by_init_and_the_watcher() -> None:
     rewind ever appears here, ``solana_launches`` and ``solana_bundles`` become
     rollback-eligible and this fails to demand the decision be revisited.
     """
-    assigners = _assigning_functions(STRATEGY_INIT, LAUNCHPAD_CURSOR)
-    assigners |= _assigning_functions(STRATEGY_SYNC, LAUNCHPAD_CURSOR)
-    expected = {"__init__", "poll_launchpad_blocks"}
-
-    assert assigners == expected, (
-        f"{LAUNCHPAD_CURSOR} is now assigned in {sorted(assigners - expected)} — if a reorg rewinds it, "
-        "the solana_launches/solana_bundles exclusion loses its justification"
+    rewind = reorg_launch_writers
+    assert any(w.attribute == LAUNCHPAD_CURSOR and w.reset_on_reorg for w in rewind), (
+        f"{LAUNCHPAD_CURSOR} is no longer recorded as rewound on reorg — solana_launches is in the "
+        "rollback list and would now delete rows the re-fetch does not rebuild"
     )
 
 
