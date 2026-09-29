@@ -203,6 +203,11 @@ pre-push:
     # (baseline: scripts/deptry-baseline.txt). New undeclared dependency = fail.
     deptry:
       glob: "*.py"
+      # lefthook runs `run:` blocks under `sh` by default. This block uses
+      # bash-only constructs (process substitution `<(...)` in the failure diff)
+      # and a nested-quote regex, so under sh it died in 0.09s without ever
+      # invoking deptry — which read as a FAIL every push.
+      shell: bash
       run: |
         set -uo pipefail
         BASE=scripts/deptry-baseline.txt
