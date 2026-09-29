@@ -41,8 +41,25 @@ SCOPE = "lite_indexer/"
 ERR_RE = re.compile(r"^(?P<file>[^:]+):(?P<line>\d+):\s+error:")
 
 
+class MypyRunError(RuntimeError):
+    """mypy could not produce a trustworthy error list — the budget is UNKNOWN.
+
+    A ratchet that cannot see the code it governs is worse than a red build:
+    an empty parse plus a non-zero exit reads as "0 errors", which is
+    indistinguishable from a clean tree. That is precisely how a dead
+    provider tier shipped looking healthy. Never let that pass silently.
+    """
+
+
 def run_mypy(repo: Path) -> tuple[dict[str, int], int]:
-    """Return ``(per-file error counts, total)`` for :data:`SCOPE`."""
+    """Return ``(per-file error counts, total)`` for :data:`SCOPE`.
+
+    Raises:
+        MypyRunError: mypy exited non-zero *without* emitting a parseable
+            diagnostic. rc=1 with errors on stdout is legitimate; rc>=2
+            (usage/config/crash/OOM) and "mypy missing" both mean the
+            measurement never happened, so the count is unknown, not zero.
+    """
     proc = subprocess.run(
         [sys.executable, "-m", "mypy", SCOPE, "--ignore-missing-imports"],
         cwd=repo,
@@ -64,6 +81,16 @@ def run_mypy(repo: Path) -> tuple[dict[str, int], int]:
             log.debug("mypy path outside repo, counted verbatim", path=path)
             rel = path
         counts[rel] = counts.get(rel, 0) + 1
+    # No parseable diagnostic but a non-zero exit: mypy never got far enough
+    # to type-check (bad flag, missing module, INTERNAL ERROR, killed by the
+    # OOM killer). Reporting that as zero errors would silently pass the
+    # ratchet, so refuse instead.
+    if total == 0 and proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        raise MypyRunError(
+            f"mypy exited {proc.returncode} with no parseable diagnostic on stdout "
+            f"({SCOPE} type-check did not run): {detail[0][:200] if detail else '<no output>'}"
+        )
     return counts, total
 
 
@@ -84,7 +111,19 @@ def main() -> int:
     repo = Path(args.repo).resolve()
     baseline_path = repo / DEFAULT_BASELINE
 
-    counts, total = run_mypy(repo)
+    try:
+        counts, total = run_mypy(repo)
+    except MypyRunError as exc:
+        # An unknown error count is not a passing budget. Fail loudly so CI
+        # goes red instead of the ratchet rubber-stamping a dead type-check.
+        print(f"mypy budget: INDETERMINATE — {exc}", file=sys.stderr)
+        print(
+            "  This is a measurement failure, not a clean tree. Fix the mypy "
+            "invocation/install, or install mypy, then re-run.",
+            file=sys.stderr,
+        )
+        log.error("mypy_budget_measurement_failed", detail=str(exc))
+        return 2
 
     if args.update_baseline and not baseline_path.exists():
         # Bootstrap: there is nothing to compare against, so record today's

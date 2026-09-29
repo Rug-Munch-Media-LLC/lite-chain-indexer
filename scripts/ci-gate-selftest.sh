@@ -18,6 +18,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STRUCT="$REPO_ROOT/scripts/check-structure.py"
 MONKEY="$REPO_ROOT/scripts/check-monkeypatch.py"
+MYPY_BUDGET="$REPO_ROOT/scripts/check-mypy-budget.py"
 
 PY="${PYTHON:-python3}"
 if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
@@ -51,7 +52,7 @@ gen() {
 }
 
 struct_rc() {
-    "$PY" "$STRUCT" --repo "$FIXTURE" "$@" >/dev/null 2>&1
+    "$PY" "$STRUCT" --repo "$FIXTURE" >/dev/null 2>&1
     echo $?
 }
 monkey_rc() {
@@ -97,19 +98,45 @@ reset_fixture
 gen 201 "$FIXTURE/src/rugbrain/over.py"
 printf '{"files": {"src/rugbrain/over.py": 201}}' >"$FIXTURE/scripts/structure-baseline.json"
 expect_rc 0 "$(struct_rc)" "allowlisted 201-line file passes (shrink-only)"
-"$PY" "$STRUCT" --repo "$FIXTURE" --debt | grep -q "src/rugbrain/over.py: 201" &&
-    pass "--debt ledger lists allowlisted file" || fail "--debt ledger" "?"
+if "$PY" "$STRUCT" --repo "$FIXTURE" --debt | grep -q "src/rugbrain/over.py: 201"; then
+    pass "--debt ledger lists allowlisted file"
+else
+    fail "--debt ledger" "?"
+fi
 
 reset_fixture
-for i in 1 2 3 4 5; do printf "def f$i():\n    pass\n\n" >>"$FIXTURE/src/rugbrain/dense.py"; done
+for i in 1 2 3 4 5; do printf 'def f%s():\n    pass\n\n' "$i" >>"$FIXTURE/src/rugbrain/dense.py"; done
 out="$("$PY" "$STRUCT" --repo "$FIXTURE" 2>&1)"
-echo "$out" | grep -q "new file fn-density" && pass "fn-density advisory reported" || fail "fn-density advisory" "?"
+if printf '%s' "$out" | grep -q "new file fn-density"; then
+    pass "fn-density advisory reported"
+else
+    fail "fn-density advisory" "?"
+fi
 expect_rc 0 "$(struct_rc)" "fn-density is advisory (exit 0)"
 
 reset_fixture
 printf '{"total": 0, "files": {}}' >"$FIXTURE/scripts/monkeypatch-baseline.json"
 printf "x = monkeypatch.getattr(m, 'n')\n" >"$FIXTURE/src/rugbrain/prod_mp.py"
 expect_rc 1 "$(monkey_rc)" "monkeypatch in production -> exit 1 (hard zero)"
+
+echo "gate-selftest: mypy-budget must refuse a DEAD type-check"
+# A ratchet that cannot run must not read as "clean". Shadow `mypy` with a
+# module that raises on import: the gate must exit non-zero rather than
+# reporting a phantom "0 errors, PASS". (This is how a dead provider tier
+# shipped looking healthy — the check ran, and checked nothing.)
+reset_fixture
+mkdir -p "$FIXTURE/scripts" "$FIXTURE/shadow"
+printf 'raise ImportError("gate-selftest: simulated mypy is not installed")\n' \
+    >"$FIXTURE/shadow/mypy.py"
+printf '{"scope": "lite_indexer/", "total": 129, "files": {}}\n' \
+    >"$FIXTURE/scripts/mypy-baseline.json"
+out="$(PYTHONPATH="$FIXTURE/shadow" "$PY" "$MYPY_BUDGET" --repo "$FIXTURE" 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "INDETERMINATE"; then
+    pass "dead mypy -> exit $rc, reported INDETERMINATE (not PASS)"
+else
+    fail "dead mypy must not PASS" "$rc"
+fi
 
 if [ "$fails" -ne 0 ]; then
     echo "gate-selftest: FAIL ($fails assertion(s) did not match)"
