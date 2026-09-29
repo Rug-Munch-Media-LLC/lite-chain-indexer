@@ -15,6 +15,7 @@ from typing import Any
 
 from lite_indexer.storage.historical_bounds import _Bounds
 from lite_indexer.storage.historical_tables import _UNCLEAN_KEYWORDS, _sql_lit
+from lite_indexer.storage.tha_api import ThaApi
 
 
 class HistoricalAccessSQLParse:
@@ -24,9 +25,7 @@ class HistoricalAccessSQLParse:
         r"^\s*SELECT\s+(?P<cols>.+?)\s+FROM\s+wallet_memory\.(?P<table>[a-zA-Z0-9_]+)\s*(?P<rest>.*)$",
         re.DOTALL | re.IGNORECASE,
     )
-    _ORDER_RE = re.compile(
-        r"\s+ORDER\s+BY\s+(?P<order>.*?)(?=\s+LIMIT\s|\s+OFFSET\s|$)", re.DOTALL | re.IGNORECASE
-    )
+    _ORDER_RE = re.compile(r"\s+ORDER\s+BY\s+(?P<order>.*?)(?=\s+LIMIT\s|\s+OFFSET\s|$)", re.DOTALL | re.IGNORECASE)
     _LIMIT_RE = re.compile(r"\s+LIMIT\s+(?P<limit>\d+)", re.IGNORECASE)
     _OFFSET_RE = re.compile(r"\s+OFFSET\s+(?P<offset>\d+)", re.IGNORECASE)
     _COND_RE = re.compile(
@@ -36,7 +35,7 @@ class HistoricalAccessSQLParse:
         r"^\s*(?P<col>[a-zA-Z_][a-zA-Z0-9_]*)\s*BETWEEN\s*%\((?P<lo>[a-zA-Z0-9_]+)\)s\s*AND\s*%\((?P<hi>[a-zA-Z0-9_]+)\)s\s*$"
     )
 
-    def _parse_sql(self, sql: str) -> tuple[str, list[str], str, str, int, int] | None:
+    def _parse_sql(self: ThaApi, sql: str) -> tuple[str, list[str], str, str, int, int] | None:
         """Parse a simple single-table SELECT (or return None)."""
         stmt = sql.strip().rstrip(";").strip()
         if not stmt or ";" in stmt:
@@ -117,8 +116,6 @@ class HistoricalAccessSQLParse:
     def _strip_limit(sql: str) -> str:
         """Remove a trailing LIMIT/OFFSET so the hot side returns all rows."""
         return re.sub(r"\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$", "", sql, flags=re.IGNORECASE)
-
-
 
 
 def _parse_select_cols(cols_text: str) -> list[str] | None:

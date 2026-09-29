@@ -3,6 +3,7 @@
 Split out of writer.py — the flow answers "which days, in what order",
 the per-day work lives in export_day.py.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -11,6 +12,7 @@ from lite_indexer.config import BOOTSTRAP_B2_BUCKET, BOOTSTRAP_PARQUET_PATH, PAR
 from lite_indexer.logging import get_logger
 from lite_indexer.storage.parquet.export_day import DayExportOptions
 from lite_indexer.storage.parquet.helpers import _state_marker
+from lite_indexer.storage.parquet.mixin_api import ParquetApi
 from lite_indexer.storage.parquet.schema import (
     _STATUS_PENDING,
     ExportSummary,
@@ -22,9 +24,8 @@ logger = get_logger(__name__)
 class ExportFlowMixin:
     """Date planning + per-day orchestration for parquet exports."""
 
-
     def export_chain(
-        self,
+        self: ParquetApi,
         chain: str,
         *,
         dates: list[date] | None = None,
@@ -101,11 +102,13 @@ class ExportFlowMixin:
 
         for day in dates:
             opts = DayExportOptions(
-                summary=summary, upload=upload, delete=delete,
-                publish_snapshot=publish_snapshot, snapshot_bucket=snapshot_bucket,
+                summary=summary,
+                upload=upload,
+                delete=delete,
+                publish_snapshot=publish_snapshot,
+                snapshot_bucket=snapshot_bucket,
                 snapshot_path=snapshot_path,
             )
             self._export_one_day(client, chain, day, opts)
 
         return summary
-

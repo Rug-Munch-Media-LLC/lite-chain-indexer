@@ -67,8 +67,13 @@ def fetch_write_day_kinds(
     write: Callable[[list[dict[str, Any]], Any], int],
     verify: Callable[[Any, int, set[str]], bool],
     local_path_for: Callable[[str], Any],
-) -> tuple[dict[str, int], int, dict[str, bool]]:
+) -> tuple[dict[str, int], int, dict[str, bool], tuple[int, int]]:
     """Fetch and WRITE each block window before fetching the next.
+
+    Returns ``(rows_per_kind, bytes_written, ok_per_kind, block_span)``;
+    ``block_span`` is the ``(min, max)`` block_number covered by the day's
+    windows, used for the snapshot manifest.
+
 
     Streaming matters as much as window sizing. The previous flow collected
     every window of every kind and then flattened them into a second full copy
@@ -123,9 +128,14 @@ def fetch_write_day_kinds(
             del rows  # release this window before fetching the next
         rows_per_kind[kind] = kind_rows
         ok_per_kind[kind] = kind_ok
-    return rows_per_kind, bytes_written, ok_per_kind, (
-        span_start if span_start is not None else 0,
-        span_end if span_end is not None else 0,
+    return (
+        rows_per_kind,
+        bytes_written,
+        ok_per_kind,
+        (
+            span_start if span_start is not None else 0,
+            span_end if span_end is not None else 0,
+        ),
     )
 
 
@@ -137,5 +147,3 @@ class DayPlan:
     day: Any
     cap: int
     client: Any
-
-

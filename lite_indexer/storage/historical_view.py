@@ -15,6 +15,7 @@ from typing import cast
 from lite_indexer.config import CH_DATABASE
 from lite_indexer.logging import get_logger
 from lite_indexer.storage.historical_tables import _TABLE_NAME, _UNCLEAN_KEYWORDS, _VIEW_CHECK_TTL
+from lite_indexer.storage.tha_api import ThaApi
 
 logger = get_logger(__name__)
 
@@ -22,7 +23,7 @@ logger = get_logger(__name__)
 class HistoricalAccessView:
     """View-rewrite mixin (API wiring path 1)."""
 
-    def maybe_rewrite_view(self, sql: str) -> str:
+    def maybe_rewrite_view(self: ThaApi, sql: str) -> str:
         """Return ``sql`` re-pointed at the unified ``*_historical`` view.
 
         Rewrites ``FROM wallet_memory.<table>`` → ``FROM
@@ -38,11 +39,9 @@ class HistoricalAccessView:
         table = self._referenced_table(sql)
         if table is None or not self._view_available(table):
             return sql
-        return re.sub(
-            rf"wallet_memory\.{table}\b", f"wallet_memory.{table}_historical", sql, count=1
-        )
+        return re.sub(rf"wallet_memory\.{table}\b", f"wallet_memory.{table}_historical", sql, count=1)
 
-    def _referenced_table(self, sql: str) -> str | None:
+    def _referenced_table(self: ThaApi, sql: str) -> str | None:
         """Return the single supported event table referenced by ``sql``.
 
         Returns None when the statement is not a clean SELECT over exactly
@@ -73,7 +72,7 @@ class HistoricalAccessView:
             return "solana_transfers"
         return cast(str, table)
 
-    def _view_available(self, table: str) -> bool:
+    def _view_available(self: ThaApi, table: str) -> bool:
         """True when ``wallet_memory.<table>_historical`` exists (cached)."""
         now = time.monotonic()
         if now - self._view_checked > _VIEW_CHECK_TTL:

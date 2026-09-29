@@ -1,4 +1,5 @@
 """Per-day parquet export mixin (one day of export logic; split from writer)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,12 +10,14 @@ from lite_indexer.config import CH_DEX_TABLE, CH_TABLE
 from lite_indexer.logging import get_logger
 from lite_indexer.storage.parquet.chunking import DayPlan, fetch_write_day_kinds
 from lite_indexer.storage.parquet.helpers import _local_dir, _local_path, _remote_dir, _state_marker
+from lite_indexer.storage.parquet.mixin_api import ParquetApi
 from lite_indexer.storage.parquet.reader import _day_row_stats, _fetch_day_rows, _max_rows_per_day
 from lite_indexer.storage.parquet.schema import _STATUS_DELETED, _STATUS_EXPORTING, _STATUS_FAILED, _STATUS_UPLOADED
 
 logger = get_logger(__name__)
 
 _KIND_TABLES: tuple[tuple[str, str], ...] = (("transfers", CH_TABLE), ("dex", CH_DEX_TABLE))
+
 
 @dataclass(frozen=True)
 class DayExportOptions:
@@ -27,10 +30,11 @@ class DayExportOptions:
     snapshot_bucket: str
     snapshot_path: str
 
+
 class ExportDayMixin:
     """One-day export: chunked fetch, write+verify, upload, delete, snapshot."""
 
-    def _export_one_day(self, client: Any, chain: str, day: date, opts: DayExportOptions) -> None:
+    def _export_one_day(self: ParquetApi, client: Any, chain: str, day: date, opts: DayExportOptions) -> None:
         """Export one (chain, day); all failures recorded on the summary."""
         marker = _state_marker(self.state_dir, chain, day)
         if marker.exists():

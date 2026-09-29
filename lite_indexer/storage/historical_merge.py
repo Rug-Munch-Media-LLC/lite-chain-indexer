@@ -11,13 +11,14 @@ from datetime import datetime
 from typing import Any
 
 from lite_indexer.storage.historical_tables import _ROW_KEY_COLS, _SORT_COLS, _sort_value, _Split
+from lite_indexer.storage.tha_api import ThaApi
 
 
 class HistoricalAccessMerge:
     """Tier planning + hot/cold merge mixin."""
 
     def _plan(
-        self,
+        self: ThaApi,
         table: str,
         from_block: int | None,
         to_block: int | None,
@@ -54,7 +55,7 @@ class HistoricalAccessMerge:
         return _Split(hot=True, cold=False)
 
     def _smart_merge(
-        self,
+        self: ThaApi,
         table: str,
         hot_results: list[dict[str, Any]],
         cold_results: list[dict[str, Any]],

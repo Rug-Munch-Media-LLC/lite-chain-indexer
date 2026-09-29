@@ -21,6 +21,7 @@ from lite_indexer.storage.ch_errors import (
     require_client,
 )
 from lite_indexer.storage.ch_rows import _parse_ts, _serialize_raw_payload
+from lite_indexer.storage.writer_api import WriterApi
 
 logger = get_logger(__name__)
 
@@ -110,7 +111,14 @@ def _dex_row(
 class DexMixin:
     """``dex_events`` writes with whale detection + USD normalization."""
 
-    def _dex_amounts_numeric(self, client: Any) -> bool:
+    # Declared (not just assigned) so the type matches ConnectMixin, which
+    # initialises it. Without this, DexMixin infers a bare ``bool`` from the
+    # assignment below while ConnectMixin declares ``bool | None``, and the
+    # two base classes of ClickHouseWriter conflict — which makes the class
+    # non-instantiable. The value is tri-state: None = not probed yet.
+    _dex_numeric_amounts: bool | None
+
+    def _dex_amounts_numeric(self: WriterApi, client: Any) -> bool:
         """Return True when dex_events amount columns are Float (not String).
 
         Schema-adaptive probe for the 2026-08-19 dex_events incident: the
@@ -125,22 +133,24 @@ class DexMixin:
         Result is cached per process; the schema never changes mid-run
         (migration 013 is applied while the indexer is stopped).
         """
-        if self._dex_numeric_amounts is not None:
-            return self._dex_numeric_amounts
+        cached = self._dex_numeric_amounts
+        if cached is not None:
+            return cached
         try:
             types = self._column_types(client, CH_DEX_TABLE)
             amount_type = types.get("amount0_in", "")
-            self._dex_numeric_amounts = "Float" in amount_type or "Decimal" in amount_type
+            numeric = "Float" in amount_type or "Decimal" in amount_type
             logger.info(
                 "dex_amount_schema_probed",
                 column_type=amount_type or "unknown",
-                numeric=self._dex_numeric_amounts,
+                numeric=numeric,
             )
         except Exception:  # noqa: BLE001 — probe failure falls back to canonical
-            self._dex_numeric_amounts = False
-        return self._dex_numeric_amounts
+            numeric = False
+        self._dex_numeric_amounts = numeric
+        return numeric
 
-    def write_dex_events(self, chain: str, events: list[dict[str, Any]]) -> int:
+    def write_dex_events(self: WriterApi, chain: str, events: list[dict[str, Any]]) -> int:
         """Insert DEX swap events into ClickHouse. Returns rows inserted.
 
         Whale detection + USD normalization happen here, at ingestion time:

@@ -101,4 +101,38 @@ __all__ = [
     "_coerce_int",
     "_transfer_dedup_key",
     "_serialize_raw_payload",
+    # The re-exports above the class: this module is the public facade, and
+    # these names are read through it at CALL TIME (the `ch_*` mixins do
+    # `_facade.CH_TTL_ENABLED` so tests can patch the flag on this module).
+    # Naming them here is required, not cosmetic: an `__all__` that omits a
+    # re-exported name disables implicit reexport, and every mixin reading a
+    # flag through the facade became an `attr-defined` error. Ruff's F401 noqa
+    # silences the linter, never mypy — this list is what silences mypy, and
+    # keeping the two lists in step is the invariant.
+    "BALANCE_CACHE_ENABLED",
+    "CH_DEPLOYER_TABLE",
+    "CH_DEX_TABLE",
+    "CH_TABLE",
+    "CH_TTL_ENABLED",
+    "HOLDER_BALANCES_MV_ENABLED",
+    "TOKEN_META_ENABLED",
+    "WALLET_PROJECTION_ENABLED",
+    "UTC",
+    "asyncio",
+    "compute_swap_usd",
+    "datetime",
+    "detect_whale",
+    "ensure_balance_cache_table",
+    "ensure_holder_balances_mv",
+    "ensure_token_meta_table",
+    "ensure_wallet_projection",
+    "get_price",
+    "is_unavailable_error",
+    "json",
+    "metrics_incr",
+    "os",
+    "require_client",
+    "threading",
+    "update_holder_balances_bulk",
+    "upsert_token_meta",
 ]

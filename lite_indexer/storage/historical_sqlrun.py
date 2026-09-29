@@ -14,6 +14,7 @@ from typing import Any
 from lite_indexer.logging import get_logger
 from lite_indexer.storage.historical_sqlparse import HistoricalAccessSQLParse
 from lite_indexer.storage.historical_tables import _sort_value
+from lite_indexer.storage.tha_api import ThaApi
 
 logger = get_logger(__name__)
 
@@ -21,9 +22,7 @@ logger = get_logger(__name__)
 class HistoricalAccessSQL(HistoricalAccessSQLParse):
     """SQL routing mixin (API wiring path 2)."""
 
-    def query_sql(
-        self, sql: str, params: dict[str, Any] | None = None
-    ) -> list[dict[str, Any]] | None:
+    def query_sql(self: ThaApi, sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]] | None:
         """Route a simple single-table SELECT through the unified layer.
 
         Only queries that are safe to execute on BOTH engines are routed:
@@ -73,16 +72,14 @@ class HistoricalAccessSQL(HistoricalAccessSQLParse):
         merged = self._project(merged, select_cols)
         return merged[offset : offset + limit]
 
-    def _query_sql_hot(self, sql: str, params: dict[str, Any], table: str) -> list[dict[str, Any]]:
+    def _query_sql_hot(self: ThaApi, sql: str, params: dict[str, Any], table: str) -> list[dict[str, Any]]:
         """Run the hot side (original SQL minus LIMIT/OFFSET); [] on failure."""
         hot_rows: list[dict[str, Any]] = []
         client = self._client()
         if client is None:
             return hot_rows
         try:
-            rows, column_types = client.execute(
-                self._strip_limit(sql), params, with_column_types=True
-            )
+            rows, column_types = client.execute(self._strip_limit(sql), params, with_column_types=True)
             names = [name for name, _ in column_types]
             hot_rows = [dict(zip(names, row, strict=False)) for row in rows]
         except Exception as exc:  # noqa: BLE001 — hot side is best-effort

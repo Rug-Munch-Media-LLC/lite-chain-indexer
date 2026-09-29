@@ -28,6 +28,7 @@ from lite_indexer.storage.ch_rows import (
     _serialize_raw_payload,
     _transfer_dedup_key,
 )
+from lite_indexer.storage.writer_api import WriterApi
 
 logger = get_logger(__name__)
 
@@ -143,7 +144,7 @@ class TransfersMixin:
             logger.warning("clickhouse_dedup_degraded", chain=chain, gap_windows=gaps, windows=windows)
         return existing
 
-    def write_transfers(self, chain: str, events: list[dict[str, Any]]) -> int:
+    def write_transfers(self: WriterApi, chain: str, events: list[dict[str, Any]]) -> int:
         """Insert transfer events into ClickHouse. Returns rows inserted.
 
         Only the hot-path transfer columns are written: chain, block_number,

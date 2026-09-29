@@ -127,3 +127,19 @@ def ensure_address_activity_table(ch_client: Any) -> bool:
 
 _ENSURE_AT: dict[str, float] = {}
 _ENSURE_TTL_SECONDS = 6 * 3600
+
+__all__ = [
+    # `address_activity.py` is the single import surface for this module and
+    # re-exports these names. `no_implicit_reexport` is on (mypy strict), so
+    # a re-exported name must be declared here or every importer of it is an
+    # `attr-defined` error.
+    "CH_ADDRESS_ACTIVITY_TABLE",
+    "RETENTION_DAYS",
+    "_ADD_CHAIN_COLUMN_DDL",
+    "_ADDRESS_ACTIVITY_DDL",
+    "_DEFAULT_CHAIN",
+    "_INSERT_COLUMNS",
+    "_MODIFY_ORDER_BY_DDL",
+    "ensure_address_activity_chain_column",
+    "ensure_address_activity_table",
+]

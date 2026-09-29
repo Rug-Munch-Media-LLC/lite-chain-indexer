@@ -19,6 +19,7 @@ from lite_indexer.storage.balance_cache import (
 from lite_indexer.storage.ch_errors import require_client
 from lite_indexer.storage.projections import ensure_wallet_projection
 from lite_indexer.storage.token_meta import ensure_token_meta_table, upsert_token_meta
+from lite_indexer.storage.writer_api import WriterApi
 
 logger = get_logger(__name__)
 
@@ -79,7 +80,7 @@ async def _wallet_balance_deltas(client: Any, chain: str, events: list[dict[str,
 class FeaturesMixin:
     """Wallet-access path: projections, token metadata, balance caches."""
 
-    async def write_internal_transfers(self, chain: str, rows: list[dict[str, Any]]) -> int:
+    async def write_internal_transfers(self: WriterApi, chain: str, rows: list[dict[str, Any]]) -> int:
         """Insert internal-transfer rows into ClickHouse.
 
         Delegates to :func:`lite_indexer.storage.trace_store.write_internal_transfers`,
@@ -111,9 +112,7 @@ class FeaturesMixin:
             return 0
         return _write(client, chain, rows)
 
-    async def write_wallet_features(
-        self, chain: str, events: list[dict[str, Any]]
-    ) -> dict[str, int]:
+    async def write_wallet_features(self: WriterApi, chain: str, events: list[dict[str, Any]]) -> dict[str, int]:
         """Apply wallet-access optimizations for a batch of transfers.
 
         Runs only when the corresponding config flag is enabled:
@@ -175,11 +174,7 @@ class FeaturesMixin:
                 stats["holder_balance_updates"] = balance_updates
 
         # 4. Auto-maintained materialized view (once per process).
-        if (
-            _facade.HOLDER_BALANCES_MV_ENABLED
-            and not self._holder_mv_ready
-            and await ensure_holder_balances_mv(client)
-        ):
+        if _facade.HOLDER_BALANCES_MV_ENABLED and not self._holder_mv_ready and await ensure_holder_balances_mv(client):
             self._holder_mv_ready = True
             stats["holder_balances_mv_ready"] = 1
 

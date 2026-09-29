@@ -18,6 +18,7 @@ from lite_indexer.storage.ch_errors import (
     require_client,
 )
 from lite_indexer.storage.ch_rows import _parse_ts, _resolve_deployer_eoas
+from lite_indexer.storage.writer_api import WriterApi
 
 logger = get_logger(__name__)
 
@@ -45,15 +46,11 @@ def _insert_deployer(
         metrics_incr("clickhouse_errors")
         logger.error(fail_event, chain=chain, rows=len(rows), error=str(exc)[:150])
         if is_unavailable_error(exc):
-            raise ClickHouseUnavailable(
-                f"ClickHouse unreachable during deployer insert (chain={chain})"
-            ) from exc
+            raise ClickHouseUnavailable(f"ClickHouse unreachable during deployer insert (chain={chain})") from exc
         return 0
 
 
-def _deployer_row(
-    chain: str, event: dict[str, Any], eoa_map: dict[str, str], now: datetime
-) -> tuple[Any, ...]:
+def _deployer_row(chain: str, event: dict[str, Any], eoa_map: dict[str, str], now: datetime) -> tuple[Any, ...]:
     """Build one EVM deployer INSERT row.
 
     Correct mapping: deployer ← tx `from` (EOA); token_address ←
@@ -108,7 +105,7 @@ def _solana_deployer_row(chain: str, event: dict[str, Any], now: datetime) -> tu
 class DeployerMixin:
     """``deployer_events`` writes for EVM and Solana strategies."""
 
-    async def write_deployer_events(self, chain: str, events: list[dict[str, Any]]) -> int:
+    async def write_deployer_events(self: WriterApi, chain: str, events: list[dict[str, Any]]) -> int:
         """Insert deployer events into ClickHouse. Returns rows inserted.
 
         F0 data-quality fix — resolves the real deployer EOA via
@@ -142,11 +139,9 @@ class DeployerMixin:
 
         now = datetime.now(UTC)
         rows = [_deployer_row(chain, e, eoa_map, now) for e in events]
-        return _insert_deployer(
-            client, chain, rows, "deployer_events_inserted", "deployer_events_insert_failed"
-        )
+        return _insert_deployer(client, chain, rows, "deployer_events_inserted", "deployer_events_insert_failed")
 
-    async def write_solana_deployer_events(self, chain: str, events: list[dict[str, Any]]) -> int:
+    async def write_solana_deployer_events(self: WriterApi, chain: str, events: list[dict[str, Any]]) -> int:
         """Insert Solana deployer events into ClickHouse. Returns rows inserted.
 
         Solana deployer events are captured structurally by the Solana

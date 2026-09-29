@@ -21,6 +21,7 @@ from lite_indexer.storage.historical_tables import (
     _block_col,
     asyncio_to_thread_with_timeout,
 )
+from lite_indexer.storage.tha_api import ThaApi
 
 logger = get_logger(__name__)
 
@@ -29,7 +30,7 @@ class HistoricalAccessQuery(HistoricalAccessMerge):
     """Unified hot/cold query mixin."""
 
     async def query(
-        self,
+        self: ThaApi,
         table: str,
         chain: str,
         from_block: int | None = None,
@@ -58,17 +59,13 @@ class HistoricalAccessQuery(HistoricalAccessMerge):
         hot_rows: list[dict[str, Any]] = []
         cold_rows: list[dict[str, Any]] = []
         if split.hot:
-            hot_rows = await self._query_hot(
-                table, chain, from_block, to_block, from_time, to_time, where, limit
-            )
+            hot_rows = await self._query_hot(table, chain, from_block, to_block, from_time, to_time, where, limit)
         if split.cold:
-            cold_rows = await self._query_cold(
-                table, chain, from_block, to_block, from_time, to_time, where, limit
-            )
+            cold_rows = await self._query_cold(table, chain, from_block, to_block, from_time, to_time, where, limit)
         return self._smart_merge(table, hot_rows, cold_rows, limit)
 
     async def _query_hot(
-        self,
+        self: ThaApi,
         table: str,
         chain: str,
         from_block: int | None,
@@ -126,7 +123,7 @@ class HistoricalAccessQuery(HistoricalAccessMerge):
         return [dict(zip(names, row, strict=False)) for row in rows]
 
     async def _query_cold(
-        self,
+        self: ThaApi,
         table: str,
         chain: str,
         from_block: int | None,

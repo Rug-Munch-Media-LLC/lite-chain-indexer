@@ -124,9 +124,7 @@ def _sql_lit(value: Any) -> str:
     return str(value)
 
 
-async def asyncio_to_thread_with_timeout(
-    func: Any, timeout: float, *args: Any, **kwargs: Any
-) -> Any:
+async def asyncio_to_thread_with_timeout(func: Any, timeout: float, *args: Any, **kwargs: Any) -> Any:
     """Run a blocking call in a worker thread bounded by ``timeout``.
 
     DuckDB has no cancellable statement timeout, so ``COLD_QUERY_TIMEOUT``
@@ -134,3 +132,22 @@ async def asyncio_to_thread_with_timeout(
     though the worker thread may finish in the background.
     """
     return await asyncio.wait_for(asyncio.to_thread(func, *args, **kwargs), timeout=timeout)
+
+
+# `no_implicit_reexport` is on (mypy strict): every name the sibling THA
+# mixins import from here must be named, or each importer is an attr-defined
+# error. This module is the shared home of the THA per-table metadata and the
+# bounds/split types.
+__all__ = [
+    "_ROW_KEY_COLS",
+    "_SORT_COLS",
+    "_Split",
+    "_TABLE_NAME",
+    "_TABLE_REF",
+    "_UNCLEAN_KEYWORDS",
+    "_VIEW_CHECK_TTL",
+    "_block_col",
+    "_sql_lit",
+    "asyncio_to_thread_with_timeout",
+    "_sort_value",
+]
