@@ -5,7 +5,8 @@ best provider for ``(chain, table)`` and runs the read through the reader that
 matches that provider's kind.
 
 * ``gcp/*``         -> :class:`~lite_indexer.query.bigquery_source.BigQuerySource`
-  (the caller's structured filters are handed over verbatim)
+  (the caller's structured filters are mapped onto a typed
+  :class:`~lite_indexer.query.bigquery_spec.BigQuerySpec`, never splatted)
 * ``s3://`` / other -> the caller's DuckDB/S3 ``_read_raw`` path
 
 Failures and empty reads fall through to the next candidate (bounded).
@@ -19,6 +20,7 @@ from collections.abc import Callable
 from typing import Any
 
 from lite_indexer.logging import get_logger
+from lite_indexer.query.bigquery_spec import BigQuerySpec
 
 logger = get_logger(__name__)
 
@@ -27,6 +29,12 @@ _MAX_LAKE_ATTEMPTS = 3
 
 #: Provider kinds routed to the BigQuery warehouse backend.
 _GCP_PREFIX = "gcp/"
+
+#: Filters the rotation forwards onto the BigQuery spec, in spec-field order.
+#: ``BigQuerySpec`` owns every filter a lake read can carry; a key outside
+#: this set is a caller bug we report rather than silently discard (see
+#: :func:`_spec_for`).
+_ROTATION_FILTER_FIELDS: tuple[str, ...] = ("address", "from_block", "to_block", "dates", "limit")
 
 
 _READ_IMPL: Callable[..., list[dict[str, Any]]] | None = None
@@ -121,4 +129,31 @@ def _read_bigquery(
     backend = bigquery
     if backend is None:
         backend = source if isinstance(source, BigQuerySource) else BigQuerySource(router=source._router())
-    return backend.query(bq_table, chain, **filters)
+    return backend.query(_spec_for(bq_table, chain, filters))
+
+
+def _spec_for(bq_table: str, chain: str, filters: dict[str, Any]) -> BigQuerySpec:
+    """Build the typed spec ``BigQuerySource.query`` accepts.
+
+    ``query(self, spec)`` takes ONE positional argument; splatting ``filters``
+    into it raised ``TypeError`` on every ``gcp/*`` read, which the rotation
+    loop swallowed into an empty page. Fields are therefore picked
+    explicitly: the spec knows ``table``/``chain`` plus every filter, so an
+    unrecognised key is a caller bug we surface by name instead of dropping —
+    silently dropping a narrowing filter would WIDEN a lake read (more rows
+    than asked for) and silently drop a widening one (``limit``) would
+    unbounded-scan the table.
+    """
+    known = set(_ROTATION_FILTER_FIELDS)
+    unknown = sorted(k for k in filters if k not in known)
+    if unknown:
+        raise ValueError(f"unsupported bigquery filter key(s): {unknown} (expected {list(known)})")
+    return BigQuerySpec(
+        table=bq_table,
+        chain=chain,
+        address=filters.get("address"),
+        from_block=filters.get("from_block"),
+        to_block=filters.get("to_block"),
+        dates=list(filters["dates"]) if filters.get("dates") else None,
+        limit=int(filters.get("limit") or BigQuerySpec.limit),
+    )

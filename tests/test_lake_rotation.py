@@ -10,6 +10,7 @@ from typing import Any
 from lite_indexer.lakes.registry import LakeProvider
 from lite_indexer.lakes.router import LakeProviderRouter
 from lite_indexer.query.biglake_rotation import read_with_rotation
+from lite_indexer.query.bigquery_spec import BigQuerySpec
 
 SERVES = frozenset({("eth", "token_transfers")})
 FILTERS: dict[str, Any] = {
@@ -68,15 +69,20 @@ class FakeSource:
 
 
 class FakeBigQuery:
-    """Stand-in for BigQuerySource: records ``query`` args, returns canned rows."""
+    """Stand-in for BigQuerySource: records ``query`` args, returns canned rows.
+
+    Mirrors the REAL ``BigQuerySource.query(self, spec: BigQuerySpec)``. The
+    old fake took ``(table, chain, **filters)`` and therefore agreed with a
+    broken call site, which is how the ``TypeError`` in the gcp leg shipped.
+    """
 
     def __init__(self, rows: list[dict[str, Any]] | None = None, raises: Exception | None = None) -> None:
         self.rows = rows if rows is not None else [{"tx_hash": "0xBQ"}]
         self.raises = raises
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
-    def query(self, table: str, chain: str = "eth", **filters: Any) -> list[dict[str, Any]]:
-        self.calls.append((table, chain, filters))
+    def query(self, spec: BigQuerySpec) -> list[dict[str, Any]]:
+        self.calls.append((spec.table, spec.chain, {k: v for k, v in vars(spec).items() if k in FILTERS}))
         if self.raises is not None:
             raise self.raises
         return self.rows
