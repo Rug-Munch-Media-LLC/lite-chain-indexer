@@ -13,12 +13,13 @@ from typing import Any, cast
 import lite_indexer.rpc.client as _facade
 from lite_indexer.config import RPC_CALL_TIMEOUT, TIMESTAMP_FETCH_TIMEOUT
 from lite_indexer.rpc import status_recorder
+from lite_indexer.rpc.client_mixin_api import MixinApi
 
 
 class BlocksMixin:
     """Small typed wrappers around the single-call path."""
 
-    async def eth_block_number(self, endpoint: str) -> int | None:
+    async def eth_block_number(self: MixinApi, endpoint: str) -> int | None:
         """Get latest block number. Handles empty/malformed responses,
         connection errors and non-hex results (all return None)."""
         result = await self.call(endpoint, "eth_blockNumber")
@@ -35,7 +36,7 @@ class BlocksMixin:
         return height
 
     async def eth_get_block_by_number_with_status(
-        self,
+        self: MixinApi,
         endpoint: str,
         block_number: int,
         full_tx: bool = False,
@@ -103,7 +104,7 @@ class BlocksMixin:
         return None, status
 
     async def eth_get_block_by_number(
-        self,
+        self: MixinApi,
         endpoint: str,
         block_number: int,
         full_tx: bool = False,
@@ -119,7 +120,7 @@ class BlocksMixin:
         block, _ = await self.eth_get_block_by_number_with_status(endpoint, block_number, full_tx, chain=chain, tip=tip)
         return block
 
-    async def eth_get_transaction_receipt(self, endpoint: str, tx_hash: str) -> dict[str, Any] | None:
+    async def eth_get_transaction_receipt(self: MixinApi, endpoint: str, tx_hash: str) -> dict[str, Any] | None:
         """Get a transaction receipt.
 
         Routed to dedicated (API-key) nodes by default — receipts are
@@ -144,7 +145,7 @@ class BlocksMixin:
             return cast(dict[str, Any], result["result"])
         return None
 
-    async def eth_call(self, endpoint: str, to: str, data: str) -> str | None:
+    async def eth_call(self: MixinApi, endpoint: str, to: str, data: str) -> str | None:
         """Execute an eth_call against a contract.
 
         Args:

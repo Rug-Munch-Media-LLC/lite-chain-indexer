@@ -17,6 +17,7 @@ from lite_indexer.config import RPC_CALL_TIMEOUT
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.rpc.batch_chunks import batch_chunks
+from lite_indexer.rpc.client_mixin_api import MixinApi
 from lite_indexer.rpc.jsonparse import decode_response_async
 
 logger = get_logger(__name__)
@@ -60,9 +61,7 @@ async def _match_batch(
             results[idx] = item
             matched += 1
         _facade._safe_record(_facade.record_endpoint_call, endpoint, method)
-        _facade._safe_record(
-            _facade.record_rpc_outcome, endpoint, ok=bool(item and item.get("error") is None)
-        )
+        _facade._safe_record(_facade.record_rpc_outcome, endpoint, ok=bool(item and item.get("error") is None))
     metrics_incr("rpc_batch_calls")
     return matched
 
@@ -71,7 +70,7 @@ class BatchMixin:
     """Batched JSON-RPC dispatch with transparent per-element fallback."""
 
     async def call_batch(
-        self,
+        self: MixinApi,
         endpoint: str,
         calls: list[tuple[str, list[Any] | None]],
         *,
@@ -147,7 +146,7 @@ class BatchMixin:
         return results
 
     async def _post_batch(
-        self,
+        self: MixinApi,
         endpoint: str,
         payload: list[dict[str, Any]],
         method: str,
@@ -164,20 +163,16 @@ class BatchMixin:
             async with _facade.provider_concurrency_slot(account_key):
                 resp = await _facade._post_json(endpoint, payload, timeout)
         record_rpc_response(endpoint, method, resp.status_code, resp.headers)
-        _facade._safe_record(
-            _facade.record_provider_response, endpoint, resp.status_code, resp.headers
-        )
+        _facade._safe_record(_facade.record_provider_response, endpoint, resp.status_code, resp.headers)
         _facade.record_budget_response(endpoint, resp.status_code)
         if resp.status_code == 429:
             _facade.record_rate_limit(endpoint)
-            raise httpx.HTTPStatusError(
-                "batch rate limited", request=httpx.Request("POST", endpoint), response=resp
-            )
+            raise httpx.HTTPStatusError("batch rate limited", request=httpx.Request("POST", endpoint), response=resp)
         resp.raise_for_status()
         return await decode_response_async(resp)
 
     async def _call_batch_fallback(
-        self,
+        self: MixinApi,
         endpoint: str,
         calls: list[tuple[str, list[Any] | None]],
         timeout: float,
@@ -188,9 +183,7 @@ class BatchMixin:
         Elements already resolved in ``existing`` are left untouched, so a
         partial batch only pays for the missing elements.
         """
-        out: list[dict[str, Any] | None] = (
-            list(existing) if existing is not None else [None] * len(calls)
-        )
+        out: list[dict[str, Any] | None] = list(existing) if existing is not None else [None] * len(calls)
         for i, (method, params) in enumerate(calls):
             if out[i] is None:
                 out[i] = await self.call(endpoint, method, params, timeout=timeout)

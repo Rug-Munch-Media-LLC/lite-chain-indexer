@@ -23,6 +23,7 @@ from lite_indexer.rpc.client_logexc import (
     _logs_success,
     _LogsRangeCtx,
 )
+from lite_indexer.rpc.client_mixin_api import MixinApi
 
 logger = get_logger(__name__)
 
@@ -47,14 +48,10 @@ async def _logs_dispatch(writer: Any, ctx: _LogsRangeCtx) -> httpx.Response:
                     client = await writer._get_client()
                     resp = await _facade._post_direct(client, endpoint, ctx.payload, RPC_TIMEOUT)
                 else:
-                    resp = await _facade._post_json(
-                        endpoint, ctx.payload, RPC_TIMEOUT, proxy=ctx.proxy_spec
-                    )
+                    resp = await _facade._post_json(endpoint, ctx.payload, RPC_TIMEOUT, proxy=ctx.proxy_spec)
     finally:
         _facade._safe_record(_facade.decr_in_flight, endpoint)
-    _facade._safe_record(
-        _facade.record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0
-    )
+    _facade._safe_record(_facade.record_rpc_latency, endpoint, (time.perf_counter() - started) * 1000.0)
     record_rpc_response(endpoint, "eth_getLogs", resp.status_code, resp.headers)
     _facade._safe_record(_facade.record_provider_response, endpoint, resp.status_code, resp.headers)
     _facade.record_budget_response(endpoint, resp.status_code)
@@ -93,7 +90,7 @@ class LogRangeMixin:
     """Single-range eth_getLogs fetch used by the range splitter."""
 
     async def _fetch_logs_range(
-        self,
+        self: MixinApi,
         endpoint: str,
         from_block: int,
         to_block: int,

@@ -9,7 +9,7 @@ facade module at call time.
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import Any
 
 import httpx
 
@@ -101,7 +101,7 @@ async def _process_call_response(
             bytes_received=bytes_received,
         )
     _facade._safe_record(_facade.record_rpc_outcome, endpoint, ok=ok)
-    return (False, cast(dict[str, Any], data))
+    return (False, data)
 
 
 def _handle_call_exception(endpoint: str, method: str, exc: BaseException) -> bool:

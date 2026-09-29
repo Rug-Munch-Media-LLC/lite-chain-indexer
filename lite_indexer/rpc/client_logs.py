@@ -17,6 +17,7 @@ from lite_indexer.rpc.client_logs_support import (
     _LogsQuery,
     _verify_and_store,
 )
+from lite_indexer.rpc.client_mixin_api import MixinApi
 
 logger = get_logger(__name__)
 
@@ -25,7 +26,7 @@ class LogsMixin:
     """eth_getLogs orchestration on top of the single/batch call paths."""
 
     async def get_logs(
-        self,
+        self: MixinApi,
         endpoint: str,
         from_block: int,
         to_block: int,
@@ -74,9 +75,7 @@ class LogsMixin:
         from lite_indexer.rpc.range_split import fetch_logs_split
 
         async def _once(child_from: int, child_to: int) -> tuple[str, list[dict[str, Any]] | None]:
-            return await self._fetch_logs_range(
-                endpoint, child_from, child_to, topic, address, max_retries
-            )
+            return await self._fetch_logs_range(endpoint, child_from, child_to, topic, address, max_retries)
 
         async def _many(
             child_ranges: list[tuple[int, int]],
@@ -90,9 +89,7 @@ class LogsMixin:
         return await _verify_and_store(self, query, logs)
 
     @staticmethod
-    def _logs_filter(
-        from_block: int, to_block: int, topic: str, address: str | None
-    ) -> dict[str, Any]:
+    def _logs_filter(from_block: int, to_block: int, topic: str, address: str | None) -> dict[str, Any]:
         """Build one ``eth_getLogs`` filter object for a block range."""
         filter_params: dict[str, Any] = {
             "fromBlock": hex(from_block),
@@ -104,7 +101,7 @@ class LogsMixin:
         return filter_params
 
     async def _fetch_logs_many(
-        self,
+        self: MixinApi,
         endpoint: str,
         ranges: list[tuple[int, int]],
         topic: str,
