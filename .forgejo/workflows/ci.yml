@@ -200,8 +200,17 @@ jobs:
       - name: Install interrogate
         run: pip install interrogate
 
-      - name: Docstring coverage (BLOCKING at 60%)
-        run: interrogate lite_indexer/ --fail-under=60
+      # Scope and threshold corrected 2026-09-29. The previous line was
+      # `interrogate lite_indexer/ --fail-under=60`. Two problems: 60% was
+      # calibrated against nothing (no scope in this repo lands near it), and
+      # the pre-push hook ran a DIFFERENT command (`interrogate .` = 50.1%
+      # because it counted tests/ at 23.5%), so the hook and CI disagreed about
+      # what the gate was. Measured today: lite_indexer/ 87.1%, api/ 95.0%,
+      # tests/ 23.5%. The production surface is what a docstring rule is for,
+      # and 80% is a real constraint the production tree already clears.
+      # Same command in .lefthook.yml (pre-push/interrogate).
+      - name: Docstring coverage (BLOCKING at 80% over production code)
+        run: interrogate lite_indexer/ api/ --fail-under=80
 
 # Append these jobs under `jobs:` in any repo's ci.yml. Self-contained.
   supply-chain:
@@ -218,7 +227,15 @@ jobs:
           curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o /usr/local/bin/osv-scanner && chmod +x /usr/local/bin/osv-scanner
           curl -sSfL https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.0/trufflehog_3.97.0_linux_amd64.tar.gz | tar xz -C /usr/local/bin trufflehog
       - name: OSV dependency scan (hallucinated/vulnerable deps)
-        run: osv-scanner scan source --format table ./ || echo "::warning::OSV findings — triaged baseline, see log"
+        # CORRECTED 2026-09-29. `osv-scanner scan source --format table ./`
+        # exits 128 with "No package sources found" — this repo has zero
+        # lockfiles (no requirements*.txt, package-lock.json, Cargo.lock,
+        # go.mod) for OSV to resolve. The `|| echo "::warning::"` turned a
+        # non-zero exit into a passing step, so this job was green while
+        # scanning nothing. The subject that DOES exist is pyproject.toml, and
+        # it is audited by the `pip-audit` job below, which is blocking.
+        # osv-scanner v2 needs `scan source -r <lockfile>`; there is no lockfile.
+        run: echo "::notice::no lockfile in tree — OSV has no subject; pyproject dependencies are audited by the blocking pip-audit job"
       - name: Trufflehog verified-live secrets (all history)
         run: trufflehog git file://. --only-verified --fail --no-update
 
@@ -231,15 +248,20 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - name: Noseyparker full-history secret hunt
+      # noseyparker scan exits non-zero whenever it finds ANY candidate, and
+      # verified-live secret detection is already a blocking step above
+      # (`trufflehog ... --only-verified --fail`). This step is a second,
+      # broader hunter whose findings must be triaged, so it stays non-blocking
+      # and now says so instead of hiding its exit code behind `|| true`.
+      - name: Noseyparker full-history secret hunt (ADVISORY — triage in logs)
         run: |
           curl -sSfL https://github.com/praetorian-inc/noseyparker/releases/latest/download/noseyparker-v0.24.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
-          ./noseyparker-v0.24.0-x86_64-unknown-linux-gnu/noseyparker scan --git-history-format all . || true
-          ./noseyparker-v0.24.0-x86_64-unknown-linux-gnu/noseyparker report || true
-      - name: Grype vulnerability match on working tree
+          ./noseyparker-v0.24.0-x86_64-unknown-linux-gnu/noseyparker scan --git-history-format all . || echo "::warning::noseyparker candidates — triage required (verified-live is enforced by the trufflehog step)"
+          ./noseyparker-v0.24.0-x86_64-unknown-linux-gnu/noseyparker report || echo "::warning::noseyparker report returned non-zero"
+      - name: Grype vulnerability match on working tree (ADVISORY — CRITICAL only)
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-          grype dir:. --fail-on critical || echo "::warning::critical vulns in tree"
+          grype dir:. --fail-on critical || echo "::warning::grype: critical vulns in tree — not blocking, see log"
 
   # ── SAST + secret scan (added 2026-08-25 — fleet-standard gates) ──
   sast:
@@ -423,8 +445,19 @@ jobs:
           # Base indexer deps + the HTTP/GraphQL api extra = the full
           # runtime surface (excludes storage/vector extras by design).
           pip install -e ".[api]"
-      - name: Run pip-audit (blocking on HIGH/CRITICAL)
-        run: pip-audit --fail-on=high --desc
+      - name: Run pip-audit (BLOCKING — any known vulnerability fails)
+        # CORRECTED 2026-09-29. The previous line was
+        #   pip-audit --fail-on=high --desc
+        # --fail-on does not exist in pip-audit 2.10.1 either, so this job has
+        # been failing at argparse with
+        #   "pip-audit: error: unrecognized arguments: --fail-on=high"
+        # and never audited anything. Correct invocation audits the project's
+        # declared dependencies; run honestly it reports
+        # "No known vulnerabilities found", exit 0.
+        # There is no severity flag in this version, so the whole audit is the
+        # gate — stricter than the "high only" filter it replaced, and there is
+        # nothing to tune to go green. Same command in .lefthook.yml.
+        run: python3 -m pip_audit . --progress-spinner off
 
   # ── Structure gate (BLOCKING) ──────────────────────────────────
   # Firm per-file size policy (≤200 lines; >500 hard fail) with a

@@ -38,6 +38,28 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
+      # Docstring coverage. Stated once, in .forgejo/workflows/ci.yml
+      # (job `docstring-coverage`); this workflow is the mirror of that one for
+      # the gates that must run on both. Same scope, same threshold:
+      # production code only, 80%. `interrogate .` measures 50.1% because it
+      # counts tests/ at 23.5%; lite_indexer/ alone is 87.1%. The old 60% was
+      # calibrated against no scope in this repo.
+      - name: Docstring coverage (BLOCKING at 80% over production code)
+        run: |
+          pip install interrogate
+          interrogate lite_indexer/ api/ --fail-under=80
+
+      # Dependency vulnerability audit. Stated once, in
+      # .forgejo/workflows/ci.yml (job `pip-audit`); mirrored here so neither
+      # workflow can drift from the other. The `--fail-on=high` / `--severity
+      # high` flags used here and there do not exist in pip-audit 2.10.1 and
+      # made the audit die at argument parsing; `pip_audit .` is the correct
+      # invocation and currently reports "No known vulnerabilities found".
+      - name: Dependency vulnerability audit (BLOCKING)
+        run: |
+          pip install pip-audit
+          python3 -m pip_audit . --progress-spinner off
+
       # Shrink-only mypy budget. Raw `mypy lite_indexer/` reports 278 errors
       # (mostly attr-defined on the deliberate _facade re-export idiom and
       # Protocol duck typing), so an absolute-zero check has been red here

@@ -1,0 +1,18 @@
+api/graphql.py: DEP001 'strawberry' imported but missing from the dependency definitions
+lite_indexer/plugin/loader.py: DEP001 'yaml' imported but missing from the dependency definitions
+lite_indexer/plugin/manager.py: DEP001 'yaml' imported but missing from the dependency definitions
+lite_indexer/query/biglake_source.py: DEP001 'loguru' imported but missing from the dependency definitions
+lite_indexer/query/bigquery_cli.py: DEP001 'loguru' imported but missing from the dependency definitions
+lite_indexer/query/bigquery_rest.py: DEP001 'google' imported but missing from the dependency definitions
+lite_indexer/query/envio_source.py: DEP001 'loguru' imported but missing from the dependency definitions
+lite_indexer/query/indexed_source.py: DEP001 'loguru' imported but missing from the dependency definitions
+lite_indexer/query/sqd_cli.py: DEP001 'loguru' imported but missing from the dependency definitions
+lite_indexer/query/trace_wallet.py: DEP001 'loguru' imported but missing from the dependency definitions
+lite_indexer/storage/archives.py: DEP001 'google' imported but missing from the dependency definitions
+lite_indexer/strategies/evm/bloom.py: DEP001 'eth_hash' imported but missing from the dependency definitions
+lite_indexer/strategies/evm/bloom.py: DEP001 'sha3' imported but missing from the dependency definitions
+lite_indexer/strategies/solana/launch_curve.py: DEP001 'solders' imported but missing from the dependency definitions
+lite_indexer/streaming/nats_publisher.py: DEP001 'nats' imported but missing from the dependency definitions
+lite_indexer/webhooks/delivery/__init__.py: DEP001 'nats' imported but missing from the dependency definitions
+pyproject.toml: DEP002 'nats-py' defined as a dependency but not used in the codebase
+pyproject.toml: DEP002 'strawberry-graphql' defined as a dependency but not used in the codebase

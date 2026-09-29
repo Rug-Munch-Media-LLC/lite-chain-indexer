@@ -1,0 +1,1 @@
+lite_indexer/traces/solana/spl.py:37: unused variable 'checked'
