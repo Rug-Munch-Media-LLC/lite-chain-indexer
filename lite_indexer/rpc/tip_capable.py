@@ -23,6 +23,8 @@ probed its pool is still served rather than refused.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc.pool import get_best_endpoint
 
@@ -37,7 +39,7 @@ TIP_HASH_INCAPABLE: dict[str, frozenset[str]] = {
 }
 
 
-def tip_hash_capable_endpoints(chain: str, endpoints: list[str]) -> list[str]:
+def tip_hash_capable_endpoints(chain: str, endpoints: Sequence[str]) -> list[str]:
     """Return ``endpoints`` ordered tip-hash-capable first.
 
     Args:

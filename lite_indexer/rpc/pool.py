@@ -273,7 +273,7 @@ def get_best_endpoint(endpoints: list[str]) -> str:
     Fallthrough: if all endpoints are in cooldown, clear and retry the first.
     """
     now = time.time()
-    from lite_indexer.rpc.cost_tier_map import cost_penalty
+    from lite_indexer.rpc.pool_score import endpoint_score
     from lite_indexer.rpc.routing import (
         STALE_ENDPOINT_PENALTY,
         TIP_FAILURE_PENALTY,
@@ -292,12 +292,10 @@ def get_best_endpoint(endpoints: list[str]) -> str:
         failures = [t for t in _endpoint_failures.get(ep, []) if now - t < ENDPOINT_COOLDOWN]
         _endpoint_failures[ep] = failures
 
-        # COST FIRST: the weight exceeds any list position ``i`` can produce,
-        # so a billable endpoint never wins on being early in the pool — only
-        # on being the last option left. Weights stay under MAX_FAILURES *
-        # 1000 (see rpc/cost_tier_map.py), so this reorders the healthy set
-        # and never excludes an endpoint outright.
-        penalty = len(failures) * 1000 + i + cost_penalty(ep)
+        # COST FIRST: cost outranks list position, so a billable endpoint never
+        # wins on being early, only on being the last option left. See
+        # rpc/pool_score.py: ONE transient failure scores BELOW the cost gap.
+        penalty = endpoint_score(ep, i, len(failures))
 
         # Hard ban: a 403/429 endpoint is provider-blacklisted for a
         # while — skip it entirely, not just deprioritized.
