@@ -51,7 +51,15 @@ async def stage_block_hashes(
         reads succeeded and the caller should compare against the
         checkpoint table.
     """
+    from lite_indexer.rpc.tip_capable import tip_hash_capable_endpoints
     from lite_indexer.strategies.evm.reorg import checkpoint_block, reorg_depth
+
+    # Drop endpoints known to refuse eth_getBlockByNumber before either hash
+    # read. get_best_endpoint() ends in a random P2C draw and does not consult
+    # the capability quarantine, so without this a chain like hyperliquid
+    # stalls in reorg_status_unknown. The verify read is deeper than the tip
+    # read, so it is if anything MORE likely to fall outside a retained window.
+    endpoints = tip_hash_capable_endpoints(chain, endpoints)
 
     tip_hash, unserved = await hash_block_or_fail(rpc, chain, to_block, endpoints)
     if unserved is not None:

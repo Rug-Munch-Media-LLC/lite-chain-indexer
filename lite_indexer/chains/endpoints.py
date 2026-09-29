@@ -451,7 +451,6 @@ CANDIDATE_ENDPOINTS: dict[str, list[str]] = {
     ],
 }
 
-
 # ── Endpoint URL template resolution ───────────────────────────────
 # `${ENV_VAR}` placeholders, ...). They are resolved at import time so the main
 # RPC path never dials dead placeholder URLs. Endpoints whose env var is
@@ -521,6 +520,7 @@ GET_LOGS_ENDPOINTS = {chain: _resolved_endpoints(urls) for chain, urls in GET_LO
 WS_HEAD_ENDPOINTS: dict[str, list[str]] = {
     chain: ws_head_endpoints(chain, _ENDPOINT_OVERLAY) for chain in BUILTIN_ENDPOINTS
 }
+
 
 def last_resort_endpoints(chain: str) -> list[str]:
     """Return the known-good last-resort endpoints for a chain.
