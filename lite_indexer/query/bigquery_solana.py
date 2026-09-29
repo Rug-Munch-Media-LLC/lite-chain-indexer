@@ -3,14 +3,16 @@
 Split out of bigquery_source.py (module size) and parameterised on
 ``BigQuerySpec`` so producers and consumers share one query contract.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
 
+from lite_indexer.query.bigquery_cli import run_bq
 from lite_indexer.query.bigquery_common import ms_to_dt as _ms_to_dt
 from lite_indexer.query.bigquery_spec import BigQuerySpec
-from lite_indexer.query.bigquery_tables import _SOLANA_TABLES, build_query, run_bq
+from lite_indexer.query.bigquery_tables import _SOLANA_TABLES, build_query
 
 
 def query_solana(source: Any, spec: BigQuerySpec) -> list[dict[str, Any]]:
@@ -72,4 +74,3 @@ def map_solana_row(table: str, raw: dict[str, Any]) -> dict[str, Any]:
         "transfer_type": raw.get("transfer_type") or "",
         "ingested_at": ingested,
     }
-

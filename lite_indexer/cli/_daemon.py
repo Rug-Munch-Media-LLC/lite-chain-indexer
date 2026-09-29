@@ -182,9 +182,9 @@ def export_global_metrics() -> None:
     """
     from lite_indexer.chains import GET_LOGS_ENDPOINTS
     from lite_indexer.indexer._resource_guards import get_cgroup_memory_mb, get_process_rss_mb
+    from lite_indexer.rpc import is_endpoint_banned  # facade exports it in __all__
     from lite_indexer.rpc.health import is_endpoint_healthy
     from lite_indexer.rpc.ledger import LEDGER
-    from lite_indexer.rpc.pool import is_endpoint_banned
 
     metrics.set_gauge("lite_indexer_rss_bytes", get_process_rss_mb() * 1024 * 1024)
     metrics.set_gauge("lite_indexer_cgroup_memory_bytes", get_cgroup_memory_mb() * 1024 * 1024)

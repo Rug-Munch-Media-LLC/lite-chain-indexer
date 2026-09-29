@@ -7,12 +7,13 @@ methods by the facade so the public surface is unchanged.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.query.leg_request import LegRequest
 from lite_indexer.query.legs_common import cold_lit
+from lite_indexer.storage.cold_store import ColdStore
 
 logger = get_logger(__name__)
 
@@ -25,8 +26,14 @@ def query_cold(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     if router.cold is None:
         return []
     where = router._build_cold_where(filters)
+    cold = router.cold
     try:
-        return router.cold.query(
+        # router is Any, so router.cold is Any. The router's cold backend is
+        # duck-typed (tests inject a FakeCold that is not a ColdStore), so an
+        # isinstance narrowing here would be a behaviour change, not a typing
+        # fix. Cast to the real ColdStore.query contract instead; the keyword
+        # arguments below are exactly the ones it declares.
+        return cast("ColdStore", cold).query(
             table,
             chain,
             from_block=from_block,

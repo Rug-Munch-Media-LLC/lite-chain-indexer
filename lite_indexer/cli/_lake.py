@@ -6,12 +6,13 @@ import argparse
 import json
 import sys
 
+from lite_indexer.cli._parser_types import SubParsers
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def add_lake_parsers(sub: argparse._SubParsersAction) -> None:
+def add_lake_parsers(sub: SubParsers) -> None:
     """Register the maintenance family subparsers.
 
     The lake/sqd/fill group plus ``orphan-sweep``: both are read-first
@@ -27,7 +28,7 @@ def add_lake_parsers(sub: argparse._SubParsersAction) -> None:
     add_orphan_sweep_parser(sub)
 
 
-def _add_sqd_parser(sub: argparse._SubParsersAction) -> None:
+def _add_sqd_parser(sub: SubParsers) -> None:
     """Register sqd-fill — near-live block-range hole fill from the SQD portal."""
     sqd = sub.add_parser(
         "sqd-fill",
@@ -62,7 +63,7 @@ def run_sqd_fill(args: argparse.Namespace) -> int:
     return 0
 
 
-def _add_backfill_parser(sub: argparse._SubParsersAction) -> None:
+def _add_backfill_parser(sub: SubParsers) -> None:
     """Register lake-backfill — bulk history from the free sonarx lake, never RPC."""
     lake_parser = sub.add_parser(
         "lake-backfill",
@@ -82,7 +83,7 @@ def _add_backfill_parser(sub: argparse._SubParsersAction) -> None:
     lake_parser.add_argument("--dry-run", action="store_true", help="Count rows per partition without writing")
 
 
-def _add_gaps_parser(sub: argparse._SubParsersAction) -> None:
+def _add_gaps_parser(sub: SubParsers) -> None:
     """Register lake-gaps — auto-detect (chain, date) partitions missing in CH."""
     gaps = sub.add_parser(
         "lake-gaps",
@@ -98,7 +99,7 @@ def _add_gaps_parser(sub: argparse._SubParsersAction) -> None:
     gaps.add_argument("--fill", action="store_true", help="Backfill the detected gaps from the lake")
 
 
-def _add_fill_solana_parser(sub: argparse._SubParsersAction) -> None:
+def _add_fill_solana_parser(sub: SubParsers) -> None:
     """Register fill-solana — BigLake (BigQuery public solana) gap fill."""
     fill = sub.add_parser(
         "fill-solana",
@@ -114,19 +115,19 @@ def _add_fill_solana_parser(sub: argparse._SubParsersAction) -> None:
     fill.add_argument("--max-rows", type=int, default=200_000, help="Hard stop across the run (default: 200000)")
     fill.add_argument("--batch-rows", type=int, default=5000, help="Rows per write batch (default: 5000)")
     fill.add_argument("--mint", action="append", default=[], help="Optional mint filter (repeatable)")
-    fill.add_argument("--max-scan-gib", type=float, default=60.0,
-                      help="Refuse runs whose estimated scan exceeds this (default 60)")
+    fill.add_argument(
+        "--max-scan-gib", type=float, default=60.0, help="Refuse runs whose estimated scan exceeds this (default 60)"
+    )
     fill.add_argument("--force-budget", action="store_true", help="Override the scan-budget guard")
-    fill.add_argument("--estimate", action="store_true",
-                      help="FREE dryRun price-check (REST transport); makes no writes")
-    fill.add_argument("--until-ts", default=None,
-                      help="Drop fetched rows newer than this ISO ts (surgical hole fills)")
-    fill.add_argument("--since-ts", default=None,
-                      help="Drop fetched rows older than this ISO ts (surgical resume fills)")
+    fill.add_argument(
+        "--estimate", action="store_true", help="FREE dryRun price-check (REST transport); makes no writes"
+    )
+    fill.add_argument("--until-ts", default=None, help="Drop fetched rows newer than this ISO ts (surgical hole fills)")
+    fill.add_argument(
+        "--since-ts", default=None, help="Drop fetched rows older than this ISO ts (surgical resume fills)"
+    )
     fill.add_argument("--force", action="store_true", help="Write even for dates CH already covers")
     fill.add_argument("--dry-run", action="store_true", help="Count rows without writing")
-
-
 
 
 def run_lake_command(args: argparse.Namespace) -> int:

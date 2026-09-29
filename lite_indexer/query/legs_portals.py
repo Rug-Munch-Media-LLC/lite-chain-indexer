@@ -9,7 +9,8 @@ unchanged.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
@@ -18,6 +19,13 @@ from lite_indexer.query.leg_request import LegRequest
 from lite_indexer.query.sqd_source import SQDSource
 
 logger = get_logger(__name__)
+
+#: ``router._filter_rows`` is a read off ``router: Any``. It is bound from
+#: ``legs_lake.filter_rows`` (a staticmethod on the router), whose contract is
+#: ``(table, rows, filters) -> list[dict[str, Any]]``. Naming it once here is
+#: what lets every leg below return a real ``list[dict[str, Any]]`` instead of
+#: passing Any straight through to the caller.
+FilterRows = Callable[[str, list[dict[str, Any]], "dict[str, Any] | list[dict[str, Any]] | None"], list[dict[str, Any]]]
 
 
 async def envio_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
@@ -43,7 +51,7 @@ async def envio_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
         logger.warning("envio_route_failed", error=str(exc)[:120])
         return []
-    filtered = router._filter_rows(table, rows, filters)
+    filtered = cast("FilterRows", router._filter_rows)(table, rows, filters)
     if filtered:
         metrics_incr("envio_routes")
     return filtered
@@ -82,7 +90,7 @@ async def indexed_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
         logger.warning("indexed_route_failed", error=str(exc)[:120])
         return []
-    filtered = router._filter_rows(table, rows, filters)
+    filtered = cast("FilterRows", router._filter_rows)(table, rows, filters)
     if filtered:
         metrics_incr("indexed_routes")
     return filtered
@@ -107,7 +115,7 @@ async def sqd_traces_route(router: Any, req: LegRequest) -> list[dict[str, Any]]
     except Exception as exc:  # noqa: BLE001 — tier failures must not break routing
         logger.warning("sqd_traces_route_failed", error=str(exc)[:120])
         return []
-    filtered = router._filter_rows(table, rows, filters)
+    filtered = cast("FilterRows", router._filter_rows)(table, rows, filters)
     if filtered:
         metrics_incr("sqd_traces_routes")
     return filtered

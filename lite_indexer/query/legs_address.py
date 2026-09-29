@@ -8,7 +8,8 @@ methods by the facade so the public surface is unchanged.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 from lite_indexer.config import CH_ADDRESS_ACTIVITY_TABLE
 from lite_indexer.logging import get_logger
@@ -23,7 +24,11 @@ def get_backfill(router: Any) -> AddressBackfill:
     """Return the shared :class:`AddressBackfill` (lazily constructed)."""
     if router._backfill is None:
         router._backfill = AddressBackfill(ch_client_factory=router._ch_client)
-    return router._backfill
+    # The leg functions take ``router: Any`` (they are bound as QueryRouter
+    # methods), so every attribute read off it is Any. QueryRouter.__init__
+    # types this field ``AddressBackfill | None`` and constructs the fallback
+    # above, so the value really is an AddressBackfill by the time it leaves.
+    return cast("AddressBackfill", router._backfill)
 
 
 def query_address_activity(router: Any, chain: str, address: str, limit: int) -> list[dict[str, Any]]:
@@ -63,7 +68,12 @@ async def backfill_address(
     never raises.
     """
     try:
-        return await router._get_backfill().backfill_address(address, chain=chain, force=force, max_tx=max_tx)
+        # router is Any, so the awaited backfill_address() is Any too; the
+        # attribute is AddressBackfill.backfill_address, which is declared to
+        # return BackfillResult.
+        return await cast("AddressBackfill", router._get_backfill()).backfill_address(
+            address, chain=chain, force=force, max_tx=max_tx
+        )
     except Exception as exc:  # noqa: BLE001 — backfill is best-effort
         logger.warning(
             "ondemand_backfill_failed",
@@ -96,7 +106,12 @@ async def get_address_activity(
     # is a local ClickHouse read, but the failure mode is identical to the
     # lake legs, so it gets the same treatment.
     capped = reject_oversize_limit(limit or router.limit_default)
-    rows = await asyncio.to_thread(router._query_address_activity, chain, addr, capped)
+    # asyncio.to_thread is typed as returning the fn's return type, but the fn
+    # here is an attribute read off `router: Any`, so it degrades to Any.
+    # _query_address_activity is legs_address.query_address_activity, declared
+    # to return list[dict[str, Any]]; the cast names that contract.
+    query_activity = cast("Callable[[str, str, int], list[dict[str, Any]]]", router._query_address_activity)
+    rows = await asyncio.to_thread(query_activity, chain, addr, capped)
     if rows or not router.on_demand_enabled:
         return rows
     try:
@@ -104,4 +119,4 @@ async def get_address_activity(
     except Exception as exc:  # noqa: BLE001 — lazy backfill must not break reads
         logger.warning("ondemand_lazy_backfill_failed", chain=chain, error=str(exc)[:120])
         return rows
-    return await asyncio.to_thread(router._query_address_activity, chain, addr, capped)
+    return await asyncio.to_thread(query_activity, chain, addr, capped)

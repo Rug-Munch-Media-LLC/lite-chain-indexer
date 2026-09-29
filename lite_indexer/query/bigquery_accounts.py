@@ -8,6 +8,7 @@ until the next calendar month (the free tier resets monthly) and skipped;
 healthy accounts rotate least-recently-used. Google is a *fallback* bulk
 source — quota exhaustion must never be silent.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,12 +17,18 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
 
 DEFAULT_STATE = "/var/data/chain-indexer/state/bigquery_accounts.json"
+
+#: Persisted quota registry: GCP project -> per-project rotation state.
+#: The inner dict is written by :func:`mark_used` / :func:`mark_exhausted`
+#: and only those keys are read back, so the value type stays open.
+_State = dict[str, dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -41,10 +48,12 @@ def load_accounts() -> list[BqAccount]:
             return [BqAccount(str(e["project"]), e.get("creds")) for e in parsed if e.get("project")]
         except (ValueError, KeyError, TypeError) as exc:
             logger.warning("bigquery_accounts_bad_json", error=str(exc)[:120])
-    accounts = [BqAccount(
-        os.environ.get("BIGQUERY_PROJECT_ID") or "gen-lang-client-0708984505",
-        os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
-    )]
+    accounts = [
+        BqAccount(
+            os.environ.get("BIGQUERY_PROJECT_ID") or "gen-lang-client-0708984505",
+            os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"),
+        )
+    ]
     alt = os.environ.get("BIGQUERY_ALT_PROJECT_ID")
     if alt:
         accounts.append(BqAccount(alt, os.environ.get("BIGQUERY_ALT_CREDENTIALS")))
@@ -55,15 +64,24 @@ def _state_path() -> Path:
     return Path(os.environ.get("BIGQUERY_STATE_FILE") or DEFAULT_STATE)
 
 
-def _load_state() -> dict:
+def _load_state() -> _State:
     try:
-        return json.loads(_state_path().read_text())
+        raw = json.loads(_state_path().read_text())
     except (OSError, ValueError) as exc:
         logger.debug("bigquery_state_unreadable", error=str(exc)[:100])
         return {}
+    # json.loads returns Any. The file is written by _save_state, but it is
+    # operator-editable (BIGQUERY_STATE_FILE), so a corrupt or hand-edited
+    # file can hold anything: narrow for real instead of casting. A non-dict
+    # top level means the whole registry is unusable -> start clean, which is
+    # the same outcome as an unreadable file.
+    if not isinstance(raw, dict):
+        logger.warning("bigquery_state_malformed", kind=type(raw).__name__)
+        return {}
+    return {str(k): v for k, v in raw.items() if isinstance(v, dict)}
 
 
-def _save_state(state: dict) -> None:
+def _save_state(state: _State) -> None:
     path = _state_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
