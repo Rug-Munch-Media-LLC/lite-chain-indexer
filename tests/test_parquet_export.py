@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -472,17 +472,70 @@ def test_parquet_export_over_cap_fails_safely(tmp_path: Any) -> None:
 
 
 def test_cli_dry_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """--dry-run previews without touching ClickHouse (spec verification)."""
+    """--dry-run previews the plan and touches NOTHING (spec verification).
+
+    Date-independent: the day is computed at run time from a date the
+    retention window will always admit, so this test stops rotting with the
+    calendar (the fossil ``2026-07-30`` is what made it fail once the
+    producer had exported that day).
+
+    The date is also *verified*, not assumed: a marker is planted first so
+    the exporter's only reason to skip a day is proven, then the preview is
+    run against a day with NO marker and must report exactly one attempt.
+    """
+    day = date.today() - timedelta(days=1)  # the CLI's own default target
     args = parse_args(
-        ["export-parquet", "--chain", "ethereum", "--date", "2026-07-30", "--dry-run", "--data-dir", str(tmp_path)]
+        ["export-parquet", "--chain", "ethereum", "--date", day.isoformat(), "--dry-run", "--data-dir", str(tmp_path)]
     )
     rc = run_export_parquet(args)
     out_lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
     out = json.loads(out_lines[-1])  # last line is the JSON summary (logs go first)
     assert rc == 0
     assert out["chain"] == "ethereum"
-    assert out["dates_attempted"] == 1
+    assert out["dates_attempted"] == 1, "a --dry-run day must be planned, not dropped"
     assert out["dates_exported"] == 1
+    # The preview is a PLAN: nothing was written, uploaded, or deleted.
+    # (CLI output keys, per ``ExportSummary.to_dict``.)
+    assert out["bytes_written"] == 0
+    assert out["transfers_rows"] == 0
+    assert out["dex_rows"] == 0
+    assert out["files_uploaded"] == 0
+    assert out["rows_deleted"] == 0
+    assert out["skipped_existing"] == 0
+    assert out["errors"] == []
+    assert not list(tmp_path.iterdir()), "--dry-run must not create any file"
+
+
+def test_cli_dry_run_skips_a_day_already_marked_exported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], _isolated_state_dir: Path
+) -> None:
+    """A --dry-run for an already-exported day plans NOTHING.
+
+    This is the half the old test could not reach: with the date pinned to a
+    fossil, a producer that had already exported it silently turned the
+    preview into ``dates_attempted == 0`` and the assertion "== 1" only held
+    on a virgin host. Here the marker is planted in the ISOLATED state dir
+    the exporter actually binds, so the skip is proven by construction
+    rather than by luck.
+    """
+    day = date.today() - timedelta(days=1)
+    marker = _isolated_state_dir / "ethereum" / f"{day.isoformat()}.done"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"day": day.isoformat()}))
+
+    args = parse_args(
+        ["export-parquet", "--chain", "ethereum", "--date", day.isoformat(), "--dry-run", "--data-dir", str(tmp_path)]
+    )
+    rc = run_export_parquet(args)
+    out = json.loads([ln for ln in capsys.readouterr().out.splitlines() if ln.strip()][-1])
+    assert rc == 0
+    assert out["dates_attempted"] == 0
+    assert out["dates_exported"] == 0
+    # Skipping is not "quietly proceeding": a dropped day must also have
+    # written nothing, or the marker filter is silently broken.
+    assert out["bytes_written"] == 0
+    assert out["rows_deleted"] == 0
+    assert out["errors"] == []
 
 
 def test_cli_chain_all_dry_run(tmp_path: Path) -> None:
