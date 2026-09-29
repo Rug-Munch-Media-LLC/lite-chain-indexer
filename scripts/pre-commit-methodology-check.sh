@@ -101,13 +101,37 @@ if [ -z "$STAGED_FILES" ]; then
     exit 0
 fi
 
+# Scan the ADDED LINES of each staged file, not the whole file.
+#
+# Scanning whole files meant any pre-existing, already-reviewed literal froze
+# its file permanently: a guard that exists to PREVENT leaks was preventing the
+# fix for one. tests/test_logging_redaction.py carried a /srv/secrets/... path
+# at line 98, so the real Infura key fix in the same file could not be
+# committed at all. A leak is what you ADD; text that was already reviewed and
+# merged is not a new leak.
+#
+# A file with no HEAD (a new or staged-only file) is scanned whole, because all
+# of its content is new.
+added_lines() {
+    git diff --cached --unified=0 --no-color -- "$1" 2>/dev/null \
+        | grep '^+' \
+        | grep -v '^+++' \
+        || true
+}
+
 for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
     while IFS= read -r file; do
         [ -n "$file" ] || continue
         is_exempt "$file" && continue
         [ -f "$file" ] || continue
-        if grep -lqE -- "$pattern" "$file" 2>/dev/null; then
-            echo "❌ FORBIDDEN PATTERN MATCH in $file"
+        if git cat-file -e ":$file" 2>/dev/null && git rev-parse --verify -q HEAD >/dev/null; then
+            haystack="$(added_lines "$file")"
+        else
+            haystack="$(cat -- "$file")"
+        fi
+        [ -n "$haystack" ] || continue
+        if printf '%s\n' "$haystack" | grep -qE -- "$pattern"; then
+            echo "❌ FORBIDDEN PATTERN MATCH in $file (added lines)"
             echo "   (pattern withheld - see .methodology-patterns; it is an"
             echo "    internal-infrastructure guard, not reproduced here)"
             FOUND=1

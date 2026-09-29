@@ -41,11 +41,25 @@ def test_userinfo_redacted():
     assert "://***@" in d["url"]
 
 
+# The key below is SHAPED like a 32-hex provider path key so the redaction
+# pattern is genuinely exercised, but it is all zeros and therefore verifies
+# against no service. The previous value was a real Infura path key that
+# verified against the live Infura API — a live third-party credential
+# committed to a public repo purely as test bait. trufflehog-verified flagged
+# it once that gate was made to actually run (it had been structurally dead:
+# `git rev-parse @{u}` fails on a detached worktree, so the scan never
+# executed). A placeholder that verifies against a real service is
+# indistinguishable, to a scanner and to an attacker, from a live key.
+# If a value here ever was a real credential, rotate it — removing it from
+# this file does NOT remove it from git history.
+_TEST_ONLY_PLACEHOLDER_KEY = "0" * 32
+
+
 def test_infura_and_blockpi_style_redacted():
     assert (
-        "aed9e73cca9c462999d6649460e30047"
+        "00000000000000000000000000000000"
         not in redact_secrets(
-            None, "info", {"endpoint": "https://mainnet.infura.io/v3/aed9e73cca9c462999d6649460e30047"}
+            None, "info", {"endpoint": "https://mainnet.infura.io/v3/00000000000000000000000000000000"}
         )["endpoint"]
     )
     assert (
@@ -81,7 +95,7 @@ def test_list_valued_endpoints_redacted():
 
 def test_filesystem_path_not_mangled():
     """Only URL path segments are masked; ordinary paths stay readable."""
-    p = "/srv/secrets/lite-indexer-endpoints.json"
+    p = "/srv/[INTERNAL_DATA_DIR]/lite-indexer-endpoints.json"
     assert redact_secrets(None, "debug", {"path": p})["path"] == p
 
 

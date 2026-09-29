@@ -7,6 +7,7 @@ result pages are served from the job's cached results — free. It also
 exposes the free ``dryRun`` byte estimator so fills can be priced BEFORE
 they spend anything.
 """
+
 from __future__ import annotations
 
 import os
@@ -46,7 +47,11 @@ def _token(creds_path: str | None) -> str:
     from google.auth.transport.requests import Request
     from google.oauth2 import service_account
 
-    path = creds_path or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or "/srv/secrets/gcp-biglake-sa.json"
+    # No fleet path literal: the credential is provisioned to the host by
+    # GOOGLE_APPLICATION_CREDENTIALS and mirrored in gopass (gcp/biglake-sa).
+    path = creds_path or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or ""
+    if not path:
+        raise RuntimeError("no BigQuery credentials: set GOOGLE_APPLICATION_CREDENTIALS to a service-account JSON")
     cached = _TOKEN_CACHE.get(path)
     if cached and cached[1] - 60 > time.time():
         return str(cached[0].token)
@@ -59,14 +64,14 @@ def _token(creds_path: str | None) -> str:
     return str(creds.token)
 
 
-def _http(method: str, url: str, *, token: str, params: dict[str, Any] | None = None,
-          payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def _http(
+    method: str, url: str, *, token: str, params: dict[str, Any] | None = None, payload: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """One REST call; quota rejections become BigQueryQuotaError."""
     if _TRANSPORT is not None:
         return _TRANSPORT(method, url, token=token, params=params, payload=payload)
     with httpx.Client(timeout=180) as client:
-        resp = client.request(method, url, params=params, json=payload,
-                              headers={"Authorization": f"Bearer {token}"})
+        resp = client.request(method, url, params=params, json=payload, headers={"Authorization": f"Bearer {token}"})
     if resp.status_code >= 400:
         detail = resp.text[:300]
         if is_quota_error(detail):
@@ -79,7 +84,7 @@ def _param_spec(entry: tuple[str, str, Any]) -> dict[str, Any]:
     """(name, type, value) -> jobs.query queryParameters entry."""
     name, typ, value = entry
     if typ.startswith("ARRAY<") and typ.endswith(">"):
-        inner = typ[len("ARRAY<"):-1]
+        inner = typ[len("ARRAY<") : -1]
         return {
             "name": name,
             "parameterType": {"type": "ARRAY", "arrayType": {"type": inner}},
@@ -101,19 +106,29 @@ def _rows_of(resp: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def estimate_scan_bytes(sql: str, params: list[tuple[str, str, Any]], *, project: str,
-                        creds_path: str | None = None) -> int:
+def estimate_scan_bytes(
+    sql: str, params: list[tuple[str, str, Any]], *, project: str, creds_path: str | None = None
+) -> int:
     """FREE dryRun: exact bytes this query would scan, without scanning."""
     body = {
-        "query": sql, "useLegacySql": False, "dryRun": True,
-        "parameterMode": "NAMED", "queryParameters": [_param_spec(p) for p in params],
+        "query": sql,
+        "useLegacySql": False,
+        "dryRun": True,
+        "parameterMode": "NAMED",
+        "queryParameters": [_param_spec(p) for p in params],
     }
     resp = _http("POST", f"{_API}/projects/{project}/queries", token=_token(creds_path), payload=body)
     return int(resp.get("totalBytesProcessed") or 0)
 
 
-def stream_query(sql: str, params: list[tuple[str, str, Any]], *, project: str,
-                 creds_path: str | None = None, page_size: int = 50_000) -> Iterator[list[dict[str, Any]]]:
+def stream_query(
+    sql: str,
+    params: list[tuple[str, str, Any]],
+    *,
+    project: str,
+    creds_path: str | None = None,
+    page_size: int = 50_000,
+) -> Iterator[list[dict[str, Any]]]:
     """Yield pages of ONE query job — result pages never re-scan.
 
     Pages are walked by ``startIndex`` against the job's ``totalRows``
@@ -121,9 +136,12 @@ def stream_query(sql: str, params: list[tuple[str, str, Any]], *, project: str,
     only the first page costs a partition scan).
     """
     body = {
-        "query": sql, "useLegacySql": False, "parameterMode": "NAMED",
+        "query": sql,
+        "useLegacySql": False,
+        "parameterMode": "NAMED",
         "queryParameters": [_param_spec(p) for p in params],
-        "maxResults": page_size, "timeoutMs": 120_000,
+        "maxResults": page_size,
+        "timeoutMs": 120_000,
     }
     token = _token(creds_path)
     resp = _http("POST", f"{_API}/projects/{project}/queries", token=token, payload=body)
@@ -134,8 +152,12 @@ def stream_query(sql: str, params: list[tuple[str, str, Any]], *, project: str,
     while not resp.get("jobComplete", True) and waited < 300:
         time.sleep(2)
         waited += 2
-        resp = _http("GET", f"{_API}/projects/{project}/queries/{job_id}", token=token,
-                     params={"location": location, "maxResults": page_size})
+        resp = _http(
+            "GET",
+            f"{_API}/projects/{project}/queries/{job_id}",
+            token=token,
+            params={"location": location, "maxResults": page_size},
+        )
     total = int(resp.get("totalRows") or 0)
     fetched = 0
     for _page in range(500):  # safety cap; each page is a free cached-result read
@@ -148,6 +170,10 @@ def stream_query(sql: str, params: list[tuple[str, str, Any]], *, project: str,
             break
         # totalRows is not guaranteed on every response — keep walking by
         # startIndex until a page comes back empty.
-        resp = _http("GET", f"{_API}/projects/{project}/queries/{job_id}", token=token,
-                     params={"startIndex": fetched, "maxResults": page_size, "location": location})
+        resp = _http(
+            "GET",
+            f"{_API}/projects/{project}/queries/{job_id}",
+            token=token,
+            params={"startIndex": fetched, "maxResults": page_size, "location": location},
+        )
     logger.debug("bigquery_rest_stream_done", fetched=fetched, total=total)

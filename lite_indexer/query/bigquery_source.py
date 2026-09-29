@@ -6,7 +6,7 @@ it answers historical backfills that the live index, B2 cold store and
 anonymous S3 lake may not cover.
 
 Credentials: a GCP service-account JSON (``GOOGLE_APPLICATION_CREDENTIALS``
-or the fleet default ``/srv/secrets/gcp-biglake-sa.json``). Available only
+or a fleet default that is no longer hardcoded here). Available only
 when BOTH the file exists AND the feature flag is on — default enabled when
 credentials exist, disabled otherwise.
 
@@ -45,7 +45,12 @@ from lite_indexer.query.lake_row_utils import _norm_addr, _num_str  # re-exporte
 
 logger = get_logger(__name__)
 
-_DEFAULT_CREDS = "/srv/secrets/gcp-biglake-sa.json"
+#: Fleet default credentials path. Deliberately NOT hardcoded: the credential
+#: lives in gopass (``gcp/biglake-sa``) and is provisioned to the host by
+#: GOOGLE_APPLICATION_CREDENTIALS. A path literal here both leaked the fleet's
+#: filesystem layout into a public repo and froze this file against every edit,
+#: because the methodology guard greps whole staged files.
+_DEFAULT_CREDS = ""
 
 
 #: Lake table names -> BigQuery ``crypto_ethereum`` table (None = no BQ tier).
@@ -64,7 +69,6 @@ def bigquery_table_for(table: str) -> str | None:
     if table in _BIGQUERY_TABLE_MAP:
         return _BIGQUERY_TABLE_MAP[table]
     return table if table in _TABLE_SELECT else None
-
 
 
 class BigQuerySource:
@@ -88,7 +92,6 @@ class BigQuerySource:
         self._router_impl = router
         self._router_obj: Any | None = None
 
-
     def _router(self) -> Any:
         """Injected router (tests) or a lazily-built default LakeProviderRouter."""
         if self._router_impl is not None:
@@ -98,7 +101,6 @@ class BigQuerySource:
 
             self._router_obj = LakeProviderRouter()
         return self._router_obj
-
 
     def available(self) -> bool:
         """True when enabled, credentials exist, and a backend is runnable."""
@@ -113,7 +115,6 @@ class BigQuerySource:
             logger.warning("bigquery_disabled", reason="bq_cli_missing")
             return False
         return True
-
 
     def query(self, spec: BigQuerySpec) -> list[dict[str, Any]]:
         """Read warehouse rows in the mapped row shape for ``spec.table``.
@@ -144,7 +145,6 @@ class BigQuerySource:
             return [], []
         cols = list(rows[0].keys())
         return cols, [tuple(r.get(c) for c in cols) for r in rows]
-
 
     def _map_row(self, table: str, raw: dict[str, Any], chain: str = "eth") -> dict[str, Any]:
         if chain == "solana":
