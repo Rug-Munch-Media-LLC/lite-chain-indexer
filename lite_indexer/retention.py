@@ -1,8 +1,7 @@
 """Hot/cold retention enforcement + drift detection.
 
 Single source of truth is :data:`lite_indexer.config.RETENTION_POLICY`
-(mirrored by ``migrations/021_retention_classes.sql`` and documented in
-``docs/CLICKHOUSE_RETENTION.md``).
+(mirrored by ``migrations/021_retentiLICKHOUSE_RETENTION.md``).
 
 * :func:`ensure_retention_policies` — idempotently applies the table-level
   ``MODIFY TTL`` for every policy table that exists, so a fresh deployment
@@ -56,7 +55,7 @@ class DriftRow:
     expected_column: str
     expected_days: int
     ok: bool
-    status: str  # ok | drift | no-ttl | absent
+    status: str  # ok | drift | no-ttl | absent | indeterminate
     actual_column: str = ""
     actual_days: int | None = None
 
@@ -98,10 +97,27 @@ def parse_live_ttl(ddl: str) -> tuple[str, int] | None:
 def evaluate_drift(live: Mapping[str, str]) -> list[DriftRow]:
     """Diff live DDLs (``table -> engine_full``) against the policy.
 
-    Tables absent from ``live`` are reported as ``absent`` and are **not**
-    drift: a fresh deployment legitimately lacks them, and the runtime
+    Tables absent from a NON-EMPTY ``live`` are reported as ``absent`` and are
+    **not** drift: a fresh deployment legitimately lacks them, and the runtime
     ``ensure_*`` DDL (or migration 013) creates them with the policy TTL.
+
+    An EMPTY ``live`` is a different thing entirely and is reported
+    ``indeterminate``: a zero-row read is indistinguishable from a wrong
+    database, a filtered query or a degraded connection, and scoring that as
+    "10/10 tables absent, all fine" reports success having measured nothing.
+    The same shape as a check that exits 0 without running.
     """
+    if not live:
+        return [
+            DriftRow(
+                table=table,
+                expected_column=RETENTION_POLICY[table].time_column,
+                expected_days=RETENTION_POLICY[table].days,
+                ok=False,
+                status="indeterminate",
+            )
+            for table in sorted(RETENTION_POLICY)
+        ]
     rows: list[DriftRow] = []
     for table in sorted(RETENTION_POLICY):
         rule = RETENTION_POLICY[table]
@@ -143,51 +159,6 @@ def fetch_live_ttls(client: Any, database: str = CH_DATABASE) -> dict[str, str]:
     return live
 
 
-def ensure_retention_policies(client: Any, database: str = CH_DATABASE) -> list[str]:
-    """Idempotently apply table-level TTLs for every existing policy table.
-
-    Non-fatal: a missing table or insufficient privileges degrades to a debug
-    log so a startup cycle never breaks on retention DDL.
-
-    Returns:
-        The tables whose ``MODIFY TTL`` succeeded.
-    """
-    try:
-        result = client.execute(
-            "SELECT name FROM system.tables WHERE database = %(db)s AND name IN %(tables)s",
-            {"db": database, "tables": tuple(sorted(RETENTION_POLICY))},
-        )
-        existing = {str(r[0]) for r in result}
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("retention_table_probe_failed", error=str(exc)[:80])
-        return []
-    # Compare against the LIVE TTL first: an unconditional MODIFY TTL is a
-    # metadata mutation on tables of 10s-100s of GiB, and this function is
-    # called from the write path (ch_dex.py / ch_transfers.py). Measured
-    # 2026-09-23: 218 identical ALTERs per table per 30 min saturated the
-    # ext4 journal and wedged dockerd. Only ALTER on real drift.
-    try:
-        live = fetch_live_ttls(client, database)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("retention_live_ttl_probe_failed", error=str(exc)[:80])
-        live = {}
-    applied: list[str] = []
-    for table in sorted(existing):
-        rule = RETENTION_POLICY.get(table)
-        if rule is None:
-            continue
-        parsed = parse_live_ttl(live[table]) if live.get(table) else None
-        if parsed is not None and parsed[0] == rule.time_column and parsed[1] == rule.days:
-            continue  # already matches the policy — no ALTER, no mutation
-        try:
-            client.execute(f"ALTER TABLE {database}.{table} MODIFY TTL {ttl_expression(rule)}")
-            applied.append(table)
-            logger.info("retention_ttl_applied", table=table, days=rule.days, column=rule.time_column)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("retention_ttl_skip", table=table, error=str(exc)[:80])
-    return applied
-
-
 def format_report(rows: list[DriftRow]) -> str:
     """Render the drift comparison as a fixed-width text table."""
     lines = [f"{'TABLE':<22} {'STATUS':<8} {'EXPECTED':<34} ACTUAL"]
@@ -200,6 +171,7 @@ def format_report(rows: list[DriftRow]) -> str:
 
 # CLI half — the process entry point lives in retention_cli (size ratchet);
 # re-exported so ``from lite_indexer.retention import main`` keeps working.
+from lite_indexer.retention_apply import ensure_retention_policies  # noqa: E402
 from lite_indexer.retention_cli import _connect, main  # noqa: E402
 
 __all__ = [

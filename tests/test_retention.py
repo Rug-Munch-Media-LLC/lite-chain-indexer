@@ -155,9 +155,18 @@ def test_evaluate_drift_reports_missing_ttl() -> None:
 
 
 def test_evaluate_drift_absent_is_not_drift() -> None:
-    rows = evaluate_drift({})
-    assert all(r.status == "absent" and r.ok for r in rows)
-    assert format_report(rows).count("absent") == len(RETENTION_POLICY)
+    # A genuinely fresh deployment has SOME tables present and the rest absent.
+    # Absent is not drift — that part of the original contract was right.
+    # (A fully EMPTY read is a different case and is indeterminate; see
+    # tests/test_retention_gate.py.)
+    table = "evm_transfers"
+    rule = RETENTION_POLICY[table]
+    live = {table: f"TTL {rule.time_column} + toIntervalDay({rule.days})"}
+    rows = evaluate_drift(live)
+    assert [r.status for r in rows if r.table == table] == ["ok"]
+    absent = [r for r in rows if r.status == "absent"]
+    assert absent and all(r.ok for r in absent)
+    assert format_report(rows).count("absent") == len(RETENTION_POLICY) - 1
 
 
 # ── runtime enforcement ───────────────────────────────────────────────
@@ -185,9 +194,13 @@ def test_ensure_retention_probe_failure_returns_empty() -> None:
 # ── CLI ───────────────────────────────────────────────────────────────
 
 
-def test_main_skips_when_ch_unavailable(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_is_indeterminate_when_ch_unavailable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Was: exit 0 with "skipped (exit 0)", so an outage was indistinguishable
+    # from a passing gate. Exit 2 is now INDETERMINATE, distinct from 1 (drift).
     monkeypatch.setattr("lite_indexer.retention_cli._connect", lambda: None)
-    assert main() == 0
+    assert main() == 2
     assert "CH unavailable" in capsys.readouterr().out
 
 
