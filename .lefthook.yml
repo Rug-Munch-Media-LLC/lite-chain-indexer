@@ -293,7 +293,14 @@ pre-push:
         if command -v trufflehog >/dev/null 2>&1; then
           RANGE=$(git rev-parse '@{u}' 2>/dev/null || true)
           if [ -z "$RANGE" ]; then
-            RANGE=$(git merge-base HEAD origin/main 2>/dev/null || true)
+            # This repo's primary remote is `forgejo`, not `origin` — there is
+            # no origin. Without forgejo in the chain the range cannot be
+            # bounded and the scan is refused, which is correct behaviour for
+            # an unbounded scan but means the gate never runs.
+            for remote in origin forgejo; do
+              [ -n "$RANGE" ] && break
+              RANGE=$(git merge-base HEAD "$remote/main" 2>/dev/null || true)
+            done
           fi
           if [ -n "$RANGE" ]; then
             trufflehog git file://. --since-commit "$RANGE" --only-verified --fail --no-update || {
