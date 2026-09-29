@@ -203,27 +203,28 @@ pre-push:
     # (baseline: scripts/deptry-baseline.txt). New undeclared dependency = fail.
     deptry:
       glob: "*.py"
-      # lefthook runs `run:` blocks under `sh` by default. This block uses
-      # bash-only constructs (process substitution `<(...)` in the failure diff)
-      # and a nested-quote regex, so under sh it died in 0.09s without ever
-      # invoking deptry — which read as a FAIL every push.
-      shell: bash
+      # POSIX sh only. lefthook runs `run:` blocks under `sh`, which on Debian
+      # is dash: `set -o pipefail` is an illegal option there and `<(...)` does
+      # not exist. An earlier version used both, so it died with
+      # "sh: 1: set: Illegal option -o pipefail" on every push — reported as a
+      # gate failure when nothing had actually run. No `set -o pipefail`, no
+      # process substitution, no bash arrays.
       run: |
-        set -uo pipefail
         BASE=scripts/deptry-baseline.txt
         NEW=$(deptry . --no-ansi \
           --package-module-name-map "pycryptodome=Crypto|pysha3=sha3|eth-hash=eth_hash|nats-py=nats|strawberry-graphql=strawberry" \
           --per-rule-ignores "DEP002=ruff|mypy|bandit|semgrep|pytest|pytest-asyncio|pytest-cov|pre-commit|gitleaks|import-linter|vulture" \
           --extend-exclude "(examples|scripts)/" 2>&1 >/dev/null \
           | grep -E "DEP00[0-9]" | sed 's/:[0-9]*:[0-9]*:/:/' | sort -u)
-        CUR=$(echo "$NEW" | grep -c . || true)
-        if [ ! -f "$BASE" ]; then
-          printf '%s\n' "$NEW" > "$BASE"; echo "deptry: wrote baseline ($CUR)"; exit 0
-        fi
+        CUR=$(printf '%s' "$NEW" | grep -c . || true)
+        [ -f "$BASE" ] || { printf '%s\n' "$NEW" > "$BASE"; echo "deptry: wrote baseline ($CUR)"; exit 0; }
         PREV=$(grep -c . "$BASE" || true)
         if [ "$CUR" -gt "$PREV" ]; then
           echo "deptry gate: FAIL — $CUR findings, baseline $PREV (shrink-only)"
-          diff <(sort "$BASE") <(echo "$NEW") | grep '^>' || true
+          printf '%s\n' "$NEW" | sort > /tmp/deptry-new.$$
+          sort "$BASE" > /tmp/deptry-base.$$
+          diff /tmp/deptry-base.$$ /tmp/deptry-new.$$ | grep '^>' || true
+          rm -f /tmp/deptry-new.$$ /tmp/deptry-base.$$
           exit 1
         fi
         echo "deptry gate: PASS — $CUR findings, baseline $PREV (shrink-only)"
