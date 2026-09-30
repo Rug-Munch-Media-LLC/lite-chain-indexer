@@ -17,8 +17,12 @@ except ImportError:  # pragma: no cover — optional dependency
     pq = None  # type: ignore[assignment]
     PYARROW_AVAILABLE = False
 
+# RAISED 5M -> 20M on 2026-09-30. Measured evm_transfers rows for one day:
+# polygon 16,485,496 / base 7,885,338 / optimism 7,363,955 / avalanche 5,843,906.
+# At 5M the busiest chains were rejected outright ("day exceeds export cap"),
+# so the 90-day archive was incomplete for exactly the chains that dominate it.
 # ClickHouse lightweight-delete maximum mutation size guard (rows per day).
-_MAX_ROWS_PER_DAY = 5_000_000
+_MAX_ROWS_PER_DAY = 20_000_000
 
 # Statuses recorded in the parquet_export_state table.
 _STATUS_PENDING = "pending"
