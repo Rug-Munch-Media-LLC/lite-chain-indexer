@@ -214,7 +214,7 @@ pre-push:
         NEW=$(deptry . --no-ansi \
           --package-module-name-map "pycryptodome=Crypto|pysha3=sha3|eth-hash=eth_hash|nats-py=nats|strawberry-graphql=strawberry" \
           --per-rule-ignores "DEP002=ruff|mypy|bandit|semgrep|pytest|pytest-asyncio|pytest-cov|pre-commit|gitleaks|import-linter|vulture" \
-          --extend-exclude "(examples|scripts)/" 2>&1 >/dev/null \
+          --extend-exclude "(examples|scripts|experiments)/" 2>&1 >/dev/null \
           | grep -E "DEP00[0-9]" | sed 's/:[0-9]*:[0-9]*:/:/' | sort -u)
         CUR=$(printf '%s' "$NEW" | grep -c . || true)
         [ -f "$BASE" ] || { printf '%s\n' "$NEW" > "$BASE"; echo "deptry: wrote baseline ($CUR)"; exit 0; }

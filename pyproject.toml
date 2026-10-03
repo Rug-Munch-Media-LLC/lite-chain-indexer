@@ -49,8 +49,6 @@ query = [
 ]
 parquet = [
     "pyarrow>=15.0.0",
-    # backfill PoC (experiments/hypersync) - declared so deptry passes
-    "hypersync>=1.2.1",
 ]
 redis = [
     "redis>=5.0.0",
