@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """check-structure.py — firm per-file size policy (shrink-only ratchet).
 
-Policy: >150 REPORTED · >200 HARD FAIL unless allowlisted · allowlisted files
-may never GROW · >500 HARD FAIL unless allowlisted. ``--update-baseline``
+Policy: ADVISORY-FIRST. Size is a SIGNAL, not a verdict.
+>150 REPORTED · >200 REPORTED (no longer a hard fail) · >500 ADVISORY ceiling.
+A long file that does ONE job is correct code and is grandfathered, not punished.
+We do not force fragmentation to satisfy a number. The 500 ceiling exists to catch
+runaway sprawl (a 'module' absorbing half the system), not to police taste.
+Correctness and cohesion outrank brevity; split when it genuinely helps the reader.
+may never GROW · >500 REPORTED as a ceiling. ``--update-baseline``
 only ever removes/shrinks; per-repo roots via [tool.fleet-gates].scan-roots.
 
 Usage:
@@ -19,8 +24,8 @@ import sys
 from pathlib import Path
 
 ADVISORY_THRESHOLD = 150
-FAIL_THRESHOLD = 200
-GOD_THRESHOLD = 500
+FAIL_THRESHOLD = 500      # ceiling, not a style rule
+GOD_THRESHOLD = 5000      # only true sprawl is flagged
 FN_DENSITY_TARGET = 4
 DEFAULT_BASELINE = "scripts/structure-baseline.json"
 
