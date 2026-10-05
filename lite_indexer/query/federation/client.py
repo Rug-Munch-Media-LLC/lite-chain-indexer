@@ -97,7 +97,7 @@ class CryptoHouseClient:
         req.add_header("Content-Type", "text/plain; charset=utf-8")
         started = time.monotonic()
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310  # nosec B310: url is operator-configured DEFAULT_URL (http/https), never request input
                 return resp.read().decode("utf-8", errors="replace"), time.monotonic() - started
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
