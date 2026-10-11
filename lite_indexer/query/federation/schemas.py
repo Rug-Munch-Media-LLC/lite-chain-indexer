@@ -4,9 +4,10 @@ Callers cannot invent columns. Every table this layer touches is described
 from ``system.columns`` once and cached, so a renamed/dropped column fails
 loudly at the boundary instead of silently changing a result set.
 
-All findings encoded here were verified live against
-``crypto-clickhouse.clickhouse.com`` (ClickHouse 26.6.1.2191) on 2026-10-04.
-The account is ``readonly=1`` — this module only ever issues reads.
+Findings were verified live against ``crypto-clickhouse.clickhouse.com``
+(ClickHouse 26.6.1.2191) on 2026-10-04; the account is ``readonly=1``. Import
+order must never decide whether the lake read path loads, so query_rows is
+imported lazily in describe() (client -> guard -> schemas -> client is a cycle).
 """
 
 from __future__ import annotations
@@ -15,8 +16,6 @@ import re
 import threading
 from dataclasses import dataclass, field
 from typing import Final
-
-from lite_indexer.query.federation.client import query_rows
 
 _IDENT: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -144,6 +143,8 @@ def describe(table: str, *, refresh: bool = False) -> TableInfo:
     ``base.blocks`` style short names are rejected on purpose: this fleet's
     whole bug class is dotted-vs-underscored table names resolving to nothing.
     """
+    from lite_indexer.query.federation.client import query_rows  # noqa: PLC0415  # lazy: breaks the import cycle
+
     if "." not in table:
         raise ValueError(f"table must be dotted db.table, got {table!r}")
     if not refresh and (cached := _cache.get(table)) is not None:
@@ -161,8 +162,7 @@ def describe(table: str, *, refresh: bool = False) -> TableInfo:
     )
     if not rows:
         raise KeyError(
-            f"table {table!r} does not exist on this endpoint — "
-            "introspect system.tables; do not guess a name"
+            f"table {table!r} does not exist on this endpoint — introspect system.tables; do not guess a name"
         )
 
     meta = query_rows(
