@@ -35,7 +35,16 @@ def _add_sqd_parser(sub: SubParsers) -> None:
         help="Fill an exact block-range hole from the near-live SQD portal",
         description="Stream ERC-20 transfers for an exact block range from portal.sqd.dev into ClickHouse.",
     )
-    sqd.add_argument("--chain", default="base", choices=["base", "ethereum", "arbitrum"])
+    # 2026-10-11: was a hardcoded 3-chain subset — the SQD portal map supports
+    # 13 EVM datasets (incl. gnosis/celo/zksync/scroll/linea/mantle/polygon/...).
+    # Derive the choices from the map so a supported chain is never CLI-blocked.
+    try:
+        from lite_indexer.query.sqd_source import SQDSource as _SQDSource
+
+        _sqd_choices = sorted(_SQDSource.EVM_DATASETS)
+    except Exception:  # noqa: BLE001 — fall back to the historical subset
+        _sqd_choices = ["arbitrum", "base", "ethereum"]
+    sqd.add_argument("--chain", default="base", choices=_sqd_choices)
     sqd.add_argument("--from-block", type=int, required=True, help="Inclusive start block")
     sqd.add_argument("--to-block", type=int, required=True, help="Inclusive end block")
     sqd.add_argument("--batch-rows", type=int, default=5000, help="Rows per write batch (default: 5000)")
