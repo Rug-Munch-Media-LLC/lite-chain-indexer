@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 ADVISORY_THRESHOLD = 150
-FAIL_THRESHOLD = 500  # ceiling, not a style rule
+FAIL_THRESHOLD = 300  # a NEW file over this is a design signal, not a style rule
 GOD_THRESHOLD = 5000  # only true sprawl is flagged
 FN_DENSITY_TARGET = 4
 DEFAULT_BASELINE = "scripts/structure-baseline.json"
