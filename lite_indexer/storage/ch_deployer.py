@@ -62,6 +62,13 @@ def _deployer_row(chain: str, event: dict[str, Any], eoa_map: dict[str, str], no
     token0 = event.get("token0", "") or ""
     token1 = event.get("token1", "") or ""
     deployer = eoa_map.get(tx_hash, "")
+    # 2026-10-11: some launch events arrive without a block timestamp under the
+    # camelCase key; accept snake_case too, and make a MISSING one visible —
+    # silently stamping ``now`` produced rows whose block_timestamp was the
+    # ingest time (data-quality bug, ~2 rows/cycle).
+    ts_raw = event.get("blockTimestamp") or event.get("block_timestamp") or ""
+    if not ts_raw:
+        logger.warning("deployer_ts_missing", chain=chain, tx_hash=tx_hash[:20])
     return (
         deployer,
         deployer,
@@ -71,7 +78,7 @@ def _deployer_row(chain: str, event: dict[str, Any], eoa_map: dict[str, str], no
         event.get("pair_address", "") or "",
         chain,
         event.get("blockNumber", 0),
-        _parse_ts(event.get("blockTimestamp", ""), now),
+        _parse_ts(ts_raw, now),
         tx_hash,
         f"{version}_pool",
         event.get("factory", ""),
