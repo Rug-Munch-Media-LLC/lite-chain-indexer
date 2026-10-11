@@ -5,9 +5,13 @@ from ``system.columns`` once and cached, so a renamed/dropped column fails
 loudly at the boundary instead of silently changing a result set.
 
 Findings were verified live against ``crypto-clickhouse.clickhouse.com``
-(ClickHouse 26.6.1.2191) on 2026-10-04; the account is ``readonly=1``. Import
-order must never decide whether the lake read path loads, so query_rows is
-imported lazily in describe() (client -> guard -> schemas -> client is a cycle).
+(ClickHouse 26.6.1.2191) on 2026-10-04; the account is ``readonly=1``.
+
+Import order must never decide whether the lake read path loads. The federation
+modules form a cycle (client -> guard -> schemas -> client), so a module-level
+import here made ``import client`` fail with "partially initialized module"
+while the tests passed — they happen to import schemas first. query_rows is
+therefore imported lazily inside :func:`describe`.
 """
 
 from __future__ import annotations

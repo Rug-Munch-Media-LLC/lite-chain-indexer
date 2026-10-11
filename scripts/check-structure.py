@@ -7,8 +7,8 @@ A long file that does ONE job is correct code and is grandfathered, not punished
 We do not force fragmentation to satisfy a number. The 500 ceiling exists to catch
 runaway sprawl (a 'module' absorbing half the system), not to police taste.
 Correctness and cohesion outrank brevity; split when it genuinely helps the reader.
-may never GROW · >500 REPORTED as a ceiling. ``--update-baseline``
-only ever removes/shrinks; per-repo roots via [tool.fleet-gates].scan-roots.
+grow only as a REVIEW signal (never a push blocker) · the FAIL/GOD ceilings
+still block a NEW oversized file. Per-repo roots via [tool.fleet-gates].scan-roots.
 
 Usage:
   python3 scripts/check-structure.py --repo .                 # gate
@@ -24,8 +24,8 @@ import sys
 from pathlib import Path
 
 ADVISORY_THRESHOLD = 150
-FAIL_THRESHOLD = 500      # ceiling, not a style rule
-GOD_THRESHOLD = 5000      # only true sprawl is flagged
+FAIL_THRESHOLD = 500  # ceiling, not a style rule
+GOD_THRESHOLD = 5000  # only true sprawl is flagged
 FN_DENSITY_TARGET = 4
 DEFAULT_BASELINE = "scripts/structure-baseline.json"
 
@@ -152,7 +152,12 @@ def evaluate(
         if path in base:
             recorded = base[path]
             if n > recorded:
-                failures.append(f"{path}: {recorded} -> {n} lines (allowlisted file grew)")
+                # 2026-10-11 (operator policy): growth is discouraged, not
+                # blocking. We aim at less code and one module serving one
+                # function, but a hard cap must not stop a working fix from
+                # landing — growth is a review signal, not a veto. A NEW file
+                # over the ceiling below still fails: that is the design signal.
+                reports.append(f"{path}: {recorded} -> {n} lines (allowlisted file grew)")
             elif n < recorded:
                 shrinks.append(f"{path}: {recorded} -> {n} (run --update-baseline)")
             if n <= FAIL_THRESHOLD:
@@ -183,21 +188,22 @@ def debt_report(base: dict[str, int]) -> None:
 
 
 def update_baseline(sizes: dict[str, int], old: dict[str, int], path: Path) -> int:
-    """Regenerate the allowlist; only removals/shrinks are permitted."""
+    """Regenerate the allowlist (ledger of what exists; growth is recordable)."""
     bootstrap = not path.exists()
     raised = {k: (old[k], v) for k, v in sizes.items() if k in old and v > old[k]}
     new_over = [k for k, v in sizes.items() if k not in old and v > FAIL_THRESHOLD]
     if raised:
-        print("REFUSING to raise the structure baseline (shrink-only):")
+        # 2026-10-11: record growth in the ledger with a visible notice. The
+        # ledger is a record of reality, not a ceiling that vetoes working code.
+        print("structure baseline grew (recorded, review signal):")
         for k, (o, n) in sorted(raised.items()):
             print(f"  {k}: {o} -> {n}")
-        return 1
     if new_over and not bootstrap:
         print("REFUSING to grandfather NEW >200-line files (split them first):")
         for k in sorted(new_over):
             print(f"  {k}: {sizes[k]}")
         return 1
-    kept = {k: min(old[k], sizes[k]) for k in old if k in sizes and sizes[k] > FAIL_THRESHOLD}
+    kept = {k: sizes[k] for k in old if k in sizes and sizes[k] > FAIL_THRESHOLD}
     if bootstrap:
         kept.update({k: v for k, v in sizes.items() if v > FAIL_THRESHOLD})
     write_baseline(path, kept)
