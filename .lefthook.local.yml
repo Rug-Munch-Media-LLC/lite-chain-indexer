@@ -1,0 +1,9 @@
+# Repo-specific hooks, extracted 2026-10-14 from a standalone
+# .lefthook.yml during the fleet-wide canonical-config migration.
+# .lefthook.yml is now a symlink to ../standards/lefthook.yml; anything
+# that is NOT canonical belongs HERE.
+
+commands:
+  mypy-report:
+      glob: "*.py"
+      run: mypy lite_indexer/ --ignore-missing-imports || true
