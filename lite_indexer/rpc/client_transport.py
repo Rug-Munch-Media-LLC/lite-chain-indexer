@@ -49,6 +49,10 @@ class TransportMixin:
                 await client.aclose()
 
 
+_TELEMETRY_FAILS: list[float] = []
+_TELEMETRY_WARN_EVERY_S = 60.0
+
+
 def _safe_record(recorder: Any, *args: Any, **kwargs: Any) -> None:
     """Run an additive ledger/routing telemetry call without breaking RPC.
 
@@ -56,11 +60,33 @@ def _safe_record(recorder: Any, *args: Any, **kwargs: Any) -> None:
     (``rpc/routing.py``) are best-effort observability layers: if a
     recorder ever raises (e.g. a corrupt ledger file), the error is
     logged and the RPC result is returned untouched.
+
+    WHY THIS IS NO LONGER logger.debug (2026-10-15): it was, and that hid a
+    real breakage. The quota ledger on this host held 172 accounts with only
+    ONE recording any usage while the RPC access logs clearly showed calls to
+    Alchemy/dRPC/Infura — the recorder was failing and logging at DEBUG, so
+    the ledger looked merely "unused" instead of broken. A quota ledger that
+    silently records nothing cannot warn before a monthly quota is exhausted;
+    it is worse than absent, because it looks like a working control.
+
+    A telemetry failure is expected to be rare, so warn (rate-limited to once
+    per _TELEMETRY_WARN_EVERY_S) rather than debug, and count every failure so
+    a caller/health check can assert the recorder is actually working.
     """
     try:
         recorder(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 — telemetry must never raise into the RPC path
-        logger.debug("rpc_telemetry_skipped", error=str(exc)[:80])
+        import time as _t
+
+        now = _t.time()
+        if not _TELEMETRY_FAILS or (now - _TELEMETRY_FAILS[-1]) >= _TELEMETRY_WARN_EVERY_S:
+            logger.warning(
+                "rpc_telemetry_skipped",
+                error=str(exc)[:120],
+                recorder=getattr(recorder, "__name__", str(recorder)),
+                total_failures=len(_TELEMETRY_FAILS) + 1,
+            )
+        _TELEMETRY_FAILS.append(now)
 
 
 async def _budget_before(endpoint: str) -> None:
