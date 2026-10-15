@@ -50,4 +50,25 @@ if [ -n "$FAILED" ]; then
     exit 1
 fi
 
+# ── B2 90-DAY ROLLING RETENTION ────────────────────────────────────────────
+# The architecture: local burns ~1 day -> B2 holds a ROLLING 90-day window ->
+# beyond 90 days is served by BigLake providers with fallback, never from here.
+# Nothing was enforcing the 90-day window on the remote, so the archive grew
+# without bound in one direction while the retention rule existed only as
+# intent. This is the missing half of the loop.
+#
+# Safety: --min-age compares against the object's own mtime, so a date-partition
+# older than 90 days is removed while anything recent survives. A failure here
+# never affects the export that just succeeded.
+B2_RETENTION_DAYS="${B2_RETENTION_DAYS:-90}"
+REMOTE_ROOT="rugmunch-b2:rmi-chain-data/parquet"
+if [ "${SKIP_B2_RETENTION:-0}" != "1" ] && command -v rclone >/dev/null 2>&1; then
+    echo "==> B2 retention: pruning objects older than ${B2_RETENTION_DAYS}d under ${REMOTE_ROOT}"
+    if rclone delete "$REMOTE_ROOT" --min-age "${B2_RETENTION_DAYS}d" --fast-list 2>&1 | tail -3; then
+        echo "==> B2 retention: 90-day rolling window enforced"
+    else
+        echo "!!! B2 retention returned non-zero (non-fatal; export already verified)"
+    fi
+fi
+
 echo "==> lite-indexer parquet daily export complete ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
