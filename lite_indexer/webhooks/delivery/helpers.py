@@ -10,9 +10,20 @@ import hashlib
 import hmac
 import time
 
-# NATS subjects captured by the delivery service (same wildcard set the
-# JetStream stream auto-provisions and the publisher writes to).
-_DELIVERY_SUBJECTS: tuple[str, ...] = ("chain.>", "alerts.>")
+# NATS subjects the delivery service subscribes to.
+#
+# alerts.> is DELIBERATELY ABSENT. Nothing in the fleet publishes an
+# alerts.* subject: the publisher (streaming/nats_publisher.py) only
+# writes chain.*, and the NATS server counters confirm it — alerts.>
+# accumulated 0 messages for the lifetime of both subscriptions while
+# chain.> carried 165,744,068 / 577,039. A subscription with no producer
+# is a consumer that can only ever idle, so it is removed here explicitly
+# rather than left to soak up an idle connection and mask the absence.
+_DELIVERY_SUBJECTS: tuple[str, ...] = ("chain.>",)
+
+#: Kept as a named record of what is intentionally not subscribed, so the next
+#: reader does not "fix" the missing subject by adding it back.
+_DISABLED_SUBJECTS: tuple[str, ...] = ("alerts.>",)
 
 # HTTP statuses treated as success. Anything >= 400 is retried.
 _SUCCESS_STATUS_LIMIT = 400

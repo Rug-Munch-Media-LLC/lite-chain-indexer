@@ -499,7 +499,7 @@ class TestNatsLifecycle:
         assert started is True
         assert delivery.started is True
         subjects = {s for s, _ in fake.subs}
-        assert subjects == {"chain.>", "alerts.>"}
+        assert subjects == {"chain.>"}
 
     async def test_start_idempotent(self, tmp_path):
         fake = FakeNCSimple()
@@ -507,7 +507,7 @@ class TestNatsLifecycle:
         with patch("nats.connect", new=AsyncMock(return_value=fake)):
             assert await delivery.start() is True
             assert await delivery.start() is True
-        assert len(fake.subs) == 2, "second start must be a no-op"
+        assert len(fake.subs) == 1, "second start must be a no-op"
 
     async def test_start_failure_returns_false(self, tmp_path):
         delivery = _make_delivery(tmp_path)
