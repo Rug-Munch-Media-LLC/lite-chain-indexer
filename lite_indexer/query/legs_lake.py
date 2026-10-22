@@ -11,10 +11,10 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from lite_indexer.config import CHAIN_BLOCK_TIMES, DEFAULT_BLOCK_TIME
 from lite_indexer.logging import get_logger
 from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.metrics import incr_labeled as metrics_labeled
-from lite_indexer.config import CHAIN_BLOCK_TIMES, DEFAULT_BLOCK_TIME
 from lite_indexer.query.leg_request import LegRequest
 from lite_indexer.query.legs_common import CH_TABLE_REF
 
@@ -62,14 +62,20 @@ def _anchor(router: Any, chain: str) -> tuple[int, int] | None:
         return None
     table = CH_TABLE_REF["evm_transfers"]
     try:
-        rows, _types = client.execute(
+        # ``execute`` returns a LIST of row tuples (not ``(rows, types)``
+        # unless ``with_column_types=True``). Unpacking it as a 2-tuple
+        # raised ValueError for this single-row aggregate, the exception
+        # was swallowed by the ``except`` below, and every deep range
+        # resolved to "dates_unresolved" — the lake was never read.
+        rows = client.execute(
             f"SELECT max(block_number), max(block_timestamp) FROM {table} WHERE chain = %(chain)s",
             {"chain": chain},
         )
     except Exception as exc:  # noqa: BLE001 — no anchor means "unknown"
-        logger.debug("lake_anchor_failed", chain=chain, error=str(exc)[:100])
+        logger.warning("lake_anchor_failed", chain=chain, error=str(exc)[:100])
         return None
     if not rows or rows[0][0] is None or rows[0][1] is None:
+        logger.warning("lake_anchor_empty", chain=chain)
         return None
     block, ts = int(rows[0][0]), rows[0][1]
     if isinstance(ts, datetime):
