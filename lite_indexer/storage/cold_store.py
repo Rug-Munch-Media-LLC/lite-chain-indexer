@@ -233,7 +233,13 @@ class ColdStore:
         if not root.is_dir():
             return {"transfers": [], "dex": [], "spl_balance_changes": []}
         if days:
+            # Two producer layouts coexist in the archive: the current
+            # {Y}/{M}/{D}/{H}/ tree and the pre-2026-09 {Y}-{M}-{D}/ tree.
+            # Matching only the first made every legacy day invisible, so a
+            # query for August/early-September returned "no history" while
+            # the parquet sat in the bucket.
             wanted = {f"{d.year:04d}/{d.month:02d}/{d.day:02d}" for d in days}
+            wanted |= {d.isoformat() for d in days}
             files: list[Path] = []
             for p in root.rglob("*.parquet"):
                 posix = p.as_posix()
@@ -255,7 +261,11 @@ class ColdStore:
             return _collect_rclone_cat_files(chain, days[0], days[-1], self.cache_dir, self.rclone_bin)
         # Unbounded (or chain-less): list the tree once, then cat each file.
         remote_root = f"{self.remote}/{chain}" if chain else self.remote
-        wanted = {f"{d.year:04d}/{d.month:02d}/{d.day:02d}" for d in days} if days else None
+        wanted = (
+            {f"{d.year:04d}/{d.month:02d}/{d.day:02d}" for d in days} | {d.isoformat() for d in days}
+            if days
+            else None
+        )
         files: list[Path] = []
         try:
             proc = subprocess.run(
