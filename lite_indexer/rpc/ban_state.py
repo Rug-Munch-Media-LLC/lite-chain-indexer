@@ -9,6 +9,7 @@ hard-ban (provider blacklist) flag, and write-through persistence via
 from __future__ import annotations
 
 import json
+import os
 import time
 
 from lite_indexer.config import ENDPOINT_BAN_BASE_SECONDS, ENDPOINT_BAN_CAP_SECONDS
@@ -20,11 +21,17 @@ logger = get_logger(__name__)
 # Consecutive-429 tracking: occasional 429s are brief throttling;
 # CONSECUTIVE 429s mean the provider is dying — escalate to a soft-ban.
 _endpoint_429_streaks: dict[str, int] = {}
-_RATE_LIMIT_STREAK_BAN_THRESHOLD = 3
-_RATE_LIMIT_STREAK_BAN_BASE_S = 300  # 5 min first soft-ban, doubles per repeat
-# Hard cap on the streak soft-ban: 3600s once turned a transient 429
-# burst into a 1h self-sustaining deadlock past the provider's recovery.
-_RATE_LIMIT_STREAK_BAN_CAP_S = 300
+# 2026-10-23: threshold raised 3 -> 4 and the windows deepened. A 3-deep 429
+# streak is ordinary free-tier congestion; sitting an endpoint out after three
+# collisions removed working capacity during a burst. Four consecutive 429s is
+# a provider pushing back. The window is env-tunable so an operator can deepen
+# it without a deploy; the CAP is deliberately ABOVE the base so repeat
+# offenders escalate instead of being re-dialled every 5 minutes (the 58-deep
+# eth.blockscout.com streak shows the endpoint was re-hit the moment its
+# 300s window expired).
+_RATE_LIMIT_STREAK_BAN_THRESHOLD = int(os.environ.get("ENDPOINT_SOFTBAN_STREAK_THRESHOLD", "4"))
+_RATE_LIMIT_STREAK_BAN_BASE_S = int(os.environ.get("ENDPOINT_SOFTBAN_BASE_SECONDS", "600"))
+_RATE_LIMIT_STREAK_BAN_CAP_S = int(os.environ.get("ENDPOINT_SOFTBAN_CAP_SECONDS", "1800"))
 
 # 403/429 bans: url -> banned_until (epoch seconds). These providers
 # blacklist the endpoint — hammering deepens the ban, so they get an

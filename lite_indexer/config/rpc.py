@@ -230,8 +230,14 @@ RPC_THROTTLE_MAX_WAIT: float = float(os.environ.get("RPC_THROTTLE_MAX_WAIT", "30
 # many of their endpoints are hit at once across chains, so concurrency and
 # requests/sec are capped per `provider_id_for_endpoint` (KeyedProvider account-
 # wide, etc.). Callers queue when the budget is exhausted rather than fire.
-RPC_PROVIDER_MAX_CONCURRENCY: int = int(os.environ.get("RPC_PROVIDER_MAX_CONCURRENCY", "4"))
-RPC_PROVIDER_RPS: float = float(os.environ.get("RPC_PROVIDER_RPS", "10.0"))
+#
+# 2026-10-23: defaults lowered 4 -> 2 concurrent and 10 -> 5 req/s. 10 req/s is
+# triple what the DEFAULT_RATE_LIMIT (5 req/s) allows for an unlisted public
+# endpoint, so the account ladder was admitting more in-flight calls than the
+# endpoint limiter below it and the surplus came back as 429s. 5 req/s mirrors
+# the per-provider floor already enforced by chains/limits.py.
+RPC_PROVIDER_MAX_CONCURRENCY: int = int(os.environ.get("RPC_PROVIDER_MAX_CONCURRENCY", "2"))
+RPC_PROVIDER_RPS: float = float(os.environ.get("RPC_PROVIDER_RPS", "5.0"))
 
 # ── Per-provider / per-endpoint request budgets (rpc/budgets.py) ───────
 # Attach a concrete (rps, max_concurrency, optional daily budget) to a

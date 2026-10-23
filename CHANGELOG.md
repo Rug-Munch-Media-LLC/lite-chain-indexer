@@ -59,6 +59,34 @@ All notable changes to LiteChainIndexer will be documented in this file.
 
 ### Reliability
 
+- **Free-pool pressure controls (RPC starvation)** — the keyless pool was
+  emptied by request concurrency, not by block lag: every endpoint is
+  measured at a 10-block `eth_getLogs` span
+  (`lite_indexer_rpc_pool_max_span == 10` on all 19 EVM chains), so six
+  chains syncing with four in-flight chunk fetches (up to 24 simultaneous
+  getLogs against 5 req/s endpoints) produced 112
+  `rpc_rate_limit_streak_softban` events/hour (one endpoint hit a 58-deep
+  429 streak), 43 `all_endpoints_down` events/hour and
+  `LiteIndexerRpcPoolExhausted` on base/blast/bsc/ethereum/fraxtal/
+  hyperliquid/metis/polygon/robinhood. Changes are configuration-first and
+  env-overridable: `MAX_CONCURRENT_CHAINS` 6 → 3 (explicit queue — the
+  semaphore now decides which chains hold a cycle, nothing is disabled),
+  `CHUNK_PARALLELISM` 4 → 2, a new `CHAIN_START_STAGGER_SECONDS` (12 s per
+  chain, so startup verification and first catch-up no longer land in one
+  instant), `RPC_PROVIDER_MAX_CONCURRENCY` 4 → 2 and `RPC_PROVIDER_RPS`
+  10 → 5 (matching the 5 req/s endpoint floor), and a deeper 429-streak
+  soft-ban: threshold 3 → 4, base 300 → 600 s, cap 300 → **1800 s** (the
+  old 300 s cap re-dialled an endpoint the moment its window expired,
+  which is how one endpoint reached a 58-deep streak). All knobs read from
+  env (`ENDPOINT_SOFTBAN_*`, `CHAIN_START_STAGGER_SECONDS`). Also fixes a
+  second source of truth: `/var/data/chain-indexer/lite-indexer.env`
+  carried `MAX_CONCURRENT_CHAINS=6`, silently overriding the code default
+  for every non-container entry point. `METRICS_HOST` is now `0.0.0.0` in
+  the deploy compose — Prometheus scrapes the container IP, and the
+  loopback binding had left every `lite_indexer_*` gauge stale for four
+  hours, blinding the pool alerts. Ceiling and census:
+  `docs/RPC-POOL-CAPACITY.md`.
+
 - **Watchdog restart throttling** (`scripts/lite-indexer-stall-check.sh`) —
   stall/no-advance restarts are now throttled to at most one per
   `RESTART_COOLDOWN_MIN` (default 30 min), persisted in

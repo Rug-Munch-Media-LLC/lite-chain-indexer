@@ -19,6 +19,7 @@ from lite_indexer.config import (
     CHAIN_AUTO_DISABLE_ENABLED,
     CHAIN_DISABLED_RECHECK_SECONDS,
     CHAIN_STALL_DISABLE_SECONDS,
+    CHAIN_START_STAGGER_SECONDS,
     DATA_DIR,
     DISK_CAP_BYTES,
     MAX_CONCURRENT_CHAINS,
@@ -305,6 +306,11 @@ async def main_daemon(
     # check. Secondary path: post-cycle recycle_if_over_budget.
     start_memory_watchdog(indexers)
 
+    # Chains are launched in priority order; the index in this list is the
+    # chain's start position, used to stagger first cycles (see _chain_loop).
+    ordered_chains = sorted(chains, key=lambda c: chain_priority(c), reverse=True)
+    start_position = {c: i for i, c in enumerate(ordered_chains)}
+
     async def _chain_loop(chain: str) -> None:
         """Independent per-chain polling loop with its own poll interval.
 
@@ -322,6 +328,20 @@ async def main_daemon(
         cleanly for systemd to restart with a fresh heap.
         """
         nonlocal error_count
+        # Explicit start stagger. Tasks are created together, so without this
+        # every chain fires startup endpoint verification and its first
+        # catch-up cycle against the shared free pool at the same instant —
+        # the burst that drives the 429-streak soft-bans. Chain N waits
+        # N * CHAIN_START_STAGGER_SECONDS; chain 0 starts immediately.
+        delay = start_position.get(chain, 0) * CHAIN_START_STAGGER_SECONDS
+        if delay > 0:
+            logger.info("chain_start_staggered", chain=chain, delay_s=round(delay, 1))
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=delay)
+                return  # shutdown requested while waiting for a start slot
+            except TimeoutError:
+                # The stagger window elapsed with no shutdown: expected path.
+                logger.debug("chain_start_stagger_elapsed", chain=chain)
         indexer = LiteIndexer(
             chain=chain,
             disk_cap=disk_cap,
@@ -422,9 +442,9 @@ async def main_daemon(
                     break
 
     # Launch one task per chain, high-priority chains first so they claim
-    # concurrency slots before low-priority chains.
-    ordered_chains = sorted(chains, key=lambda c: chain_priority(c), reverse=True)
-
+    # concurrency slots before low-priority chains. `ordered_chains` was
+    # computed above (before _chain_loop) so the start stagger can read it;
+    # the launch sequence is what makes "first" meaningful.
     # ── Parallel startup endpoint verification ──────────────────────────
     # Verification used to run inside each chain's sync loop, serialized by
     # MAX_CONCURRENT_CHAINS, so only the first few chains got a log pool

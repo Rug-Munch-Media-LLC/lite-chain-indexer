@@ -43,7 +43,10 @@ CHUNK_SIZE_EVM: int = 50
 CHUNK_SIZE_SOLANA: int = 500
 
 # Max concurrent chunk fetches per range (parallelism cap).
-CHUNK_PARALLELISM: int = 4
+# 2026-10-23: 4 -> 2. With a 10-block measured getLogs span, 4 in-flight chunks
+# per chain x 6 chains saturated every 5 req/s free endpoint; the 429s
+# aggregated into consecutive-429 streak soft-bans (see MAX_CONCURRENT_CHAINS).
+CHUNK_PARALLELISM: int = int(os.environ.get("CHUNK_PARALLELISM", "2"))
 # ── Multi-Chain Parallelism ───────────────────────────────────────────
 # Per-chain CPU affinity (Linux only, best-effort). Used when running a
 # single chain per process; the multi-chain daemon uses priorities.
@@ -56,7 +59,22 @@ CHAIN_AFFINITY_ENABLED: bool = os.environ.get("CHAIN_AFFINITY_ENABLED", "0") == 
 # `MAX_CONCURRENT_CHAINS × per-chain budget`. High-priority chains get
 # slots first (task creation order); lower-priority chains rotate in as
 # slots free. Set MAX_CONCURRENT_CHAINS=14 to restore old behavior.
-MAX_CONCURRENT_CHAINS: int = int(os.environ.get("MAX_CONCURRENT_CHAINS", "6"))
+#
+# 2026-10-23 RPC-STARVATION CAP (was 6): every free endpoint is measured at a
+# 10-block getLogs span (lite_indexer_rpc_pool_max_span == 10 on all 19 EVM
+# chains), so per-chain request rate is what empties the shared free pool. Six
+# concurrent chains produced 112 `rpc_rate_limit_streak_softban` events/hour
+# (one endpoint reached a 58-deep 429 streak) and 43 `all_endpoints_down`
+# events/hour. This cap is the ONLY place the active chain count is bounded —
+# raising it re-creates the storm.
+MAX_CONCURRENT_CHAINS: int = int(os.environ.get("MAX_CONCURRENT_CHAINS", "3"))
+
+# Stagger between chain starts inside the daemon (seconds). All chain tasks are
+# created at once, so without a stagger every chain's startup endpoint
+# verification and first catch-up cycle hit the free pool in the same instant.
+# Chain N starts after N * CHAIN_START_STAGGER_SECONDS. 0 disables the stagger
+# (restores the simultaneous start).
+CHAIN_START_STAGGER_SECONDS: float = float(os.environ.get("CHAIN_START_STAGGER_SECONDS", "12.0"))
 
 # Bounded worker count for offloading RPC JSON decode off the event loop.
 # py-spy sampling of the live daemon (2026-09-13) showed the single event
