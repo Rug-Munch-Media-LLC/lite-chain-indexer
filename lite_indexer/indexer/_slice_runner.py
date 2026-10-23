@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 #: Sized so a full 16-chain round at MAX_CONCURRENT_CHAINS=3 stays under
 #: the 900 s staleness bound (16 / 3 x 150 s = 800 s), while a healthy
 #: cycle (median 72-130 s) still finishes in one turn.
-SYNC_SLICE_BUDGET_S = float(os.environ.get("SYNC_SLICE_BUDGET_S", "150"))
+SYNC_SLICE_BUDGET_S = float(os.environ.get("SYNC_SLICE_BUDGET_S", "60"))
 
 SliceRunner = Callable[[int, int, dict[str, Any], float], Awaitable[dict[str, Any]]]
 

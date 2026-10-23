@@ -57,3 +57,7 @@ data/
 
 # Methodology checker ignore-list (contains internal hostnames; never commit)
 .methodology-patterns
+
+# pytest test-selector cache (build artifact)
+.test-selector-cache.json
+.lefthook.yml.bak-selector-*

@@ -14,6 +14,7 @@ access and is decrease-only.
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -99,7 +100,7 @@ def _slice_host(failing_slice: int | None) -> _SliceHost:
 async def test_later_slice_failure_keeps_earlier_checkpoints():
     with _env(SYNC_CHECKPOINT_SLICE="50"):
         host = _slice_host(failing_slice=50)
-        result = await host._sync_loop_body({"status": "running", "errors": []}, 0.0)
+        result = await host._sync_loop_body({"status": "running", "errors": []}, time.monotonic())
 
     assert host.saved == [(49, 1)]  # slice 1 checkpointed, not discarded
     assert (0, 49) in host.attempted
@@ -111,7 +112,7 @@ async def test_later_slice_failure_keeps_earlier_checkpoints():
 async def test_first_slice_failure_no_advance():
     with _env(SYNC_CHECKPOINT_SLICE="50"):
         host = _slice_host(failing_slice=0)
-        result = await host._sync_loop_body({"status": "running", "errors": []}, 0.0)
+        result = await host._sync_loop_body({"status": "running", "errors": []}, time.monotonic())
 
     assert host.saved == []
     assert result["status"] == "fetch_failed"
@@ -121,7 +122,7 @@ async def test_first_slice_failure_no_advance():
 async def test_env_override_honored():
     with _env(SYNC_CHECKPOINT_SLICE="2"):
         host = _slice_host(failing_slice=None)
-        await host._sync_loop_body({"status": "running", "errors": []}, 0.0)
+        await host._sync_loop_body({"status": "running", "errors": []}, time.monotonic())
 
     assert host.attempted[:3] == [(0, 1), (2, 3), (4, 5)]
     assert host.attempted[-1] == (148, 149)

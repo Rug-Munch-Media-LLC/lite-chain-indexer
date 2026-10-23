@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -78,7 +79,7 @@ def test_retry_resumes_at_the_failing_slice(tmp_path) -> None:
     host._sync_loop_body = SyncLoopMixin._sync_loop_body.__get__(host, _ResumeHost)  # type: ignore[method-assign]
 
     with _env(SYNC_CHECKPOINT_SLICE="50"):
-        first = asyncio.run(host._sync_loop_body({"status": "running", "errors": []}, 0.0))
+        first = asyncio.run(host._sync_loop_body({"status": "running", "errors": []}, time.monotonic()))
         assert first["status"] == "slice_partial"
         # Slices 0-49, 50-99, 100-149 committed; 150 failed.
         assert state.load()["last_block"] == 149
@@ -87,7 +88,7 @@ def test_retry_resumes_at_the_failing_slice(tmp_path) -> None:
 
         host.attempted.clear()
         host.failing_slice = None
-        second = asyncio.run(host._sync_loop_body({"status": "running", "errors": []}, 0.0))
+        second = asyncio.run(host._sync_loop_body({"status": "running", "errors": []}, time.monotonic()))
 
     assert host.attempted[0] == (150, 199)  # resumed at slice N, not (0, 49)
     assert (0, 49) not in host.attempted
