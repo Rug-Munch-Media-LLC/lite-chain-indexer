@@ -7,9 +7,11 @@
 #
 # Covered assertions:
 #   (i)   501-line file                -> structure gate exits 1
-#   (ii)  >200 non-allowlisted file    -> structure gate exits 1
-#   (iii) allowlist-growth case        -> structure gate exits 1
+#   (ii)  >300 new non-allowlisted file -> structure gate exits 1
+#   (iii) allowlist-growth case        -> reported as advisory, never blocks
 #   (iv)  +1 monkeypatch occurrence    -> monkeypatch gate exits 1
+#   (v)   +1 antipattern occurrence    -> antipattern gate exits 1 AND names
+#         the offending file:line, and refuses to raise a baseline silently
 #   (0)   clean fixture                -> both gates exit 0
 #
 # Usage: bash scripts/ci-gate-selftest.sh
@@ -18,6 +20,7 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STRUCT="$REPO_ROOT/scripts/check-structure.py"
 MONKEY="$REPO_ROOT/scripts/check-monkeypatch.py"
+ANTI="$REPO_ROOT/scripts/check-antipatterns.py"
 MYPY_BUDGET="$REPO_ROOT/scripts/check-mypy-budget.py"
 
 PY="${PYTHON:-python3}"
@@ -59,6 +62,10 @@ monkey_rc() {
     "$PY" "$MONKEY" --repo "$FIXTURE" >/dev/null 2>&1
     echo $?
 }
+anti_rc() {
+    "$PY" "$ANTI" --repo "$FIXTURE" >/dev/null 2>&1
+    echo $?
+}
 
 expect_rc() { # expect_rc <want> <actual> <label>
     if [ "$2" -eq "$1" ]; then
@@ -79,19 +86,41 @@ gen 501 "$FIXTURE/src/rugbrain/god.py"
 expect_rc 1 "$(struct_rc)" "501-line file -> exit 1"
 
 reset_fixture
-gen 201 "$FIXTURE/src/rugbrain/over.py"
-expect_rc 1 "$(struct_rc)" "201-line non-allowlisted -> exit 1"
+gen 301 "$FIXTURE/src/rugbrain/over.py"
+expect_rc 1 "$(struct_rc)" "301-line non-allowlisted (new file over the 300 ceiling) -> exit 1"
 
 reset_fixture
 printf '{"files": {"src/rugbrain/growth.py": 205}}' >"$FIXTURE/scripts/structure-baseline.json"
-gen 260 "$FIXTURE/src/rugbrain/growth.py"
-expect_rc 1 "$(struct_rc)" "allowlist growth -> exit 1"
+gen 301 "$FIXTURE/src/rugbrain/growth.py"
+out="$("$PY" "$STRUCT" --repo "$FIXTURE" 2>&1)"
+if printf '%s' "$out" | grep -q "allowlisted file grew"; then
+    pass "allowlist growth is REPORTED (advisory, not a push blocker)"
+else
+    fail "allowlist growth reported" "?"
+fi
 
 reset_fixture
 printf '{"total": 0, "files": {}}' >"$FIXTURE/scripts/monkeypatch-baseline.json"
 printf "import monkeypatch as monkeypatch\nmonkeypatch.setattr(x, 'y', z)\n" \
     >"$FIXTURE/src/rugbrain/mp.py"
 expect_rc 1 "$(monkey_rc)" "+1 monkeypatch -> exit 1"
+
+# (v) antipattern ratchet: growth fails, names the file:line, and refuses to
+#     raise the baseline silently. A gate that reports only a count is ignored.
+reset_fixture
+printf '{"rules": {"monkeypatch": 0}, "total": 0}\n' >"$FIXTURE/scripts/antipattern-baseline.json"
+printf 'import mock\n\ntry:\n    pass\nexcept ValueError:\n    pass\n' >"$FIXTURE/src/rugbrain/bad.py"
+expect_rc 1 "$(anti_rc)" "antipattern growth -> exit 1"
+anti_out="$("$PY" "$ANTI" --repo "$FIXTURE" 2>&1)"
+if printf '%s' "$anti_out" | grep -q "src/rugbrain/bad.py:5"; then
+    pass "antipattern failure names the offending file:line"
+else
+    fail "antipattern offender line" "?"
+fi
+expect_rc 1 "$("$PY" "$ANTI" --repo "$FIXTURE" --update-baseline >/dev/null 2>&1; echo $?)" \
+    "REFUSES to raise the baseline without --justify"
+expect_rc 0 "$("$PY" "$ANTI" --repo "$FIXTURE" --update-baseline --justify "selftest" >/dev/null 2>&1; echo $?)" \
+    "--justify records the raise"
 
 echo "gate-selftest: new-behavior assertions"
 reset_fixture
