@@ -103,7 +103,7 @@ class SlotRotation:
             enqueued=self._clock(),
         )
         self._waiters.append(waiter)
-        logger.debug("slot_queued", chain=chain, depth=len(self._waiters), active=self._active)
+        logger.info("slot_queued", chain=chain, depth=len(self._waiters), active=self._active)
         try:
             await waiter.event.wait()
         except asyncio.CancelledError:
