@@ -103,6 +103,12 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       4.7k rejections during 08/04 outage), merkle (HTTP400),
     #       limit) probed and rejected — official seeds added instead.
     "bsc": [
+        # Ankr is the ONLY endpoint proven to serve eth_getLogs over a historical
+        # span on this chain (verified 2026-10-23: 50k-block range cap, 600 calls
+        # at 4.3 rps, 599 ok, 0x429). Every other bsc endpoint is pruned, capped
+        # at 25-50 blocks, or 403/429. Without it bsc cannot leave block
+        # 120,079,834 - it is 9.2M blocks (~48 days) behind tip.
+        "https://rpc.ankr.com/bsc/${ANKR_KEY}",  # T1 - archive, keyed via ANKR_KEY
         "https://bsc.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId + eth_getLogs 2026-09-13)
         "https://rpc-bsc.48.club",  # T1 — 48.club (verified)
         "https://bsc.blockrazor.xyz",  # T2 — blockrazor (25-block range cap)
