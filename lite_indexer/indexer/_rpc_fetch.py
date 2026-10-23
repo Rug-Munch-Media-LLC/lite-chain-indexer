@@ -70,12 +70,14 @@ class RpcFetchMixin(IndexerMixinBase):
             Standardized internal-transfer rows (possibly empty).
         """
         from lite_indexer.traces import has_trace_endpoints
+        from lite_indexer.traces.policy import trace_policy
         from lite_indexer.traces.trace_collector import TraceCollector
 
         if not self._is_evm() or not has_trace_endpoints(self.chain):
             return []
 
-        max_blocks = min(TRACE_MAX_BLOCKS_PER_CYCLE, to_block - from_block + 1)
+        policy = trace_policy(self.chain)
+        max_blocks = min(policy.max_blocks_per_cycle, TRACE_MAX_BLOCKS_PER_CYCLE, to_block - from_block + 1)
         if max_blocks <= 0:
             return []
         # Sweep from the range head (most recent) — oldest blocks get
@@ -87,7 +89,7 @@ class RpcFetchMixin(IndexerMixinBase):
                 self.chain,
                 start,
                 to_block,
-                concurrency=TRACE_CONCURRENCY,
+                concurrency=min(policy.concurrency, TRACE_CONCURRENCY),
                 max_blocks=max_blocks,
             )
         except Exception as exc:  # noqa: BLE001 — trace collection is best-effort

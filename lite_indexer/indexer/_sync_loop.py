@@ -473,12 +473,15 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         trace_events: list[dict[str, Any]] = []
         if self.traces_enabled:
             try:
+                from lite_indexer.traces.policy import trace_policy
+
                 trace_events = await guarded_phase(
                     "internal_transfers",
                     self._collect_internal_transfers(from_block, to_block),
                     chain=self.chain,
                     from_block=from_block,
                     to_block=to_block,
+                    timeout=trace_policy(self.chain).phase_timeout_s,
                 )
             except PhaseTimeoutError as exc:
                 # Non-fatal: transfers already checkpointed this slice.
