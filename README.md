@@ -1,6 +1,6 @@
 # Lite Chain Indexer
 
-> Self-hosted, zero-cost multi-chain indexer — 16 chains (14 EVM, Solana, Tron) on free public RPCs, 283M indexed EVM transfers (+628M internal).
+> Self-hosted, zero-cost multi-chain indexer — 21 networks indexed (20 EVM-family chains including Tron, plus Solana) on free public RPCs, 283M indexed EVM transfers (+628M internal).
 
 **License:** [MIT](LICENSE) · **Canonical:** https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer
 **Mirrors:** [GitHub](https://github.com/Rug-Munch-Media-LLC) · [GitLab](https://gitlab.com/rug-munch-media-group) · [Codeberg](https://codeberg.org/RugMunchMedia)
@@ -8,14 +8,14 @@
 **Clone over Nostr:** `git clone nostr://npub1e97559tn2j6j02shalmn5x6xv5jt8ejlclh6sta8nln0n55whwtszyrqud/git.cryptorugmunch.com/lite-chain-indexer` (GRASP)
 
 **The self-hosted, zero-cost, multi-chain blockchain indexer.**
-Index transfers, DEX swaps, deployer activity, and internal-transfer traces across **16 chains (14 EVM + Solana + Tron)** using **only free public RPCs** out of the box. Zero infrastructure cost. Zero API keys required. Runs in roughly **1–3 GB RAM**, bounded by a hard memory-recycle ceiling that restarts the daemon before it can grow unbounded. **283M indexed EVM transfers (+628M internal) on a $5 VPS.** Optional authenticated RPCs can be layered in via the private overlay for extra throughput.
+Index transfers, DEX swaps, deployer activity, and internal-transfer traces across **21 networks (20 EVM-family chains including Tron, plus Solana)** using **only free public RPCs** out of the box. Zero infrastructure cost. Zero API keys required. Runs in roughly **1–3 GB RAM**, bounded by a hard memory-recycle ceiling that restarts the daemon before it can grow unbounded. **283M indexed EVM transfers (+628M internal) on a $5 VPS.** The chain registry defines 18; the live daemon runs 16 of them. Optional authenticated RPCs can be layered in via the private overlay for extra throughput.
 
 [![CI](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml/badge.svg?branch=main)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-v1.3.0-blue.svg)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/tags)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
-[![16 chains](https://img.shields.io/badge/chains-16-success.svg)](#chains-covered)
+[![21 networks](https://img.shields.io/badge/networks-21-success.svg)](#chains-covered)
 [![1,100+ tests](https://img.shields.io/badge/tests-1%2C100%2B-success.svg)](#testing)
 
 ## House Standard
