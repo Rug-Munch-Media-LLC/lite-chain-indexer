@@ -441,11 +441,18 @@ async def probe_logs_capability(
         logger.debug("capability_logs_probe_no_tip", endpoint=endpoint[:60])
         return GetLogsCapability.TRANSIENT
     from_block = hex(max(0, int(tip) - 2))
+    # Topic-filtered: this MUST be the production request shape. The
+    # unfiltered tip-range probe was rejected by providers whose getLogs
+    # limit is a RESULT cap, not a block cap (Ankr bsc: -32062 "Block range
+    # is too large" for 3 unfiltered blocks in 0.27s, while the same span
+    # topic-filtered answers 200). Those endpoints classified TRANSIENT ->
+    # logs_capable=None -> never recorded usable, never excluded from the
+    # getLogs rotation, pool metrics read 0/0 for the chain (bsc 2026-10-23).
     payload: dict[str, Any] = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "eth_getLogs",
-        "params": [{"fromBlock": from_block, "toBlock": "latest"}],
+        "params": [{"fromBlock": from_block, "toBlock": "latest", "topics": [TRANSFER_TOPIC]}],
     }
     status_code: int | None = None
     try:

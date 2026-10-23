@@ -40,8 +40,16 @@ def _measured_max_block_range(endpoint: str) -> int | None:
         record = peek_capability(endpoint)
     except Exception:  # noqa: BLE001 — registry failure must not break routing
         return None
-    if record is None or record.getlogs_max_range <= 0:
+    if record is None:
         return None
+    if record.getlogs_max_range <= 0:
+        # A PROBED zero is a verdict (cannot serve logs at the smallest
+        # probed span), not an unknown: the ladder first rung (10 blocks,
+        # production shape) failed. Returning None here made a probe-and-fail
+        # endpoint look UNLIMITED, so it stayed in every getLogs rotation,
+        # failed, opened its circuit, and dragged the chain to pool-fully-down
+        # (bsc dataseeds, 2026-10-23). Only an unprobed record stays unknown.
+        return 0 if record.probed_at > 0 else None
     return record.getlogs_max_range
 
 
