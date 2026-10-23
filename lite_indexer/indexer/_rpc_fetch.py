@@ -11,7 +11,7 @@ import gc  # noqa: F401 — used by maintenance mixin body
 from datetime import UTC, datetime  # noqa: F401 — UTC/datetime used in mixin bodies
 from typing import Any  # noqa: F401
 
-from lite_indexer.config import TIMESTAMP_PHASE_DEADLINE_S, TRACE_CONCURRENCY, TRACE_MAX_BLOCKS_PER_CYCLE
+from lite_indexer.config import TIMESTAMP_PHASE_DEADLINE_S
 from lite_indexer.indexer._base import IndexerMixinBase
 from lite_indexer.logging import get_logger
 from lite_indexer.strategies.evm.strategy import EVMChainStrategy
@@ -69,38 +69,11 @@ class RpcFetchMixin(IndexerMixinBase):
         Returns:
             Standardized internal-transfer rows (possibly empty).
         """
-        from lite_indexer.traces import has_trace_endpoints
-        from lite_indexer.traces.policy import trace_policy
-        from lite_indexer.traces.trace_collector import TraceCollector
+        from lite_indexer.traces.phase import collect_internal_transfers
 
-        if not self._is_evm() or not has_trace_endpoints(self.chain):
+        if not self._is_evm():
             return []
-
-        policy = trace_policy(self.chain)
-        max_blocks = min(policy.max_blocks_per_cycle, TRACE_MAX_BLOCKS_PER_CYCLE, to_block - from_block + 1)
-        if max_blocks <= 0:
-            return []
-        # Sweep from the range head (most recent) — oldest blocks get
-        # covered on later cycles when the range advances.
-        start = to_block - max_blocks + 1
-        collector = TraceCollector(self.chain)
-        try:
-            return await collector.collect_range(
-                self.chain,
-                start,
-                to_block,
-                concurrency=min(policy.concurrency, TRACE_CONCURRENCY),
-                max_blocks=max_blocks,
-            )
-        except Exception as exc:  # noqa: BLE001 — trace collection is best-effort
-            logger.warning(
-                "trace_collection_failed",
-                chain=self.chain,
-                from_block=start,
-                to_block=to_block,
-                error=str(exc)[:120],
-            )
-            return []
+        return await collect_internal_transfers(self.chain, from_block, to_block)
 
     # ── RPC: Transfer Events ────────────────────────────────────────
 

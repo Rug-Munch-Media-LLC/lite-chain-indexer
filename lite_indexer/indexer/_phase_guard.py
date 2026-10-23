@@ -38,19 +38,14 @@ async def guarded_phase(
     chain: str,
     from_block: int,
     to_block: int,
-    timeout: float | None = None,
 ) -> Any:
     """Await a sync fetch phase under the phase timeout.
-
-    ``timeout`` overrides the global limit for chains with a tighter trace
-    budget (see :mod:`lite_indexer.traces.policy`).
 
     Raises :class:`PhaseTimeoutError` after logging ``sync_phase_timeout`` and
     bumping the rpc-failure metric — the caller must not advance state.
     """
-    limit = RPC_PHASE_TIMEOUT_S if timeout is None else timeout
     try:
-        return await asyncio.wait_for(coro, timeout=limit)
+        return await asyncio.wait_for(coro, timeout=RPC_PHASE_TIMEOUT_S)
     except TimeoutError:
         logger.warning(
             "sync_phase_timeout",
@@ -58,7 +53,7 @@ async def guarded_phase(
             phase=phase,
             from_block=from_block,
             to_block=to_block,
-            timeout_s=limit,
+            timeout_s=RPC_PHASE_TIMEOUT_S,
         )
         metrics.incr_labeled("lite_indexer_rpc_failures", chain=chain)
         raise PhaseTimeoutError(phase, from_block, to_block) from None

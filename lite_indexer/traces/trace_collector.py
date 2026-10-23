@@ -40,15 +40,11 @@ from lite_indexer.rpc import RpcClient, get_best_endpoint, record_endpoint_failu
 from lite_indexer.rpc.ratelimit import apply_provider_rate_limit
 from lite_indexer.traces.endpoints import TRACE_ENDPOINTS
 from lite_indexer.traces.parsers import extract_internal_transfers as _parse_rows
-from lite_indexer.traces.policy import trace_policy
 
 logger = get_logger(__name__)
 
 # JSON-RPC error text that means "this endpoint does not serve this
 # trace method on the free tier" — the endpoint itself may be fine.
-#: endpoint -> trace method that worked; shared across sync cycles.
-_METHOD_CACHE: dict[str, str] = {}
-
 _UNSUPPORTED_MARKERS = (
     "whitelist",
     "not supported",
@@ -113,13 +109,7 @@ class TraceCollector:
         # endpoint -> method that worked ("debug_traceBlockByNumber" or
         # "trace_block"). Learned on first use; avoids re-probing every
         # block after an endpoint tells us it rejects a method.
-        # Module-level so a learned method survives the per-cycle collector
-        # instance — re-probing a rejecting endpoint costs a 429 + ban wait.
-        policy = trace_policy(chain)
-        if policy.preferred_method:
-            for endpoint in self.endpoints:
-                _METHOD_CACHE.setdefault(endpoint, policy.preferred_method)
-        self._method_cache = _METHOD_CACHE
+        self._method_cache: dict[str, str] = {}
         # block_number -> datetime, cached so a full-range sweep issues
         # one timestamp call per block (reused across rows of the block).
         self._ts_cache: dict[int, datetime] = {}

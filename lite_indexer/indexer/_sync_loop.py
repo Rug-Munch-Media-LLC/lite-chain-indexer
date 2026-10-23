@@ -472,21 +472,9 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         # BEFORE the "no events" short-circuit (blocks can hold trace-only).
         trace_events: list[dict[str, Any]] = []
         if self.traces_enabled:
-            try:
-                from lite_indexer.traces.policy import trace_policy
+            from lite_indexer.traces.phase import run_trace_phase
 
-                trace_events = await guarded_phase(
-                    "internal_transfers",
-                    self._collect_internal_transfers(from_block, to_block),
-                    chain=self.chain,
-                    from_block=from_block,
-                    to_block=to_block,
-                    timeout=trace_policy(self.chain).phase_timeout_s,
-                )
-            except PhaseTimeoutError as exc:
-                # Non-fatal: transfers already checkpointed this slice.
-                logger.warning("sync_phase_failed", chain=self.chain, phase="internal_transfers", error=str(exc)[:120])
-                summary.setdefault("phase_failures", []).append("internal_transfers")
+            trace_events = await run_trace_phase(self, summary, from_block, to_block)
             if trace_events:
                 summary["trace_events_fetched"] = len(trace_events)
 
