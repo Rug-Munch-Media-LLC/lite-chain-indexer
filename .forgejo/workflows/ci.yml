@@ -11,7 +11,7 @@ on:
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
+    runs-on: docker-x64
     strategy:
       fail-fast: false
       matrix:
@@ -102,7 +102,7 @@ jobs:
   # every tracked file for curated provider tokens. Checkout + python3
   # only — no dependencies required.
   public-leak-gate:
-    runs-on: ubuntu-latest
+    runs-on: docker-x64
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -113,7 +113,7 @@ jobs:
   # 2026-09-17: the stall-check thrash incidents lived in shell, untested.
   # Every failure mode now has a scenario test; the suite must stay green.
   script-tests:
-    runs-on: ubuntu-latest
+    runs-on: docker-x64
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -126,7 +126,7 @@ jobs:
   # Single Python version (no matrix) — coverage is version-independent.
   # Smoke-marked tests need live ClickHouse/RPC endpoints and are excluded.
   coverage-gate:
-    runs-on: ubuntu-latest
+    runs-on: docker-x64
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -187,7 +187,7 @@ jobs:
 
   # ── Docstring coverage ───────────────────────────────────────────────
   docstring-coverage:
-    runs-on: ubuntu-latest
+    runs-on: docker-x64
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
