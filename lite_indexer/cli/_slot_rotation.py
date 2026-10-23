@@ -81,6 +81,7 @@ class SlotRotation:
         self._waiters: list[_Waiter] = []
         self._served: dict[str, int] = {}
         self._arrivals = 0
+        self._held: set[str] = set()
 
     # ── public API ────────────────────────────────────────────────────
     async def acquire(self, chain: str) -> None:
@@ -125,6 +126,7 @@ class SlotRotation:
     def release(self, chain: str) -> None:
         """Return ``chain``'s slot, granting it to the next fair waiter."""
         self._active -= 1
+        self._held.discard(chain)
         logger.info("slot_released", chain=chain, depth=len(self._waiters), active=self._active)
         if self._waiters:
             self._promote(self._pick())
@@ -147,6 +149,13 @@ class SlotRotation:
             return 0.0
         return self._clock() - min(w.enqueued for w in self._waiters)
 
+    def snapshot(self) -> dict[str, tuple[float, float]]:
+        """chain -> (state, wait_s); 2=holding, 1=queued (starved)."""
+        now = self._clock()
+        snap = {c: (2.0, 0.0) for c in self._held}
+        snap.update({w.chain: (1.0, now - w.enqueued) for w in self._waiters})
+        return snap
+
     # ── internals ─────────────────────────────────────────────────────
     def _pick(self) -> _Waiter:
         """Choose the next waiter: aged first, else least-served."""
@@ -167,6 +176,7 @@ class SlotRotation:
 
     def _grant(self, chain: str) -> None:
         self._active += 1
+        self._held.add(chain)
         self._served[chain] = self._served.get(chain, 0) + 1
 
 
@@ -176,7 +186,14 @@ def build_rotation(
     max_wait_s: float = DEFAULT_MAX_WAIT_S,
 ) -> SlotRotation | None:
     """Return a fair rotation for ``slots``, or None when the cap is disabled."""
-    return SlotRotation(slots, priority_for=priority_for, max_wait_s=max_wait_s) if slots and slots > 0 else None
+    global CURRENT
+    CURRENT = SlotRotation(slots, priority_for=priority_for, max_wait_s=max_wait_s) if slots and slots > 0 else None
+    return CURRENT
+
+
+#: Newest rotation, so the metrics exporter can report slot state without
+#: threading a reference through the daemon.
+CURRENT: SlotRotation | None = None
 
 
 __all__ = ["DEFAULT_MAX_WAIT_S", "SLOT_WAIT_WARN_S", "SlotRotation", "build_rotation"]

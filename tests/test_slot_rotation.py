@@ -143,3 +143,24 @@ def test_cancelled_waiter_does_not_leak_a_slot():
         return rotation.active
 
     assert asyncio.run(scenario()) == 1
+
+
+def test_snapshot_reports_holding_queued_and_wait_age():
+    """The snapshot names the stage: who holds a slot, who is starved, how long."""
+
+    async def scenario() -> tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]]:
+        rotation = SlotRotation(1)
+        await rotation.acquire("holder")
+        queued = asyncio.create_task(rotation.acquire("starved"))
+        await asyncio.sleep(0.01)
+        mid = rotation.snapshot()
+        rotation.release("holder")
+        await queued
+        rotation.release("starved")
+        return mid, rotation.snapshot()
+
+    mid, after = asyncio.run(scenario())
+    assert mid["holder"][0] == 2.0
+    assert mid["starved"][0] == 1.0
+    assert mid["starved"][1] > 0.0
+    assert after == {}

@@ -72,6 +72,7 @@ async def metrics_gauge_loop(
     are observability, never a reason to stop indexing.
     """
     from lite_indexer.metrics_daily_health import export_daily_health
+    from lite_indexer.metrics_slot import export_slot_metrics
 
     while True:
         try:
@@ -89,6 +90,7 @@ async def metrics_gauge_loop(
             await asyncio.to_thread(export_daily_health, chains, parked)
             for indexer in list(indexers):
                 export_chain_metrics(indexer)
+            export_slot_metrics()
         except Exception as exc:  # noqa: BLE001 — metrics must never kill the daemon
             logger.warning("metrics_gauge_update_failed", error=str(exc)[:120])
         await asyncio.sleep(max(1.0, interval))
