@@ -69,6 +69,7 @@ from lite_indexer.indexer._resource_guards import (
 from lite_indexer.indexer._rpc_fetch import RpcFetchMixin
 from lite_indexer.indexer._sidecars import BackfillMixin, SidecarsMixin
 from lite_indexer.indexer._sync_loop import SyncLoopMixin
+from lite_indexer.indexer._verify_bounded import resolve_verified
 from lite_indexer.indexer.backfill import BackfillExecutor, BackfillQueue
 from lite_indexer.indexer.backfill_executor import (
     EvmBackfillHost,
@@ -83,7 +84,6 @@ from lite_indexer.rpc.verify import (
     apply_verified_endpoints,
     restore_original_endpoints,
     verify_chain_endpoints,
-    wait_startup_result,
 )
 from lite_indexer.state import StateHighWater, StateManager
 from lite_indexer.storage import (
@@ -582,9 +582,8 @@ class LiteIndexer(
         # starts the moment its own verification lands instead of waiting for
         # the whole pass; falls back to in-loop verification when no startup
         # pass covered this chain.
-        result = await wait_startup_result(self.chain)
-        if result is None:
-            result = await verify_chain_endpoints(self.chain, self.rpc)
+        # Bounded verification: a probe must never hold a slot (_verify_bounded).
+        result = await resolve_verified(self)
         if result is None:
             summary["status"] = "no_endpoints"
             summary["errors"].append(f"no endpoints configured for {self.chain}")

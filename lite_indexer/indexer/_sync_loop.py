@@ -60,6 +60,12 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
     persistence, state save, and all the error/reorg guards.
     """
 
+    #: Wall-clock budget for ONE cycle's slices before it yields its slot.
+    #: Sized so a full 16-chain round at MAX_CONCURRENT_CHAINS=3 stays under
+    #: the 900 s staleness bound (16 / 3 x 150 s = 800 s), while a healthy
+    #: cycle (median 72-130 s) still finishes in one turn.
+    SYNC_SLICE_BUDGET_S = float(os.environ.get("SYNC_SLICE_BUDGET_S", "150"))
+
     # ── Reorg sentinel ─────────────────────────────────────────────────
     # Defined at module level in indexer/__init__.py; re-declared here so
     # the mixin works standalone in tests.
@@ -298,6 +304,25 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         slices_done = 0
         last_from, last_to = from_block, from_block - 1
         for slice_from, slice_to in iter_slices(from_block, to_block, slice_size()):
+            # SLICE TIME BUDGET: a cycle must YIELD its concurrency slot, not
+            # swallow the whole backlog. A chain 3 h behind needs ~40 slices;
+            # unbounded, that cycle held one of the three slots for minutes and
+            # the other 15 chains queued behind it (2026-10-31: 11 queued, 0
+            # granted). Every slice checkpoints state, so stopping here is free
+            # and the next turn continues from the durable checkpoint.
+            if slices_done and time.monotonic() - start_time > self.SYNC_SLICE_BUDGET_S:
+                record_slice_checkpoint(self, last_from, last_to, slices_done)
+                summary["status"] = "cycle_budget"
+                summary["slices_done"] = slices_done
+                summary["duration_seconds"] = time.monotonic() - start_time
+                logger.info(
+                    "sync_cycle_budget_yield",
+                    chain=self.chain,
+                    slices=slices_done,
+                    budget_s=self.SYNC_SLICE_BUDGET_S,
+                    remaining_blocks=to_block - last_to,
+                )
+                return summary
             result = await self._sync_range_body(slice_from, slice_to, summary, start_time)
             status = result.get("status")
             if status in HARD_ABORT_STATUSES:

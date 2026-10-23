@@ -84,6 +84,11 @@ async def recycle_if_over_budget(
 # produces ~150 slots/min. Memory gating is unchanged for these chains.
 _SEMAPHORE_EXEMPT_CHAINS: frozenset[str] = frozenset({"solana"})
 
+#: Hard wall-clock cap on one sync cycle (default 600 s). Sits well above a
+#: healthy cycle (measured median 72-130 s) and below the 900 s staleness
+#: bound, so a pathological cycle costs one turn instead of the fleet.
+SYNC_CYCLE_TIMEOUT_S: float = float(os.environ.get("SYNC_CYCLE_TIMEOUT_S", "600"))
+
 
 def _watchdog_sleep(seconds: int) -> None:
     """Sleep helper for the watchdog loop (patch point for tests)."""
@@ -320,10 +325,32 @@ async def main_daemon(
                 # least-served-first slot, released in finally so cancellation
                 # or shutdown mid-cycle can never leak capacity.
                 if concurrency_slot is not None and chain not in _SEMAPHORE_EXEMPT_CHAINS:
+                    hold_start = time.monotonic()
                     await concurrency_slot.acquire(chain)
                     try:
-                        result = await indexer.sync_loop()
+                        # HARD CYCLE CAP. A cycle that never returns holds its
+                        # slot forever, which defeats the fairness rotation:
+                        # 3 leaked slots starve every other chain no matter how
+                        # fair the queue is. State is checkpointed per slice,
+                        # so cancelling here loses at most the slice in flight
+                        # (the same path SIGTERM already uses).
+                        try:
+                            async with asyncio.timeout(SYNC_CYCLE_TIMEOUT_S):
+                                result = await indexer.sync_loop()
+                        except TimeoutError:
+                            logger.error(
+                                "sync_cycle_timeout",
+                                chain=chain,
+                                timeout_s=SYNC_CYCLE_TIMEOUT_S,
+                                hold_s=round(time.monotonic() - hold_start, 1),
+                            )
+                            result = {"status": "cycle_timeout", "chain": chain}
                     finally:
+                        logger.info(
+                            "sync_cycle_end",
+                            chain=chain,
+                            hold_s=round(time.monotonic() - hold_start, 1),
+                        )
                         concurrency_slot.release(chain)
                 else:
                     result = await indexer.sync_loop()

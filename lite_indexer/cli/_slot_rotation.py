@@ -94,6 +94,7 @@ class SlotRotation:
         """
         if self._active < self._slots and not self._waiters:
             self._grant(chain)
+            logger.info("slot_granted", chain=chain, wait_s=0.0, active=self._active)
             return
         self._arrivals += 1
         waiter = _Waiter(
@@ -124,6 +125,7 @@ class SlotRotation:
     def release(self, chain: str) -> None:
         """Return ``chain``'s slot, granting it to the next fair waiter."""
         self._active -= 1
+        logger.info("slot_released", chain=chain, depth=len(self._waiters), active=self._active)
         if self._waiters:
             self._promote(self._pick())
         # else: the slot simply stays free.
