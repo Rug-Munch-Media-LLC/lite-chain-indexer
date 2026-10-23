@@ -23,6 +23,14 @@ CHAIN_LAG_GAUGE_SPECS: dict[str, tuple[str, ...]] = {
     # and had ZERO series before today (declared 2026-09-27, never emitted),
     # so the only data-freshness rule in the fleet was dead code.
     "lite_indexer_chain_ingest_age_seconds": ("chain",),
+    # Daily health (2026-10-31): emitted for EVERY configured chain by
+    # metrics_daily_health, parked chains included. "stalled" is a real
+    # boolean now; before this it existed only as a counter for chain="none".
+    "lite_indexer_chain_last_ingest_timestamp_seconds": ("chain",),
+    "lite_indexer_chain_rows_1h": ("chain",),
+    "lite_indexer_chain_rows_24h": ("chain",),
+    "lite_indexer_chain_parked": ("chain",),
+    "lite_indexer_chain_daily_cadence_breach": ("chain",),
     "lite_indexer_rpc_block_hash_unserved": ("chain",),
     "lite_indexer_rpc_block_hash_fallback": ("chain",),
 }

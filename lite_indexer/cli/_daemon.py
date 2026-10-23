@@ -214,14 +214,19 @@ def export_chain_metrics(indexer: LiteIndexer) -> None:
         metrics.set_labeled_gauge("lite_indexer_nats_circuit_open", circuit_open, chain=indexer.chain)
 
 
-async def _metrics_gauge_loop(indexers: list[LiteIndexer], interval: float) -> None:
+async def _metrics_gauge_loop(
+    indexers: list[LiteIndexer],
+    interval: float,
+    chains: list[str],
+    parked: set[str],
+) -> None:
     """Refresh every alert-referenced gauge on a fixed interval.
 
     Runs as its own task so the exporter's data stays current without
     touching the sync cycles. Any failure is logged and swallowed — metrics
     are observability, never a reason to stop indexing.
     """
-    from lite_indexer.metrics_ingest_age import export_ingest_age
+    from lite_indexer.metrics_daily_health import export_daily_health
 
     while True:
         try:
@@ -233,7 +238,10 @@ async def _metrics_gauge_loop(indexers: list[LiteIndexer], interval: float) -> N
             # its high-water froze for 48 days while the container looked
             # healthy. Run them on a worker thread instead.
             await asyncio.to_thread(export_global_metrics)
-            await asyncio.to_thread(export_ingest_age, [indexer.chain for indexer in indexers])
+            # ALL CONFIGURED CHAINS, not only live indexers: a chain that
+            # never reached a cycle used to have no freshness series at all,
+            # which is why the stall alert stayed silent for 12 of 16 chains.
+            await asyncio.to_thread(export_daily_health, chains, parked)
             for indexer in list(indexers):
                 export_chain_metrics(indexer)
         except Exception as exc:  # noqa: BLE001 — metrics must never kill the daemon
@@ -295,6 +303,20 @@ async def main_daemon(
             loop.add_signal_handler(sig, partial(_handle_signal, sig))
         except (NotImplementedError, RuntimeError):
             signal.signal(sig, _handle_signal)
+
+    # Daily cadence contract: load the parked declarations BEFORE the chain
+    # loops so a malformed one fails the daemon at startup instead of
+    # silently quieting a dead chain's alert.
+    from lite_indexer.chain_states import load_parked
+
+    parked_decls = load_parked(known=set(chains))
+    logger.info(
+        "daily_cadence_contract",
+        chains=len(chains),
+        parked=sorted(parked_decls),
+        cadence_s=86400,
+        stall_after_s=900,
+    )
 
     # Fair rotation: least-served-first beats FIFO when fast loops re-queue.
     concurrency_slot = build_rotation(max_concurrent, chain_priority)
@@ -483,7 +505,7 @@ async def main_daemon(
     # consumed pct, RPC pool health, NATS circuit). Keeps the /metrics
     # endpoint current for the loaded alert rules.
     metrics_task = asyncio.create_task(
-        _metrics_gauge_loop(indexers, METRICS_GAUGE_INTERVAL_SECONDS),
+        _metrics_gauge_loop(indexers, METRICS_GAUGE_INTERVAL_SECONDS, chains, set(parked)),
         name="metrics-gauges",
     )
 

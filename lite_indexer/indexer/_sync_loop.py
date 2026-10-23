@@ -169,6 +169,13 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         if wakeup is None or timeout <= 0:
             await asyncio.sleep(max(0.0, timeout))
             return
+        # CONSUME the head seen during the cycle before waiting. asyncio.Event
+        # never auto-clears, so after the first pushed head every later
+        # wait_for_head() returned instantly: a WS-enabled chain re-queued for
+        # a concurrency slot with NO poll interval and starved the rotation
+        # (measured 2026-10-31: chains with a live head pool cycled
+        # back-to-back while 12 others sat parked in the slot queue).
+        wakeup.clear()
         try:
             await asyncio.wait_for(wakeup.wait(), timeout=timeout)
         except TimeoutError:

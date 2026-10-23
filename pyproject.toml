@@ -14,6 +14,7 @@ dependencies = [
     "structlog>=24.4.0",
     "clickhouse-driver>=0.2.0",
     "prometheus-client>=0.21.0",
+    "pyyaml>=6.0",
     # Core (not optional): EVM bloom filtering needs keccak256 on the hot path.
     # Without the C implementation, the pure-Python fallback in
     # strategies/evm/bloom.py is silently used and is ~1000x slower.

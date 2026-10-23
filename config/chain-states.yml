@@ -1,0 +1,43 @@
+# chain-states.yml — the daily cadence contract's declaration file.
+#
+# CONTRACT (enforced by lite_indexer/chain_states.py + metrics_daily_health.py)
+#   * Every chain the daemon runs must land at least one row per 24 h.
+#   * A chain that genuinely cannot is declared under `parked:` WITH a
+#     reason of >= 20 chars and a review date. The loader refuses a short
+#     reason, a shrug ("n/a", "tbd", "todo"), an unknown chain name or an
+#     unknown key — a declaration must never be able to hide a dead chain.
+#   * `lite_indexer_chain_parked{chain}=1` silences ONLY that chain's
+#     stall / cadence alerts; rows and ingest age keep being exported, so a
+#     parked chain that starts working again is still visible.
+#   * Removing a chain from the daemon to quiet an alert is not a park.
+#
+# AUDIT 2026-10-31 (evidence: 7-day per-chain ingest gaps in ClickHouse,
+# evm_transfers + dex_events + deployer_events). All 16 running chains
+# produced rows within the last 24 h, so NONE qualifies as parked:
+#
+#   chain        max gap (7d)   rows (24h)   verdict
+#   ethereum     114.8 h        697,763      starved by cycle length -> fixed
+#   optimism     131.5 h        174,429      starved by cycle length -> fixed
+#   polygon      113.1 h      3,454,249      starved by cycle length -> fixed
+#   avalanche    101.3 h         44,882      starved by cycle length -> fixed
+#   celo           5.2 h      1,577,632      live
+#   bsc            2.0 h      1,066,062      live (dex+deployer demand-gated)
+#   tron           2.0 h        156,490      live
+#   zksync         2.2 h         28,867      live
+#   linea          2.2 h          5,641      live
+#   scroll         2.1 h          5,889      live
+#   base           1.8 h      1,551,001      live
+#   mantle         1.6 h          4,504      live
+#   fantom         1.5 h         42,543      live
+#   arbitrum       0.8 h        220,635      live
+#   gnosis         0.7 h        143,058      live
+#   metis          0.3 h          1,861      live (1 healthy endpoint)
+#   blast          0.2 h            207      live (1-2 endpoints, low volume)
+#   fraxtal        0.3 h          1,459      live
+#   hyperliquid    0.4 h             24      live (1 endpoint, low volume)
+#   robinhood      0.4 h            119      live (low volume)
+#
+# The four multi-day gaps were STARVATION (cycle 780-1270 s x 16 chains / 3
+# slots), not death: every one of them wrote rows again as soon as it won a
+# slot. Cadence is the fix; parking them would have hidden the defect.
+parked: {}

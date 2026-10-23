@@ -1,0 +1,53 @@
+# Alert rules for the lite-chain-indexer daily cadence contract.
+# Gauges are emitted for EVERY configured chain by
+# lite_indexer/metrics_daily_health.py (parked chains included).
+groups:
+  - name: lite-indexer-daily-health
+    rules:
+      # Fast signal: a chain silent past the accepted bound. Parked chains
+      # are excluded by the join, never by deleting the series.
+      - alert: LiteIndexerChainStale
+        expr: |
+          lite_indexer_chain_ingest_age_seconds > 900
+          unless on(chain) lite_indexer_chain_parked == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.chain }} ingested nothing for {{ $value | humanizeDuration }}"
+          description: >-
+            No row has landed for this chain in over 900 s. Check
+            slot_queued depth, sync_start cadence and the RPC pool before
+            raising MAX_CONCURRENT_CHAINS.
+
+      # The contract itself: at least one ingest per 24 h.
+      - alert: LiteIndexerChainDailyCadenceBreach
+        expr: lite_indexer_chain_daily_cadence_breach == 1
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.chain }} breached the 24 h ingest contract"
+          description: >-
+            Either the chain is broken or it must be declared under
+            `parked:` in config/chain-states.yml with a reason and a
+            review date.
+
+      # Never ingested at all in the window (age == -1): the case the old
+      # exporter could not express, because it emitted no series.
+      - alert: LiteIndexerChainNeverIngested
+        expr: lite_indexer_chain_ingest_age_seconds < 0 unless on(chain) lite_indexer_chain_parked == 1
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.chain }} has no rows in 24 h"
+
+      # Liveness of the writer, independent of freshness.
+      - alert: LiteIndexerChainRowsFlat
+        expr: lite_indexer_chain_rows_1h == 0 unless on(chain) lite_indexer_chain_parked == 1
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.chain }} wrote no rows in the last hour"
