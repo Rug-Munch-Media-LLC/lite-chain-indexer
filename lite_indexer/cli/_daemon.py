@@ -15,6 +15,7 @@ from typing import Any
 from lite_indexer import metrics
 from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
 from lite_indexer.chains.parallelism import chain_priority
+from lite_indexer.cli._slot_rotation import build_rotation
 from lite_indexer.config import (
     CHAIN_AUTO_DISABLE_ENABLED,
     CHAIN_DISABLED_RECHECK_SECONDS,
@@ -257,11 +258,10 @@ async def main_daemon(
     tracking AND its own asyncio task polling at its own optimal interval,
     so fast chains (Base 2s) are not throttled by slow ones (Ethereum 12s).
 
-    Concurrency is capped at ``max_concurrent`` chains syncing at once
-    (default 6, see ``MAX_CONCURRENT_CHAINS``): every chain task shares
-    one semaphore. High-priority chains are scheduled first; lower-priority
-    chains rotate in as slots free. This bounds peak RSS — 14 chains
-    running simultaneously caused repeated cgroup OOM kills on 2026-08-03.
+    Concurrency is capped at ``max_concurrent`` chains syncing at once (see
+    ``MAX_CONCURRENT_CHAINS``): every chain task shares one FAIR rotation, so
+    chains rotate least-served-first instead of FIFO. This bounds peak RSS —
+    14 chains at once caused repeated cgroup OOM kills on 2026-08-03.
     Runs until SIGTERM/SIGINT.
     """
     logger.info(
@@ -296,8 +296,8 @@ async def main_daemon(
         except (NotImplementedError, RuntimeError):
             signal.signal(sig, _handle_signal)
 
-    # Shared concurrency cap: at most `max_concurrent` chains sync at once.
-    concurrency_slot = asyncio.Semaphore(max_concurrent) if max_concurrent and max_concurrent > 0 else None
+    # Fair rotation: least-served-first beats FIFO when fast loops re-queue.
+    concurrency_slot = build_rotation(max_concurrent, chain_priority)
     # Live indexers, kept so shutdown can close their HTTP clients.
     indexers: list[LiteIndexer] = []
 
@@ -392,15 +392,15 @@ async def main_daemon(
                     )
                     await asyncio.sleep(MEMORY_PAUSE_SLEEP)
                     continue
-                # 2026-09-21 solana real-time fix: the shared FIFO
-                # semaphore made the solana lane wait ~6.5 min behind long
-                # EVM cycles between 54s sync passes (~14 slots/min
-                # effective vs ~150 slots/min chain production). Exempt
-                # chains run on a dedicated lane; their own memory gate
-                # (solana budget 1024MB) still applies every cycle.
+                # Solana keeps its dedicated lane; every other chain takes a
+                # least-served-first slot, released in finally so cancellation
+                # or shutdown mid-cycle can never leak capacity.
                 if concurrency_slot is not None and chain not in _SEMAPHORE_EXEMPT_CHAINS:
-                    async with concurrency_slot:
+                    await concurrency_slot.acquire(chain)
+                    try:
                         result = await indexer.sync_loop()
+                    finally:
+                        concurrency_slot.release(chain)
                 else:
                     result = await indexer.sync_loop()
                 if isinstance(result, dict) and result.get("status") == "error":

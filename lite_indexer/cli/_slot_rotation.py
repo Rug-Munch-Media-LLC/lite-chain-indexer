@@ -59,7 +59,16 @@ class SlotRotation:
         self._arrivals += 1
         waiter = _Waiter(chain=chain, priority=self._priority_for(chain), arrival=self._arrivals)
         self._waiters.append(waiter)
-        await waiter.event.wait()
+        try:
+            await waiter.event.wait()
+        except asyncio.CancelledError:
+            # Shutdown/cancel while queued: drop the waiter, or hand an
+            # ALREADY-granted slot back, so cancellation never leaks capacity.
+            if waiter in self._waiters:
+                self._waiters.remove(waiter)
+            else:
+                self.release(chain)
+            raise
 
     def release(self, chain: str) -> None:
         """Return ``chain``'s slot, granting it to the next fair waiter."""
@@ -96,4 +105,9 @@ class SlotRotation:
         self._served[chain] = self._served.get(chain, 0) + 1
 
 
-__all__ = ["SlotRotation"]
+def build_rotation(slots: int, priority_for: callable[[str], int] | None = None) -> SlotRotation | None:
+    """Return a fair rotation for ``slots``, or None when the cap is disabled."""
+    return SlotRotation(slots, priority_for=priority_for) if slots and slots > 0 else None
+
+
+__all__ = ["SlotRotation", "build_rotation"]
