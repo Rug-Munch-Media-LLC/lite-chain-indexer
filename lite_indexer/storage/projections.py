@@ -20,9 +20,8 @@ the two results into a single wallet-history stream without re-deriving
 direction from the address column.
 
 The projections are automatically maintained for new inserts. To backfill
-existing rows (the 264M rows already in the table) pass
-``materialize_existing=True`` once — ``ALTER TABLE ... MATERIALIZE
-PROJECTION`` rebuilds them in the background.
+existing rows pass ``materialize_existing=True`` once — ``ALTER TABLE ...
+MATERIALIZE PROJECTION`` rebuilds them in the background.
 
 Gated by ``WALLET_PROJECTION_ENABLED`` (see :mod:`lite_indexer.config`).
 All DDL is idempotent and non-fatal: a missing table or missing
@@ -31,6 +30,7 @@ privileges degrades to a debug log, matching the retention-policy style.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from lite_indexer.config import (
@@ -43,17 +43,22 @@ from lite_indexer.metrics import incr as metrics_incr
 
 logger = get_logger(__name__)
 
-# ``ALTER TABLE ... ADD PROJECTION`` is mutation-class DDL: ClickHouse admits it
-# through the merges+mutations pool and refuses it with Code 36 ("no free
-# entries in pool to execute mutation") while that pool is busy merging. The
-# caller re-invokes ``ensure_wallet_projection`` on every sync cycle, so a busy
-# pool turns one idempotent DDL into an endless mutation storm: on 2026-10-23
-# both projections were already fully materialized (283.9M rows, equal to the
-# base table) while ~7.8k Code 36 errors accrued, one every few seconds.
+# ``ALTER TABLE ... ADD PROJECTION`` is mutation-class DDL and is REFUSED with
+# ClickHouse Code 36 whenever the merges/mutations-pool sanity check fails —
+# and that check runs BEFORE the projection name is compared, so
+# ``ADD PROJECTION IF NOT EXISTS`` does not help: a redundant statement for a
+# projection that already exists still raises. Reproduced 2026-10-23 on
+# 26.7.1: 'number_of_free_entries_in_pool_to_execute_optimize_entire_partition'
+# (25) > 'background_pool_size' * 'background_merges_mutations_concurrency_
+# ratio' (20), with both wallet projections fully materialized in
+# system.projections. The caller re-invokes ``ensure_wallet_projection`` on
+# every sync cycle, so a refused no-op ALTER becomes an endless mutation
+# storm (~7.8k Code 36 errors accrued that way).
 #
-# The projections exist after the first successful ADD, so the retries add no
-# information - only pool admission pressure. Cap the attempts; once exhausted
-# this process stops asking and the sync path proceeds unblocked.
+# Fix: read ``system.projections`` (a plain SELECT, no pool admission) and
+# issue DDL only for projections that are genuinely absent. The attempt cap
+# below stays as the last-resort guard when the catalogue itself is
+# unreadable.
 _MAX_DDL_ATTEMPTS = 3
 _ddl_attempts = 0
 
@@ -67,6 +72,12 @@ _WALLET_PROJECTION_COLUMNS = (
     "log_index",
     "token_address",
     "value",
+)
+
+# (source address column, direction label, projection name)
+_WALLET_PROJECTIONS = (
+    ("from_address", "out", WALLET_OUT_PROJECTION),
+    ("to_address", "in", WALLET_IN_PROJECTION),
 )
 
 
@@ -92,6 +103,41 @@ def _projection_ddl(address_column: str, direction: str, projection: str) -> str
     )
 
 
+def _rows(result: Any) -> Any:
+    """Normalize a ClickHouse result across driver/connect/fake clients."""
+    for attribute in ("result_rows", "result_set"):
+        rows = getattr(result, attribute, None)
+        if rows is not None:
+            return rows
+    return result or []
+
+
+def _existing_projections(ch_client: Any) -> set[str]:
+    """Names of projections already defined on ``CH_TABLE``.
+
+    ``ADD PROJECTION IF NOT EXISTS`` cannot be used as the existence check:
+    ClickHouse validates the mutation-pool settings first, so a redundant
+    ADD is refused with Code 36 instead of being a no-op.
+
+    ``system.projections`` is the obvious source but the indexer user has no
+    SELECT grant on it (Code 497, verified 2026-10-23), so the existence check
+    reads the table DDL instead — metadata only, no mutation pool, and the
+    writer already holds the privilege it needs to write the table.
+
+    Returns:
+        Projection names currently defined. Empty when the DDL cannot be
+        read — the caller then falls back to attempting the DDL rather than
+        assuming the projections are absent.
+    """
+    try:
+        result = ch_client.execute(f"SHOW CREATE TABLE {CH_TABLE}")
+    except Exception as exc:  # noqa: BLE001 — metadata read is best-effort
+        logger.debug("wallet_projection_ddl_unavailable", error=str(exc)[:80])
+        return set()
+    ddl = " ".join(str(row[0]) for row in _rows(result) if row)
+    return {name for _, _, name in _WALLET_PROJECTIONS if re.search(rf"\bPROJECTION\s+{re.escape(name)}\b", ddl)}
+
+
 async def ensure_wallet_projection(
     ch_client: Any,
     materialize_existing: bool = False,
@@ -102,6 +148,10 @@ async def ensure_wallet_projection(
     are served from an address-keyed copy instead of a full scan. This is
     electrs' key-as-record pattern: the projection's primary ordering IS
     the query answer.
+
+    Existence is resolved from ``system.projections`` first, so an
+    already-present projection costs one SELECT and zero mutation-class DDL
+    (the Code 36 storm path).
 
     Args:
         ch_client: ClickHouse client (anything with ``execute``).
@@ -126,17 +176,25 @@ async def ensure_wallet_projection(
         )
         return True
 
+    existing = _existing_projections(ch_client)
+    missing = [spec for spec in _WALLET_PROJECTIONS if spec[2] not in existing]
+    if not missing:
+        logger.info(
+            "wallet_projection_present",
+            table=CH_TABLE,
+            projections=(WALLET_OUT_PROJECTION, WALLET_IN_PROJECTION),
+        )
+        _ddl_attempts = 0
+        metrics_incr("wallet_projection_ready")
+        return True
+
     try:
-        statements = [
-            _projection_ddl("from_address", "out", WALLET_OUT_PROJECTION),
-            _projection_ddl("to_address", "in", WALLET_IN_PROJECTION),
-        ]
-        for stmt in statements:
-            ch_client.execute(stmt)
+        for address_column, direction, projection in missing:
+            ch_client.execute(_projection_ddl(address_column, direction, projection))
         logger.info(
             "wallet_projection_ensured",
             table=CH_TABLE,
-            projections=(WALLET_OUT_PROJECTION, WALLET_IN_PROJECTION),
+            created=[spec[2] for spec in missing],
         )
         _ddl_attempts = 0
         metrics_incr("wallet_projection_ready")
