@@ -278,13 +278,23 @@ def get(name: str) -> float:
     return float(counter.get())
 
 
-def set_gauge(name: str, value: float) -> None:
+def set_gauge(name: str, value: float, **labels: str) -> None:
     """Set a named gauge, creating it lazily if unknown.
+
+    Accepts label values because the chain-lag family is per-chain:
+    ``set_gauge("lite_indexer_chain_lag_blocks", n, chain="bsc")``. Before
+    2026-10-23 this raised ``TypeError``, so every lag/stalled/lagging
+    sample was silently dropped and only a stray ``chain="none"`` series
+    survived — the same family the bsc stall should have paged on.
 
     Args:
         name: Gauge name (e.g. 'rpc_consensus_effective_rate').
         value: Absolute value to store.
+        **labels: Label values (e.g. ``chain="bsc"``); none = unlabeled.
     """
+    if labels:
+        set_labeled_gauge(name, value, **labels)
+        return
     gauge_obj = _GAUGES.get(name)
     if gauge_obj is None:
         gauge_obj = _make_gauge(name)

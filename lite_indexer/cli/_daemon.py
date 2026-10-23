@@ -184,6 +184,7 @@ def export_global_metrics() -> None:
     from lite_indexer.indexer._resource_guards import get_cgroup_memory_mb, get_process_rss_mb
     from lite_indexer.rpc import is_endpoint_banned  # facade exports it in __all__
     from lite_indexer.rpc.health import is_endpoint_healthy
+    from lite_indexer.rpc.health_logs import logs_probe_verdict
     from lite_indexer.rpc.ledger import LEDGER
 
     metrics.set_gauge("lite_indexer_rss_bytes", get_process_rss_mb() * 1024 * 1024)
@@ -195,7 +196,20 @@ def export_global_metrics() -> None:
             metrics.set_labeled_gauge("lite_indexer_quota_consumed_pct", float(consumed), provider=provider)
 
     for chain, endpoints in GET_LOGS_ENDPOINTS.items():
-        healthy = sum(1 for endpoint in endpoints if not is_endpoint_banned(endpoint) and is_endpoint_healthy(endpoint))
+        # 2026-10-23 bsc incident: "healthy" must mean "can serve the logs for
+        # the range we need", not "answers eth_blockNumber". Every bsc endpoint
+        # answered liveness while all of them refused eth_getLogs, so this
+        # gauge read 8/13 on a pool with ZERO usable endpoints and the
+        # LiteIndexerRpcPoolExhausted rule (which also excluded bsc) stayed mute.
+        # The getLogs verdict wins whenever it exists; liveness is the fallback
+        # for endpoints the monitor has not probed yet.
+        healthy = sum(
+            1
+            for endpoint in endpoints
+            if not is_endpoint_banned(endpoint)
+            and is_endpoint_healthy(endpoint)
+            and logs_probe_verdict(endpoint) is not False
+        )
         metrics.set_labeled_gauge("lite_indexer_rpc_pool_healthy_endpoints", healthy, chain=chain)
 
 
@@ -218,9 +232,12 @@ async def _metrics_gauge_loop(indexers: list[LiteIndexer], interval: float) -> N
     touching the sync cycles. Any failure is logged and swallowed — metrics
     are observability, never a reason to stop indexing.
     """
+    from lite_indexer.metrics_ingest_age import export_ingest_age
+
     while True:
         try:
             export_global_metrics()
+            export_ingest_age([indexer.chain for indexer in indexers])
             for indexer in list(indexers):
                 export_chain_metrics(indexer)
         except Exception as exc:  # noqa: BLE001 — metrics must never kill the daemon

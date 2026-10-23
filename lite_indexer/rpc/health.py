@@ -24,6 +24,7 @@ from lite_indexer.metrics import incr as metrics_incr
 from lite_indexer.rpc import user_agent
 from lite_indexer.rpc.budgets import budget_available
 from lite_indexer.rpc.capabilities import is_logs_capability_failure
+from lite_indexer.rpc.health_logs import PROBE_SPAN_BLOCKS, probe_logs_range
 
 logger = get_logger(__name__)
 
@@ -281,6 +282,33 @@ def is_endpoint_healthy(endpoint: str) -> bool:
 # ── Periodic Health Monitor ───────────────────────────────────────────
 
 
+def _pending_from_block(chain: str) -> int | None:
+    """First block the sync loop for ``chain`` will request next.
+
+    Reads the durable cursor directly (no StateManager logging) so the
+    probe measures the real pending range instead of a synthetic tip span.
+    """
+    from lite_indexer.config import STATE_DIR
+
+    path = STATE_DIR / f"lite_{chain}.json"
+    try:
+        return int(json.loads(path.read_text())["last_block"]) + 1
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+async def _probe_tip(endpoint: str, timeout: float) -> int | None:
+    """Read the chain tip, used only when no cursor exists yet."""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout), headers=user_agent.rpc_headers()) as client:
+            resp = await client.post(
+                endpoint, json={"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []}
+            )
+            return int(resp.json()["result"], 16)
+    except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+        return None
+
+
 async def _probe_endpoint(endpoint: str, timeout: float) -> int:
     """Light liveness probe for a single RPC endpoint (eth_blockNumber).
 
@@ -371,9 +399,24 @@ async def monitor_endpoint_health(
             up: list[str] = []
             down: list[str] = []
             rate_limited: list[str] = []
+            # 2026-10-23 bsc incident: liveness alone is a lie. Every
+            # configured BSC endpoint answered eth_blockNumber while none
+            # could serve eth_getLogs for the pending range (pruned history,
+            # 25-block caps, 429s, archive-token walls). Probe the span the
+            # sync loop asks for next — that is the capability that matters.
+            pending_from = _pending_from_block(chain)
+            tip = await _probe_tip(endpoints[0], timeout) if pending_from is None else None
             for url in endpoints:
                 status = await _probe_endpoint(url, timeout)
                 ok = status == 200
+                # The getLogs verdict is recorded but NEVER turns into a
+                # ban/circuit: a capability refusal (pruned history, range
+                # cap) is a property of the endpoint, not a transient fault,
+                # and banning on it would deepen a chain's outage. It feeds
+                # the pool gauge and selection penalty only.
+                if ok:
+                    span_from = pending_from if pending_from is not None else max(0, (tip or 0) - PROBE_SPAN_BLOCKS)
+                    await probe_logs_range(url, span_from, span_from + PROBE_SPAN_BLOCKS - 1, timeout=timeout)
                 _set_health(url, ok)
                 if ok:
                     up.append(url)
