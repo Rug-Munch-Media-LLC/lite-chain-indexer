@@ -8,7 +8,7 @@
 **Clone over Nostr:** `git clone nostr://npub1e97559tn2j6j02shalmn5x6xv5jt8ejlclh6sta8nln0n55whwtszyrqud/git.cryptorugmunch.com/lite-chain-indexer` (GRASP)
 
 **The self-hosted, zero-cost, multi-chain blockchain indexer.**
-Index transfers, DEX swaps, deployer activity, and internal-transfer traces across **21 networks (20 EVM-family chains including Tron, plus Solana)** using **only free public RPCs** out of the box. Zero infrastructure cost. Zero API keys required. Runs in roughly **1–3 GB RAM**, bounded by a hard memory-recycle ceiling that restarts the daemon before it can grow unbounded. **283M indexed EVM transfers (+628M internal) on a $5 VPS.** The chain registry defines 18; the live daemon runs 16 of them. Optional authenticated RPCs can be layered in via the private overlay for extra throughput.
+Index transfers, DEX swaps, deployer activity, and internal-transfer traces across **21 networks (20 EVM-family chains including Tron, plus Solana)** using **only free public RPCs** out of the box. Zero infrastructure cost. Zero API keys required. Runs in roughly **1–3 GB RAM**, bounded by a hard memory-recycle ceiling that restarts the daemon before it can grow unbounded. **283M indexed EVM transfers (+628M internal) on a $5 VPS.** The chain registry defines 21; the live daemon runs all 21 of them. Optional authenticated RPCs can be layered in via the private overlay for extra throughput.
 
 [![CI](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml/badge.svg?branch=main)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/badge/version-v1.3.0-blue.svg)](https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/tags)
