@@ -180,11 +180,7 @@ def export_global_metrics() -> None:
     ledger, and the endpoint pool. Called periodically from
     ``_metrics_gauge_loop`` — never raises into the daemon.
     """
-    from lite_indexer.chains import GET_LOGS_ENDPOINTS
     from lite_indexer.indexer._resource_guards import get_cgroup_memory_mb, get_process_rss_mb
-    from lite_indexer.rpc import is_endpoint_banned  # facade exports it in __all__
-    from lite_indexer.rpc.health import is_endpoint_healthy
-    from lite_indexer.rpc.health_logs import logs_probe_verdict
     from lite_indexer.rpc.ledger import LEDGER
 
     metrics.set_gauge("lite_indexer_rss_bytes", get_process_rss_mb() * 1024 * 1024)
@@ -195,38 +191,13 @@ def export_global_metrics() -> None:
         if consumed is not None:
             metrics.set_labeled_gauge("lite_indexer_quota_consumed_pct", float(consumed), provider=provider)
 
-    from lite_indexer.rpc.capabilities import peek_capability
+    # Pool gauges live in rpc/pool_metrics.py (producer fix, 2026-10-23):
+    # "healthy" is USABLE (proven to serve logs) and carries the real span a
+    # working endpoint serves, instead of counting liveness or an unprobed
+    # shape as zero/healthy.
+    from lite_indexer.rpc.pool_metrics import publish_pool_metrics
 
-    for chain, endpoints in GET_LOGS_ENDPOINTS.items():
-        # 2026-10-23 bsc incident: "healthy" must mean "verified to serve the
-        # logs for the range we need", not "answers eth_blockNumber" and not
-        # "not yet proven broken". Every bsc endpoint answered liveness while
-        # only ONE could serve eth_getLogs over the real pending span, so this
-        # gauge read 8/13 (then 4/11, counting never-probed endpoints as
-        # healthy) on a pool with a single usable endpoint, and the
-        # LiteIndexerRpcPoolExhausted rule stayed mute for 48 days.
-        #
-        # An UNPROBED endpoint now counts as NOT healthy: unknown capacity is
-        # the exact failure mode this gauge exists to expose. A chain reads 0
-        # until its capability probe lands, which is the truth.
-        healthy = 0
-        max_span = 0
-        for endpoint in endpoints:
-            if is_endpoint_banned(endpoint) or not is_endpoint_healthy(endpoint):
-                continue
-            if logs_probe_verdict(endpoint) is False:
-                continue
-            record = peek_capability(endpoint)
-            if record is None or record.logs_capable is not True:
-                continue
-            healthy += 1
-            max_span = max(max_span, record.getlogs_max_range)
-        metrics.set_labeled_gauge("lite_indexer_rpc_pool_healthy_endpoints", healthy, chain=chain)
-        # Catch-up speed signal. bsc's only working endpoint serves ~20 blocks
-        # per eth_getLogs call (10k-result cap), so 9.2M blocks needs ~460k
-        # calls. Without this gauge the pool "looks healthy" while the chain
-        # advances 20 blocks at a time - the silent half of the 48-day stall.
-        metrics.set_labeled_gauge("lite_indexer_rpc_pool_max_span", max_span, chain=chain)
+    publish_pool_metrics()
 
 
 def export_chain_metrics(indexer: LiteIndexer) -> None:

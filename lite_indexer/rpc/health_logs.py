@@ -49,9 +49,22 @@ def clear_logs_verdicts() -> None:
     _logs_reason.clear()
 
 
-def _record(endpoint: str, ok: bool, reason: str) -> None:
+def _record(endpoint: str, ok: bool, reason: str, *, chain: str = "", span_blocks: int = PROBE_SPAN_BLOCKS) -> None:
+    """Store the verdict, then persist it as a capability record.
+
+    Persisting here is the point: a probe that passed must leave a record
+    (``logs_capable`` + a measured span), otherwise the pool gauge and the
+    range planner see "unknown capability" and treat a working endpoint as
+    unusable — the keyed-Ankr failure mode of 2026-10-23.
+    """
     _logs_ok[endpoint] = ok
     _logs_reason[endpoint] = reason
+    try:
+        from lite_indexer.rpc.logs_capability_persist import note_logs_probe
+
+        note_logs_probe(endpoint, chain, span_blocks, ok, reason)
+    except Exception:  # noqa: BLE001 — recording must never break probing
+        logger.debug("logs_capability_record_failed", endpoint=endpoint[:60])
 
 
 async def probe_logs_range(
@@ -59,6 +72,7 @@ async def probe_logs_range(
     from_block: int,
     to_block: int,
     timeout: float = 8.0,
+    chain: str = "",
 ) -> tuple[bool, str]:
     """Fetch one tiny eth_getLogs span and classify the answer.
 
@@ -74,10 +88,13 @@ async def probe_logs_range(
         from_block: First block of the span (the real pending range).
         to_block: Last block of the span.
         timeout: Per-probe HTTP timeout.
+        chain: Chain the endpoint serves (recorded on the capability record).
 
     Returns:
         ``(ok, reason)``. Reason is ``"ok"`` or the provider's rejection.
     """
+    span_blocks = max(1, int(to_block) - int(from_block) + 1)
+    verdict_kw = {"chain": chain, "span_blocks": span_blocks}
     body = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -89,27 +106,27 @@ async def probe_logs_range(
             resp = await client.post(endpoint, json=body)
     except (httpx.HTTPError, ConnectionError, OSError, TimeoutError) as exc:
         reason = f"transport: {type(exc).__name__}"
-        _record(endpoint, False, reason)
+        _record(endpoint, False, reason, **verdict_kw)
         return False, reason
 
     if resp.status_code != 200:
         reason = f"http {resp.status_code}"
-        _record(endpoint, False, reason)
+        _record(endpoint, False, reason, **verdict_kw)
         return False, reason
     try:
         payload = resp.json()
     except ValueError:
-        _record(endpoint, False, "non-json body")
+        _record(endpoint, False, "non-json body", **verdict_kw)
         return False, "non-json body"
 
     error = payload.get("error") if isinstance(payload, dict) else None
     if error:
         reason = f"rpc {error.get('code')}: {str(error.get('message'))[:90]}"
-        _record(endpoint, False, reason)
+        _record(endpoint, False, reason, **verdict_kw)
         return False, reason
     if not isinstance(payload.get("result"), list):
-        _record(endpoint, False, "no result list")
+        _record(endpoint, False, "no result list", **verdict_kw)
         return False, "no result list"
 
-    _record(endpoint, True, "ok")
+    _record(endpoint, True, "ok", **verdict_kw)
     return True, "ok"

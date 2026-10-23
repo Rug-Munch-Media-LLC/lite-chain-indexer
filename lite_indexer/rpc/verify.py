@@ -44,6 +44,7 @@ from lite_indexer.rpc.capabilities import (
 )
 from lite_indexer.rpc.client import RpcClient
 from lite_indexer.rpc.health import verify_endpoints_for_chain
+from lite_indexer.rpc.health_logs import PROBE_SPAN_BLOCKS
 from lite_indexer.rpc.pool import get_best_endpoint
 
 logger = get_logger(__name__)
@@ -153,14 +154,18 @@ async def _probe_and_record_capabilities(
         # Warm cache: reuse the persisted verdict + measured range instead of
         # re-running the probes. This is the whole point of persisting gating
         # state (D2) — a restart inside the interval must not re-probe.
-        if existing.logs_capable is True:
+        # A span at or below the monitor probe floor (5 blocks) is a FLOOR,
+        # not a measurement: the 5-minute health monitor proves usability but
+        # cannot discover the endpoint's real ceiling. Trusting it froze bsc's
+        # catch-up number at 5 while the ladder had measured 10. Re-run the
+        # ladder unless the stored span is a real measurement.
+        if existing.logs_capable is True and existing.getlogs_max_range > PROBE_SPAN_BLOCKS:
             return GetLogsCapability.CAPABLE
         if existing.logs_capable is False:
             return GetLogsCapability.CANNOT_SERVE_LOGS
-        if existing.getlogs_max_range > 0:
-            # Range is known but the broad verdict was transient/unknown:
-            # keep TRANSIENT (never exclude on a timeout) and reuse the
-            # cached range — no ladder re-run.
+        if existing.logs_capable is None and existing.getlogs_max_range > PROBE_SPAN_BLOCKS:
+            # Range measured, broad verdict transient/unknown: keep TRANSIENT
+            # (never exclude on a timeout) and reuse the range.
             return GetLogsCapability.TRANSIENT
 
     try:

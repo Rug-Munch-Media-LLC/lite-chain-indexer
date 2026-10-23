@@ -416,7 +416,9 @@ async def monitor_endpoint_health(
                 # the pool gauge and selection penalty only.
                 if ok:
                     span_from = pending_from if pending_from is not None else max(0, (tip or 0) - PROBE_SPAN_BLOCKS)
-                    await probe_logs_range(url, span_from, span_from + PROBE_SPAN_BLOCKS - 1, timeout=timeout)
+                    await probe_logs_range(
+                        url, span_from, span_from + PROBE_SPAN_BLOCKS - 1, timeout=timeout, chain=chain
+                    )
                 _set_health(url, ok)
                 if ok:
                     up.append(url)

@@ -376,7 +376,19 @@ class ResponseCacheDB:
                 conn.commit()
             return True
         except Exception as exc:  # noqa: BLE001
-            logger.debug("gating_state_put_failed", kind=kind, error=str(exc)[:100])
+            # WARNING, not debug: this is how 2026-10-16..23 happened — the
+            # capability/health/ban store was read-only (root-owned volume,
+            # uid 1000 process) and every verdict was silently dropped, so
+            # each restart re-derived "unknown capability" and the pool gauge
+            # read 0. Log once per kind per process, then stay quiet.
+            if kind not in _WRITE_FAILED_KINDS:
+                _WRITE_FAILED_KINDS.add(kind)
+                logger.warning(
+                    "gating_state_put_failed",
+                    kind=kind,
+                    error=str(exc)[:120],
+                    path=self.path[:80],
+                )
             return False
 
     def state_delete(self, kind: str, key: str) -> None:
@@ -425,6 +437,10 @@ class ResponseCacheDB:
 
 
 # ── Process-wide singleton ─────────────────────────────────────────────
+
+#: Gating-state kinds whose write already failed in this process (one
+#: warning each — never a per-write log storm).
+_WRITE_FAILED_KINDS: set[str] = set()
 
 _DB: ResponseCacheDB | None = None
 _OVERRIDE_PATH: str | None = None

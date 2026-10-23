@@ -186,6 +186,9 @@ _LABELED_GAUGE_SPECS: dict[str, tuple[str, ...]] = {
     # reads 20 while 9.2M blocks behind: the catch-up-rate signal that was
     # missing while the pool gauge showed "healthy".
     "lite_indexer_rpc_pool_max_span": ("chain",),
+    # Summed usable span per chain — total blocks of log capacity per call.
+    # Honest capacity: one 10-block endpoint reads 10, not "healthy".
+    "lite_indexer_rpc_pool_usable_span": ("chain",),
     # Usable (broad-getLogs-capable) endpoints per chain — the log-path pool
     # after capability exclusions (publicnode-class tip-only endpoints are
     # excluded from the log path).

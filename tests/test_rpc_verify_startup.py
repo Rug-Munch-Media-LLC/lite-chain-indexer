@@ -24,7 +24,13 @@ import pytest
 
 from lite_indexer.rpc import health as hh
 from lite_indexer.rpc import verify as vf
-from lite_indexer.rpc.capabilities import CapabilityRecord, GetLogsCapability, set_capability
+from lite_indexer.rpc.capabilities import (
+    CapabilityRecord,
+    GetLogsCapability,
+    get_capability,
+    set_capability,
+)
+from lite_indexer.rpc.health_logs import PROBE_SPAN_BLOCKS
 
 
 @pytest.fixture(autouse=True)
@@ -185,7 +191,15 @@ async def test_cache_hit_within_interval_skips_reprobing():
 @pytest.mark.asyncio
 async def test_capability_record_cache_skips_reprobing():
     ep = "https://cap-cached.example"
-    set_capability(CapabilityRecord(endpoint=ep, chain="ethereum", logs_capable=True, probed_at=time.time()))
+    set_capability(
+        CapabilityRecord(
+            endpoint=ep,
+            chain="ethereum",
+            logs_capable=True,
+            getlogs_max_range=10,
+            probed_at=time.time(),
+        )
+    )
     calls = 0
 
     async def _probe(*args, **kwargs):
@@ -197,6 +211,42 @@ async def test_capability_record_cache_skips_reprobing():
         status = await vf._probe_and_record_capabilities(object(), ep, "ethereum", 100)  # noqa: SLF001
     assert status is GetLogsCapability.CAPABLE
     assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_floor_span_is_not_a_measurement_and_reprobes():
+    """A 5-block monitor floor must not freeze the span (bsc read 5, real 10)."""
+    ep = "https://cap-floor.example"
+    set_capability(
+        CapabilityRecord(
+            endpoint=ep,
+            chain="bsc",
+            logs_capable=True,
+            getlogs_max_range=PROBE_SPAN_BLOCKS,
+            probed_at=time.time(),
+        )
+    )
+    calls = 0
+
+    async def _probe(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return GetLogsCapability.CAPABLE
+
+    async def _archive(*args, **kwargs):
+        return False
+
+    async def _range(*args, **kwargs):
+        return 10
+
+    with (
+        patch("lite_indexer.rpc.verify.probe_archive", _archive),
+        patch("lite_indexer.rpc.verify.probe_getlogs_range", _range),
+        patch("lite_indexer.rpc.verify.probe_logs_capability", _probe),
+    ):
+        await vf._probe_and_record_capabilities(object(), ep, "bsc", 100)  # noqa: SLF001
+    assert calls == 1
+    assert get_capability(ep).getlogs_max_range == 10
 
 
 @pytest.mark.asyncio
