@@ -178,8 +178,14 @@ _LABELED_GAUGE_SPECS: dict[str, tuple[str, ...]] = {
     # Per-chain latest persisted block (BootstrapNeeded alert + dashboards).
     "lite_indexer_state_last_block": ("chain",),
     "lite_indexer_last_block": ("chain",),
-    # Healthy RPC endpoints per chain (RpcPoolExhausted alert).
+    # Healthy RPC endpoints per chain (RpcPoolExhausted alert). "Healthy"
+    # means PROVEN to serve eth_getLogs (capability verdict), not "answers
+    # eth_blockNumber" - see the 2026-10-23 bsc incident.
     "lite_indexer_rpc_pool_healthy_endpoints": ("chain",),
+    # Largest eth_getLogs span any healthy endpoint serves, per chain. bsc
+    # reads 20 while 9.2M blocks behind: the catch-up-rate signal that was
+    # missing while the pool gauge showed "healthy".
+    "lite_indexer_rpc_pool_max_span": ("chain",),
     # Usable (broad-getLogs-capable) endpoints per chain — the log-path pool
     # after capability exclusions (publicnode-class tip-only endpoints are
     # excluded from the log path).
