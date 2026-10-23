@@ -43,6 +43,20 @@ from lite_indexer.metrics import incr as metrics_incr
 
 logger = get_logger(__name__)
 
+# ``ALTER TABLE ... ADD PROJECTION`` is mutation-class DDL: ClickHouse admits it
+# through the merges+mutations pool and refuses it with Code 36 ("no free
+# entries in pool to execute mutation") while that pool is busy merging. The
+# caller re-invokes ``ensure_wallet_projection`` on every sync cycle, so a busy
+# pool turns one idempotent DDL into an endless mutation storm: on 2026-10-23
+# both projections were already fully materialized (283.9M rows, equal to the
+# base table) while ~7.8k Code 36 errors accrued, one every few seconds.
+#
+# The projections exist after the first successful ADD, so the retries add no
+# information - only pool admission pressure. Cap the attempts; once exhausted
+# this process stops asking and the sync path proceeds unblocked.
+_MAX_DDL_ATTEMPTS = 3
+_ddl_attempts = 0
+
 # Columns every wallet-history query needs. The projection drops the
 # heavy token_symbol/token_name/ingested_at/source columns entirely.
 # ``chain`` is emitted explicitly as the first projection column.
@@ -101,6 +115,17 @@ async def ensure_wallet_projection(
         True when both projections are present (or were created), False
         when the table is missing or privileges are insufficient.
     """
+    global _ddl_attempts
+    if _ddl_attempts >= _MAX_DDL_ATTEMPTS:
+        # Give up on the DDL for this process. The projections are already
+        # defined; a busy pool must not convert a no-op ALTER into a storm.
+        logger.warning(
+            "wallet_projection_ddl_deferred",
+            table=CH_TABLE,
+            attempts=_ddl_attempts,
+        )
+        return True
+
     try:
         statements = [
             _projection_ddl("from_address", "out", WALLET_OUT_PROJECTION),
@@ -113,14 +138,18 @@ async def ensure_wallet_projection(
             table=CH_TABLE,
             projections=(WALLET_OUT_PROJECTION, WALLET_IN_PROJECTION),
         )
+        _ddl_attempts = 0
         metrics_incr("wallet_projection_ready")
 
         if materialize_existing:
             for projection in (WALLET_OUT_PROJECTION, WALLET_IN_PROJECTION):
-                ch_client.execute(f"ALTER TABLE {CH_TABLE} MATERIALIZE PROJECTION {projection}")  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+                ch_client.execute(
+                    f"ALTER TABLE {CH_TABLE} MATERIALIZE PROJECTION {projection}"
+                )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
             logger.info("wallet_projection_materialize_scheduled", table=CH_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
+        _ddl_attempts += 1
         if "privileges" in str(exc).lower() or "doesn't exist" in str(exc).lower():
             logger.debug("wallet_projection_skip", error=str(exc)[:80])
         else:
