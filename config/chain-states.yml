@@ -40,4 +40,34 @@
 # The four multi-day gaps were STARVATION (cycle 780-1270 s x 16 chains / 3
 # slots), not death: every one of them wrote rows again as soon as it won a
 # slot. Cadence is the fix; parking them would have hidden the defect.
+# AUDIT 2026-10-24 (slot quantum, evidence: slot_released/sync_cycle_end
+# telemetry + per-chain ingest age, window 19:20:20Z-20:20:20Z).
+#
+# ROOT CAUSE of the 12-starved-chains incident: one sync CYCLE held a slot,
+# and a cycle is up to BATCH_SIZE/slice = 1000/50 = 20 slices. Measured slice
+# cost ~55-72 s, so a cycle ran 780-1600 s while MAX_CONCURRENT_CHAINS=3
+# served 15 non-exempt chains: release() was reachable (try/finally always
+# ran) but arrived only once per ~1100 s, so the queue depth grew to 12 and
+# grants dried up. The slot bounded the wrong quantum.
+#
+# FIX: SYNC_SLICE_BUDGET_S (60 s) makes the cycle return at a slice
+# boundary; every slice already checkpoints state, so yielding costs no
+# progress. Measured holds fell to 106-146 s and rotation to ~390 s.
+#
+# A budget alone was NOT sufficient: it is checked BETWEEN slices, so one
+# 50-block getLogs slice that took 430 s on ethereum (406 s on bsc) still
+# dominated a rotation and the cheap chains (scroll: 2.8 s/slice) waited
+# ~1260 s between turns -> 1415 s stale. Production therefore runs
+# SYNC_CHECKPOINT_SLICE=10 (86 s worst quantum), so a rotation is bounded by
+# chain COUNT, not by the slowest RPC.
+#
+# TRON is NOT parked: its five keyless endpoints answer getnowblock with
+# HTTP 200 (api.trongrid.io, tron.api.pocket.network, tron-rpc.publicnode.com
+# probed 2026-10-24) and it wrote 1200 rows in 5 min once granted a slot.
+# The earlier healthy_ep=0 was a probe artifact, not a dead chain.
+#
+# BSC is NOT parked: 2755 rows in the window, age 380 s.
+#
+# No chain qualifies as parked. Parking any of them would hide the defect
+# the rotation fix removed.
 parked: {}
