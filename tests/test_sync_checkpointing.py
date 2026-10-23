@@ -66,11 +66,11 @@ async def test_env_override_honored():
 def test_slice_size_default_override_and_junk():
     original = os.environ.pop("SYNC_CHECKPOINT_SLICE", None)
     try:
-        assert _checkpoint.slice_size() == _checkpoint.DEFAULT_SYNC_CHECKPOINT_SLICE == 50
+        assert _checkpoint.slice_size() == _checkpoint.DEFAULT_SYNC_CHECKPOINT_SLICE == 10
         os.environ["SYNC_CHECKPOINT_SLICE"] = "7"
         assert _checkpoint.slice_size() == 7
         os.environ["SYNC_CHECKPOINT_SLICE"] = "not-a-number"
-        assert _checkpoint.slice_size() == 50
+        assert _checkpoint.slice_size() == 10
     finally:
         if original is None:
             os.environ.pop("SYNC_CHECKPOINT_SLICE", None)

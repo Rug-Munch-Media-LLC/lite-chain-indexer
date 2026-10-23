@@ -24,7 +24,14 @@ logger = get_logger(__name__)
 # Default sub-slice size for per-slice checkpointing. Overridable with the
 # ``SYNC_CHECKPOINT_SLICE`` env var, read at call time so it can be retuned
 # without a redeploy.
-DEFAULT_SYNC_CHECKPOINT_SLICE = 50
+#: Blocks per slice. 50 was chosen when a slice only had to be safe to
+#: interrupt; it is also the SLOT QUANTUM, and 50 blocks of logs costs
+#: 300-600 s on a busy chain (measured 2026-10-24: ethereum median hold
+#: 671 s, bsc 598 s). With MAX_CONCURRENT_CHAINS=3 and 15 non-exempt chains
+#: that is a ~2200 s round, so a chain went 1761 s between turns. Slices of
+#: 10 blocks cut the quantum ~5x, keeping a full round under the 900 s
+#: staleness bound (15 / 3 x ~150 s) without raising concurrency.
+DEFAULT_SYNC_CHECKPOINT_SLICE = 10
 
 # Statuses that always stop the cycle: the range itself is invalid/rewound
 # or ClickHouse is unwritable — continuing to the next slice cannot help.
@@ -37,7 +44,7 @@ SOFT_ABORT_STATUSES = frozenset({"fetch_failed", "ch_write_failed", "dex_write_f
 
 
 def slice_size() -> int:
-    """Resolve ``SYNC_CHECKPOINT_SLICE`` (default 50, floored at 1)."""
+    """Resolve ``SYNC_CHECKPOINT_SLICE`` (default 10, floored at 1)."""
     raw = os.environ.get("SYNC_CHECKPOINT_SLICE")
     if raw is None:
         return DEFAULT_SYNC_CHECKPOINT_SLICE
