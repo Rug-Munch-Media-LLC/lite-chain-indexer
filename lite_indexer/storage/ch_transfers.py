@@ -160,7 +160,11 @@ class TransfersMixin:
             events: Parsed transfer event dicts.
 
         Returns:
-            Number of rows inserted (0 on failure/unavailable).
+            Number of events HANDLED: rows inserted, or — when every event in
+            the batch was already durable — the count of durable events. 0 is
+            reserved for a genuine insert failure/unavailable ClickHouse, so
+            the sync loop's ``ch_inserted == 0`` guard keeps its data-loss
+            meaning.
         """
         if not events:
             return 0
@@ -190,8 +194,15 @@ class TransfersMixin:
             logger.info("clickhouse_dedup_skipped", chain=chain, skipped=skipped, kept=len(rows))
 
         if not rows:
-            # All durable (post-rewind replay): falsy count == "handled", so the
-            # range advances without falsely claiming a row was written.
-            return 0
+            # All durable (post-rewind replay) — a HANDLED range, not a failed
+            # write. Returning 0 here made the sync loop's data-loss guard
+            # (``ch_inserted == 0`` → ``sync_aborted_ch_write_failed``) abort an
+            # idempotent replay and re-fetch the same range: arbitrum stalled
+            # ~20 min per replay on 2026-10-23, logging ``dedup_skipped kept=0``
+            # and never a ``clickhouse_insert_failed``. Report the durable
+            # events as handled; ``_insert_transfers`` still returns 0 when the
+            # INSERT itself fails.
+            logger.info("clickhouse_all_durable", chain=chain, handled=len(unique))
+            return len(unique)
 
         return _insert_transfers(client, chain, rows)
