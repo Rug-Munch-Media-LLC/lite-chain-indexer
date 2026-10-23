@@ -130,10 +130,10 @@ class SonarxLakeSource:
                 con = duckdb.connect()
                 con.execute("INSTALL httpfs; LOAD httpfs;")
                 con.execute("SET enable_progress_bar = false;")
-                con.execute("SET s3_region = 'us-east-1';")
+                con.execute("SET s3_region = 'us-east-2';")
                 con.execute(
                     "CREATE OR REPLACE SECRET s3_anon "
-                    "(TYPE S3, PROVIDER config, REGION 'us-east-1', KEY_ID '', SECRET '')"
+                    "(TYPE S3, PROVIDER config, REGION 'us-east-2', KEY_ID '', SECRET '')"
                 )
                 self._con = con
         return self._con
