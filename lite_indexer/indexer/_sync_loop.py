@@ -28,17 +28,11 @@ from lite_indexer.config import (
 )
 from lite_indexer.indexer._attest import attest_range
 from lite_indexer.indexer._base import IndexerMixinBase
-from lite_indexer.indexer._checkpoint import (
-    HARD_ABORT_STATUSES,
-    SOFT_ABORT_STATUSES,
-    iter_slices,
-    record_slice_checkpoint,
-    slice_size,
-)
 from lite_indexer.indexer._dex_phase import note_dex_timeout, resolve_dex_events
 from lite_indexer.indexer._head_pool_start import start_head_pool as start_head_pool_bounded
 from lite_indexer.indexer._phase_guard import PhaseTimeoutError, guarded_phase
 from lite_indexer.indexer._reorg_phase import ReorgPhaseMixin
+from lite_indexer.indexer._slice_runner import run_slices
 from lite_indexer.indexer._writers import (
     flush_solana_launch_bundles,
     flush_tron_launch,
@@ -59,12 +53,6 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
     Holds the main sync cycle: block range determination, event fetching,
     persistence, state save, and all the error/reorg guards.
     """
-
-    #: Wall-clock budget for ONE cycle's slices before it yields its slot.
-    #: Sized so a full 16-chain round at MAX_CONCURRENT_CHAINS=3 stays under
-    #: the 900 s staleness bound (16 / 3 x 150 s = 800 s), while a healthy
-    #: cycle (median 72-130 s) still finishes in one turn.
-    SYNC_SLICE_BUDGET_S = float(os.environ.get("SYNC_SLICE_BUDGET_S", "150"))
 
     # ── Reorg sentinel ─────────────────────────────────────────────────
     # Defined at module level in indexer/__init__.py; re-declared here so
@@ -290,55 +278,12 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         summary: dict[str, Any],
         start_time: float,
     ) -> dict[str, Any]:
-        """Process the cycle's block range as checkpointed sub-slices.
-
-        Each sub-slice persists state + high-water on completion inside
-        ``_sync_range_body``, so a later phase timeout keeps every earlier
-        slice instead of discarding the whole cycle's fetch.
-        """
+        """Resolve the block range, then run its slices (see _slice_runner)."""
         block_range = await self._determine_block_range(summary)
         if block_range is None:
             self._save_current_state()
             return summary
-        from_block, to_block = block_range
-        slices_done = 0
-        last_from, last_to = from_block, from_block - 1
-        for slice_from, slice_to in iter_slices(from_block, to_block, slice_size()):
-            # SLICE TIME BUDGET: a cycle must YIELD its concurrency slot, not
-            # swallow the whole backlog. A chain 3 h behind needs ~40 slices;
-            # unbounded, that cycle held one of the three slots for minutes and
-            # the other 15 chains queued behind it (2026-10-31: 11 queued, 0
-            # granted). Every slice checkpoints state, so stopping here is free
-            # and the next turn continues from the durable checkpoint.
-            if slices_done and time.monotonic() - start_time > self.SYNC_SLICE_BUDGET_S:
-                record_slice_checkpoint(self, last_from, last_to, slices_done)
-                summary["status"] = "cycle_budget"
-                summary["slices_done"] = slices_done
-                summary["duration_seconds"] = time.monotonic() - start_time
-                logger.info(
-                    "sync_cycle_budget_yield",
-                    chain=self.chain,
-                    slices=slices_done,
-                    budget_s=self.SYNC_SLICE_BUDGET_S,
-                    remaining_blocks=to_block - last_to,
-                )
-                return summary
-            result = await self._sync_range_body(slice_from, slice_to, summary, start_time)
-            status = result.get("status")
-            if status in HARD_ABORT_STATUSES:
-                return result
-            if status in SOFT_ABORT_STATUSES:
-                # First slice failed → no advance (fail-closed). A later one
-                # failed → earlier checkpoints are durable; stop here.
-                if slices_done == 0:
-                    return result
-                record_slice_checkpoint(self, last_from, last_to, slices_done)
-                result["status"] = "slice_partial"
-                return result
-            slices_done += 1
-            last_from, last_to = slice_from, slice_to
-        record_slice_checkpoint(self, last_from, last_to, slices_done)
-        return summary
+        return await run_slices(self, self._sync_range_body, block_range, summary, start_time)
 
     async def _sync_range_body(
         self,

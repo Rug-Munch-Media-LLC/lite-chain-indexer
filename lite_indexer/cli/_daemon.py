@@ -12,6 +12,7 @@ from typing import Any
 
 from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
 from lite_indexer.chains.parallelism import chain_priority
+from lite_indexer.cli._cycle_cap import run_cycle
 from lite_indexer.cli._daemon_startup import announce_daily_cadence, install_signal_handlers
 from lite_indexer.cli._metrics_loop import metrics_gauge_loop
 from lite_indexer.cli._slot_rotation import build_rotation
@@ -76,18 +77,6 @@ async def recycle_if_over_budget(
     await asyncio.gather(*(ix.aclose() for ix in indexers), return_exceptions=True)
     logger.info("memory_recycle_exit", rss_mb=mem_mb, recycle_mb=threshold)
     os._exit(0)
-
-
-# 2026-09-21: chains exempt from the shared MAX_CONCURRENT_CHAINS
-# semaphore (dedicated lane). Solana measured ~14 slots/min effective
-# because it queued FIFO behind multi-minute EVM cycles; the chain
-# produces ~150 slots/min. Memory gating is unchanged for these chains.
-_SEMAPHORE_EXEMPT_CHAINS: frozenset[str] = frozenset({"solana"})
-
-#: Hard wall-clock cap on one sync cycle (default 600 s). Sits well above a
-#: healthy cycle (measured median 72-130 s) and below the 900 s staleness
-#: bound, so a pathological cycle costs one turn instead of the fleet.
-SYNC_CYCLE_TIMEOUT_S: float = float(os.environ.get("SYNC_CYCLE_TIMEOUT_S", "600"))
 
 
 def _watchdog_sleep(seconds: int) -> None:
@@ -322,38 +311,8 @@ async def main_daemon(
                     await asyncio.sleep(MEMORY_PAUSE_SLEEP)
                     continue
                 # Solana keeps its dedicated lane; every other chain takes a
-                # least-served-first slot, released in finally so cancellation
-                # or shutdown mid-cycle can never leak capacity.
-                if concurrency_slot is not None and chain not in _SEMAPHORE_EXEMPT_CHAINS:
-                    hold_start = time.monotonic()
-                    await concurrency_slot.acquire(chain)
-                    try:
-                        # HARD CYCLE CAP. A cycle that never returns holds its
-                        # slot forever, which defeats the fairness rotation:
-                        # 3 leaked slots starve every other chain no matter how
-                        # fair the queue is. State is checkpointed per slice,
-                        # so cancelling here loses at most the slice in flight
-                        # (the same path SIGTERM already uses).
-                        try:
-                            async with asyncio.timeout(SYNC_CYCLE_TIMEOUT_S):
-                                result = await indexer.sync_loop()
-                        except TimeoutError:
-                            logger.error(
-                                "sync_cycle_timeout",
-                                chain=chain,
-                                timeout_s=SYNC_CYCLE_TIMEOUT_S,
-                                hold_s=round(time.monotonic() - hold_start, 1),
-                            )
-                            result = {"status": "cycle_timeout", "chain": chain}
-                    finally:
-                        logger.info(
-                            "sync_cycle_end",
-                            chain=chain,
-                            hold_s=round(time.monotonic() - hold_start, 1),
-                        )
-                        concurrency_slot.release(chain)
-                else:
-                    result = await indexer.sync_loop()
+                # least-served-first slot under a hard cycle cap.
+                result = await run_cycle(concurrency_slot, chain, indexer)
                 if isinstance(result, dict) and result.get("status") == "error":
                     error_count += 1
 
@@ -463,7 +422,12 @@ async def main_daemon(
     for task in chain_tasks:
         task.cancel()
     await asyncio.gather(
-        health_task, discovery_task, metrics_task, startup_verify_task, *chain_tasks, return_exceptions=True
+        health_task,
+        discovery_task,
+        metrics_task,
+        startup_verify_task,
+        *chain_tasks,
+        return_exceptions=True,
     )
     if price_task is not None:
         await asyncio.gather(price_task, return_exceptions=True)
