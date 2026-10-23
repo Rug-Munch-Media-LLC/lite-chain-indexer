@@ -272,34 +272,30 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
         # chain's highwater.
         "https://gateway.tenderly.co/public/celo",  # T2 — Tenderly public RPC gateway — keyless, archive getLogs verified 2026-09-13
     ],
-    # ── Blast (verified 2026-09-01) ──────────────────────────────────
-    # L2, chainId 81457 (0x13e31). publicnode: chainId ✓, getLogs ✓.
+    # ── Blast (chainId 81457 / 0x13e31) ─────────────────────────────
+    # PROBED 2026-10-23: rpc.blast.io topic-only getLogs ✓ (1368 logs/500
+    # blocks). publicnode + pocket now reject topic-only getLogs (-32701 /
+    # -32602 "missing address"); the tenderly blast gateway is 404 (gone).
     "blast": [
-        "https://blast-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
-        "https://blast.publicnode.com",  # T1 — keyless publicnode canonical host — live-verified eth_chainId 2026-09-13
-        #     keyed fallback so the chain is no longer single-endpoint.
-        "https://blast.api.pocket.network",  # T3 — Pocket Network (keyless; live-verified eth_chainId 2026-09-13; getLogs returns [] which is valid on this chain)
-        "https://gateway.tenderly.co/public/blast",  # T2 — Tenderly public RPC gateway — keyless, archive getLogs verified 2026-09-13
+        "https://rpc.blast.io",  # T1 — OFFICIAL, topic-only getLogs ✓ 2026-10-23
+        "https://blast-rpc.publicnode.com",  # T2 — blockNumber ✓ only (getLogs needs address)
+        "https://blast.api.pocket.network",  # T3 — blockNumber ✓ only (getLogs needs address)
     ],
-    # ── Fraxtal (verified 2026-09-01) ────────────────────────────────
-    # L2, chainId 252. publicnode: chainId ✓, getLogs ✓.
+    # ── Fraxtal (chainId 252 / 0xfc) ────────────────────────────────
+    # PROBED 2026-10-23: rpc.frax.com + tenderly topic-only getLogs ✓
+    # (3220 logs/500 blocks). publicnode/pocket need an address filter.
     "fraxtal": [
-        "https://fraxtal-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
-        #     keyed fallback so the chain is no longer single-endpoint.
-        "https://fraxtal.api.pocket.network",  # T3 — Pocket Network (keyless, archive-capable; live-verified eth_chainId + eth_getLogs 2026-09-13)
-        "https://gateway.tenderly.co/public/fraxtal",  # T2 — Tenderly public RPC gateway — keyless, archive getLogs verified 2026-09-13
-        # 0xfc + archive eth_getLogs blocks 1..2 → real logs, 2026-09-13).
+        "https://rpc.frax.com",  # T1 — OFFICIAL, topic-only getLogs ✓ 2026-10-23
+        "https://gateway.tenderly.co/public/fraxtal",  # T2 — topic-only getLogs ✓ 2026-10-23
+        "https://fraxtal.api.pocket.network",  # T3 — getLogs needs address; blockNumber fallback
+        "https://fraxtal-rpc.publicnode.com",  # T3 — blockNumber ✓ only
     ],
-    # ── Metis (verified 2026-09-01) ──────────────────────────────────
-    # L2, chainId 1088. publicnode: chainId ✓, getLogs ✓.
+    # ── Metis (chainId 1088 / 0x440) ────────────────────────────────
+    # PROBED 2026-10-23: pocket topic-only getLogs ✓ (546 logs/500 blocks);
+    # publicnode rejects topic-only getLogs (-32701, address required).
     "metis": [
-        "https://metis-rpc.publicnode.com",  # T1 — verified live (getLogs ✓)
-        #     keyed fallback so the chain is no longer single-endpoint.
-        # T3: Pocket keyless fallback, NON-ARCHIVE for eth_getLogs ("no
-        #     source; Pocket is the non-archive tip/blockNumber fallback.
-        "https://metis.api.pocket.network",  # T3 — Pocket Network (keyless NON-archive fallback; live-verified eth_chainId 2026-09-13)
-        # eth_getLogs blocks 1..2 → real logs, 2026-09-13) — fixes metis's
-        # archive gap (Pocket here is non-archive). 3 accounts.
+        "https://metis.api.pocket.network",  # T1 — getLogs ✓ 2026-10-23
+        "https://metis-rpc.publicnode.com",  # T2 — blockNumber ✓ only
     ],
     # ── Robinhood Chain (2 endpoints, verified 2026-09-01) ────────────
     # Arbitrum Orbit L2, chainId 4663 (0x1237), native ETH. The old spec

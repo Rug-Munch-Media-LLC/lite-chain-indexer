@@ -489,10 +489,11 @@ TENDERLY_NETS: dict[str, str] = {
     "zksync": "zksync",
     "mantle": "mantle",
     "celo": "celo",
-    "blast": "blast",
     "fraxtal": "fraxtal",
 }
-TENDERLY_UNSUPPORTED = ("bsc", "scroll", "metis", "fantom", "robinhood")
+# blast dropped 2026-10-23: https://gateway.tenderly.co/public/blast → 404
+# (probed 3x); https://rpc.blast.io now serves its topic-only getLogs.
+TENDERLY_UNSUPPORTED = ("bsc", "scroll", "metis", "fantom", "robinhood", "blast")
 
 
 class TestTenderlyGateway:
