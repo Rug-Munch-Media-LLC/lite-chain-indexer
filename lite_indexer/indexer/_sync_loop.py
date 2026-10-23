@@ -23,7 +23,6 @@ from lite_indexer.config import (
     DEX_SKIP_TO_HEAD_HOURS,
     HEAD_BUFFER,
     REORG_PROTECTION_ENABLED,  # noqa: F401 — patched by tests
-    RPC_WS_HEAD_ENABLED,
     STATE_BACKWARD_PROTECTION,
     STATE_REGRESSION_TOLERANCE_BLOCKS,
 )
@@ -37,6 +36,7 @@ from lite_indexer.indexer._checkpoint import (
     slice_size,
 )
 from lite_indexer.indexer._dex_phase import note_dex_timeout, resolve_dex_events
+from lite_indexer.indexer._head_pool_start import start_head_pool as start_head_pool_bounded
 from lite_indexer.indexer._phase_guard import PhaseTimeoutError, guarded_phase
 from lite_indexer.indexer._reorg_phase import ReorgPhaseMixin
 from lite_indexer.indexer._writers import (
@@ -51,9 +51,6 @@ from lite_indexer.storage.ch_write_pool import run_ch_write
 from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrategy
 
 logger = get_logger(__name__)
-
-#: Bound on WS head-pool endpoint resolution before the chain loop starts.
-HEAD_POOL_START_TIMEOUT_S: float = 10.0
 
 
 class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
@@ -107,48 +104,8 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         )
 
     async def start_head_pool(self) -> None:
-        """Start the EVM webSocket head subscriber (no-op when unconfigured).
-
-        Runs BEFORE the chain loop, so it must never be able to hold a chain
-        out of ``sync_loop``: endpoint resolution executes on a worker thread
-        under :data:`HEAD_POOL_START_TIMEOUT_S`, and a timeout/error fails
-        OPEN (HTTP polling continues, the WS pool is simply absent), logging
-        the per-chain duration that used to be invisible (2026-10-24).
-        """
-        if self._head_pool_task is not None or not self._is_evm() or not RPC_WS_HEAD_ENABLED:
-            return
-        started = time.monotonic()
-        try:
-            endpoints = await asyncio.wait_for(
-                asyncio.to_thread(self._head_ws_endpoints),
-                timeout=HEAD_POOL_START_TIMEOUT_S,
-            )
-        except TimeoutError:
-            logger.error(
-                "head_pool_start_timeout",
-                chain=self.chain,
-                timeout_s=HEAD_POOL_START_TIMEOUT_S,
-                duration_ms=round((time.monotonic() - started) * 1000, 1),
-            )
-            return
-        except (OSError, ValueError) as exc:
-            logger.warning("head_pool_start_failed", chain=self.chain, error=str(exc)[:100])
-            return
-        if not endpoints:
-            return
-        from lite_indexer.rpc.head_pool import subscribe_heads
-
-        self._head_wakeup = asyncio.Event()
-        self._head_pool_task = asyncio.create_task(
-            subscribe_heads(self.chain, endpoints, self._on_head),
-            name=f"ws-head-{self.chain}",
-        )
-        logger.info(
-            "head_pool_started",
-            chain=self.chain,
-            endpoints=len(endpoints),
-            duration_ms=round((time.monotonic() - started) * 1000, 1),
-        )
+        """Start the EVM webSocket head subscriber (no-op when unconfigured)."""
+        await start_head_pool_bounded(self)
 
     async def stop_head_pool(self) -> None:
         """Cancel the WS head subscriber (idempotent)."""

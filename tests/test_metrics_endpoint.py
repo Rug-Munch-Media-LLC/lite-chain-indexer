@@ -16,7 +16,7 @@ import pytest
 from prometheus_client import REGISTRY
 
 from lite_indexer import metrics, metrics_server
-from lite_indexer.cli._daemon import export_chain_metrics, export_global_metrics
+from lite_indexer.cli._metrics_loop import export_chain_metrics, export_global_metrics
 
 # Every metric referenced by fleet-infra/prometheus/rules/lite-indexer.yml
 # that this repo is responsible for exporting (process_* come from the

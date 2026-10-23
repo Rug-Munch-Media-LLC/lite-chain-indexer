@@ -66,50 +66,65 @@ def _client():
     )
 
 
-def export_daily_health(chains, parked=()) -> None:
+def _fetch_rows(sql: str, client=None) -> dict[str, tuple[int, int, int, int]] | None:
+    """Run the freshness query; ``None`` when ClickHouse cannot answer.
+
+    ``client`` is a seam for tests; the daemon opens a short-lived client.
+    """
+    owned = client is None
+    rows: dict[str, tuple[int, int, int, int]] = {}
+    try:
+        client = client or _client()
+        for chain, age_s, last_ts, rows_1h, rows_24h in client.execute(sql):
+            rows[str(chain)] = (int(age_s), int(last_ts), int(rows_1h), int(rows_24h))
+    except Exception as exc:  # noqa: BLE001 - observability never breaks the daemon
+        logger.warning("daily_health_query_failed", error=str(exc)[:120])
+        return None
+    finally:
+        if owned and client is not None:
+            with contextlib.suppress(Exception):
+                client.disconnect()
+    return rows
+
+
+def _publish_chain(chain: str, row: tuple[int, int, int, int], parked_set: set[str]) -> None:
+    """Publish every daily-health gauge for one chain (parked included)."""
+    age, last_ts, rows_1h, rows_24h = row
+    is_parked = chain in parked_set
+    stalled = 0.0 if is_parked or 0 <= age <= STALL_AFTER_S else 1.0
+    breach = 0.0 if is_parked or 0 <= age <= DAILY_CADENCE_SECONDS else 1.0
+    metrics.set_labeled_gauge("lite_indexer_chain_ingest_age_seconds", float(age), chain=chain)
+    metrics.set_labeled_gauge("lite_indexer_chain_last_ingest_timestamp_seconds", float(last_ts), chain=chain)
+    metrics.set_labeled_gauge("lite_indexer_chain_rows_1h", float(rows_1h), chain=chain)
+    metrics.set_labeled_gauge("lite_indexer_chain_rows_24h", float(rows_24h), chain=chain)
+    metrics.set_labeled_gauge("lite_indexer_chain_stalled", stalled, chain=chain)
+    metrics.set_labeled_gauge("lite_indexer_chain_parked", 1.0 if is_parked else 0.0, chain=chain)
+    metrics.set_labeled_gauge("lite_indexer_chain_daily_cadence_breach", breach, chain=chain)
+    if stalled:
+        logger.warning("chain_ingest_stale", chain=chain, age_s=age, rows_24h=rows_24h)
+
+
+def export_daily_health(chains, parked=(), client=None) -> None:
     """Publish the daily-health family for ``chains`` (parked included).
 
     Args:
-        chains: Every chain the daemon is configured to run — NOT only the
+        chains: Every chain the daemon is configured to run - NOT only the
             ones that already produced a cycle, so a chain that never
             ingested still gets a series (``-1`` / ``stalled=1``).
         parked: Declared parked chain names; their ``stalled`` stays 0 and
             ``parked`` becomes 1, so a declaration silences only itself.
+        client: ClickHouse client seam (tests); ``None`` opens a fresh client.
 
     Best-effort: a ClickHouse hiccup keeps the previous samples and never
     stops indexing.
     """
-    names = list(dict.fromkeys(chains))
-    parked_set = set(parked)
     sql = _SQL.format(db=os.getenv("CH_DATABASE", "wallet_memory"))
-    rows: dict[str, tuple[int, int, int, int]] = {}
-    client = None
-    try:
-        client = _client()
-        for chain, age_s, last_ts, rows_1h, rows_24h in client.execute(sql):
-            rows[str(chain)] = (int(age_s), int(last_ts), int(rows_1h), int(rows_24h))
-    except Exception as exc:  # noqa: BLE001 — observability never breaks the daemon
-        logger.warning("daily_health_query_failed", error=str(exc)[:120])
+    rows = _fetch_rows(sql, client)
+    if rows is None:
         return
-    finally:
-        if client is not None:
-            with contextlib.suppress(Exception):
-                client.disconnect()
-
-    for chain in names:
-        age, last_ts, rows_1h, rows_24h = rows.get(chain, (-1, 0, 0, 0))
-        is_parked = chain in parked_set
-        stalled = 0.0 if is_parked or 0 <= age <= STALL_AFTER_S else 1.0
-        breach = 0.0 if is_parked or 0 <= age <= DAILY_CADENCE_SECONDS else 1.0
-        metrics.set_labeled_gauge("lite_indexer_chain_ingest_age_seconds", float(age), chain=chain)
-        metrics.set_labeled_gauge("lite_indexer_chain_last_ingest_timestamp_seconds", float(last_ts), chain=chain)
-        metrics.set_labeled_gauge("lite_indexer_chain_rows_1h", float(rows_1h), chain=chain)
-        metrics.set_labeled_gauge("lite_indexer_chain_rows_24h", float(rows_24h), chain=chain)
-        metrics.set_labeled_gauge("lite_indexer_chain_stalled", stalled, chain=chain)
-        metrics.set_labeled_gauge("lite_indexer_chain_parked", 1.0 if is_parked else 0.0, chain=chain)
-        metrics.set_labeled_gauge("lite_indexer_chain_daily_cadence_breach", breach, chain=chain)
-        if stalled:
-            logger.warning("chain_ingest_stale", chain=chain, age_s=age, rows_24h=rows_24h)
+    parked_set = set(parked)
+    for chain in dict.fromkeys(chains):
+        _publish_chain(chain, rows.get(chain, (-1, 0, 0, 0)), parked_set)
 
 
 __all__ = ["export_daily_health"]

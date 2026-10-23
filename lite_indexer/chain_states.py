@@ -69,27 +69,10 @@ def _parse_entry(chain: str, entry: Any) -> ParkedChain:
     )
 
 
-def load_parked(path: str | None = None, known: set[str] | None = None) -> dict[str, ParkedChain]:
-    """Load and validate the parked-chain declarations.
-
-    Args:
-        path: Declaration file; defaults to :data:`DEFAULT_PATH`. A missing
-            file means "nothing parked" (every chain must meet the cadence).
-        known: Optional set of chains the daemon runs. A declaration for a
-            chain outside it is an error — a typo must not silence a chain.
-
-    Returns:
-        Mapping of chain name to its :class:`ParkedChain` declaration.
-
-    Raises:
-        ChainStatesError: unreadable YAML, unknown chain, unknown key, or a
-            missing/shrugged reason.
-    """
+def _load_document(target: Path) -> dict[str, Any]:
+    """Read the declaration file and validate its top-level shape."""
     import yaml
 
-    target = Path(path or DEFAULT_PATH)
-    if not target.exists():
-        return {}
     try:
         doc = yaml.safe_load(target.read_text()) or {}
     except (OSError, yaml.YAMLError) as exc:
@@ -102,8 +85,36 @@ def load_parked(path: str | None = None, known: set[str] | None = None) -> dict[
     parked_raw = doc.get("parked") or {}
     if not isinstance(parked_raw, dict):
         raise ChainStatesError(f"{target}: 'parked' must be a mapping of chain -> declaration")
+    return parked_raw
+
+
+def _reject_unknown_chains(target: Path, parked_raw: dict[str, Any], known: set[str]) -> None:
+    """A declaration for a chain this daemon does not run is a typo, not a park."""
+    stray = sorted(set(parked_raw) - set(known))
+    if stray:
+        raise ChainStatesError(f"{target}: parked chain(s) not run by this daemon: {stray}")
+
+
+def load_parked(path: str | None = None, known: set[str] | None = None) -> dict[str, ParkedChain]:
+    """Load and validate the parked-chain declarations.
+
+    Args:
+        path: Declaration file; defaults to :data:`DEFAULT_PATH`. A missing
+            file means "nothing parked" (every chain must meet the cadence).
+        known: Optional set of chains the daemon runs. A declaration for a
+            chain outside it is an error - a typo must not silence a chain.
+
+    Returns:
+        Mapping of chain name to its :class:`ParkedChain` declaration.
+
+    Raises:
+        ChainStatesError: unreadable YAML, unknown chain, unknown key, or a
+            missing/shrugged reason.
+    """
+    target = Path(path or DEFAULT_PATH)
+    if not target.exists():
+        return {}
+    parked_raw = _load_document(target)
     if known is not None:
-        stray = sorted(set(parked_raw) - set(known))
-        if stray:
-            raise ChainStatesError(f"{target}: parked chain(s) not run by this daemon: {stray}")
+        _reject_unknown_chains(target, parked_raw, known)
     return {chain: _parse_entry(chain, entry) for chain, entry in parked_raw.items()}

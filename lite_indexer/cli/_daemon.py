@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import os
-import signal
 import threading
 import time
 from collections.abc import Sequence
-from functools import partial
 from pathlib import Path
 from typing import Any
 
-from lite_indexer import metrics
 from lite_indexer.chains import CHAIN_POLL_INTERVALS, effective_poll_interval, log_chain_resources
 from lite_indexer.chains.parallelism import chain_priority
+from lite_indexer.cli._daemon_startup import announce_daily_cadence, install_signal_handlers
+from lite_indexer.cli._metrics_loop import metrics_gauge_loop
 from lite_indexer.cli._slot_rotation import build_rotation
 from lite_indexer.config import (
     CHAIN_AUTO_DISABLE_ENABLED,
@@ -175,80 +174,6 @@ def start_memory_watchdog(indexers: Sequence[LiteIndexer]) -> threading.Thread |
     return thread
 
 
-def export_global_metrics() -> None:
-    """Publish the process / quota / RPC-pool gauges the alert rules scrape.
-
-    Best-effort and synchronous: reads local RSS/cgroup files, the quota
-    ledger, and the endpoint pool. Called periodically from
-    ``_metrics_gauge_loop`` — never raises into the daemon.
-    """
-    from lite_indexer.indexer._resource_guards import get_cgroup_memory_mb, get_process_rss_mb
-    from lite_indexer.rpc.ledger import LEDGER
-
-    metrics.set_gauge("lite_indexer_rss_bytes", get_process_rss_mb() * 1024 * 1024)
-    metrics.set_gauge("lite_indexer_cgroup_memory_bytes", get_cgroup_memory_mb() * 1024 * 1024)
-
-    for provider, state in LEDGER.snapshot().items():
-        consumed = state.get("consumed_pct")
-        if consumed is not None:
-            metrics.set_labeled_gauge("lite_indexer_quota_consumed_pct", float(consumed), provider=provider)
-
-    # Pool gauges live in rpc/pool_metrics.py (producer fix, 2026-10-23):
-    # "healthy" is USABLE (proven to serve logs) and carries the real span a
-    # working endpoint serves, instead of counting liveness or an unprobed
-    # shape as zero/healthy.
-    from lite_indexer.rpc.pool_metrics import publish_pool_metrics
-
-    publish_pool_metrics()
-
-
-def export_chain_metrics(indexer: LiteIndexer) -> None:
-    """Publish the per-chain state gauges for one running indexer."""
-    last_block = indexer.state.load().get("last_block")
-    if last_block is not None:
-        metrics.set_labeled_gauge("lite_indexer_state_last_block", int(last_block), chain=indexer.chain)
-        metrics.set_labeled_gauge("lite_indexer_last_block", int(last_block), chain=indexer.chain)
-    publisher = getattr(indexer, "_nats_publisher", None)
-    if publisher is not None:
-        circuit_open = 1.0 if getattr(publisher, "circuit_state", "closed") == "open" else 0.0
-        metrics.set_labeled_gauge("lite_indexer_nats_circuit_open", circuit_open, chain=indexer.chain)
-
-
-async def _metrics_gauge_loop(
-    indexers: list[LiteIndexer],
-    interval: float,
-    chains: list[str],
-    parked: set[str],
-) -> None:
-    """Refresh every alert-referenced gauge on a fixed interval.
-
-    Runs as its own task so the exporter's data stays current without
-    touching the sync cycles. Any failure is logged and swallowed — metrics
-    are observability, never a reason to stop indexing.
-    """
-    from lite_indexer.metrics_daily_health import export_daily_health
-
-    while True:
-        try:
-            # BLOCKING CALLS MUST NOT RUN ON THE EVENT LOOP. Both exporters use
-            # the synchronous clickhouse_driver Client; measured 2026-10-23 on
-            # production: 76 queries / 69.3 s of ClickHouse time in a 120 s
-            # window (~58% of wall clock) executed inline here, which starved
-            # every chain loop - bsc never got an event-loop slot to sync, so
-            # its high-water froze for 48 days while the container looked
-            # healthy. Run them on a worker thread instead.
-            await asyncio.to_thread(export_global_metrics)
-            # ALL CONFIGURED CHAINS, not only live indexers: a chain that
-            # never reached a cycle used to have no freshness series at all,
-            # which is why the stall alert stayed silent for 12 of 16 chains.
-            await asyncio.to_thread(export_daily_health, chains, parked)
-            for indexer in list(indexers):
-                export_chain_metrics(indexer)
-        except Exception as exc:  # noqa: BLE001 — metrics must never kill the daemon
-            logger.warning("metrics_gauge_update_failed", error=str(exc)[:120])
-        await asyncio.sleep(max(1.0, interval))
-
-
 async def main_daemon(
     chains: list[str],
     dex_enabled: bool = False,
@@ -291,32 +216,9 @@ async def main_daemon(
     shutdown_event = asyncio.Event()
     error_count = 0
 
-    def _handle_signal(sig: int, _frame: Any = None) -> None:
-        sig_name = signal.Signals(sig).name
-        logger.info("daemon_signal_received", signal=sig_name)
-        shutdown_event.set()
+    install_signal_handlers(shutdown_event)
 
-    # Register signal handlers
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
-            loop.add_signal_handler(sig, partial(_handle_signal, sig))
-        except (NotImplementedError, RuntimeError):
-            signal.signal(sig, _handle_signal)
-
-    # Daily cadence contract: load the parked declarations BEFORE the chain
-    # loops so a malformed one fails the daemon at startup instead of
-    # silently quieting a dead chain's alert.
-    from lite_indexer.chain_states import load_parked
-
-    parked_decls = load_parked(known=set(chains))
-    logger.info(
-        "daily_cadence_contract",
-        chains=len(chains),
-        parked=sorted(parked_decls),
-        cadence_s=86400,
-        stall_after_s=900,
-    )
+    parked = announce_daily_cadence(chains)
 
     # Fair rotation: least-served-first beats FIFO when fast loops re-queue.
     concurrency_slot = build_rotation(max_concurrent, chain_priority)
@@ -505,7 +407,7 @@ async def main_daemon(
     # consumed pct, RPC pool health, NATS circuit). Keeps the /metrics
     # endpoint current for the loaded alert rules.
     metrics_task = asyncio.create_task(
-        _metrics_gauge_loop(indexers, METRICS_GAUGE_INTERVAL_SECONDS, chains, set(parked)),
+        metrics_gauge_loop(indexers, METRICS_GAUGE_INTERVAL_SECONDS, chains, parked),
         name="metrics-gauges",
     )
 

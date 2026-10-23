@@ -45,12 +45,29 @@ def reset_warnings() -> None:
     _WARNED.clear()
 
 
+def _cgroup_v2_path(line: str) -> str | None:
+    """Path of the ``0::<path>`` line; ``None`` when the line is not cgroup v2."""
+    parts = line.split(":", 2)
+    if len(parts) != 3 or parts[0] != "0" or parts[1] != "":
+        return None
+    return parts[2].strip("/")
+
+
+def _resolved_dir(base: str, rel: str) -> str | None:
+    """``<base>/<rel>`` when it exposes ``memory.current``; warn once otherwise."""
+    resolved = os.path.join(base, rel) if rel else base
+    if os.path.exists(os.path.join(resolved, "memory.current")):
+        return resolved
+    warn_once("cgroup_memory_controller_missing", path=resolved)
+    return None
+
+
 def cgroup_dir(root: str | None = None, proc: str | None = None) -> str | None:
     """Directory holding this process's cgroup v2 ``memory.*`` files.
 
     Parses the ``0::<path>`` line of ``/proc/self/cgroup``. An empty path
-    (``0::/``) means the process IS at the cgroup root — which is the normal
-    case inside a container with its own cgroup namespace — and resolves to
+    (``0::/``) means the process IS at the cgroup root - which is the normal
+    case inside a container with its own cgroup namespace - and resolves to
     ``<root>`` itself, NOT to a failure.
 
     Returns ``None`` (after a single loud warning) only when cgroup v2 is
@@ -66,14 +83,9 @@ def cgroup_dir(root: str | None = None, proc: str | None = None) -> str | None:
         warn_once("cgroup_proc_unreadable", path=proc_path, error=str(exc)[:100])
         return None
     for line in lines:
-        parts = line.split(":", 2)
-        if len(parts) == 3 and parts[0] == "0" and parts[1] == "":
-            rel = parts[2].strip("/")
-            resolved = os.path.join(base, rel) if rel else base
-            if not os.path.exists(os.path.join(resolved, "memory.current")):
-                warn_once("cgroup_memory_controller_missing", path=resolved)
-                return None
-            return resolved
+        rel = _cgroup_v2_path(line)
+        if rel is not None:
+            return _resolved_dir(base, rel)
     warn_once("cgroup_v2_unavailable", path=proc_path)
     return None
 

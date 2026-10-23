@@ -321,13 +321,13 @@ def test_head_pool_module_is_provider_free() -> None:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-async def test_pushed_head_wakes_wait_for_head() -> None:
+async def test_head_pushed_during_the_wait_wakes_wait_for_head() -> None:
     indexer = _FakeChainIndexer()
     indexer._head_wakeup = asyncio.Event()
-    indexer._on_head(123, "0xdeadbeefcafe")
-    await asyncio.wait_for(indexer.wait_for_head(5.0), 1.0)
-    assert indexer._head_wakeup is not None
-    assert not indexer._head_wakeup.is_set()
+    asyncio.get_running_loop().call_later(0.05, indexer._on_head, 123, "0xdead")
+    start = time.monotonic()
+    await indexer.wait_for_head(5.0)  # returns on the head pushed mid-wait
+    assert time.monotonic() - start < 1.0 and not indexer._head_wakeup.is_set()
 
 
 async def test_wait_for_head_without_pool_uses_timeout() -> None:
