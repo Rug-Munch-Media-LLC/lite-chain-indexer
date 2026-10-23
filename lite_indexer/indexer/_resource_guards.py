@@ -30,6 +30,7 @@ from lite_indexer.config import (
     MEMORY_HIGH_MB,
     MEMORY_PAUSE_SLEEP,
 )
+from lite_indexer.indexer._cgroup import cgroup_dir, read_mb
 from lite_indexer.logging import get_logger
 from lite_indexer.storage import ClickHouseWriter
 
@@ -66,24 +67,13 @@ def get_process_rss_mb() -> int:
 def _cgroup_v2_path(root: str | None = None) -> str | None:
     """Resolve this process's cgroup v2 ``memory.current`` path.
 
-    Parses ``/proc/self/cgroup`` (v2 format: ``0::/system.slice/foo.service``)
-    and joins the relative path under ``root`` (default ``_CGROUP_ROOT``).
-    Returns ``None`` on any failure (non-Linux, cgroup v1, missing file)
-    so callers fall back.
+    Delegates to :func:`lite_indexer.indexer._cgroup.cgroup_dir`, which also
+    handles the cgroup-ROOT case (``0::/``) that made every containerised
+    deployment read 0 bytes (2026-10-24 post-mortem). ``None`` when cgroup v2
+    is genuinely unavailable, so callers fall back to RSS.
     """
-    root = root if root is not None else _CGROUP_ROOT
-    try:
-        with open(_PROC_CGROUP) as f:
-            for line in f:
-                parts = line.rstrip("\n").split(":", 2)
-                if len(parts) == 3 and parts[0] == "0" and parts[1] == "" and parts[2]:
-                    rel = parts[2].lstrip("/")
-                    if not rel:
-                        return None
-                    return os.path.join(root, rel, "memory.current")
-    except OSError:
-        return None
-    return None
+    directory = cgroup_dir(root if root is not None else _CGROUP_ROOT, _PROC_CGROUP)
+    return os.path.join(directory, "memory.current") if directory else None
 
 
 def get_cgroup_memory_mb(root: str | None = None) -> int:
@@ -93,14 +83,16 @@ def get_cgroup_memory_mb(root: str | None = None) -> int:
     anon + file cache + kernel + sock), unlike process RSS. Returns 0 on
     any failure so callers fall back to the RSS reader.
     """
-    path = CGROUP_MEMORY_PATH or _cgroup_v2_path(root)
-    if not path:
-        return 0
-    try:
-        with open(path) as f:
-            return int(int(f.read().strip()) / (1024 * 1024))
-    except (OSError, ValueError):
-        return 0
+    if CGROUP_MEMORY_PATH:
+        try:
+            with open(CGROUP_MEMORY_PATH) as f:
+                return int(int(f.read().strip()) / (1024 * 1024))
+        except (OSError, ValueError):
+            return 0
+    # read_mb() warns ONCE per process when the file cannot be read, then
+    # returns 0: the guard fails OPEN to RSS instead of pausing on a
+    # fabricated value (2026-10-24 post-mortem).
+    return read_mb("memory.current", root if root is not None else _CGROUP_ROOT, _PROC_CGROUP)
 
 
 def _public_cgroup_reader() -> int:

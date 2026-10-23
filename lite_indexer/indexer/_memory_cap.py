@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 
 from lite_indexer.config import CGROUP_MEMORY_PATH, MEMORY_HIGH_MB
+from lite_indexer.indexer._cgroup import read_bytes, warn_once
 from lite_indexer.indexer._resource_guards import _cgroup_v2_path
 from lite_indexer.logging import get_logger
 
@@ -43,22 +44,23 @@ def cgroup_memory_max_mb(path: str | None = None) -> int:
     Accepts an explicit ``path=`` seam so tests need no patching.
     """
     if path is None:
-        cgroup_dir = _cgroup_v2_dir()
-        if not cgroup_dir:
-            return 0
-        path = os.path.join(cgroup_dir, "memory.max")
+        # read_bytes() logs ONE loud warning when the cap is unreadable and
+        # returns None; 0 below means "no cap known" so the caller fails OPEN
+        # and keeps the declared ceiling (2026-10-24 post-mortem).
+        raw = read_bytes("memory.max")
+        return 0 if raw is None else int(raw / (1024 * 1024))
     try:
         with open(path) as f:
             content = f.read().strip()
     except OSError as exc:
-        logger.debug("cgroup_memory_max_unreadable", path=path, error=str(exc)[:100])
+        warn_once("cgroup_memory_max_unreadable", path=path, error=str(exc)[:100])
         return 0
     if content == "max":
         return 0
     try:
         return int(int(content) / (1024 * 1024))
     except ValueError as exc:
-        logger.debug("cgroup_memory_max_garbage", path=path, error=str(exc)[:100])
+        warn_once("cgroup_memory_max_garbage", path=path, error=str(exc)[:100])
         return 0
 
 
@@ -99,5 +101,8 @@ def resolve_recycle_mb(
     if declared > 0 and effective != declared:
         logger.error("memory_recycle_clamped", declared_mb=declared, cgroup_cap_mb=cap, effective_mb=effective)
     if 0 < effective <= MEMORY_HIGH_MB:
-        logger.warning("memory_pause_above_recycle", high_mb=MEMORY_HIGH_MB, recycle_mb=effective)
+        # Configuration finding, not a runtime event: the watchdog re-resolves
+        # every tick, and this used to emit ~65 warnings per 20 min, which read
+        # like a pause gate firing (it never was — see 2026-10-24 post-mortem).
+        warn_once("memory_pause_above_recycle", high_mb=MEMORY_HIGH_MB, recycle_mb=effective)
     return effective

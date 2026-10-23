@@ -28,10 +28,17 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 
+from lite_indexer.logging import get_logger
+
+logger = get_logger(__name__)
+
 #: Default wall-clock bound on a queued acquire. Sized above the fastest
 #: healthy cycle (Base ~2 s) but far below a slow backfill cycle, so an aged
 #: waiter wins the next free slot instead of waiting out whole rounds.
 DEFAULT_MAX_WAIT_S = 120.0
+
+#: A queued acquire longer than this is a starvation signal worth a WARNING.
+SLOT_WAIT_WARN_S = 120.0
 
 
 @dataclass
@@ -77,7 +84,14 @@ class SlotRotation:
 
     # ── public API ────────────────────────────────────────────────────
     async def acquire(self, chain: str) -> None:
-        """Wait for a slot for ``chain``."""
+        """Wait for a slot for ``chain``.
+
+        A chain parked here is INVISIBLE in the sync logs — it emits no
+        ``sync_start`` and no error, which is why 12 of 16 chains looked
+        "dead" for 20 min on 2026-10-23/24. Both edges are therefore logged
+        with the wall-clock wait, and a wait over ``SLOT_WAIT_WARN_S`` warns
+        so a starved chain names itself.
+        """
         if self._active < self._slots and not self._waiters:
             self._grant(chain)
             return
@@ -89,6 +103,7 @@ class SlotRotation:
             enqueued=self._clock(),
         )
         self._waiters.append(waiter)
+        logger.debug("slot_queued", chain=chain, depth=len(self._waiters), active=self._active)
         try:
             await waiter.event.wait()
         except asyncio.CancelledError:
@@ -99,6 +114,12 @@ class SlotRotation:
             else:
                 self.release(chain)
             raise
+        waited = self._clock() - waiter.enqueued
+        fields = {"chain": chain, "wait_s": round(waited, 1), "active": self._active}
+        if waited >= SLOT_WAIT_WARN_S:
+            logger.warning("slot_wait_exceeded", **fields)
+        else:
+            logger.info("slot_granted", **fields)
 
     def release(self, chain: str) -> None:
         """Return ``chain``'s slot, granting it to the next fair waiter."""
@@ -156,4 +177,4 @@ def build_rotation(
     return SlotRotation(slots, priority_for=priority_for, max_wait_s=max_wait_s) if slots and slots > 0 else None
 
 
-__all__ = ["DEFAULT_MAX_WAIT_S", "SlotRotation", "build_rotation"]
+__all__ = ["DEFAULT_MAX_WAIT_S", "SLOT_WAIT_WARN_S", "SlotRotation", "build_rotation"]

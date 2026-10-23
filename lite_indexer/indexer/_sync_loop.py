@@ -52,6 +52,9 @@ from lite_indexer.strategies import EVMChainStrategy, SolanaStrategy, TronStrate
 
 logger = get_logger(__name__)
 
+#: Bound on WS head-pool endpoint resolution before the chain loop starts.
+HEAD_POOL_START_TIMEOUT_S: float = 10.0
+
 
 class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
     """Sync loop body — extracted from the former god-file.
@@ -106,14 +109,31 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
     async def start_head_pool(self) -> None:
         """Start the EVM webSocket head subscriber (no-op when unconfigured).
 
-        Resolves WS endpoints from the private overlay only. No endpoints, a
-        non-EVM chain, a disabled ``RPC_WS_HEAD_ENABLED`` or an already
-        running pool all make this a no-op — HTTP polling continues
-        unaffected.
+        Runs BEFORE the chain loop, so it must never be able to hold a chain
+        out of ``sync_loop``: endpoint resolution executes on a worker thread
+        under :data:`HEAD_POOL_START_TIMEOUT_S`, and a timeout/error fails
+        OPEN (HTTP polling continues, the WS pool is simply absent), logging
+        the per-chain duration that used to be invisible (2026-10-24).
         """
         if self._head_pool_task is not None or not self._is_evm() or not RPC_WS_HEAD_ENABLED:
             return
-        endpoints = self._head_ws_endpoints()
+        started = time.monotonic()
+        try:
+            endpoints = await asyncio.wait_for(
+                asyncio.to_thread(self._head_ws_endpoints),
+                timeout=HEAD_POOL_START_TIMEOUT_S,
+            )
+        except TimeoutError:
+            logger.error(
+                "head_pool_start_timeout",
+                chain=self.chain,
+                timeout_s=HEAD_POOL_START_TIMEOUT_S,
+                duration_ms=round((time.monotonic() - started) * 1000, 1),
+            )
+            return
+        except (OSError, ValueError) as exc:
+            logger.warning("head_pool_start_failed", chain=self.chain, error=str(exc)[:100])
+            return
         if not endpoints:
             return
         from lite_indexer.rpc.head_pool import subscribe_heads
@@ -122,6 +142,12 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         self._head_pool_task = asyncio.create_task(
             subscribe_heads(self.chain, endpoints, self._on_head),
             name=f"ws-head-{self.chain}",
+        )
+        logger.info(
+            "head_pool_started",
+            chain=self.chain,
+            endpoints=len(endpoints),
+            duration_ms=round((time.monotonic() - started) * 1000, 1),
         )
 
     async def stop_head_pool(self) -> None:
@@ -179,7 +205,7 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
         """
         highwater = self._highwater.load()
         if highwater is not None and from_block < highwater - STATE_REGRESSION_TOLERANCE_BLOCKS:
-            ch_max = self._fetch_ch_max_block()
+            ch_max = await asyncio.to_thread(self._fetch_ch_max_block)
             resume = max(highwater, ch_max or 0) + 1
             if resume > from_block:
                 logger.warning(
@@ -198,7 +224,7 @@ class SyncLoopMixin(ReorgPhaseMixin, IndexerMixinBase):
             return None
 
         # No high-water mark: only trust CH when it is actually AHEAD.
-        ch_max = self._fetch_ch_max_block()
+        ch_max = await asyncio.to_thread(self._fetch_ch_max_block)
         if ch_max is not None and from_block < ch_max - STATE_REGRESSION_TOLERANCE_BLOCKS:
             resume = ch_max + 1
             logger.warning(
