@@ -103,7 +103,8 @@ def duckdb_rows(part: Path) -> int:
     return int(out.stdout.strip())
 
 
-def _manifest(spec: TableSpec, chain: str, day: str, rows: int, size: int, digest: str, late: int) -> dict:
+def _manifest(spec: TableSpec, chain: str, day: str, part: dict) -> dict:
+    """Build the unit manifest. `part` carries rows/bytes/md5/late_rows."""
     return {
         "v": 1,
         "table": spec.table,
@@ -111,13 +112,13 @@ def _manifest(spec: TableSpec, chain: str, day: str, rows: int, size: int, diges
         "date": day,
         "mode": spec.mode,
         "cursor": spec.cursor or None,
-        "rows": rows,
-        "bytes": size,
-        "md5": digest,
+        "rows": part["rows"],
+        "bytes": part["bytes"],
+        "md5": part["md5"],
         "part": "part-000.parquet",
         "predicate": f"{spec.chain_column} = '{chain}' AND toDate({spec.cursor}) = toDate('{day}')",
         "streamed": True,
-        "late_rows": late,
+        "late_rows": part["late_rows"],
         "exported_at": dt.datetime.now(dt.UTC).isoformat(),
     }
 
@@ -139,7 +140,10 @@ def verify_upload(spec: TableSpec, out_dir: Path, expected: dict[tuple[str, str]
             continue
         digest = hashlib.md5(part.read_bytes()).hexdigest()  # noqa: S324 — integrity, not auth
         upload(part, f"{key_dir}/part-000.parquet")
-        manifest = _manifest(spec, chain, day, got, part.stat().st_size, digest, got - want)
+        manifest = _manifest(
+            spec, chain, day,
+            {"rows": got, "bytes": part.stat().st_size, "md5": digest, "late_rows": got - want},
+        )
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
             json.dump(manifest, fh, indent=2, sort_keys=True)
             local = Path(fh.name)
