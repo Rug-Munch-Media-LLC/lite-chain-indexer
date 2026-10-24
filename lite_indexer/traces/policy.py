@@ -19,7 +19,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-DEFAULT_PHASE_TIMEOUT_S = 300.0
+#: 2026-10-24: 300 s was a SLICE-KILLER, not a budget. The trace phase runs
+#: before the durable legs checkpoint, so with a 90 s slice ceiling the outer
+#: timeout fired first and bsc/ethereum advanced NOTHING (measured: highwater
+#: frozen 23 min, sync_slice_timeout slices_done=0 on the same range). A phase
+#: budget must sit well BELOW the slice ceiling so traces can only ever cost
+#: their own box; 15 s leaves ~75 s for transfers/dex/insert.
+DEFAULT_PHASE_TIMEOUT_S = 15.0
 DEFAULT_MAX_BLOCKS = 100
 DEFAULT_CONCURRENCY = 2
 

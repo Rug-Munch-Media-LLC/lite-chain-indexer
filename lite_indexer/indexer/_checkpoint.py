@@ -30,9 +30,10 @@ logger = get_logger(__name__)
 #: = 2, plus hash/dex/insert overhead), so a 10-block slice is ~25 s and a
 #: 100-block slice is ~250 s. 100 therefore blew through SYNC_SLICE_TIMEOUT_S
 #: (90 s) on the first slice every turn and advanced NOTHING (measured 02:59Z).
-#: 30 blocks x 2.5 s = ~75 s, inside the cap with margin, and moves 3x the
-#: 10-block quantum that left bsc at +10 blocks per 655 s turn.
-DEFAULT_SYNC_CHECKPOINT_SLICE = 30
+#: 20 blocks x 2.5 s = ~50 s plus the 15 s trace box = ~65 s, inside the cap
+#: with margin, and moves 2x the 10-block quantum that left bsc at +10 blocks
+#: per 655 s turn. Raise only together with SYNC_SLICE_TIMEOUT_S.
+DEFAULT_SYNC_CHECKPOINT_SLICE = 20
 
 # Statuses that always stop the cycle: the range itself is invalid/rewound
 # or ClickHouse is unwritable — continuing to the next slice cannot help.
