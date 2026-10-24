@@ -24,21 +24,26 @@ import asyncio
 import os
 import time
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import Any, TypeVar
 
 from lite_indexer.logging import get_logger
 from lite_indexer.rpc.pool import get_best_endpoint
 
 logger = get_logger(__name__)
 
+#: Result type of one leg; ``None`` means "this leg produced no usable answer".
+T = TypeVar("T")
+
 HEDGE_DELAY_S = float(os.getenv("RPC_HEDGE_DELAY", "1.5"))
 HEDGE_ENABLED = os.getenv("RPC_HEDGE_ENABLED", "1") != "0"
 
 
 async def hedged_rpc(
-    factory: Callable[[str], Coroutine[Any, Any, dict[str, Any] | None]],
+    factory: Callable[[str], Coroutine[Any, Any, T | None]],
     endpoints: list[str],
-) -> dict[str, Any] | None:
+    *,
+    delay_s: float | None = None,
+) -> T | None:
     """Race an RPC operation across the pool with a delayed hedge.
 
     Args:
@@ -47,6 +52,8 @@ async def hedged_rpc(
             land inside the factory (as it does in RpcClient methods).
         endpoints: candidate endpoints for the chain (health-ranked inside
             via :func:`lite_indexer.rpc.pool.get_best_endpoint`).
+        delay_s: Override ``RPC_HEDGE_DELAY`` for this call (tests pass a
+            short delay; production leaves it unset).
 
     Returns:
         The first successful response dict, or None when every attempt
@@ -56,8 +63,9 @@ async def hedged_rpc(
         return None
 
     primary = get_best_endpoint(endpoints)
+    delay = HEDGE_DELAY_S if delay_s is None else delay_s
 
-    if not HEDGE_ENABLED or HEDGE_DELAY_S <= 0 or len(endpoints) < 2:
+    if not HEDGE_ENABLED or delay <= 0 or len(endpoints) < 2:
         return await factory(primary)
 
     # Hedge candidate: best endpoint that is NOT the primary.
@@ -67,10 +75,18 @@ async def hedged_rpc(
 
     started = time.perf_counter()
     primary_task = asyncio.create_task(factory(primary))
-    done, _pending = await asyncio.wait({primary_task}, timeout=HEDGE_DELAY_S)
+    done, _pending = await asyncio.wait({primary_task}, timeout=delay)
     if done:
-        # Primary answered inside the delay window — no hedge spent.
-        return primary_task.result()
+        # Primary answered inside the delay window. Only a real answer skips
+        # the hedge: a fast None (empty/malformed response) or a raised leg is
+        # a failure, not an answer, so the hedge is spent immediately rather
+        # than reporting the pool down while a healthy peer is one call away.
+        try:
+            result = primary_task.result()
+        except Exception:  # noqa: BLE001 — a failed leg must not stop the hedge
+            result = None
+        if result is not None:
+            return result
 
     hedge_task = asyncio.create_task(factory(hedge_ep))
     logger.debug(
