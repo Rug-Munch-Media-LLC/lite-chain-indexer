@@ -31,6 +31,7 @@ EXPECTED_SUBCOMMANDS = [
     "lake-gaps",
     "sqd-fill",
     "fill-solana",
+    "fill-eth",
     "orphan-sweep",
 ]
 
@@ -48,6 +49,7 @@ CANONICAL_ARGS = {
     "lake-gaps": ["--chain", "base"],
     "sqd-fill": ["--chain", "base", "--from-block", "1", "--to-block", "2"],
     "fill-solana": ["--from-date", "2026-01-01", "--to-date", "2026-01-02"],
+    "fill-eth": ["--from-date", "2026-01-01", "--to-date", "2026-01-02", "--estimate"],
     "orphan-sweep": ["--chain", "base"],
 }
 
@@ -66,6 +68,7 @@ DESCRIPTION_MARKERS = {
     "lake-gaps": "Scan a lookback window for dates the lake can serve",
     "sqd-fill": "--batch-rows BATCH_ROWS",
     "fill-solana": "--force-budget",
+    "fill-eth": "--max-scan-gib",
     "orphan-sweep": "Reconcile historical orphan rows",
 }
 

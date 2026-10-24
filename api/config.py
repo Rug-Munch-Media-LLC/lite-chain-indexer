@@ -8,13 +8,17 @@ even if application-level validation is bypassed.
 
 from __future__ import annotations
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 def _get_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
     except ValueError:
+        logger.debug("config value %s is not an int; using default", name)
         return default
 
 
@@ -22,6 +26,7 @@ def _get_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
     except ValueError:
+        logger.debug("config value %s is not a float; using default", name)
         return default
 
 
