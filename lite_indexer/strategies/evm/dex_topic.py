@@ -19,7 +19,7 @@ from lite_indexer.chunks import CHUNK_PARALLELISM, chunk_range, merge_chunked_re
 from lite_indexer.config import CHUNK_SIZE_EVM
 from lite_indexer.logging import get_logger
 from lite_indexer.state import PairCache
-from lite_indexer.strategies.evm.dex_topic_leg import fetch_range
+from lite_indexer.strategies.evm.dex_topic_leg import LegContext, fetch_range
 
 logger = get_logger(__name__)
 
@@ -62,6 +62,14 @@ async def fetch_topic(
         return []
     # Only query endpoints that can serve this block range (provider limits).
     endpoints = get_endpoints_for_range(endpoints, to_block - from_block)
+    leg = LegContext(
+        topic=topic,
+        label=label,
+        chain=chain,
+        endpoints=tuple(endpoints),
+        client=client,
+        pair_cache=pair_cache,
+    )
 
     started = time.monotonic()
     effective_chunk = min(chunk_size, max(1, to_block - from_block + 1))
@@ -69,7 +77,7 @@ async def fetch_topic(
 
     async def _fetch_chunk(chunk_start: int, chunk_end: int) -> list[dict[str, Any]] | None:
         async with semaphore:
-            return await fetch_range(topic, label, chain, endpoints, client, pair_cache, chunk_start, chunk_end)
+            return await fetch_range(leg, chunk_start, chunk_end)
 
     tasks: list[asyncio.Task[list[dict[str, Any]] | None]] = [
         asyncio.ensure_future(_fetch_chunk(chunk_start, chunk_end))

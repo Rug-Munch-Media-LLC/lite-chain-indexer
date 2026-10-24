@@ -14,6 +14,7 @@ most one leg.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -44,12 +45,24 @@ logger = get_logger(__name__)
 ATTEMPT_DEADLINE_S = RPC_TIMEOUT * 2 + 10
 
 
+@dataclass(frozen=True)
+class LegContext:
+    """Everything one dex leg needs that is constant across its chunks."""
+
+    topic: str
+    label: str
+    chain: str
+    endpoints: tuple[str, ...]
+    client: httpx.AsyncClient
+    pair_cache: Any
+
+
 def _read_response_text(response: httpx.Response) -> str:
     """Read ``response.text`` off-thread, bounded by the caller's deadline."""
     return response.text
 
 
-def leg_endpoint_order(endpoints: list[str], label: str) -> list[str]:
+def leg_endpoint_order(endpoints: tuple[str, ...] | list[str], label: str) -> list[str]:
     """Endpoints in the order this leg should try them (per-leg start offset)."""
     best_idx = endpoints.index(get_best_endpoint(endpoints))
     start_idx = (best_idx + leg_start_index(label, len(endpoints))) % len(endpoints)
@@ -62,17 +75,16 @@ async def _read_body(response: httpx.Response) -> str:
 
 
 async def attempt_endpoint(
-    client: httpx.AsyncClient,
+    ctx: LegContext,
     url: str,
     body: dict[str, Any],
-    ctx: LogDecodeContext,
-    label: str,
+    page_ctx: LogDecodeContext,
 ) -> tuple[bool, list[dict[str, Any]] | None]:
     """One endpoint attempt → ``(served, page)``; ``served`` False = try the next."""
     await apply_endpoint_backoff(url)
     try:
         resp = await asyncio.wait_for(
-            client.post(
+            ctx.client.post(
                 url,
                 json=body,
                 timeout=httpx.Timeout(RPC_TIMEOUT, connect=DEX_LEG_CONNECT_TIMEOUT_S),
@@ -80,7 +92,7 @@ async def attempt_endpoint(
             timeout=ATTEMPT_DEADLINE_S,
         )
         if resp.status_code == 200:
-            page = decode_topic_page(await _read_body(resp), ctx, label, url)
+            page = decode_topic_page(await _read_body(resp), page_ctx, ctx.label, url)
             if page is None:
                 record_endpoint_failure(url)
                 return False, None
@@ -109,12 +121,7 @@ async def attempt_endpoint(
 
 
 async def fetch_range(
-    topic: str,
-    label: str,
-    chain: str,
-    endpoints: list[str],
-    client: httpx.AsyncClient,
-    pair_cache: Any,
+    ctx: LegContext,
     range_start: int,
     range_end: int,
 ) -> list[dict[str, Any]] | None:
@@ -123,17 +130,17 @@ async def fetch_range(
     Returns the longest decoded page, or ``None`` when every endpoint failed
     for the range (``[]`` would be indistinguishable from "no swaps in range").
     """
-    body = build_getlogs_body(topic, range_start, range_end)
-    ctx = LogDecodeContext(
-        chain=chain,
+    body = build_getlogs_body(ctx.topic, range_start, range_end)
+    page_ctx = LogDecodeContext(
+        chain=ctx.chain,
         from_block=range_start,
         to_block=range_end,
-        topic=topic,
-        pair_tokens=pair_cache.all,
+        topic=ctx.topic,
+        pair_tokens=ctx.pair_cache.all,
     )
     best_result: list[dict[str, Any]] | None = None
-    for url in leg_endpoint_order(endpoints, label):
-        served, page = await attempt_endpoint(client, url, body, ctx, label)
+    for url in leg_endpoint_order(ctx.endpoints, ctx.label):
+        served, page = await attempt_endpoint(ctx, url, body, page_ctx)
         if not served:
             continue
         # The response covers the range tail, so this endpoint served the range
