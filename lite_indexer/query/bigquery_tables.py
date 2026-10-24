@@ -64,6 +64,11 @@ _TABLE_SELECT: dict[str, str] = {
         "block_number, UNIX_MILLIS(block_timestamp) AS block_timestamp, "
         "transaction_hash AS tx_hash, from_address, to_address, token_address, value, log_index"
     ),
+    "traces": (
+        "block_number, UNIX_MILLIS(block_timestamp) AS block_timestamp, "
+        "transaction_hash AS tx_hash, from_address, to_address, CAST(value AS STRING) AS value, "
+        "trace_address, call_type, trace_type, gas_used, error, input"
+    ),
     "logs": (
         "block_number, UNIX_MILLIS(block_timestamp) AS block_timestamp, "
         "transaction_hash AS tx_hash, address AS token_address, log_index"

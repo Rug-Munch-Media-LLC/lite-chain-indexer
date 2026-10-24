@@ -23,6 +23,9 @@ def add_lake_parsers(sub: SubParsers) -> None:
     _add_gaps_parser(sub)
     _add_sqd_parser(sub)
     _add_fill_solana_parser(sub)
+    from lite_indexer.cli._lake_fill_eth import add_fill_eth_parser
+
+    add_fill_eth_parser(sub)
     from lite_indexer.cli._orphan_sweep import add_orphan_sweep_parser
 
     add_orphan_sweep_parser(sub)
@@ -147,6 +150,10 @@ def run_lake_command(args: argparse.Namespace) -> int:
         return run_orphan_sweep(args)
     if args.command == "sqd-fill":
         return run_sqd_fill(args)
+    if args.command == "fill-eth":
+        from lite_indexer.cli._lake_fill_eth import run_fill_eth
+
+        return run_fill_eth(args)
     if args.command == "fill-solana":
         from lite_indexer.cli._lake_fill import run_fill_solana
 
