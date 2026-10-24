@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from lite_indexer.logging import get_logger
 from lite_indexer.query.bigquery_common import BigQueryQuotaError
@@ -104,12 +104,24 @@ def map_transfer(raw: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _parse_trace_address(path_raw: object) -> list[int]:
+    """``"0,1,2"`` -> ``[0, 1, 2]``; anything unparsable yields ``[]``."""
+    path = str(path_raw or "").strip()
+    if not path:
+        return []
+    return [int(p) for p in path.split(",") if p.strip().isdigit()]
+
+
+def _parse_trace_value(value: object) -> int:
+    """Trace value in wei. A NULL value is a genuine zero-value call."""
+    return int(value) if value is not None else 0
+
+
 def map_trace(raw: dict[str, Any]) -> dict[str, Any]:
     """``traces`` row → ``internal_transfers`` row dict."""
-    path = str(raw.get("trace_address") or "").strip()
-    trace_address = [int(p) for p in path.split(",") if p.strip().isdigit()] if path else []
+    trace_address = _parse_trace_address(raw.get("trace_address"))
     data = raw.get("input") or ""
-    value = raw.get("value")
+    value = _parse_trace_value(raw.get("value"))
     return {
         "chain": _CHAIN,
         "block_number": int(raw.get("block_number") or 0),
@@ -118,7 +130,7 @@ def map_trace(raw: dict[str, Any]) -> dict[str, Any]:
         "trace_address": trace_address,
         "from_address": _addr(raw.get("from_address")),
         "to_address": _addr(raw.get("to_address")),
-        "value_wei": int(value) if value is not None else 0,
+        "value_wei": value,
         "call_type": raw.get("call_type") or raw.get("trace_type") or "",
         "gas_used": int(raw.get("gas_used") or 0),
         "error": str(raw.get("error") or "")[:200],
@@ -182,6 +194,14 @@ def _scan_estimate(req: EthFillRequest) -> float:
     return sum(len(req.dates) * _DAY_GIB[t] for t in req.tables)
 
 
+class _FillCtx(NamedTuple):
+    """Immutable per-run fill context (request + resolved BigQuery account)."""
+
+    req: EthFillRequest
+    project: str
+    creds: str
+
+
 def backfill_eth_from_bigquery(
     req: EthFillRequest,
     *,
@@ -210,38 +230,59 @@ def backfill_eth_from_bigquery(
     out = EthFillResult(scan_gib=est)
     for day in req.dates:
         for table in req.tables:
-            key = f"eth/{day}/{table}"
-            client = ch.client()
-            if client is None:
-                raise ClickHouseUnavailable(f"ClickHouse unreachable (chain={_CHAIN})")
-            try:
-                existing = _existing_day_rows(client, table, day)
-                if existing and not req.force:
-                    logger.warning("eth_fill_day_already_present", date=day, table=table, rows=existing)
-                    out.counts[key] = 0
-                    continue
-                sink = _Sink(ch, table, req.batch_rows)
-                for page in stream_query(day_sql(table, day), [], project=project, creds_path=creds):
-                    if req.dry_run:
-                        sink.rows += len(page)
-                        continue
-                    for raw in page:
-                        sink.add(raw)
-                sink.flush()
-            except ClickHouseUnavailable:
-                logger.error("eth_fill_aborted_clickhouse_unavailable", date=day, table=table)
-                raise
-            except BigQueryQuotaError:
-                logger.error("eth_fill_aborted_quota", date=day, table=table)
-                raise
-            except Exception as exc:  # noqa: BLE001 — one bad day must not abort the run
-                logger.warning("eth_fill_partition_failed", date=day, table=table, error=str(exc)[:160])
-                out.counts[key] = 0
-                continue
-            out.counts[key] = sink.rows
-            if sink.nulls:
-                out.null_values[key] = sink.nulls
-                logger.warning("eth_fill_null_value", date=day, table=table, rows=sink.nulls)
-            out.rows += sink.rows
-            logger.info("eth_fill_progress", date=day, table=table, rows=sink.rows, total=out.rows)
+            _fill_partition(ch, table, day, _FillCtx(req, project, creds), out)
     return out
+
+
+def _fill_partition(ch: Any, table: str, day: str, ctx: _FillCtx, out: EthFillResult) -> None:
+    """Fill one (day, table) partition and record its counts on ``out``."""
+    key = f"eth/{day}/{table}"
+    client = ch.client()
+    if client is None:
+        raise ClickHouseUnavailable(f"ClickHouse unreachable (chain={_CHAIN})")
+    try:
+        if _skip_existing(client, table, day, ctx, out):
+            return
+        sink = _Sink(ch, table, ctx.req.batch_rows)
+        _stream_partition(sink, table, day, ctx)
+        sink.flush()
+        _record_partition(out, key, table, day, sink)
+    except ClickHouseUnavailable:
+        logger.error("eth_fill_aborted_clickhouse_unavailable", date=day, table=table)
+        raise
+    except BigQueryQuotaError:
+        logger.error("eth_fill_aborted_quota", date=day, table=table)
+        raise
+    except Exception as exc:  # noqa: BLE001 - one bad day must not abort the run
+        logger.warning("eth_fill_partition_failed", date=day, table=table, error=str(exc)[:160])
+        out.counts[key] = 0
+
+
+def _skip_existing(client: Any, table: str, day: str, ctx: _FillCtx, out: EthFillResult) -> bool:
+    """True when the day is already in ClickHouse and ``--force`` is absent."""
+    existing = _existing_day_rows(client, table, day)
+    if existing and not ctx.req.force:
+        logger.warning("eth_fill_day_already_present", date=day, table=table, rows=existing)
+        out.counts[f"eth/{day}/{table}"] = 0
+        return True
+    return False
+
+
+def _stream_partition(sink: _Sink, table: str, day: str, ctx: _FillCtx) -> None:
+    """Stream one BigQuery day-partition page by page into ``sink``."""
+    for page in stream_query(day_sql(table, day), [], project=ctx.project, creds_path=ctx.creds):
+        if ctx.req.dry_run:
+            sink.rows += len(page)
+            continue
+        for raw in page:
+            sink.add(raw)
+
+
+def _record_partition(out: EthFillResult, key: str, table: str, day: str, sink: _Sink) -> None:
+    """Fold one finished partition's counts into the run result."""
+    out.counts[key] = sink.rows
+    if sink.nulls:
+        out.null_values[key] = sink.nulls
+        logger.warning("eth_fill_null_value", date=day, table=table, rows=sink.nulls)
+    out.rows += sink.rows
+    logger.info("eth_fill_progress", date=day, table=table, rows=sink.rows, total=out.rows)
