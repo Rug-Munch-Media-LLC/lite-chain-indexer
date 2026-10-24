@@ -6,6 +6,7 @@ Extracted 2026-09-21: chunked eth_getLogs topic fetch + its response helper.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import httpx
@@ -24,6 +25,10 @@ from lite_indexer.rpc import (
 )
 from lite_indexer.state import PairCache
 from lite_indexer.strategies.evm._getlogs_body import build_getlogs_body
+from lite_indexer.strategies.evm.dex_leg_route import (
+    DEX_LEG_CONNECT_TIMEOUT_S,
+    leg_start_index,
+)
 from lite_indexer.strategies.evm.topic_decode import decode_topic_page
 
 logger = get_logger(__name__)
@@ -77,7 +82,13 @@ async def fetch_topic(
     async def _fetch_one_range(range_start: int, range_end: int) -> list[dict[str, Any]] | None:
         body = build_getlogs_body(topic, range_start, range_end)
 
-        start_idx = endpoints.index(get_best_endpoint(endpoints))
+        # Every leg used to start on the SAME best endpoint, so six legs
+        # collided on one provider account and a dead "best" endpoint made
+        # all six pay its connect penalty (measured 2026-10-24: 3.06 s of
+        # real work presented as 30.1 s). Offset the start per leg so a dead
+        # endpoint costs at most one leg.
+        best_idx = endpoints.index(get_best_endpoint(endpoints))
+        start_idx = (best_idx + leg_start_index(label, len(endpoints))) % len(endpoints)
         rotated = endpoints[start_idx:] + endpoints[:start_idx]
 
         best_result: list[dict[str, Any]] | None = None
@@ -91,7 +102,11 @@ async def fetch_topic(
             await apply_endpoint_backoff(url)
             try:
                 resp = await asyncio.wait_for(
-                    client.post(url, json=body, timeout=RPC_TIMEOUT),
+                    client.post(
+                        url,
+                        json=body,
+                        timeout=httpx.Timeout(RPC_TIMEOUT, connect=DEX_LEG_CONNECT_TIMEOUT_S),
+                    ),
                     timeout=attempt_deadline,
                 )
                 if resp.status_code == 200:
@@ -148,6 +163,7 @@ async def fetch_topic(
         # [] would be indistinguishable from "no swaps in range".
         return best_result
 
+    started = time.monotonic()
     effective_chunk = min(chunk_size, max(1, to_block - from_block + 1))
     semaphore = asyncio.Semaphore(CHUNK_PARALLELISM)
 
@@ -171,4 +187,14 @@ async def fetch_topic(
             # defers instead of silently advancing.
             return None
 
-    return merge_chunked_results(chunk_results)
+    merged = merge_chunked_results(chunk_results)
+    # Per-leg cost: the swap leg binds the slice, so measure it per leg.
+    logger.info(
+        "dex_leg_done",
+        chain=chain,
+        leg=label,
+        chunks=len(tasks),
+        events=len(merged),
+        duration_s=round(time.monotonic() - started, 2),
+    )
+    return merged
