@@ -26,7 +26,18 @@ SYNC_CYCLE_TIMEOUT_S: float = float(os.environ.get("SYNC_CYCLE_TIMEOUT_S", "600"
 #: (dedicated lane). Solana measured ~14 slots/min effective because it
 #: queued FIFO behind multi-minute EVM cycles; the chain produces ~150
 #: slots/min. Memory gating is unchanged for these chains.
-SEMAPHORE_EXEMPT_CHAINS: frozenset[str] = frozenset({"solana"})
+#:
+#: 2026-10-24 bsc: added on evidence, not on impatience. bsc held a slot and
+#: advanced ZERO blocks for 23+ minutes (8 consecutive ``sync_slice_timeout``
+#: on the SAME 20-block range 129310222-129310241, ``slices_done=0``), because
+#: a slice costs ~31 s standalone (measured: transfers 0.55 s, timestamps
+#: 0.85 s, ``fetch_swap_events`` 30.1 s — 6 topic legs x 2 chunks contending
+#: on RPC_PROVIDER_MAX_CONCURRENCY=2 / RPC_PROVIDER_RPS=5) and over 90 s under
+#: 6-way contention. A chain that times out every slice is not using its slot,
+#: it is holding it: exempting bsc returns 1/6 of the rotation to the other 14
+#: chains AND lets bsc retry without a ~14 s ``slot_granted`` wait. Memory
+#: gating is unchanged, and the 90 s slice cap still bounds one attempt.
+SEMAPHORE_EXEMPT_CHAINS: frozenset[str] = frozenset({"solana", "bsc"})
 
 
 async def run_cycle(rotation: Any, chain: str, indexer: Any) -> Any:

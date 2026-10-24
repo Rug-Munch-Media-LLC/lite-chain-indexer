@@ -36,11 +36,20 @@ def ladder_rungs(candidates: Sequence[int], max_calls: int) -> Iterator[int]:
 def conservative_bound(candidates: Sequence[int], max_calls: int, accepted: Sequence[int]) -> int:
     """Conservative eth_getLogs range for an endpoint from the rungs it accepted.
 
-    Returns the **smallest accepted rung**, never the largest: routing only
-    needs a range size that is known to work, and an endpoint's ceiling can
-    move under load. A caller that stops probing at the first rejection
-    therefore gets exactly the same answer as one that keeps probing to its
-    budget — the extra rungs can only lower confidence, never raise it.
+    Returns the **largest accepted rung**, not the smallest. An accepted rung
+    is a proven fact — the endpoint answered that exact range — so the largest
+    one is both safe and the only value that carries the ladder's information.
+    Returning the smallest made the ladder inert: the first rung is always the
+    smallest, so any endpoint that could serve the first rung was recorded at
+    that rung forever and higher rungs could never be reported. Measured
+    2026-10-24: ``bsc.api.pocket.network`` served 50 blocks / 11,216 logs in
+    1.96 s and ``rpc-bsc.48.club`` served 200 blocks / 47,220 logs in 1.08 s,
+    yet the pool still reported ``max_span{bsc}=10`` — a probe artefact, not a
+    chain limit.
+
+    The bound stays conservative in the sense that matters: it is never a
+    value the endpoint has not served. A rung the probe did not reach (outside
+    ``max_calls``) still cannot raise the bound.
 
     Args:
         candidates: Ascending candidate range sizes.
@@ -48,12 +57,12 @@ def conservative_bound(candidates: Sequence[int], max_calls: int, accepted: Sequ
         accepted: Rungs, in probe order, the endpoint answered OK for.
 
     Returns:
-        The smallest accepted size within the budget, or ``0`` when no rung
+        The largest accepted size within the budget, or ``0`` when no rung
         was accepted (the endpoint cannot serve logs at any probed size).
     """
     walked = set(ladder_rungs(candidates, max_calls))
     in_budget = [size for size in accepted if size in walked]
-    return min(in_budget) if in_budget else 0
+    return max(in_budget) if in_budget else 0
 
 
 __all__ = ["conservative_bound", "ladder_rungs"]

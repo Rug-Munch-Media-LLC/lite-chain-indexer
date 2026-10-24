@@ -70,14 +70,23 @@ def test_range_probe_stops_at_first_failure():
     assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, []) == 0
 
 
-def test_range_probe_returns_conservative_lower_bound():
-    """The bound is the SMALLEST accepted rung, not the largest."""
+def test_range_probe_returns_largest_proven_rung():
+    """The bound is the LARGEST accepted rung, never an unproven one.
+
+    2026-10-24: the previous contract (smallest accepted rung) made the ladder
+    inert — the first rung is always the smallest, so max_span could never
+    exceed it and bsc was pinned at 10 blocks while endpoints demonstrably
+    served 200. An accepted rung is proof; the largest accepted rung is the
+    most information a probe can carry.
+    """
     everything_accepted = [10, 100, 1000]
 
-    # 1000 answered, but 10 also did — report the rung known to work.
-    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, everything_accepted) == 10
-    # Only 100 was ever accepted: that rung IS the conservative floor.
+    # Every rung answered — 1000 is proven, so it is the answer.
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, everything_accepted) == 1000
+    # Only 100 was ever accepted: that rung IS the proven bound.
     assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, [100]) == 100
+    # 10 accepted then 100 rejected -> the proven bound is still 10.
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, [10]) == 10
     rungs = list(ladder_rungs(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS))
     assert rungs == [10, 100, 1000]
     assert len(rungs) <= GETLOGS_PROBE_MAX_CALLS
@@ -87,7 +96,7 @@ def test_range_probe_never_trusts_an_unprobed_rung():
     """A rung outside the call budget cannot raise the reported bound."""
     everything = [10, 100, 1000, 10000]
 
-    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, everything) == 10
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, everything) == 1000
     assert conservative_bound(GETLOGS_PROBE_CANDIDATES, 0, [10]) == 0
 
 
