@@ -65,4 +65,41 @@ def conservative_bound(candidates: Sequence[int], max_calls: int, accepted: Sequ
     return max(in_budget) if in_budget else 0
 
 
-__all__ = ["conservative_bound", "ladder_rungs"]
+def probe_timeout_for(
+    size: int,
+    base_timeout: float,
+    base_span: int,
+    cap: float,
+) -> float:
+    """Per-rung probe timeout, scaled by the span being asked for.
+
+    A fixed timeout cannot measure a range capability: an ``eth_getLogs``
+    answer costs roughly proportional to the logs it returns, so the same
+    wall-clock budget that is generous for 10 blocks is a guaranteed timeout
+    for 100. Measured 2026-10-24 on bsc: the 100-block rung took 23-35 s on
+    endpoints that serve it happily (``rpc-bsc.48.club`` 23.5 s,
+    ``bsc.api.pocket.network`` 27.0 s) against a probe timeout of 2.5 s, so
+    every rung above the first was recorded as a rejection and the endpoint
+    was pinned at 10 blocks — a probe artefact compounding the
+    ``conservative_bound`` one.
+
+    Scaling keeps the rung-10 cost exactly where it was (no startup
+    regression for endpoints that only serve small ranges) and lets a larger
+    rung prove itself within a budget proportional to its own size.
+
+    Args:
+        size: Rung size in blocks being probed.
+        base_timeout: Timeout that is correct for ``base_span`` blocks.
+        base_span: The rung whose cost ``base_timeout`` represents.
+        cap: Hard ceiling for any single rung.
+
+    Returns:
+        A timeout in seconds, never below ``base_timeout``, never above ``cap``.
+    """
+    if base_span <= 0:
+        return min(cap, base_timeout)
+    multiples = max(1, int(size) // int(base_span))
+    return min(cap, base_timeout * multiples)
+
+
+__all__ = ["conservative_bound", "ladder_rungs", "probe_timeout_for"]

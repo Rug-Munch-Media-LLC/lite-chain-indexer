@@ -67,7 +67,11 @@ from lite_indexer.rpc.capability_classify import (
 from lite_indexer.rpc.capability_classify import (
     is_logs_capability_failure as is_logs_capability_failure,
 )
-from lite_indexer.rpc.capability_ladder import conservative_bound, ladder_rungs
+from lite_indexer.rpc.capability_ladder import (
+    conservative_bound,
+    ladder_rungs,
+    probe_timeout_for,
+)
 from lite_indexer.rpc.gates import provider_gates
 
 if TYPE_CHECKING:  # pragma: no cover — annotation-only, avoids import cycle
@@ -94,6 +98,10 @@ GETLOGS_RANGE_LADDER: tuple[int, ...] = (10, 100, 1000, 10000)
 GETLOGS_PROBE_CANDIDATES: tuple[int, ...] = (10, 100, 1000)
 GETLOGS_PROBE_MAX_CALLS = 3
 GETLOGS_PROBE_TIMEOUT = 2.5
+#: Ceiling for a single ladder rung once its budget is scaled by span. The
+#: 100-block rung needs 23-35 s on bsc endpoints that serve it; 30 s covers
+#: the fast ones and still bounds a pathological startup to 3 rungs.
+GETLOGS_PROBE_RUNG_TIMEOUT_CAP = 30.0
 
 # Well-known, funded EOA (vitalik.eth) — a balance at genesis-era blocks
 # only resolves on an archive-capable node; non-archive nodes error with
@@ -591,7 +599,15 @@ async def probe_getlogs_range(
     for size in ladder_rungs(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS):
         calls += 1
         from_block = max(1, anchor - size + 1)
-        status = await _probe_getlogs_once(endpoint, from_block, anchor, topic0, timeout=timeout)
+        # Per-rung budget: a 100-block answer cannot be measured with the
+        # 10-block timeout (measured 23-35 s on bsc against 2.5 s).
+        rung_timeout = probe_timeout_for(
+            size,
+            base_timeout=timeout,
+            base_span=GETLOGS_PROBE_CANDIDATES[0],
+            cap=GETLOGS_PROBE_RUNG_TIMEOUT_CAP,
+        )
+        status = await _probe_getlogs_once(endpoint, from_block, anchor, topic0, timeout=rung_timeout)
         if status == _GetLogsProbeStatus.OK:
             accepted.append(size)
             continue
