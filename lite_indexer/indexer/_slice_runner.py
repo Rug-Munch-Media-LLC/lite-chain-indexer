@@ -9,6 +9,7 @@ mixin keeps only range resolution and delegation.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from collections.abc import Awaitable, Callable
@@ -30,6 +31,13 @@ logger = get_logger(__name__)
 #: the 900 s staleness bound (16 / 3 x 150 s = 800 s), while a healthy
 #: cycle (median 72-130 s) still finishes in one turn.
 SYNC_SLICE_BUDGET_S = float(os.environ.get("SYNC_SLICE_BUDGET_S", "60"))
+
+#: Hard ceiling on ONE slice. The budget above is only checked BETWEEN slices,
+#: so an unbounded slice set the real hold: bsc spent 300 s inside a single
+#: 10-block slice on a trace-phase timeout and held its slot for 656 s. A turn
+#: is now <= SYNC_SLICE_BUDGET_S + this, which is what makes the slot count
+#: arithmetic (6 slots x 150 s < 900 s staleness) true instead of aspirational.
+SYNC_SLICE_TIMEOUT_S = float(os.environ.get("SYNC_SLICE_TIMEOUT_S", "90"))
 
 SliceRunner = Callable[[int, int, dict[str, Any], float], Awaitable[dict[str, Any]]]
 
@@ -68,7 +76,26 @@ async def run_slices(
                 remaining_blocks=to_block - last_to,
             )
             return summary
-        result = await sync_slice(slice_from, slice_to, summary, start_time)
+        try:
+            async with asyncio.timeout(SYNC_SLICE_TIMEOUT_S):
+                result = await sync_slice(slice_from, slice_to, summary, start_time)
+        except TimeoutError:
+            # The slice is abandoned, not advanced: fail-closed on the first
+            # slice, keep earlier checkpoints on a later one.
+            summary["status"] = "slice_timeout"
+            summary["slices_done"] = slices_done
+            summary["duration_seconds"] = time.monotonic() - start_time
+            logger.warning(
+                "sync_slice_timeout",
+                chain=indexer.chain,
+                slice_from=slice_from,
+                slice_to=slice_to,
+                timeout_s=SYNC_SLICE_TIMEOUT_S,
+                slices_done=slices_done,
+            )
+            if slices_done:
+                record_slice_checkpoint(indexer, last_from, last_to, slices_done)
+            return summary
         status = result.get("status")
         if status in HARD_ABORT_STATUSES:
             return result

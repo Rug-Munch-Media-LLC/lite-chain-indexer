@@ -29,6 +29,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
+from lite_indexer import metrics
 from lite_indexer.config import INDEXER_DEMAND_DIR, LAZY_INDEXING_ENABLED
 from lite_indexer.logging import get_logger
 
@@ -136,7 +137,10 @@ def read_demand_files(chain: str, demand_dir: Path | str | None = None) -> set[s
             if (chain_dir / event_type).is_file():
                 demanded.add(event_type)
     except OSError as exc:
-        logger.warning("demand_scan_failed", chain=chain, error=str(exc)[:80])
+        # Errno 13 on the demand mount silently disabled lazy indexing for the
+        # chain; a scan we cannot perform is a failure, not a warning.
+        logger.error("demand_scan_failed", chain=chain, error=str(exc)[:80])
+        metrics.incr_labeled("lite_indexer_demand_scan_failures", chain=chain)
     return demanded
 
 

@@ -68,8 +68,9 @@ def record_range_attestation(
             leaf_count=attestor.leaf_count,
         )
         return root
-    except Exception as exc:  # noqa: BLE001 — attestation is best-effort
-        logger.warning("attestation_failed", chain=chain, error=str(exc)[:120])
+    except Exception as exc:  # noqa: BLE001 — attestation must not abort a sync
+        logger.error("attestation_failed", chain=chain, error=str(exc)[:120])
+        metrics_incr("attestation_failures")
         return None
 
 

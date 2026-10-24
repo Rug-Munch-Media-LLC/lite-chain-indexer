@@ -60,14 +60,14 @@ CHAIN_AFFINITY_ENABLED: bool = os.environ.get("CHAIN_AFFINITY_ENABLED", "0") == 
 # slots first (task creation order); lower-priority chains rotate in as
 # slots free. Set MAX_CONCURRENT_CHAINS=14 to restore old behavior.
 #
-# 2026-10-23 RPC-STARVATION CAP (was 6): every free endpoint is measured at a
-# 10-block getLogs span (lite_indexer_rpc_pool_max_span == 10 on all 19 EVM
-# chains), so per-chain request rate is what empties the shared free pool. Six
-# concurrent chains produced 112 `rpc_rate_limit_streak_softban` events/hour
-# (one endpoint reached a 58-deep 429 streak) and 43 `all_endpoints_down`
-# events/hour. This cap is the ONLY place the active chain count is bounded —
-# raising it re-creates the storm.
-MAX_CONCURRENT_CHAINS: int = int(os.environ.get("MAX_CONCURRENT_CHAINS", "3"))
+# 2026-10-24 ARITHMETIC CAP (6). Fairness cannot fix an oversized turn: with
+# 15 non-exempt chains, mean wait = (15 / slots - 1) x turn. Turns are now
+# hard-bounded (SYNC_SLICE_BUDGET_S + SYNC_SLICE_TIMEOUT_S = 150 s worst case),
+# so 6 slots give a ~375 s round against the 900 s staleness bound, and
+# 6 x CHUNK_PARALLELISM(2) = 12 in-flight getLogs across per-chain endpoint
+# pools. The 2026-10-23 storm was 6 chains x CHUNK_PARALLELISM=4 = 24 in
+# flight; that constant is now 2, so 6 slots is half the pressure that stormed.
+MAX_CONCURRENT_CHAINS: int = int(os.environ.get("MAX_CONCURRENT_CHAINS", "6"))
 
 # Stagger between chain starts inside the daemon (seconds). All chain tasks are
 # created at once, so without a stagger every chain's startup endpoint

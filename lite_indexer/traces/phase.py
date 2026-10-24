@@ -16,6 +16,14 @@ from lite_indexer.traces.policy import trace_policy
 
 logger = get_logger(__name__)
 
+#: Per-chain trace-phase health. A chain whose trace endpoint rate-limits
+#: EVERY turn (bsc, ethereum 2026-10-24: 300 s timeout on every cycle) must
+#: stop buying that timeout with slot time: after this many consecutive
+#: timeouts the phase is skipped for ``_SKIP_TURNS`` turns, then retried.
+_PHASE_STATE: dict[str, dict[str, int]] = {}
+_SKIP_AFTER_TIMEOUTS = 2
+_SKIP_TURNS = 20
+
 
 async def run_trace_phase(
     host: Any,
@@ -37,13 +45,28 @@ async def run_trace_phase(
     Returns:
         Standardized internal-transfer rows (empty when the phase failed).
     """
+    state = _PHASE_STATE.setdefault(host.chain, {"timeouts": 0, "skip": 0})
+    if state["skip"] > 0:
+        state["skip"] -= 1
+        return []
+
     policy = trace_policy(host.chain)
     try:
-        return await asyncio.wait_for(
+        rows = await asyncio.wait_for(
             host._collect_internal_transfers(from_block, to_block),
             timeout=policy.phase_timeout_s,
         )
     except TimeoutError:
+        state["timeouts"] += 1
+        if state["timeouts"] >= _SKIP_AFTER_TIMEOUTS:
+            state["timeouts"] = 0
+            state["skip"] = _SKIP_TURNS
+            logger.error(
+                "trace_phase_degraded",
+                chain=host.chain,
+                skipped_turns=_SKIP_TURNS,
+                reason="consecutive phase timeouts",
+            )
         error = f"internal_transfers fetch timed out for {from_block}-{to_block}"
         logger.warning(
             "sync_phase_timeout",
@@ -57,6 +80,8 @@ async def run_trace_phase(
         logger.warning("sync_phase_failed", chain=host.chain, phase="internal_transfers", error=error)
         summary.setdefault("phase_failures", []).append("internal_transfers")
         return []
+    state["timeouts"] = 0
+    return rows
 
 
 async def collect_internal_transfers(chain: str, from_block: int, to_block: int) -> list[dict[str, Any]]:

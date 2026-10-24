@@ -3,21 +3,14 @@
 A plain ``asyncio.Semaphore`` is FIFO but NOT fair across chains that re-queue
 at very different rates: the 0.4 s Solana loop and the 2 s Base loop are back
 in the queue constantly, so low-priority chains (bsc, fantom, celo) can wait
-behind them indefinitely. Measured 2026-10-23 with a 3-slot semaphore: after
-7 minutes only solana/base/polygon had ingested, while 13 chains sat
-900-1300 s stale — the soft-ban storm was traded for starvation.
+behind them indefinitely. :class:`SlotRotation` grants the next free slot to
+the chain served the FEWEST times (least-served-first, ties broken by
+priority, then arrival order), so every chain gets a turn before any chain
+gets a second one.
 
-:class:`SlotRotation` fixes that by granting the next free slot to the chain
-that has been served the FEWEST times (least-served-first, ties broken by
-priority, then arrival order). Every chain therefore gets a turn before any
-chain gets a second one.
-
-Served-count fairness alone bounds the number of GRANTS a waiter sits out, not
-the WALL TIME: a sync cycle was measured at 780-1270 s (2026-10-23), so with
-16 chains a strict round-robin still parks a chain for hours. ``max_wait_s``
-therefore adds a hard age bound — once a waiter has been queued that long it
-outranks served-count at the next release (oldest first). Under saturation
-that degrades to arrival order, which is exactly the anti-starvation contract.
+Served-count fairness bounds the number of GRANTS a waiter sits out, not the
+WALL TIME (a turn is hard-bounded by ``SYNC_SLICE_TIMEOUT_S``); ``max_wait_s``
+adds a hard age bound at the next release.
 
 Single-threaded asyncio only: no locks, no threads, no timers.
 """
@@ -27,17 +20,17 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
+from lite_indexer.cli._slot_fairness import default_store
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
 
-#: Default wall-clock bound on a queued acquire. Sized above the fastest
-#: healthy cycle (Base ~2 s) but far below a slow backfill cycle, so an aged
-#: waiter wins the next free slot instead of waiting out whole rounds.
+#: Wall-clock bound on a queued acquire: an aged waiter wins the next slot.
 DEFAULT_MAX_WAIT_S = 120.0
 
-#: A queued acquire longer than this is a starvation signal worth a WARNING.
+#: A queued acquire longer than this is a starvation signal (WARNING).
 SLOT_WAIT_WARN_S = 120.0
 
 
@@ -61,6 +54,7 @@ class SlotRotation:
         priority_for: callable[[str], int] | None = None,
         max_wait_s: float = DEFAULT_MAX_WAIT_S,
         clock: callable[[], float] | None = None,
+        fairness: Any = None,
     ) -> None:
         """Create the rotation.
 
@@ -82,6 +76,10 @@ class SlotRotation:
         self._served: dict[str, int] = {}
         self._arrivals = 0
         self._held: set[str] = set()
+        # CI recreates the container every few minutes: persist served counts.
+        self._fairness = fairness
+        if fairness is not None:
+            self._served, self._arrivals = fairness.load()
 
     # ── public API ────────────────────────────────────────────────────
     async def acquire(self, chain: str) -> None:
@@ -178,22 +176,25 @@ class SlotRotation:
         self._active += 1
         self._held.add(chain)
         self._served[chain] = self._served.get(chain, 0) + 1
+        if self._fairness is not None:
+            self._fairness.save(self._served, self._arrivals)
 
 
 def build_rotation(
     slots: int,
     priority_for: callable[[str], int] | None = None,
     max_wait_s: float = DEFAULT_MAX_WAIT_S,
+    fairness: Any = None,
 ) -> SlotRotation | None:
     """Return a fair rotation for ``slots``, or None when the cap is disabled."""
     global CURRENT
-    CURRENT = SlotRotation(slots, priority_for=priority_for, max_wait_s=max_wait_s) if slots and slots > 0 else None
-    return CURRENT
+    if fairness is None and slots:
+        fairness = default_store()  # persists across CI container recreates
+    CURRENT = SlotRotation(slots, priority_for=priority_for, max_wait_s=max_wait_s, fairness=fairness)
+    return CURRENT if slots else None
 
 
-#: Newest rotation, so the metrics exporter can report slot state without
-#: threading a reference through the daemon.
-CURRENT: SlotRotation | None = None
+CURRENT: SlotRotation | None = None  # newest rotation, read by the metrics exporter
 
 
 __all__ = ["DEFAULT_MAX_WAIT_S", "SLOT_WAIT_WARN_S", "SlotRotation", "build_rotation"]

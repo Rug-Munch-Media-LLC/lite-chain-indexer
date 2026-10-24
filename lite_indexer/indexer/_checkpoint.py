@@ -24,14 +24,16 @@ logger = get_logger(__name__)
 # Default sub-slice size for per-slice checkpointing. Overridable with the
 # ``SYNC_CHECKPOINT_SLICE`` env var, read at call time so it can be retuned
 # without a redeploy.
-#: Blocks per slice. 50 was chosen when a slice only had to be safe to
-#: interrupt; it is also the SLOT QUANTUM, and 50 blocks of logs costs
-#: 300-600 s on a busy chain (measured 2026-10-24: ethereum median hold
-#: 671 s, bsc 598 s). With MAX_CONCURRENT_CHAINS=3 and 15 non-exempt chains
-#: that is a ~2200 s round, so a chain went 1761 s between turns. Slices of
-#: 10 blocks cut the quantum ~5x, keeping a full round under the 900 s
-#: staleness bound (15 / 3 x ~150 s) without raising concurrency.
-DEFAULT_SYNC_CHECKPOINT_SLICE = 10
+#: Blocks per slice. This is the BLOCK QUANTUM: a turn must move at least
+#: ``production rate x turn interval`` blocks or the chain diverges forever.
+#: Measured 2026-10-24: slices of 10 blocks held a slot for only ~25 s but
+#: moved bsc +10 blocks per 655 s turn = 0.015 blocks/s against 1.33 blocks/s
+#: of BSC production, so bsc's highwater fell 119,129 blocks behind tip while
+#: looking "healthy". A 100-block slice is 10 span-limited getLogs calls at
+#: CHUNK_PARALLELISM=2 (~5 s) and keeps the quantum above production. The
+#: TURN is now bounded by time (SYNC_SLICE_BUDGET_S + SYNC_SLICE_TIMEOUT_S),
+#: not by slice count, so a bigger block quantum cannot stretch a slot hold.
+DEFAULT_SYNC_CHECKPOINT_SLICE = 100
 
 # Statuses that always stop the cycle: the range itself is invalid/rewound
 # or ClickHouse is unwritable — continuing to the next slice cannot help.

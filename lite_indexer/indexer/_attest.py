@@ -17,6 +17,7 @@ import asyncio
 from collections.abc import Sequence
 from typing import Any
 
+from lite_indexer import metrics
 from lite_indexer.attestation_record import AttestOptions, record_range_attestation
 from lite_indexer.config import ATTESTATION_ENABLED
 from lite_indexer.logging import get_logger
@@ -57,8 +58,12 @@ async def attest_range(
             list(events) + list(dex_events),
             AttestOptions(block_hashes=collect_block_hashes(events, dex_events)),
         )
-    except Exception as exc:  # noqa: BLE001 — attestation is best-effort
-        logger.warning("attestation_failed", chain=chain, error=str(exc)[:120])
+    except Exception as exc:  # noqa: BLE001 — attestation must not abort a sync
+        # A path/permission bug here used to be logged as a warning and lost;
+        # three chains silently stopped attesting (2026-10-24 Errno 13). ERROR
+        # plus a counter makes it alertable instead of decorative.
+        logger.error("attestation_failed", chain=chain, error=str(exc)[:120])
+        metrics.incr_labeled("lite_indexer_attestation_failures", chain=chain)
         return None
 
 

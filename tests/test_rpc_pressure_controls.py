@@ -30,9 +30,11 @@ def test_pressure_defaults_bound_the_free_pool():
     """Defaults must keep the pool under its measured free-tier ceiling."""
     from lite_indexer.config import indexing
 
-    # Three chains x two chunks is the documented ceiling (docs/RPC-POOL-CAPACITY.md);
-    # raising either re-creates the 2026-10-23 429 storm.
-    assert 1 <= indexing.MAX_CONCURRENT_CHAINS <= 3
+    # Six chains x two chunks = 12 in-flight getLogs, half the 24 that stormed
+    # on 2026-10-23 (6 chains x CHUNK_PARALLELISM=4). Slots buy the round time
+    # that keeps 15 chains inside the 900 s staleness bound; chunks are the
+    # pool pressure. Raise neither without re-measuring 429 streaks.
+    assert 1 <= indexing.MAX_CONCURRENT_CHAINS <= 6
     assert 1 <= indexing.CHUNK_PARALLELISM <= 2
     # A non-zero stagger keeps startup verification off the pool in one burst.
     assert indexing.CHAIN_START_STAGGER_SECONDS > 0
