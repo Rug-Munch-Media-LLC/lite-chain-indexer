@@ -158,7 +158,8 @@ def test_invalid_date_rejected() -> None:
 
 
 def test_num_str_edge_cases() -> None:
-    assert _num_str(None) == "0"
+    # NULL is "the lake does not know", not a zero amount (2026-10-24 fix).
+    assert _num_str(None) is None
     assert _num_str(61.0) == "61"
     assert _num_str(61.5) == "61.5"
     assert _num_str("abc") == "abc"

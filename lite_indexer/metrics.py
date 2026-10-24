@@ -24,6 +24,7 @@ import contextlib
 from typing import Any
 
 from lite_indexer.metrics_chain_lag import CHAIN_LAG_GAUGE_SPECS
+from lite_indexer.metrics_plain import _PlainCounter, _PlainGauge
 
 try:
     from prometheus_client import REGISTRY, Counter, Gauge, ProcessCollector
@@ -98,50 +99,6 @@ _GAUGE_NAMES: tuple[str, ...] = (
     "lite_indexer_rss_bytes",
     "lite_indexer_cgroup_memory_bytes",
 )
-
-
-class _PlainCounter:
-    """Minimal ``Counter`` stand-in when prometheus_client is missing."""
-
-    __slots__ = ("_value",)
-
-    def __init__(self) -> None:
-        self._value = 0.0
-
-    def inc(self, amount: float = 1.0) -> None:
-        """Increment the counter by ``amount`` (default 1.0)."""
-        self._value += amount
-
-    def get(self) -> float:
-        """Return the current counter value."""
-        return self._value
-
-    def set(self, value: float) -> None:
-        """Set the counter to an absolute ``value``."""
-        self._value = value
-
-
-class _PlainGauge:
-    """Minimal labeled ``Gauge`` stand-in when prometheus_client is missing."""
-
-    __slots__ = ("_key", "_values")
-
-    def __init__(self, values: dict[tuple[tuple[str, str], ...], float] | None = None) -> None:
-        self._values: dict[tuple[tuple[str, str], ...], float] = {} if values is None else values
-        self._key: tuple[tuple[str, str], ...] = ()
-
-    def labels(self, **labels: str) -> _PlainGauge:
-        child = _PlainGauge(self._values)
-        child._key = tuple(sorted(labels.items()))
-        return child
-
-    def set(self, value: float) -> None:
-        """Set the gauge to an absolute ``value``."""
-        self._values[self._key] = float(value)
-
-    def get(self) -> float:
-        """Return the current gauge value."""
-        return self._values.get(self._key, 0.0)
 
 
 def _make_counter(name: str, labelnames: tuple[str, ...] = ()) -> Any:

@@ -122,6 +122,10 @@ For a **non-EVM** chain (e.g., a new Solana or Tron-like network):
 
 We use pytest with `asyncio_mode = auto`, so async tests work out of the box.
 
+Run tests with the system interpreter — `python3 -m pytest` — not a local
+`.venv` (see `docs/TEST-ENV.md`: `.venv/` is a stale 3.11 venv with no `pip`,
+while runtime and the canonical test interpreter are `python3` 3.12).
+
 ```bash
 # Run all tests
 pytest -v
