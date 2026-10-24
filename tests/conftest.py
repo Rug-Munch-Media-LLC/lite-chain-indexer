@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -59,6 +60,37 @@ def _no_live_nats(monkeypatch: pytest.MonkeyPatch) -> None:
     before conftest's env override could apply.
     """
     monkeypatch.setattr("lite_indexer.indexer.NATS_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_endpoint_verify(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let a unit test probe the live RPC pool to verify endpoints.
+
+    The sync cycle resolves its pool through ``_verify_bounded.resolve_verified``,
+    which calls ``verify_chain_endpoints`` - a real network pass (60 s hard
+    bound, one probe per configured endpoint). Unit tests that drive
+    ``_sync_loop_inner`` therefore spent the whole 90 s slice budget on live
+    probes and 429-softbans, then failed as ``sync_slice_timeout`` (or passed
+    only by timing luck, which made them order- and load-dependent: measured
+    2026-10-24, test_traces and test_reliability_fixes flipped between green
+    and red on identical code).
+
+    The default is "no verified set": the cycle proceeds with the configured
+    pool, exactly like a bounded-verification timeout. Tests that assert the
+    verified-set swap patch ``_verify_bounded.verify_chain_endpoints`` with
+    their own result, which overrides this fixture (their setattr runs later).
+    Smoke-marked tests (live-service integration) are exempt.
+    """
+    if request.node.get_closest_marker("smoke"):
+        return
+    monkeypatch.setattr(
+        "lite_indexer.indexer._verify_bounded.wait_startup_result",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "lite_indexer.indexer._verify_bounded.verify_chain_endpoints",
+        AsyncMock(return_value=None),
+    )
 
 
 @pytest.fixture(autouse=True)

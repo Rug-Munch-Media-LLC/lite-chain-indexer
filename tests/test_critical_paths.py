@@ -28,7 +28,6 @@ async def test_state_skips_on_failure(tmp_path, monkeypatch):
     from lite_indexer.indexer import LiteIndexer
     from lite_indexer.rpc.verify import EndpointVerifyResult
 
-
     indexer = LiteIndexer(chain="ethereum", data_dir=tmp_path)
     indexer.state.save(42, 0)  # seed: last indexed block = 42
     assert indexer.state.load()["last_block"] == 42
@@ -44,7 +43,16 @@ async def test_state_skips_on_failure(tmp_path, monkeypatch):
         original_endpoints=original,
         verified_endpoints=[],
     )
-    monkeypatch.setattr("lite_indexer.indexer.verify_chain_endpoints", AsyncMock(return_value=result))
+    # The call site is the submodule binding (the package re-export is a
+    # separate name, so patching it never took effect).
+    # No daemon startup pass in a unit test — do not wait 60 s for its future.
+    # Endpoint verification is neutralised suite-wide (conftest
+    # _no_live_endpoint_verify); an empty verified set is what "every endpoint
+    # failed" looks like once the probe pass has run.
+    monkeypatch.setattr(
+        "lite_indexer.indexer._verify_bounded.verify_chain_endpoints",
+        AsyncMock(return_value=result),
+    )
     monkeypatch.setattr("lite_indexer.indexer.check_disk_cap_async", AsyncMock(return_value=True))
     monkeypatch.setattr("lite_indexer.indexer.check_disk_space", lambda: True)
 
@@ -59,7 +67,6 @@ async def test_state_skips_on_failure(tmp_path, monkeypatch):
 async def test_deployers_with_dex(tmp_path, monkeypatch):
     """Deployer events must still be captured when DEX indexing is enabled."""
     from lite_indexer.indexer import LiteIndexer
-
 
     indexer = LiteIndexer(
         chain="ethereum",
@@ -125,7 +132,6 @@ async def test_dex_write_zero_aborts_and_rewinds_state(tmp_path, monkeypatch):
     """
     from lite_indexer.indexer import LiteIndexer
 
-
     indexer = LiteIndexer(
         chain="ethereum",
         from_block=100,
@@ -171,7 +177,6 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
     """After a reorg triggers head-start recovery, a successful sync clears it."""
     from lite_indexer.indexer import LiteIndexer
 
-
     indexer = LiteIndexer(
         chain="ethereum",
         from_block=100,
@@ -186,6 +191,13 @@ async def test_reorg_flag_resets(tmp_path, monkeypatch):
     # disable traces so the test does not make real (rate-limited) trace
     # RPC calls to live endpoints.
     indexer.traces_enabled = False
+    # Lazy indexing would enable the DEX phase and fetch real mainnet events,
+    # eating the 60 s cycle budget before the reorg flag can be asserted.
+    indexer.lazy_indexing_enabled = False
+    indexer.dex_enabled = False
+
+    # Endpoint verification is neutralised suite-wide (conftest
+    # _no_live_endpoint_verify), so this test keeps the configured pool.
 
     # The 2026-08-04 CH health gate would pause the sync when the fake
     # writer reports client=None. This test exercises the reorg flag
@@ -226,7 +238,7 @@ async def test_verified_endpoints_applied(tmp_path, monkeypatch):
     """The endpoints swapped in during verification are used for fetching."""
     import lite_indexer.chains as chains_mod
     from lite_indexer.indexer import LiteIndexer
-    from lite_indexer.rpc.verify import EndpointVerifyResult
+    from lite_indexer.rpc.verify import EndpointVerifyResult, clear_startup_results
 
     original_endpoints = list(chains_mod.GET_LOGS_ENDPOINTS["ethereum"])
     verified = ["https://verified-a.example", "https://verified-b.example"]
@@ -239,11 +251,12 @@ async def test_verified_endpoints_applied(tmp_path, monkeypatch):
     # unless enabled) and traces/CH below.
     indexer.nats_enabled = False
 
-    # Capture the endpoint actually used by the strategy during the sync
+    # Tip resolution happens BEFORE verification and legitimately walks the
+    # full configured pool, so it cannot witness the swap. Capture the pool
+    # the transfer fetch actually sees instead.
     used_endpoints: list[str] = []
 
     async def fake_eth_block_number(endpoint: str) -> int:
-        used_endpoints.append(endpoint)
         return 1000
 
     indexer.rpc.eth_block_number = fake_eth_block_number
@@ -253,11 +266,19 @@ async def test_verified_endpoints_applied(tmp_path, monkeypatch):
         original_endpoints=original_endpoints,
         verified_endpoints=verified,
     )
-    monkeypatch.setattr("lite_indexer.indexer.verify_chain_endpoints", AsyncMock(return_value=result))
+    clear_startup_results()
+    monkeypatch.setattr(
+        "lite_indexer.indexer._verify_bounded.verify_chain_endpoints",
+        AsyncMock(return_value=result),
+    )
     monkeypatch.setattr("lite_indexer.indexer.check_disk_cap_async", AsyncMock(return_value=True))
     monkeypatch.setattr("lite_indexer.indexer.check_disk_space", lambda: True)
 
-    indexer.strategy.fetch_transfers = AsyncMock(return_value=[])
+    async def fake_fetch_transfers(from_block: int, to_block: int) -> list[Any]:
+        used_endpoints.extend(list(chains_mod.GET_LOGS_ENDPOINTS["ethereum"]))
+        return []
+
+    indexer.strategy.fetch_transfers = AsyncMock(side_effect=fake_fetch_transfers)
 
     # Isolation seams (mirror test_reorg_flag_resets): without these the
     # sync makes REAL trace-RPC / ClickHouse / NDJSON calls and hangs the
@@ -526,7 +547,6 @@ def test_checkpoint_recovery(tmp_path, monkeypatch):
     from lite_indexer.recovery import recover_chain_state
     from lite_indexer.state import StateHighWater, StateManager
 
-
     # Stats query returns min=0 max=2000; gap scan (stride 1000) finds the
     # sampled block at 1000 missing → hole spans 1000..1999
     ch = _FakeCH(
@@ -604,7 +624,6 @@ def test_chain_health_check(monkeypatch):
 async def test_concurrent_chain_sync(tmp_path, monkeypatch):
     """Two chains syncing concurrently keep independent state and summaries."""
     from lite_indexer.indexer import LiteIndexer
-
 
     def make_indexer(chain: str, to_block: int) -> LiteIndexer:
         indexer = LiteIndexer(

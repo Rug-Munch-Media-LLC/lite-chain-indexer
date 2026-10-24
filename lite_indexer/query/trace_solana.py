@@ -1,15 +1,16 @@
-"""Solana edges via Helius enhanced transactions (native SOL + SPL).
+"""Solana edges via a keyed archive tier (enhanced transactions, SOL + SPL).
 
 Solana is the one chain where our own tables cannot answer the funding
 question: ``solana_spl_balance_changes`` has no counterparty column (only
 ``owner`` + ``delta``), and native SOL movements are not stored at all. So
-the trace reads Helius' parsed transactions, which carry
+the trace reads the archive tier's parsed transactions, which carry
 ``nativeTransfers`` (lamports) and ``tokenTransfers`` (human amounts) with
 both sides — the same shape the EVM tier produces.
 
-The endpoint is keyed: ``HELIUS_API_KEY`` (or the indexer env's
-``HELIUS_KEY``). Without a key this tier reports itself unavailable rather
-than guessing.
+The tier is keyed and its base URL is operator-supplied, both from the
+private runtime env (never git): ``SOLANA_TRACE_API_KEY`` and
+``SOLANA_TRACE_API_URL`` (a template containing ``{address}``). Without
+either the tier reports itself unavailable rather than guessing.
 """
 
 from __future__ import annotations
@@ -26,13 +27,19 @@ from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
 
-_API = "https://api.helius.xyz/v0/addresses/{address}/transactions"
+_URL_ENV = "SOLANA_TRACE_API_URL"
+_KEY_ENV = "SOLANA_TRACE_API_KEY"
 _LAMPORTS = 1_000_000_000
 
 
 def _api_key() -> str:
     load_env_file()
-    return (os.getenv("HELIUS_API_KEY") or os.getenv("HELIUS_KEY") or "").strip()
+    return os.getenv(_KEY_ENV, "").strip()
+
+
+def _api_url() -> str:
+    load_env_file()
+    return os.getenv(_URL_ENV, "").strip()
 
 
 def _get(url: str, timeout: int) -> Any:
@@ -62,7 +69,7 @@ def _edge(
         "tx_hash": signature,
         "ts": ts,
         "kind": kind,
-        "tier": "helius",
+        "tier": "solana-archive",
         "tx_count": 1,
     }
 
@@ -123,31 +130,32 @@ def fetch_solana(
     limit: int = 100,
     timeout: int = 25,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Return native + SPL edges for one Solana address via Helius.
+    """Return native + SPL edges for one Solana address via the archive tier.
 
     Args:
         address: Base58 account address (case-sensitive).
-        limit: Transactions requested (Helius max 100 per call).
+        limit: Transactions requested (tier max 100 per call).
         timeout: HTTP timeout in seconds.
 
     Returns:
         ``(rows, notes)``. Rows only include transfers where ``address`` is
-        one side, and only the newest ``limit`` transactions — Helius'
+        one side, and only the newest ``limit`` transactions — the tier's
         address endpoint is recency-ordered, so this is a *recent* view, not
         full history.
     """
     key = _api_key()
-    if not key:
-        return [], ["helius: no API key (HELIUS_API_KEY / HELIUS_KEY)"]
+    template = _api_url()
+    if not key or not template:
+        return [], [f"solana-archive: unconfigured ({_KEY_ENV} / {_URL_ENV})"]
     query = urllib.parse.urlencode({"api-key": key, "limit": max(1, min(int(limit), 100))})
-    url = f"{_API.format(address=urllib.parse.quote(address))}?{query}"
+    url = f"{template.format(address=urllib.parse.quote(address))}?{query}"
     try:
         payload = _get(url, timeout)
     except Exception as exc:  # noqa: BLE001 — a dead RPC tier is a note, not a crash
-        logger.warning("helius_trace_failed", error=str(exc)[:120])
-        return [], [f"helius: request failed ({str(exc)[:80]})"]
+        logger.warning("solana_trace_failed", error=str(exc)[:120])
+        return [], [f"solana-archive: request failed ({str(exc)[:80]})"]
     if not isinstance(payload, list):
-        return [], ["helius: unexpected payload shape"]
+        return [], ["solana-archive: unexpected payload shape"]
     rows = _transfers(payload, address)
-    notes = [f"helius: {len(payload)} txs scanned, {len(rows)} movements"]
+    notes = [f"solana-archive: {len(payload)} txs scanned, {len(rows)} movements"]
     return rows, notes

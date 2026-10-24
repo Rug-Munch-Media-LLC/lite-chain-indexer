@@ -443,7 +443,8 @@ async def probe_logs_capability(
     from_block = hex(max(0, int(tip) - 2))
     # Topic-filtered: this MUST be the production request shape. The
     # unfiltered tip-range probe was rejected by providers whose getLogs
-    # limit is a RESULT cap, not a block cap (Ankr bsc: -32062 "Block range
+    # limit is a RESULT cap, not a block cap (keyed provider on bsc: -32062
+    # "Block range
     # is too large" for 3 unfiltered blocks in 0.27s, while the same span
     # topic-filtered answers 200). Those endpoints classified TRANSIENT ->
     # logs_capable=None -> never recorded usable, never excluded from the

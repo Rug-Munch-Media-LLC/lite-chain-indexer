@@ -106,7 +106,7 @@ fi
 # Scanning whole files meant any pre-existing, already-reviewed literal froze
 # its file permanently: a guard that exists to PREVENT leaks was preventing the
 # fix for one. tests/test_logging_redaction.py carried a /srv/secrets/... path
-# at line 98, so the real Infura key fix in the same file could not be
+# at line 98, so the real provider key fix in the same file could not be
 # committed at all. A leak is what you ADD; text that was already reviewed and
 # merged is not a new leak.
 #

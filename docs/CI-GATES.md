@@ -154,8 +154,8 @@ enforced here.**
 ## Known red: `tests/test_logging_redaction.py:46`
 
 `trufflehog --only-verified --fail` exits **183** with `verified_secrets: 1` —
-a 32-hex Infura URL path key used as redaction bait inside a logging-redaction
-test (`Detector Type: Infura`, file `tests/test_logging_redaction.py`, line 46).
+a 32-hex provider URL path key used as redaction bait inside a logging-redaction
+test (`Detector Type: <provider>`, file `tests/test_logging_redaction.py`, line 46).
 
 It is a realistic-format literal rather than a live credential, but it is a
 VERIFIED secret to the scanner and it is in pushed history, so the gate is left

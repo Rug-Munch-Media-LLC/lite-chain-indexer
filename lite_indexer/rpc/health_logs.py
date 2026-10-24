@@ -55,7 +55,7 @@ def _record(endpoint: str, ok: bool, reason: str, *, chain: str = "", span_block
     Persisting here is the point: a probe that passed must leave a record
     (``logs_capable`` + a measured span), otherwise the pool gauge and the
     range planner see "unknown capability" and treat a working endpoint as
-    unusable — the keyed-Ankr failure mode of 2026-10-23.
+    unusable — the keyed-provider failure mode of 2026-10-23.
     """
     _logs_ok[endpoint] = ok
     _logs_reason[endpoint] = reason

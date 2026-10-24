@@ -184,7 +184,7 @@ class TestPoolWideOutage:
         from lite_indexer.strategies.evm import transfer_handler as th
 
         a, b = "https://a.invalid", "https://b.invalid"
-        for _ in range(3):
+        for _ in range(ban_state_mod._RATE_LIMIT_STREAK_BAN_THRESHOLD):
             record_rate_limit(a)
             record_rate_limit(b)
         assert pool_rate_limited([a, b]) is True
@@ -330,7 +330,8 @@ class TestPoolWideOutage:
         re-test it, else an all-soft-banned pool (celo, 2026-09-19) can never
         self-recover."""
         ep = "https://softbanned.invalid"
-        for _ in range(3):  # streak >= threshold arms the soft-ban
+        # streak == threshold arms the soft-ban
+        for _ in range(ban_state_mod._RATE_LIMIT_STREAK_BAN_THRESHOLD):
             record_rate_limit(ep)
         assert is_endpoint_banned(ep) is True
         assert probe_eligible_endpoints([ep]) == [ep]
@@ -400,15 +401,19 @@ class TestPoolWideOutage:
         with patch.dict(caps._CAPABILITY_RECORDS, records, clear=True):
             assert probe_eligible_endpoints([fresh]) == []
 
-    def test_rate_limit_streak_softban_capped_at_300s(self, clock: _Clock):
-        """Was capped at 3600s → a transient 429 burst froze the chain for an
-        hour past provider recovery. Cap must be 300s at every streak."""
+    def test_rate_limit_streak_softban_capped(self, clock: _Clock):
+        """A 429 burst must never freeze the chain past provider recovery.
+
+        The window escalates (base → doubling) but stops at the module CAP,
+        which is deliberately ABOVE the base so repeat offenders sit out
+        longer instead of being re-dialled the moment the window expires.
+        """
         ep = "https://streaky.invalid"
-        for _ in range(6):
+        for _ in range(ban_state_mod._RATE_LIMIT_STREAK_BAN_THRESHOLD * 3):
             record_rate_limit(ep)
 
         ban_s = ban_state_mod._endpoint_bans[ep] - clock.now
-        assert ban_s == pytest.approx(300.0)
+        assert ban_s == pytest.approx(float(ban_state_mod._RATE_LIMIT_STREAK_BAN_CAP_S))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -561,17 +566,18 @@ class TestRateLimitDoesNotTripCircuit:
         assert is_endpoint_banned(ep) is False
 
     def test_sustained_429_streak_escalates_to_softban(self, clock: _Clock):
-        """Streak >= 3 → escalating soft-ban: 5min, then doubling, cap 1h.
+        """Streak >= threshold → escalating soft-ban: base, then doubling, cap.
 
         This is the anti-ban guard: parallel chunk workers must stop
         aggregating into a permanent 429 storm against a dying provider.
         """
         ep = "https://streaky.invalid"
+        threshold = ban_state_mod._RATE_LIMIT_STREAK_BAN_THRESHOLD
         try:
-            record_rate_limit(ep)
-            record_rate_limit(ep)
+            for _ in range(threshold - 1):
+                record_rate_limit(ep)
             assert is_endpoint_banned(ep) is False  # still transient
-            record_rate_limit(ep)  # streak 3 → first soft-ban
+            record_rate_limit(ep)  # streak == threshold → first soft-ban
             assert is_endpoint_banned(ep) is True
         finally:
             unban_endpoint(ep)
@@ -580,7 +586,7 @@ class TestRateLimitDoesNotTripCircuit:
         """A success anywhere resets the streak — recovery is honored."""
         ep = "https://recovering.invalid"
         try:
-            for _ in range(3):
+            for _ in range(ban_state_mod._RATE_LIMIT_STREAK_BAN_THRESHOLD):
                 record_rate_limit(ep)
             assert is_endpoint_banned(ep) is True
             record_endpoint_success(ep)

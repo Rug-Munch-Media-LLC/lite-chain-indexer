@@ -15,7 +15,8 @@ Source policy per chain (no tier is invented, absence is reported):
 
 * EVM — ClickHouse ``evm_transfers`` + ``internal_transfers`` for the recent
   window; optionally BigLake (ethereum only) for history older than it.
-* Solana — Helius enhanced transactions (native SOL + SPL). Our tables store
+* Solana — a keyed archive tier (enhanced transactions, native SOL + SPL). Our
+  tables store
   SPL balance deltas without a counterparty and no native SOL at all.
 
 Expansion is level-synchronous: one query per hop over the whole frontier,
@@ -25,8 +26,9 @@ not one per address, so latency stays flat as the graph widens.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from lite_indexer.logging import get_logger
 from lite_indexer.query.trace_evm import fetch_evm, fetch_lake
@@ -94,12 +96,8 @@ def _rank(edges: list[dict[str, Any]], fanout: int) -> list[str]:
     weights: dict[str, float] = {}
     for edge in edges:
         for addr in (edge["from"], edge["to"]):
-            weights[addr] = (
-                weights.get(addr, 0.0) + float(edge.get("usd") or 0.0) + float(edge["amount"])
-            )
-    return [
-        addr for addr, _ in sorted(weights.items(), key=lambda kv: kv[1], reverse=True)[:fanout]
-    ]
+            weights[addr] = weights.get(addr, 0.0) + float(edge.get("usd") or 0.0) + float(edge["amount"])
+    return [addr for addr, _ in sorted(weights.items(), key=lambda kv: kv[1], reverse=True)[:fanout]]
 
 
 def _prices(run: Run, chain: str, assets: list[str]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -192,9 +190,7 @@ def trace(
         for row in touching:
             candidates.extend(_candidates(row, frontier_set, seen))
         ranked = _rank([r for r in touching if r["from"] in seen or r["to"] in seen], fanout)
-        new_nodes = [addr for addr in ranked if addr in set(candidates)][
-            : max(0, max_nodes - len(seen))
-        ]
+        new_nodes = [addr for addr in ranked if addr in set(candidates)][: max(0, max_nodes - len(seen))]
         for addr in new_nodes:
             seen.add(addr)
             hops[addr] = hop

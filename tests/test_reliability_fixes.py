@@ -39,12 +39,15 @@ def _no_live_endpoint_verify() -> Any:
     """The EVM endpoint verification probes live RPCs (~20s); stub it here."""
     from unittest.mock import AsyncMock, patch
 
-    with patch("lite_indexer.indexer.LiteIndexer._evm_verify_endpoints", AsyncMock(return_value=None)), \
-            patch("lite_indexer.indexer.LiteIndexer._publish_nats_events", AsyncMock(return_value=0)), \
-            patch("lite_indexer.indexer.LiteIndexer._dispatch_plugin_events", AsyncMock(return_value={})), \
-            patch("lite_indexer.indexer.LiteIndexer._run_backfill_sidecar", AsyncMock(return_value={})), \
-            patch("lite_indexer.indexer.LiteIndexer._run_vector_ingestion_guarded", AsyncMock(return_value=None)):
+    with (
+        patch("lite_indexer.indexer.LiteIndexer._evm_verify_endpoints", AsyncMock(return_value=None)),
+        patch("lite_indexer.indexer.LiteIndexer._publish_nats_events", AsyncMock(return_value=0)),
+        patch("lite_indexer.indexer.LiteIndexer._dispatch_plugin_events", AsyncMock(return_value={})),
+        patch("lite_indexer.indexer.LiteIndexer._run_backfill_sidecar", AsyncMock(return_value={})),
+        patch("lite_indexer.indexer.LiteIndexer._run_vector_ingestion_guarded", AsyncMock(return_value=None)),
+    ):
         yield
+
 
 EP = "https://probe.example"
 
@@ -208,6 +211,10 @@ async def test_state_not_advanced_when_enabled_writer_fails(tmp_path):
     indexer.deployers_enabled = True
     indexer.dex_enabled = False
     indexer.traces_enabled = False
+    # Lazy indexing re-enables dex_enabled from the demand signal inside the
+    # cycle, which turns this writer-gate test into a REAL eth_getLogs run
+    # against the live pool (429-softban -> 90 s slice_timeout).
+    indexer.lazy_indexing_enabled = False
 
     strategy = indexer.strategy
     strategy.fetch_block_number = AsyncMock(return_value=500)

@@ -36,6 +36,7 @@ from lite_indexer.rpc.capabilities import (
     set_capability,
 )
 from lite_indexer.rpc.capability_ladder import conservative_bound, ladder_rungs
+from lite_indexer.rpc.health_logs import PROBE_SPAN_BLOCKS
 
 EP = "https://probe-budget.example"
 
@@ -134,7 +135,17 @@ async def test_warm_cache_with_range_skips_all_probes():
 
 @pytest.mark.asyncio
 async def test_warm_cache_conclusive_verdict_skips_probes():
-    set_capability(CapabilityRecord(endpoint=EP, chain="bsc", logs_capable=True, probed_at=time.time()))
+    # The cached range must be conclusive (> PROBE_SPAN_BLOCKS), else the
+    # verifier deliberately re-probes the ladder rung (3ca36d664).
+    set_capability(
+        CapabilityRecord(
+            endpoint=EP,
+            chain="bsc",
+            getlogs_max_range=PROBE_SPAN_BLOCKS * 4,
+            logs_capable=True,
+            probed_at=time.time(),
+        )
+    )
     with (
         patch.object(vf, "probe_archive", _forbidden),
         patch.object(vf, "probe_getlogs_range", _forbidden),

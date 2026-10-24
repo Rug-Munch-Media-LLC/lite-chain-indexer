@@ -5,7 +5,7 @@ edge rows (one per ``(from, to, asset)`` per tier) plus the resolved entity
 labels, and this module produces the JSON contract the API/CLI returns.
 
 Deduplication is by ``(tx_hash, from, to, asset)``: the same movement seen by
-ClickHouse *and* BigLake (or by Helius and a local table) is one edge, and
+ClickHouse *and* BigLake (or by an archive tier and a local table) is one edge,
 the tier list records every source that saw it. Amounts are never summed
 across tiers — the larger value wins, because duplicate ingestion always
 duplicates downward (a lake row is never *more* precise than a local one).
@@ -30,9 +30,7 @@ _KIND_BY_CATEGORY: dict[str, str] = {
 }
 
 #: Categories that raise a risk flag regardless of node kind.
-_RISK_CATEGORIES = frozenset(
-    {"sanctioned", "darknet_market", "ransomware", "money_laundering", "scam", "malicious"}
-)
+_RISK_CATEGORIES = frozenset({"sanctioned", "darknet_market", "ransomware", "money_laundering", "scam", "malicious"})
 
 _STOP_KINDS = ("exchange", "bridge", "mixer")
 
@@ -86,9 +84,7 @@ def _node(address: str, chain: str, labels: dict[str, Any], hops: dict[str, int]
     }
 
 
-def _merge_edge(
-    edges: dict[tuple[str, str, str, str], dict[str, Any]], edge: dict[str, Any]
-) -> None:
+def _merge_edge(edges: dict[tuple[str, str, str, str], dict[str, Any]], edge: dict[str, Any]) -> None:
     key = (edge["tx_hash"], edge["from"], edge["to"], edge["asset"])
     seen = edges.get(key)
     if seen is None:
@@ -142,9 +138,7 @@ def build_graph(
             "from": src,
             "to": dst,
             "asset": asset,
-            "symbol": str(
-                row.get("symbol") or ("SOL" if asset == "native" and chain == "solana" else "")
-            ),
+            "symbol": str(row.get("symbol") or ("SOL" if asset == "native" and chain == "solana" else "")),
             "amount": round(amount, 8),
             "usd": _usd(asset, amount, prices),
             "tx_hash": str(row.get("tx_hash") or ""),
@@ -176,9 +170,7 @@ def build_graph(
         node["out_usd"] = round(node["out_usd"], 2)
 
     return {
-        "nodes": sorted(
-            nodes.values(), key=lambda n: (n["hops"] if n["hops"] is not None else 99, n["address"])
-        ),
+        "nodes": sorted(nodes.values(), key=lambda n: (n["hops"] if n["hops"] is not None else 99, n["address"])),
         "edges": edges,
         "stop_addresses": sorted(a for a, n in nodes.items() if n["kind"] in _STOP_KINDS),
     }
