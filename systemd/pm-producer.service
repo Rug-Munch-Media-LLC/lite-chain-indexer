@@ -1,0 +1,21 @@
+[Unit]
+Description=Polymarket producer — pm_trades / pm_markets / pm_holders
+Documentation=file:///srv/work/repos/lite-chain-indexer/docs/POLYMARKET-PRODUCER.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/work/repos/lite-chain-indexer
+Environment=PYTHONPATH=/srv/work/repos/lite-chain-indexer
+EnvironmentFile=/srv/secrets/lite-indexer.env
+# Cadence per dataset lives in the cycle (see docs/POLYMARKET-PRODUCER.md):
+# the timer only says "tick", the producer decides what is due from ClickHouse.
+ExecStart=/srv/work/repos/lite-chain-indexer/.venv/bin/python -m lite_indexer.producers.polymarket --json
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

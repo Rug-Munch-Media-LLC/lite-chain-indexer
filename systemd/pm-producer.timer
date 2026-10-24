@@ -1,0 +1,12 @@
+[Unit]
+Description=Tick the Polymarket producer every 15 minutes
+Documentation=file:///srv/work/repos/lite-chain-indexer/docs/POLYMARKET-PRODUCER.md
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=45s
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
