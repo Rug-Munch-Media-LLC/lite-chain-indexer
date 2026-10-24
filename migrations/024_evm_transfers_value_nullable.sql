@@ -1,0 +1,34 @@
+-- Migration 024: evm_transfers.value becomes Nullable(String).
+--
+-- WHY: the AWS public-blockchain sonarx lake (v1.1, base/arbitrum) stores the
+-- amount as a DOUBLE that can be NULL. The lake mapper used to convert NULL to
+-- the string "0" (query/lake_row_utils.py and ingest/lake_sonarx.py), so 3 of
+-- 50 sampled rows were silently zero-valued and any backfill would have
+-- written millions of fabricated zeros indistinguishable from real
+-- zero-value transfers. The mappers now preserve NULL; this migration gives
+-- the column a way to hold it.
+--
+-- ClickHouse allows String -> Nullable(String) via ALTER MODIFY COLUMN; no
+-- data is rewritten (the column keeps its ZSTD codec and its default).
+--
+-- IDENTIFYING ALREADY-FABRICATED ROWS (do NOT rewrite history without a
+-- decision — this migration does not touch a single row):
+--   Fabricated zeros are only distinguishable by re-reading the source lake
+--   for the same key. A stored '0' whose lake VALUE IS NULL is fabricated:
+--
+--     -- per (chain, block_number, tx_hash, log_index) where the lake is NULL
+--     SELECT t.chain, t.block_number, t.tx_hash, t.log_index, count() AS n
+--     FROM wallet_memory.evm_transfers AS t
+--     WHERE t.value = '0'
+--     GROUP BY t.chain, t.block_number, t.tx_hash, t.log_index
+--     -- then anti-join the lake partition (DuckDB, ingest/lake_sonarx.py):
+--     --   SELECT BLOCK_NUMBER, TRANSACTION_HASH, LOG_INDEX
+--     --   FROM read_parquet('s3://aws-public-blockchain/v1.1/sonarx/<chain>/
+--     --        transfers/date=<date>/*.parquet', hive_partitioning=true)
+--     --   WHERE VALUE IS NULL
+--   Rows with no lake NULL twin are genuine zero-value transfers and must be
+--   kept. Rewriting the fabricated ones to NULL (or deleting them) is an
+--   operator decision recorded outside this migration.
+
+ALTER TABLE wallet_memory.evm_transfers
+    MODIFY COLUMN value Nullable(String);

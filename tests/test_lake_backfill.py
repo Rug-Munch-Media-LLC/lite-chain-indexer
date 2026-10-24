@@ -42,7 +42,9 @@ def test_map_transfer_row() -> None:
 def test_map_transfer_row_nulls() -> None:
     row = map_transfer_row({"BLOCK_NUMBER": None, "VALUE": None, "TIMESTAMP": None})
     assert row["blockNumber"] == 0
-    assert row["value"] == "0"
+    # NULL must stay NULL: "0" is a real amount and a fabricated one is
+    # indistinguishable from it (2026-10-24 fix).
+    assert row["value"] is None
     assert row["blockTimestamp"] == ""
 
 
@@ -71,7 +73,11 @@ def test_map_trace_row() -> None:
 
 
 def test_map_trace_row_empty_path() -> None:
-    row = map_trace_row({"PATH": None, "VALUE": None})
+    # A NULL value means no value moved; value_wei is UInt256 (not Nullable),
+    # so the row is dropped instead of invented as 0.
+    assert map_trace_row({"PATH": None, "VALUE": None}) is None
+    row = map_trace_row({"PATH": None, "VALUE": 0.0})
+    assert row is not None
     assert row["trace_address"] == []
     assert row["value_wei"] == 0
 
@@ -145,18 +151,14 @@ class FakeWriter:
 
 def test_dry_run_counts_without_writing() -> None:
     src, wh = FakeSource(), FakeWriter()
-    counts = backfill_chain_from_lake(
-        LakeBackfillRequest("base", ["2026-09-08"], dry_run=True), source=src, writer=wh
-    )
+    counts = backfill_chain_from_lake(LakeBackfillRequest("base", ["2026-09-08"], dry_run=True), source=src, writer=wh)
     assert counts == {"base/2026-09-08/transfers": 3, "base/2026-09-08/traces": 2}
     assert not wh.transfers and not wh.internal
 
 
 def test_real_run_writes_batches() -> None:
     src, wh = FakeSource(), FakeWriter()
-    counts = backfill_chain_from_lake(
-        LakeBackfillRequest("base", ["2026-09-08"], batch_rows=2), source=src, writer=wh
-    )
+    counts = backfill_chain_from_lake(LakeBackfillRequest("base", ["2026-09-08"], batch_rows=2), source=src, writer=wh)
     assert counts == {"base/2026-09-08/transfers": 3, "base/2026-09-08/traces": 2}
     # 3 rows at batch_rows=2 → 2 write calls for transfers.
     assert sum(len(ev) for _, ev in wh.transfers) == 3
@@ -166,16 +168,16 @@ def test_real_run_writes_batches() -> None:
 
 def test_missing_partition_tolerated() -> None:
     src, wh = FakeSource(fail_dates={"2026-09-09"}), FakeWriter()
-    counts = backfill_chain_from_lake(
-        LakeBackfillRequest("base", ["2026-09-08", "2026-09-09"]), source=src, writer=wh
-    )
+    counts = backfill_chain_from_lake(LakeBackfillRequest("base", ["2026-09-08", "2026-09-09"]), source=src, writer=wh)
     assert counts["base/2026-09-09/transfers"] == 0
     assert counts["base/2026-09-08/transfers"] == 3  # good date unaffected
 
 
 def test_unsupported_chain_raises() -> None:
     with pytest.raises(ValueError, match="unsupported sonarx chain"):
-        backfill_chain_from_lake(LakeBackfillRequest("ethereum", ["2026-09-08"]), source=FakeSource(), writer=FakeWriter())
+        backfill_chain_from_lake(
+            LakeBackfillRequest("ethereum", ["2026-09-08"]), source=FakeSource(), writer=FakeWriter()
+        )
 
 
 def test_unavailable_source_returns_empty() -> None:
@@ -183,7 +185,9 @@ def test_unavailable_source_returns_empty() -> None:
         def available(self) -> bool:
             return False
 
-    assert backfill_chain_from_lake(LakeBackfillRequest("base", ["2026-09-08"]), source=Dead(), writer=FakeWriter()) == {}
+    assert (
+        backfill_chain_from_lake(LakeBackfillRequest("base", ["2026-09-08"]), source=Dead(), writer=FakeWriter()) == {}
+    )
 
 
 # ── Network-optional live schema probe (skips cleanly on failure) ─────

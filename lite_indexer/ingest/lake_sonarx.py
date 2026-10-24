@@ -27,6 +27,7 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from typing import Any
 
+from lite_indexer.lake_numbers import _num_str  # NULL-preserving, shared with the biglake mapper
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
@@ -43,18 +44,6 @@ def _iso_from_unix(ts: Any) -> str:
     except (TypeError, ValueError, OSError, OverflowError):
         logger.debug("lake_timestamp_invalid", value=str(ts)[:40])
         return ""
-
-
-def _num_str(value: Any) -> str:
-    """Normalize a lake DOUBLE value to a decimal string (precision caveat: DOUBLE)."""
-    if value is None:
-        return "0"
-    try:
-        fvalue = float(value)
-    except (TypeError, ValueError):
-        logger.debug("lake_number_invalid", value=str(value)[:40])
-        return str(value)
-    return str(int(fvalue)) if fvalue.is_integer() else str(fvalue)
 
 
 def _addr(value: Any) -> str:
@@ -75,8 +64,19 @@ def map_transfer_row(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def map_trace_row(raw: dict[str, Any]) -> dict[str, Any]:
-    """Map one sonarx ``traces`` row to an ``internal_transfers`` row dict."""
+def map_trace_row(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Map one sonarx ``traces`` row to an ``internal_transfers`` row dict.
+
+    Returns:
+        ``None`` when the lake VALUE is NULL or unparseable. A trace frame with
+        no known value moved no value, so it is not an internal transfer;
+        ``internal_transfers.value_wei`` is ``UInt256`` (not ``Nullable``) and
+        inventing a 0 there would be a fabricated transfer.
+    """
+    value_wei = _num_str(raw.get("VALUE"))
+    if value_wei is None:
+        logger.debug("sonarx_trace_value_null", tx_hash=str(raw.get("TRANSACTION_HASH"))[:66])
+        return None
     path = str(raw.get("PATH") or "").strip()
     trace_address = [int(p) for p in path.split(",") if p.strip().isdigit()] if path else []
     input_data = raw.get("INPUT") or ""
@@ -88,7 +88,7 @@ def map_trace_row(raw: dict[str, Any]) -> dict[str, Any]:
         "trace_address": trace_address,
         "from_address": _addr(raw.get("FROM_ADDRESS")),
         "to_address": _addr(raw.get("TO_ADDRESS")),
-        "value_wei": int(_num_str(raw.get("VALUE"))),
+        "value_wei": int(value_wei),
         "call_type": raw.get("TYPE") or "",
         "gas_used": int(raw.get("GAS_USED") or 0),
         "error": "" if not raw.get("ERROR") else str(raw["ERROR"])[:200],
@@ -151,7 +151,9 @@ class SonarxLakeSource:
             if not batch:
                 break
             for row in batch:
-                yield mapper(dict(zip(cols, row, strict=False)))
+                mapped = mapper(dict(zip(cols, row, strict=False)))
+                if mapped is not None:
+                    yield mapped
 
     def read_transfers(self, chain: str, date: str) -> Iterator[dict[str, Any]]:
         """Yield ``evm_transfers``-shaped event dicts for one date partition."""

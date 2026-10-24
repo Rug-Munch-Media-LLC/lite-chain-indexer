@@ -36,7 +36,6 @@ from lite_indexer.rpc.capabilities import (
     set_capability,
 )
 from lite_indexer.rpc.capability_ladder import conservative_bound, ladder_rungs
-from lite_indexer.rpc.health_logs import PROBE_SPAN_BLOCKS
 
 EP = "https://probe-budget.example"
 
@@ -71,14 +70,23 @@ def test_range_probe_stops_at_first_failure():
     assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, []) == 0
 
 
-def test_range_probe_returns_conservative_lower_bound():
-    """The bound is the SMALLEST accepted rung, not the largest."""
+def test_range_probe_returns_largest_proven_rung():
+    """The bound is the LARGEST accepted rung, never an unproven one.
+
+    2026-10-24: the previous contract (smallest accepted rung) made the ladder
+    inert — the first rung is always the smallest, so max_span could never
+    exceed it and bsc was pinned at 10 blocks while endpoints demonstrably
+    served 200. An accepted rung is proof; the largest accepted rung is the
+    most information a probe can carry.
+    """
     everything_accepted = [10, 100, 1000]
 
-    # 1000 answered, but 10 also did — report the rung known to work.
-    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, everything_accepted) == 10
-    # Only 100 was ever accepted: that rung IS the conservative floor.
+    # Every rung answered — 1000 is proven, so it is the answer.
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, everything_accepted) == 1000
+    # Only 100 was ever accepted: that rung IS the proven bound.
     assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, [100]) == 100
+    # 10 accepted then 100 rejected -> the proven bound is still 10.
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, [10]) == 10
     rungs = list(ladder_rungs(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS))
     assert rungs == [10, 100, 1000]
     assert len(rungs) <= GETLOGS_PROBE_MAX_CALLS
@@ -88,7 +96,7 @@ def test_range_probe_never_trusts_an_unprobed_rung():
     """A rung outside the call budget cannot raise the reported bound."""
     everything = [10, 100, 1000, 10000]
 
-    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, everything) == 10
+    assert conservative_bound(GETLOGS_PROBE_CANDIDATES, GETLOGS_PROBE_MAX_CALLS, everything) == 1000
     assert conservative_bound(GETLOGS_PROBE_CANDIDATES, 0, [10]) == 0
 
 
@@ -135,13 +143,19 @@ async def test_warm_cache_with_range_skips_all_probes():
 
 @pytest.mark.asyncio
 async def test_warm_cache_conclusive_verdict_skips_probes():
-    # The cached range must be conclusive (> PROBE_SPAN_BLOCKS), else the
-    # verifier deliberately re-probes the ladder rung (3ca36d664).
+    """A conclusive verdict WITH a measured span skips every probe.
+
+    The stored span must be a real measurement, not the monitor floor: the
+    health monitor proves usability with PROBE_SPAN_BLOCKS (5) and cannot see
+    the ceiling, so a span at or below that floor deliberately re-runs the
+    ladder (verify.py warm-cache guard, 2026-10-23). ``logs_capable=True``
+    alone is conclusive about *capability*, not about the range.
+    """
     set_capability(
         CapabilityRecord(
             endpoint=EP,
             chain="bsc",
-            getlogs_max_range=PROBE_SPAN_BLOCKS * 4,
+            getlogs_max_range=100,
             logs_capable=True,
             probed_at=time.time(),
         )
@@ -154,6 +168,40 @@ async def test_warm_cache_conclusive_verdict_skips_probes():
         status = await vf._probe_and_record_capabilities(_TipClient(), EP, "bsc", 1_000_000)  # noqa: SLF001
 
     assert status is GetLogsCapability.CAPABLE
+
+
+@pytest.mark.asyncio
+async def test_warm_conclusive_verdict_without_measurement_reprobes():
+    """capable-but-unmeasured is NOT a warm hit: the ladder must run.
+
+    A record written by set_logs_capability() carries logs_capable=True and no
+    span. Reusing it would size every getLogs chunk from the static provider
+    cap while the endpoint's real ceiling was never measured — the probe
+    artefact that pinned bsc at 10 blocks.
+    """
+    set_capability(CapabilityRecord(endpoint=EP, chain="bsc", logs_capable=True, probed_at=time.time()))
+    probed: list[str] = []
+
+    async def _record_range(*args, **kwargs):
+        probed.append("range")
+        return 100
+
+    async def _archive(*args, **kwargs):
+        return False
+
+    async def _cap(endpoint, tip, timeout=0.0):
+        return GetLogsCapability.CAPABLE
+
+    with (
+        patch.object(vf, "probe_archive", _archive),
+        patch.object(vf, "probe_getlogs_range", _record_range),
+        patch.object(vf, "probe_logs_capability", _cap),
+    ):
+        status = await vf._probe_and_record_capabilities(_TipClient(), EP, "bsc", 1_000_000)  # noqa: SLF001
+
+    assert probed == ["range"]
+    assert status is GetLogsCapability.CAPABLE
+    assert get_capability(EP).getlogs_max_range == 100
 
 
 # ── Cold probe: classify + persist the conservative range ──────────────
