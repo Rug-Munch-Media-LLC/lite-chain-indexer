@@ -1,0 +1,22 @@
+# archive-export.service — nightly parquet archive to B2 (cursor/snapshot tables).
+#
+# The export spec alone archived nothing: nothing scheduled archive-export.py,
+# so every registered table was a promise with no clock behind it. This unit
+# is the clock. It refuses to start when preflight fails (free space,
+# ClickHouse, B2) and publishes units exported/missing as a textfile metric.
+[Unit]
+Description=Parquet archive export to B2 (per-unit, verified)
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+RequiresMountsFor=/data
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=@REPO@/scripts/archive-preflight.sh
+ExecStart=@REPO@/.venv/bin/python scripts/archive-daily.py
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

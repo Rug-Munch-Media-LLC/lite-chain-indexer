@@ -74,9 +74,14 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 ENTRYPOINT ["lite-indexer"]
 CMD ["--help"]
 
-# Labels for image metadata
+# Labels for image metadata.
+# org.opencontainers.image.revision is the git sha the image was built from:
+#   docker build --build-arg GIT_REVISION=$(git rev-parse --short HEAD)
+# Answers "what is actually running" via docker inspect, without hashing files.
+ARG GIT_REVISION=unknown
 LABEL org.opencontainers.image.title="LiteChainIndexer" \
       org.opencontainers.image.description="Multi-chain blockchain indexer using free RPCs" \
       org.opencontainers.image.source="https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer" \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.vendor="Rug Munch Media LLC"
+      org.opencontainers.image.vendor="Rug Munch Media LLC" \
+      org.opencontainers.image.revision="${GIT_REVISION}"

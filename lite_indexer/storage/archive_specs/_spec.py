@@ -21,6 +21,7 @@ class TableSpec:
     ttl_days: int
     columns: tuple[str, ...]
     dataset: str = ""
+    chain_literal: str = ""
 
     @property
     def date_column(self) -> str:

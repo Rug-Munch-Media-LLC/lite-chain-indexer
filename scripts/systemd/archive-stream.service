@@ -1,0 +1,22 @@
+# archive-stream.service — the ONE streaming pass for address_activity.
+#
+# 262 GiB, unpartitioned, sorted by (address, tx_signature, chain): every
+# per-unit query is a full table scan, so this table is exported by a single
+# ordered pass that splits as it streams (see archive_stream.py). Weekly, not
+# nightly, because the pass reads the whole table; the preflight still runs.
+[Unit]
+Description=Streaming parquet archive pass for address_activity (single scan)
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+RequiresMountsFor=/data
+
+[Service]
+Type=oneshot
+WorkingDirectory=@REPO@
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=@REPO@/scripts/archive-preflight.sh
+ExecStart=@REPO@/.venv/bin/python scripts/archive-stream.py --table address_activity
+TimeoutStartSec=12h
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

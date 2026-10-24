@@ -54,6 +54,12 @@ def ch_parquet(sql: str, dest: Path) -> None:
                 *CH,
                 "--max_execution_time",
                 "0",
+                "--max_bytes_before_external_sort",
+                "2000000000",
+                "--max_bytes_before_external_group_by",
+                "2000000000",
+                "--max_memory_usage",
+                "8000000000",
                 "--output_format_parquet_compression_method",
                 "zstd",
                 "--query",
@@ -84,6 +90,8 @@ def unit_predicate(spec: TableSpec, unit: Unit) -> str:
     parts = []
     if spec.chain_column:
         parts.append(f"{spec.chain_column} = '{unit.chain}'")
+    elif spec.chain_literal:
+        parts.append(f"'{spec.chain_literal}' = '{unit.chain}'")
     if spec.mode == CURSOR:
         parts.append(f"toDate({spec.cursor}) = toDate('{unit.day}')")
     return " AND ".join(parts) or "1=1"
@@ -91,7 +99,7 @@ def unit_predicate(spec: TableSpec, unit: Unit) -> str:
 
 def discover_units(spec: TableSpec, chains: list[str]) -> list[Unit]:
     """Every unit ClickHouse can serve right now, with its authoritative count."""
-    chain_expr = spec.chain_column or "'solana'"
+    chain_expr = spec.chain_column or repr(spec.chain_literal or "solana")
     where = ""
     if chains and spec.chain_column:
         where = f"WHERE {spec.chain_column} IN ({','.join(repr(c) for c in chains)})"

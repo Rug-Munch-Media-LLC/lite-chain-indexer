@@ -1,0 +1,11 @@
+# archive-export.timer — daily 03:30 UTC, catch up after downtime.
+[Unit]
+Description=Daily parquet archive export to B2
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

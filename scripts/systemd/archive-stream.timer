@@ -1,0 +1,11 @@
+# archive-stream.timer — weekly, Sunday 04:30 UTC (after the daily export).
+[Unit]
+Description=Weekly single-pass archive for address_activity
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00 UTC
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

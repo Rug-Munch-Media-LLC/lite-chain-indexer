@@ -24,12 +24,14 @@ from __future__ import annotations
 from lite_indexer.storage.archive_specs._registry_evm import EVM_SPECS
 from lite_indexer.storage.archive_specs._registry_multichain import MULTICHAIN_SPECS
 from lite_indexer.storage.archive_specs._registry_polymarket import POLYMARKET_SPECS
+from lite_indexer.storage.archive_specs._registry_scanner import SCANNER_SPECS
 from lite_indexer.storage.archive_specs._spec import CURSOR, SNAPSHOT, TableSpec
 
 ARCHIVE_TABLES: dict[str, TableSpec] = {
     **EVM_SPECS,
     **MULTICHAIN_SPECS,
     **POLYMARKET_SPECS,
+    **SCANNER_SPECS,
 }
 
 # The tables this task proved were unexported (325 GiB, no path at all).
