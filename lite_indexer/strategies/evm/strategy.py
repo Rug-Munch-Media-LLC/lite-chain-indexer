@@ -13,7 +13,6 @@ Manages:
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 from typing import Any
 
@@ -31,13 +30,14 @@ from lite_indexer.logging import get_logger
 from lite_indexer.rpc import (
     RpcClient,
     get_best_endpoint,
-    record_endpoint_failure,
     user_agent,
     verify_endpoints_for_chain,
 )
 from lite_indexer.rpc import (
     fetch_block_timestamps as rpc_fetch_block_timestamps,
 )
+from lite_indexer.rpc.head_read import read_head
+from lite_indexer.rpc.rpc_unavailable import RpcUnavailable
 from lite_indexer.state import PairCache
 from lite_indexer.storage.address_activity import parse_evm_address_activity
 from lite_indexer.strategies.address_activity import CrossChainAddressActivityMixin
@@ -220,37 +220,34 @@ class EVMChainStrategy(CrossChainAddressActivityMixin, AbstractChainStrategy):
     # ── Block Number ─────────────────────────────────────────────────
 
     async def fetch_block_number(self) -> int | None:
-        """Get latest block number via eth_blockNumber.
+        """Get the latest block number, hedged across two providers.
 
-        Returns None on all errors (timeout, connection, empty response,
-        malformed JSON). The caller handles None by treating it as
-        "no RPC available" and aborting the sync cycle.
+        ``read_head`` fires a second provider when the first is slow, counts
+        only a positive integer as an answer, and never returns an unlabelled
+        value: when every provider fails it serves the last-known-good tip with
+        its age (logged as ``fetch_block_number_stale``) so the sync loop keeps
+        making progress against a head it knows is old, instead of stalling.
+
+        Returns None only when no provider answered AND no tip was ever
+        recorded — the caller treats that as "no RPC available".
         """
         endpoints = GET_LOGS_ENDPOINTS.get(self.chain, [])
         if not endpoints:
             logger.error("no_endpoints_for_chain", chain=self.chain)
             return None
-
-        # Try multiple endpoints for redundancy
-        for _ in range(3):
-            endpoint = get_best_endpoint(endpoints)
-            try:
-                result = await self.rpc.eth_block_number(endpoint)
-                if result is not None:
-                    return result
-            except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
-                logger.warning(
-                    "fetch_block_number_failed",
-                    chain=self.chain,
-                    endpoint=endpoint[:50],
-                    error=str(exc)[:60],
-                )
-                record_endpoint_failure(endpoint)
-                await asyncio.sleep(1)
-                continue
-
-        logger.error("fetch_block_number_all_failed", chain=self.chain)
-        return None
+        try:
+            reading = await read_head(self.rpc, self.chain, endpoints)
+        except RpcUnavailable as exc:
+            logger.error("fetch_block_number_all_failed", chain=self.chain, detail=exc.detail)
+            return None
+        if reading.stale:
+            logger.warning(
+                "fetch_block_number_stale",
+                chain=self.chain,
+                age_s=round(reading.age_s, 1),
+                tip=reading.value,
+            )
+        return reading.value
 
     # ── Block Timestamps ─────────────────────────────────────────────
 
