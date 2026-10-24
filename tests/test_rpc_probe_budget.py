@@ -143,7 +143,23 @@ async def test_warm_cache_with_range_skips_all_probes():
 
 @pytest.mark.asyncio
 async def test_warm_cache_conclusive_verdict_skips_probes():
-    set_capability(CapabilityRecord(endpoint=EP, chain="bsc", logs_capable=True, probed_at=time.time()))
+    """A conclusive verdict WITH a measured span skips every probe.
+
+    The stored span must be a real measurement, not the monitor floor: the
+    health monitor proves usability with PROBE_SPAN_BLOCKS (5) and cannot see
+    the ceiling, so a span at or below that floor deliberately re-runs the
+    ladder (verify.py warm-cache guard, 2026-10-23). ``logs_capable=True``
+    alone is conclusive about *capability*, not about the range.
+    """
+    set_capability(
+        CapabilityRecord(
+            endpoint=EP,
+            chain="bsc",
+            getlogs_max_range=100,
+            logs_capable=True,
+            probed_at=time.time(),
+        )
+    )
     with (
         patch.object(vf, "probe_archive", _forbidden),
         patch.object(vf, "probe_getlogs_range", _forbidden),
@@ -152,6 +168,40 @@ async def test_warm_cache_conclusive_verdict_skips_probes():
         status = await vf._probe_and_record_capabilities(_TipClient(), EP, "bsc", 1_000_000)  # noqa: SLF001
 
     assert status is GetLogsCapability.CAPABLE
+
+
+@pytest.mark.asyncio
+async def test_warm_conclusive_verdict_without_measurement_reprobes():
+    """capable-but-unmeasured is NOT a warm hit: the ladder must run.
+
+    A record written by set_logs_capability() carries logs_capable=True and no
+    span. Reusing it would size every getLogs chunk from the static provider
+    cap while the endpoint's real ceiling was never measured — the probe
+    artefact that pinned bsc at 10 blocks.
+    """
+    set_capability(CapabilityRecord(endpoint=EP, chain="bsc", logs_capable=True, probed_at=time.time()))
+    probed: list[str] = []
+
+    async def _record_range(*args, **kwargs):
+        probed.append("range")
+        return 100
+
+    async def _archive(*args, **kwargs):
+        return False
+
+    async def _cap(endpoint, tip, timeout=0.0):
+        return GetLogsCapability.CAPABLE
+
+    with (
+        patch.object(vf, "probe_archive", _archive),
+        patch.object(vf, "probe_getlogs_range", _record_range),
+        patch.object(vf, "probe_logs_capability", _cap),
+    ):
+        status = await vf._probe_and_record_capabilities(_TipClient(), EP, "bsc", 1_000_000)  # noqa: SLF001
+
+    assert probed == ["range"]
+    assert status is GetLogsCapability.CAPABLE
+    assert get_capability(EP).getlogs_max_range == 100
 
 
 # ── Cold probe: classify + persist the conservative range ──────────────
