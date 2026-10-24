@@ -3,6 +3,7 @@
 Uses a fake HyperSync client so the decode + Parquet layout can be validated
 without a live token. Not part of the PoC run; a correctness harness.
 """
+
 from __future__ import annotations
 
 import sys
@@ -92,10 +93,13 @@ def _page(start_block, n_logs_per_block, ts):
         for j in range(n_logs_per_block):
             logs.append(
                 FakeLog(
-                    n, t, f"0x{n:064x}", j,
+                    n,
+                    t,
+                    f"0x{n:064x}",
+                    j,
                     "0xAbC0000000000000000000000000000000000001",
                     "0x000000000000000000000000" + f"{n:040x}",
-                    "0x000000000000000000000000" + f"{n+1:040x}",
+                    "0x000000000000000000000000" + f"{n + 1:040x}",
                     123456789 * (i + 1),
                 )
             )
@@ -113,7 +117,7 @@ def main() -> int:
         written = []
         for p in pages:
             blocks = {b.number: b.timestamp for b in p.data.blocks}
-            rows = [bb.log_to_row(l, blocks) for l in p.data.logs]
+            rows = [bb.log_to_row(rec, blocks) for rec in p.data.logs]
             written.extend(bb.write_partition(rows, out))
 
         total_rows = sum(n for _, n, _ in written)

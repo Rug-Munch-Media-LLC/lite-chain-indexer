@@ -151,7 +151,10 @@ def test_write_transfers_all_duplicates_writes_nothing(monkeypatch) -> None:
     writer, client = _writer(monkeypatch, existing=[(100, "0xaa", 0)])
     written = writer.write_transfers("tron", [_event(100, "0xaa", 0)])
 
-    assert written == 0
+    # All-durable rewind = a HANDLED range: the durable events are reported
+    # so the sync loop's `ch_inserted == 0` data-loss guard does not abort
+    # and re-fetch (f8c5d78d1). A genuine INSERT failure still returns 0.
+    assert written == 1
     assert client.inserts == []
 
 
@@ -243,8 +246,9 @@ def test_capped_window_is_logged_and_counted_not_silently_trusted(monkeypatch, c
     assert _events_named(caplog, "clickhouse_dedup_window_capped")
     assert _events_named(caplog, "clickhouse_dedup_degraded")
     # Skipped count comes from what WAS returned; the write still proceeds
-    # (availability beats dedup) and the gap is reported, not hidden.
-    assert written == 0
+    # (availability beats dedup) and the gap is reported, not hidden. The
+    # event is durable, so the range counts as HANDLED (1), not failed (0).
+    assert written == 1
 
 
 def test_uncapped_window_emits_no_degradation_log(monkeypatch, caplog) -> None:

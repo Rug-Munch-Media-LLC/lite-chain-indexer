@@ -103,18 +103,11 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #       4.7k rejections during 08/04 outage), merkle (HTTP400),
     #       limit) probed and rejected — official seeds added instead.
     "bsc": [
-        # Ankr is the ONLY endpoint proven to serve eth_getLogs over this
-        # chain's PENDING span (verified 2026-10-23 at block 120,079,835 with
-        # the real request shape: 9,685 logs in 20 blocks -> a ~20-block cap
-        # set by the 10k-RESULT limit, NOT a block-range limit; the same query
-        # over 50k blocks succeeds when the filter matches nothing). Every
-        # other bsc endpoint is pruned (48.club 'header not found'), 403
-        # (publicnode needs an archive token), -32005 (binance seeds), 429, or
-        # address-filter-only (pocket). Without it bsc cannot leave block
-        # 120,079,834 - 9.2M blocks (~48 days) behind tip.
-        # CORRECTION: the earlier "50k-block span, 600 calls" measurement was
-        # taken over an empty range and does not hold on real data.
-        "https://rpc.ankr.com/bsc/${ANKR_KEY}",  # T1 - archive, keyed via ANKR_KEY
+        # Keyed archive providers (the only class proven to serve eth_getLogs
+        # over this chain's PENDING span on 2026-10-23) are PRIVATE: they
+        # belong in the runtime overlay, never in this public pool — see
+        # lite_indexer/chains/_overlay.py. Overlay entries are appended after
+        # these free/keyless ones.
         "https://bsc.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId + eth_getLogs 2026-09-13)
         "https://rpc-bsc.48.club",  # T1 — 48.club (verified)
         "https://bsc.blockrazor.xyz",  # T2 — blockrazor (25-block range cap)
@@ -160,13 +153,9 @@ GET_LOGS_ENDPOINTS: dict[str, list[str]] = {
     #     blockNumber/timestamp fallback only)
     #       rejected — publicnode + meowrpc added as T3 fallbacks.
     "arbitrum": [
-        # Ankr - the only archive endpoint proven to serve eth_getLogs over
-        # arbitrum's PENDING span (verified 2026-10-23 at block 509.24M: a
-        # Transfer-topic query caps at 1,968 blocks - the 10k-RESULT limit, not
-        # a block-range limit; an empty filter over 50k blocks succeeds).
-        # arbitrum is 8.2M blocks behind tip; tenderly/pocket serve 2,000 and
-        # arb1 caps at 500, so catch-up depends on this entry.
-        "https://rpc.ankr.com/arbitrum/${ANKR_KEY}",  # T1 - archive, keyed via ANKR_KEY
+        # Keyed archive providers (the only class proven, 2026-10-23, to reach
+        # this chain's PENDING span — ~1,968 blocks per Transfer-topic query)
+        # are PRIVATE: supplied by the runtime overlay, never shipped here.
         "https://arbitrum.gateway.tenderly.co",
         "https://arb-one.api.pocket.network",  # T1 — Pocket Network (keyless, archive-capable; live-verified eth_chainId 2026-09-13)
         "https://arb1.arbitrum.io/rpc",

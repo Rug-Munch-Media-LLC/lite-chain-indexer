@@ -16,7 +16,8 @@ so one ``IN`` query each covers a whole frontier.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from lite_indexer.query.trace_sql import sql_for
 
@@ -46,9 +47,7 @@ _KIND_BY_ENTITY_TYPE = {
     "contract": "contract",
 }
 
-_RISK_CATEGORIES = frozenset(
-    {"sanctioned", "darknet_market", "ransomware", "money_laundering", "scam", "malicious"}
-)
+_RISK_CATEGORIES = frozenset({"sanctioned", "darknet_market", "ransomware", "money_laundering", "scam", "malicious"})
 
 
 def _merge(target: dict[str, Any], address: str) -> dict[str, Any]:

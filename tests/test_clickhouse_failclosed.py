@@ -6,8 +6,9 @@ to insert", the per-slice checkpoint advanced, and the outage window became
 a permanent fleet-wide hole (~20 chains × 80 min).
 
 Only connection-level failures raise; a live server rejecting the query
-(``ServerException``) still returns 0, and a dedup-only batch (all rows
-already durable) is a legitimate zero and returns 0 normally.
+(``ServerException``) still returns 0, while a dedup-only batch (all rows
+already durable) is a HANDLED range and reports the durable rows — never 0,
+which the sync loop reads as a failed write and re-fetches.
 
 Hermetic: DI fakes / subclass seams, no network, no monkeypatch fixture.
 """
@@ -115,13 +116,16 @@ def test_insert_connection_errors_raise(err: BaseException) -> None:
         writer.write_transfers("tron", [_event(1, "0xbb", 0)])
 
 
-# ── Legitimate zero / data-error outcomes stay 0 ───────────────────────
+# ── Data-error outcomes stay 0; an all-durable replay is handled (1) ───
 
 
-def test_dedup_only_insert_returns_zero_success() -> None:
+def test_dedup_only_insert_reports_handled_success() -> None:
+    """An all-durable replay is HANDLED: it reports the durable events (1),
+    never 0 — 0 is reserved for a failed INSERT, and the sync loop's
+    data-loss guard reads 0 as a lost range (f8c5d78d1)."""
     writer = ClickHouseWriter()
     writer._client = FakeClient(existing=[(100, "0xaa", 0)])
-    assert writer.write_transfers("tron", [_event(100, "0xaa", 0)]) == 0
+    assert writer.write_transfers("tron", [_event(100, "0xaa", 0)]) == 1
 
 
 def test_insert_server_exception_returns_zero() -> None:

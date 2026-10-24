@@ -26,7 +26,7 @@ range as unknown, not as "no transfers".
   `120,079,834`), 9.21M blocks behind tip.
 * Blocker: `sync_aborted_fetch_failed` — a 200-block `eth_getLogs` window blew
   the 300 s phase budget on a pool where the only logs-capable endpoint is
-  Ankr, whose `getlogs_max_range` is **10 blocks** (probe, 10:28:20Z).
+  a keyed provider, whose `getlogs_max_range` is **10 blocks** (probe, 10:28:20Z).
 * Backfilling 9.2M blocks at ≤20 blocks/call ≈ **460k `eth_getLogs` calls**,
   producing ~**4.4B rows** (15× the table) over an estimated 30 h on a host at
   load 39 with 494 GB free. That cost is not payable for stale history whose

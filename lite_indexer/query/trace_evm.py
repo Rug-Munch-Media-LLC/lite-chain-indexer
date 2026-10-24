@@ -12,8 +12,9 @@ never needs to know which tier produced a row.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any
 
 from lite_indexer.query.trace_sql import sql_for
 
@@ -163,9 +164,7 @@ def fetch_lake(
     if not source.available():
         return [], ["biglake: disabled or duckdb missing"]
     try:
-        lake_rows, truncated = source.query(
-            "evm_transfers", chain, address=address, dates=dates, limit=limit
-        )
+        lake_rows, truncated = source.query("evm_transfers", chain, address=address, dates=dates, limit=limit)
     except Exception as exc:  # noqa: BLE001 — the lake is a free best-effort tier
         return [], [f"biglake query failed: {str(exc)[:90]}"]
 

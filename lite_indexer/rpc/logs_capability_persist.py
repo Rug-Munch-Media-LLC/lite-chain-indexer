@@ -5,7 +5,7 @@ filled by the *verification* path, so an endpoint proven usable by a LIVE
 probe (the 5-minute health monitor, a desperation probe) still carried no
 record. Its span then stayed unknown (``getlogs_max_range == 0``), the pool
 gauge excluded it, and the range planner judged every request a violation.
-Keyed URLs (Ankr / Alchemy / dRPC) were the worst hit: proven on every
+Keyed URLs were the worst hit: proven on every
 cycle, never recorded.
 
 The verdict is written through :func:`set_capability`, so it is both in

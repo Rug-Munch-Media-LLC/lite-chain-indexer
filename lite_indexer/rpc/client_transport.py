@@ -64,7 +64,7 @@ def _safe_record(recorder: Any, *args: Any, **kwargs: Any) -> None:
     WHY THIS IS NO LONGER logger.debug (2026-10-15): it was, and that hid a
     real breakage. The quota ledger on this host held 172 accounts with only
     ONE recording any usage while the RPC access logs clearly showed calls to
-    Alchemy/dRPC/Infura — the recorder was failing and logging at DEBUG, so
+    keyed providers — the recorder was failing and logging at DEBUG, so
     the ledger looked merely "unused" instead of broken. A quota ledger that
     silently records nothing cannot warn before a monthly quota is exhausted;
     it is worse than absent, because it looks like a working control.

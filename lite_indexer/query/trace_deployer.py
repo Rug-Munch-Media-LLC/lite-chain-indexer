@@ -13,7 +13,8 @@ launches". This module answers it in one call:
    strongest cheap signal of one operator behind many launches.
 
 Solana note: shared-funder detection needs a full transfer graph per
-candidate wallet. Helius answers "who funded this wallet", not "who else did
+candidate wallet. The archive tier answers "who funded this wallet", not
+"who else did
 this payer fund", so for Solana the flag is computed only from our own
 tables and is reported as unavailable when they cannot supply it.
 """
@@ -21,7 +22,8 @@ tables and is reported as unavailable when they cannot supply it.
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from lite_indexer.query.trace import default_run, trace
 from lite_indexer.query.trace_sql import sql_for
@@ -66,12 +68,10 @@ def _shared(run: Run, chain: str, funder: str, deployer: str) -> dict[str, Any]:
         return {
             "funder": funder,
             "available": False,
-            "reason": "solana shared-funder needs a full payer graph (Helius is per-wallet)",
+            "reason": "solana shared-funder needs a full payer graph (tier is per-wallet)",
         }
     try:
-        sql, params = sql_for(
-            "shared_funder", chain=chain, funder=funder, exclude=deployer, limit=50
-        )
+        sql, params = sql_for("shared_funder", chain=chain, funder=funder, exclude=deployer, limit=50)
         others = [str(row["deployer"]) for row in run(sql, params) if row.get("deployer")]
     except Exception as exc:  # noqa: BLE001 — a missing flag must not fail the lineage
         return {"funder": funder, "available": False, "reason": str(exc)[:90]}

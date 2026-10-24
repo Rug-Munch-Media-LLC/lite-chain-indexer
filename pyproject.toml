@@ -114,6 +114,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101"]
 "scripts/**/*.py" = ["T201"]
+# Operator-facing CLI experiments print to stdout by contract, exactly like
+# scripts/**: T201 targets library code, not runnable harnesses.
+"experiments/**/*.py" = ["T201"]
 
 [tool.ruff.format]
 quote-style = "double"

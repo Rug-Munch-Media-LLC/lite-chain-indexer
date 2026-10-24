@@ -584,10 +584,17 @@ class TestIndexerTraceIntegration:
         strategy = indexer.strategy
         strategy.fetch_block_number = AsyncMock(return_value=500)
         strategy.fetch_transfers = AsyncMock(return_value=[])
+        # Tip resolution is a separate RPC path from the mocked strategy and
+        # would otherwise walk the live pool (429-softban → slice timeout).
+        indexer.rpc.eth_block_number = AsyncMock(return_value=500)
 
-        # No DEX / deployers — keep the test focused on traces.
+        # No DEX / deployers — keep the test focused on traces. Lazy indexing
+        # must go too: _refresh_demand_enabled() re-enables dex_enabled from the
+        # demand signal and the cycle then issues REAL eth_getLogs against the
+        # live pool (measured 2026-10-24: 429-softban + 90 s slice timeout).
         indexer.dex_enabled = False
         indexer.deployers_enabled = False
+        indexer.lazy_indexing_enabled = False
 
         trace_rows = [
             {

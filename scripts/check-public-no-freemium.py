@@ -64,7 +64,10 @@ def main() -> int:
             continue
         lowered = text.lower()
         for token in PLAIN_TOKENS:
-            if token in lowered:
+            # Match the token unless it is preceded by a letter: catches
+            # ``HELIUS_KEY`` / ``rpc.ankr.com`` while ignoring the
+            # ``sqlalchemy`` -> ``alchemy`` substring false positive.
+            if re.search(rf"(?<![a-z]){re.escape(token)}", lowered):
                 hits.append((name, token))
         for pattern in ANCHORED_PATTERNS:
             if pattern.search(text):
