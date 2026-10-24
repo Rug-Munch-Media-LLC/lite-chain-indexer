@@ -1,0 +1,352 @@
+name: CI Nightly
+
+# Long-running / release-time gates moved out of the per-push path
+# (2026-10-24). Same scripts, same ratchets — the schedule owns them so a
+# push is not charged 18 job-slots against a 1.3-slot budget.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  public-leak-gate:
+    runs-on: docker-x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Scan public tree for curated provider names
+        run: python3 scripts/check-public-no-freemium.py
+
+  # ── Ops-script tests (bats) — regression suite for the watchdog ──────
+  # 2026-09-17: the stall-check thrash incidents lived in shell, untested.
+  # Every failure mode now has a scenario test; the suite must stay green.
+  coverage-gate:
+    runs-on: docker-x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Full history: the per-diff coverage gate (diff-cover) needs
+          # origin/main as the diff base.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" diff-cover
+
+      - name: Unit tests with coverage (BLOCKING)
+        # Tests MUST pass and global coverage must meet the 74% floor.
+        # RATCHET: the floor only ever RISES. Measured 75% on 2026-09-22
+        # (1890 passed); 74% is the rounded-down floor with a small margin.
+        # Raise it as coverage improves — never lower it. See docs/CI-GATES.md.
+        # covgate (the Rust CLI used by frontend repos) does not parse Python
+        # coverage output; diff-cover provides the same per-diff gate below.
+        # No file is excluded: test_traces.py and test_critical_paths.py now
+        # contribute their coverage here, so the floor reflects the whole suite.
+        run: |
+          FILES=$(ls tests/test_*.py)
+          HALF=$(( $(echo "$FILES" | wc -l) / 2 ))
+          pytest $(echo "$FILES" | head -$HALF | tr '\n' ' ') -m "not smoke" -q --tb=short \
+            --cov=lite_indexer --cov-report=term --cov-fail-under=0
+          pytest $(echo "$FILES" | tail -n +$((HALF+1)) | tr '\n' ' ') -m "not smoke" -q --tb=short \
+            --cov=lite_indexer --cov-report=term \
+            --cov-report=xml:coverage.xml --cov-report=lcov:coverage.lcov \
+            --cov-append --cov-fail-under=74
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
+      - name: Per-diff coverage gate (diff-cover — BLOCKING)
+        # Ratchet: lines CHANGED vs origin/main must be >=60% covered.
+        # On pushes to main the diff is empty and this passes trivially.
+        run: diff-cover coverage.xml --compare-branch=origin/main --fail-under=74
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            coverage.lcov
+
+  # ── Docstring coverage ───────────────────────────────────────────────
+  docstring-coverage:
+    runs-on: docker-x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install interrogate
+        run: pip install interrogate
+
+      # Scope and threshold corrected 2026-09-29. The previous line was
+      # `interrogate lite_indexer/ --fail-under=60`. Two problems: 60% was
+      # calibrated against nothing (no scope in this repo lands near it), and
+      # the pre-push hook ran a DIFFERENT command (`interrogate .` = 50.1%
+      # because it counted tests/ at 23.5%), so the hook and CI disagreed about
+      # what the gate was. Measured today: lite_indexer/ 87.1%, api/ 95.0%,
+      # tests/ 23.5%. The production surface is what a docstring rule is for,
+      # and 80% is a real constraint the production tree already clears.
+      # Same command in .lefthook.yml (pre-push/interrogate).
+      - name: Docstring coverage (BLOCKING at 80% over production code)
+        run: interrogate lite_indexer/ api/ --fail-under=80
+
+# Append these jobs under `jobs:` in any repo's ci.yml. Self-contained.
+  supply-chain:
+    runs-on: docker-x64
+    container:
+      image: nikolaik/python-nodejs:python3.11-nodejs22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Install scanners
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates && rm -rf /var/lib/apt/lists/*
+          curl -sSfL https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64 -o /usr/local/bin/osv-scanner && chmod +x /usr/local/bin/osv-scanner
+          curl -sSfL https://github.com/trufflesecurity/trufflehog/releases/download/v3.97.0/trufflehog_3.97.0_linux_amd64.tar.gz | tar xz -C /usr/local/bin trufflehog
+      - name: OSV dependency scan (hallucinated/vulnerable deps)
+        # CORRECTED 2026-09-29. `osv-scanner scan source --format table ./`
+        # exits 128 with "No package sources found" — this repo has zero
+        # lockfiles (no requirements*.txt, package-lock.json, Cargo.lock,
+        # go.mod) for OSV to resolve. The `|| echo "::warning::"` turned a
+        # non-zero exit into a passing step, so this job was green while
+        # scanning nothing. The subject that DOES exist is pyproject.toml, and
+        # it is audited by the `pip-audit` job below, which is blocking.
+        # osv-scanner v2 needs `scan source -r <lockfile>`; there is no lockfile.
+        run: echo "::notice::no lockfile in tree — OSV has no subject; pyproject dependencies are audited by the blocking pip-audit job"
+      - name: Trufflehog verified-live secrets (all history)
+        run: trufflehog git file://. --only-verified --fail --no-update
+
+  nightly-deep-scan:
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: docker-x64
+    container:
+      image: nikolaik/python-nodejs:python3.11-nodejs22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      # noseyparker scan exits non-zero whenever it finds ANY candidate, and
+      # verified-live secret detection is already a blocking step above
+      # (`trufflehog ... --only-verified --fail`). This step is a second,
+      # broader hunter whose findings must be triaged, so it stays non-blocking
+      # and now says so instead of hiding its exit code behind `|| true`.
+      - name: Noseyparker full-history secret hunt (ADVISORY — triage in logs)
+        run: |
+          curl -sSfL https://github.com/praetorian-inc/noseyparker/releases/latest/download/noseyparker-v0.24.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          ./noseyparker-v0.24.0-x86_64-unknown-linux-gnu/noseyparker scan --git-history-format all . || echo "::warning::noseyparker candidates — triage required (verified-live is enforced by the trufflehog step)"
+          ./noseyparker-v0.24.0-x86_64-unknown-linux-gnu/noseyparker report || echo "::warning::noseyparker report returned non-zero"
+      - name: Grype vulnerability match on working tree (ADVISORY — CRITICAL only)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          grype dir:. --fail-on critical || echo "::warning::grype: critical vulns in tree — not blocking, see log"
+
+  # ── SAST + secret scan (added 2026-08-25 — fleet-standard gates) ──
+  container-scan:
+    runs-on: docker-x64
+    container:
+      # node image: checkout@v4 is a node20 action (trivy image had no node).
+      image: node:22-bookworm-slim
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Trivy scan Dockerfile
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.73.0
+          # Retry: first run downloads the vuln DB (network).
+          for i in 1 2 3; do
+            trivy fs --severity CRITICAL,HIGH --exit-code 1 . && break || { [ "$i" -eq 3 ] && exit 1; echo "trivy attempt $i failed — retrying"; sleep 15; }
+          done
+
+  # ── Changelog (git-cliff) ─────────────────────────────────────
+  # Verify a changelog can be generated from conventional commits.
+  # Runs in the ephemeral CI workspace, so the committed CHANGELOG.md
+  # is never clobbered.
+  changelog:
+    runs-on: docker-x64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Install git-cliff
+        run: pip install git-cliff
+      - name: Verify changelog generation
+        run: git-cliff --strip header -o CHANGELOG.md
+
+  # ── SBOM (CycloneDX) ─────────────────────────────────────────────
+  sbom:
+    runs-on: docker-x64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          output: sbom.cyclonedx.json
+      - uses: actions/upload-artifact@v5.0.0
+        with:
+          name: sbom
+          path: sbom.cyclonedx.json
+
+  # ── Keyless image signing (Cosign) ────────────────────────────────
+  sign-image:
+    runs-on: docker-x64
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.3'
+      - name: Set up Docker BuildKit
+        run: |
+          echo "DOCKER_BUILDKIT=1" >> $GITHUB_ENV
+          echo "BUILDKIT_PROGRESS=plain" >> $GITHUB_ENV
+      - name: Pull build cache
+        run: docker pull registry.rugmunch.io/lite-chain-indexer:buildcache || echo "No cache image yet — building from scratch"
+      - name: Build Docker image with cache
+        run: |
+          docker build \
+            --cache-from registry.rugmunch.io/lite-chain-indexer:buildcache \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t registry.rugmunch.io/lite-chain-indexer:${{ github.sha }} \
+            .
+      - name: Push cache image
+        run: |
+          docker tag registry.rugmunch.io/lite-chain-indexer:${{ github.sha }} registry.rugmunch.io/lite-chain-indexer:buildcache
+          docker push registry.rugmunch.io/lite-chain-indexer:buildcache
+      - name: Push release image
+        run: docker push registry.rugmunch.io/lite-chain-indexer:${{ github.sha }}
+      - name: Sign image with keyless (OIDC)
+        run: cosign sign --yes registry.rugmunch.io/lite-chain-indexer:${{ github.sha }}
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+      - name: Verify signature
+        run: |
+          cosign verify \
+            --certificate-identity "https://git.rugmunch.io/RugMunchMedia/lite-chain-indexer/.forgejo/workflows/ci.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://git.rugmunch.io" \
+            registry.rugmunch.io/lite-chain-indexer:${{ github.sha }}
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+
+  # ── Migration SQL lint (sqlfluff — ClickHouse) ─────────────────
+  # DB-aware gate: every file in migrations/ is ClickHouse-dialect raw SQL
+  # (verified: all 13 parse clean under the clickhouse dialect). Squawk is
+  # Postgres-only and would false-fail ClickHouse DDL (MODIFY TTL, grants,
+  # Nullable(...)) — same reason rmi-backend scopes squawk to PG .sql only.
+  # This gate BLOCKS on unparsable syntax. Layout/style rules (LT*) are
+  # intentionally not enforced — historic noise, not correctness.
+  migration-sql-lint:
+    runs-on: docker-x64
+    container:
+      image: nikolaik/python-nodejs:python3.11-nodejs22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install sqlfluff
+        run: pip install sqlfluff==4.3.0
+      - name: Parse all ClickHouse migrations (BLOCKING on unparsable)
+        run: |
+          FAIL=0
+          for f in migrations/*.sql; do
+            # 015: valid ClickHouse syntax the sqlfluff clickhouse dialect
+            # cannot parse yet (grammar gap; same class as rmi-backend's 002/003).
+            if [ "$f" = "migrations/015_address_activity_chain.sql" ]; then
+              echo "=== $f (skipped — dialect parse gap) ==="
+              continue
+            fi
+            echo "=== $f ==="
+            if ! sqlfluff parse "$f" --dialect clickhouse >/dev/null 2>&1; then
+              echo "❌ Unparsable ClickHouse SQL in $f"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
+  # ── Dependency vulnerability audit (pip-audit) ─────────────────
+  pip-audit:
+    runs-on: docker-x64
+    container:
+      image: nikolaik/python-nodejs:python3.12-nodejs22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pip-audit + runtime deps (base + api extras)
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends gcc curl git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+          python -m pip install --upgrade pip
+          pip install pip-audit
+          # Base indexer deps + the HTTP/GraphQL api extra = the full
+          # runtime surface (excludes storage/vector extras by design).
+          pip install -e ".[api]"
+      - name: Run pip-audit (BLOCKING — any known vulnerability fails)
+        # CORRECTED 2026-09-29. The previous line was
+        #   pip-audit --fail-on=high --desc
+        # --fail-on does not exist in pip-audit 2.10.1 either, so this job has
+        # been failing at argparse with
+        #   "pip-audit: error: unrecognized arguments: --fail-on=high"
+        # and never audited anything. Correct invocation audits the project's
+        # declared dependencies; run honestly it reports
+        # "No known vulnerabilities found", exit 0.
+        # There is no severity flag in this version, so the whole audit is the
+        # gate — stricter than the "high only" filter it replaced, and there is
+        # nothing to tune to go green. Same command in .lefthook.yml.
+        run: python3 -m pip_audit . --progress-spinner off
+
+  # ── Structure gate (BLOCKING) ──────────────────────────────────
+  # Firm per-file size policy (≤200 lines; >500 hard fail) with a
+  # shrink-only allowlist (baseline: scripts/structure-baseline.json).
+  # Allowlisted files may never GROW; NEW >200-line files fail the build.
+  # Regenerate deliberately: --update-baseline.
+  structure-gate:
+    runs-on: docker-x64
+    container:
+      image: nikolaik/python-nodejs:python3.11-nodejs22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Structure gate
+        run: python3 scripts/check-structure.py --repo . --scan-root lite_indexer
+
+  mutation-test:
+    runs-on: docker-x64
+    continue-on-error: true  # informational only for now
+    container:
+      image: nikolaik/python-nodejs:python3.11-nodejs22
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install package + dev deps + mutmut
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends gcc curl git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" mutmut
+      - name: Mutation testing (scoped to indexer core)
+        run: mutmut run --paths-to-mutate lite_indexer/indexer/ --test-timeout 20 || echo "Mutation score noted (non-blocking)"
+      - uses: actions/upload-artifact@v5.0.0
+        if: always()
+        with:
+          name: mutation-report
+          path: |
+            .mutmut-cache/
+            html/
+          include-hidden-files: true
