@@ -250,6 +250,7 @@ async def test_verified_endpoints_applied(tmp_path, monkeypatch):
     # messages into local infra during tests. Same for NDJSON writer (None
     # unless enabled) and traces/CH below.
     indexer.nats_enabled = False
+    indexer.lazy_indexing_enabled = False  # no dex refresh -> no live eth_getLogs
 
     # Tip resolution happens BEFORE verification and legitimately walks the
     # full configured pool, so it cannot witness the swap. Capture the pool
