@@ -24,16 +24,15 @@ logger = get_logger(__name__)
 # Default sub-slice size for per-slice checkpointing. Overridable with the
 # ``SYNC_CHECKPOINT_SLICE`` env var, read at call time so it can be retuned
 # without a redeploy.
-#: Blocks per slice. This is the BLOCK QUANTUM: a turn must move at least
-#: ``production rate x turn interval`` blocks or the chain diverges forever.
-#: Measured 2026-10-24: slices of 10 blocks held a slot for only ~25 s but
-#: moved bsc +10 blocks per 655 s turn = 0.015 blocks/s against 1.33 blocks/s
-#: of BSC production, so bsc's highwater fell 119,129 blocks behind tip while
-#: looking "healthy". A 100-block slice is 10 span-limited getLogs calls at
-#: CHUNK_PARALLELISM=2 (~5 s) and keeps the quantum above production. The
-#: TURN is now bounded by time (SYNC_SLICE_BUDGET_S + SYNC_SLICE_TIMEOUT_S),
-#: not by slice count, so a bigger block quantum cannot stretch a slot hold.
-DEFAULT_SYNC_CHECKPOINT_SLICE = 100
+#: Blocks per slice = the BLOCK QUANTUM a turn can move. Sized from the
+#: MEASURED per-block cost, not a guess: bsc/ethereum spend ~2.5 s of slot
+#: time per block (span-limited getLogs at 10 blocks per call, CHUNK_PARALLELISM
+#: = 2, plus hash/dex/insert overhead), so a 10-block slice is ~25 s and a
+#: 100-block slice is ~250 s. 100 therefore blew through SYNC_SLICE_TIMEOUT_S
+#: (90 s) on the first slice every turn and advanced NOTHING (measured 02:59Z).
+#: 30 blocks x 2.5 s = ~75 s, inside the cap with margin, and moves 3x the
+#: 10-block quantum that left bsc at +10 blocks per 655 s turn.
+DEFAULT_SYNC_CHECKPOINT_SLICE = 30
 
 # Statuses that always stop the cycle: the range itself is invalid/rewound
 # or ClickHouse is unwritable — continuing to the next slice cannot help.

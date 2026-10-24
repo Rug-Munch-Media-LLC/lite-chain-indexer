@@ -40,7 +40,7 @@ def _env(**values: str) -> Iterator[None]:
 def test_slice_size_default_when_unset() -> None:
     with _env(SYNC_CHECKPOINT_SLICE=""):
         os.environ.pop("SYNC_CHECKPOINT_SLICE", None)
-        assert _checkpoint.slice_size() == _checkpoint.DEFAULT_SYNC_CHECKPOINT_SLICE == 100
+        assert _checkpoint.slice_size() == _checkpoint.DEFAULT_SYNC_CHECKPOINT_SLICE == 30
 
 
 def test_slice_size_honors_positive_override() -> None:
