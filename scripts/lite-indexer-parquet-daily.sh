@@ -26,7 +26,27 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$REPO_DIR"
 
 YESTERDAY=$(date -u -d "yesterday" +%Y-%m-%d)
-CHAINS="ethereum bsc polygon arbitrum optimism base avalanche gnosis"
+# Chain set is DERIVED, never hand-written. A hardcoded 8-chain list here is
+# what left 13 chains unarchived for 37 days (2026-09-16 -> 2026-10-23) while
+# every run exited 0. Canonical list: fleet-infra scripts/parquet/lib.
+# PD_LIB is injected by the systemd unit (the canonical list lives in the
+# private infra repo, not here). Required: never guess a path, never fall back
+# to a hardcoded chain list.
+PD_LIB=${PD_LIB:?PD_LIB must point at the canonical parquet lib directory}
+if [ ! -r "$PD_LIB/parquet-chains.sh" ]; then
+    echo "FATAL: canonical chain list missing at $PD_LIB/parquet-chains.sh" >&2
+    exit 78
+fi
+# shellcheck source=/dev/null
+. "$PD_LIB/parquet-chains.sh"
+CH_BIN=${CH_BIN:-docker exec rmi-clickhouse clickhouse-client}
+DB=${DB:-wallet_memory}
+if ! pd_chains_validate; then
+    echo "FATAL: chain list incomplete — refusing to export a partial day" >&2
+    exit 78
+fi
+CHAINS=$(pd_chains | tr '\n' ' ')
+echo "==> units: $(echo $CHAINS | wc -w) chains"
 
 echo "==> lite-indexer parquet daily export ($(date -u +%Y-%m-%dT%H:%M:%SZ)) date=${YESTERDAY}"
 

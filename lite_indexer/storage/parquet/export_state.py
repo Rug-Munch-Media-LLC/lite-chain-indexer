@@ -2,7 +2,16 @@
 
 Split out of writer.py — the export flow and the state bookkeeping
 change for different reasons; composed into ParquetExporter.
+
+Invariant (fixed 2026-10-24): a (chain, date) row may carry ``deleted_at``
+only when ``uploaded_at`` is also set — or when the day held zero rows, so
+there was nothing to upload. The status row is REPLACED on every transition
+(ReplacingMergeTree), so the upload proof must be carried forward instead of
+being nulled by the delete write. Before this, 733 real-row records showed
+``deleted_at`` with ``uploaded_at = NULL``; 721 of them did have the object in
+B2 (the proof was erased, not missing).
 """
+
 from __future__ import annotations
 
 import json
@@ -33,6 +42,22 @@ class ExportStateMixin:
         except Exception as exc:
             logger.debug("parquet_state_table_ensure_failed", error=str(exc)[:100])
 
+    def _prior_uploaded_at(self, client: Any, chain: str, day: date) -> datetime | None:
+        """Return the upload proof already recorded for (chain, date), if any."""
+        try:
+            rows = client.execute(
+                f"SELECT max(uploaded_at) FROM {CH_PARQUET_STATE_TABLE} WHERE chain = %(chain)s AND date = %(day)s",
+                {"chain": chain, "day": day.isoformat()},
+            )
+            return rows[0][0] if rows and rows[0][0] else None
+        except Exception as exc:
+            logger.warning(
+                "parquet_prior_upload_lookup_failed",
+                chain=chain,
+                day=day.isoformat(),
+                error=str(exc)[:100],
+            )
+            return None
 
     def _record_state(
         self,
@@ -66,6 +91,18 @@ class ExportStateMixin:
             metrics.incr_labeled("lite_indexer_parquet_export_failed", chain=chain, date=day.isoformat())
         uploaded_at = now if status == _STATUS_UPLOADED else None
         deleted_at = now if status == _STATUS_DELETED else None
+        if status == _STATUS_DELETED:
+            # Never erase the upload proof: carry it forward across the
+            # uploaded -> deleted transition.
+            uploaded_at = self._prior_uploaded_at(client, chain, day)
+            if uploaded_at is None and (transfers_rows or dex_rows):
+                # Rows were deleted with no proof they ever reached B2. Record
+                # the failure loudly instead of a clean-looking 'deleted'.
+                status = _STATUS_FAILED
+                deleted_at = None
+                error_message = "deleted_without_upload_proof"
+                metrics.incr_labeled("lite_indexer_parquet_export_failed", chain=chain, date=day.isoformat())
+                logger.error("parquet_deleted_without_upload_proof", chain=chain, day=day.isoformat())
         try:
             client.execute(
                 f"INSERT INTO {CH_PARQUET_STATE_TABLE} "
@@ -86,8 +123,12 @@ class ExportStateMixin:
                 ],
             )
         except Exception as exc:
-            logger.warning("parquet_state_record_failed", chain=chain, day=day.isoformat(), error=str(exc)[:100])
-
+            logger.warning(
+                "parquet_state_record_failed",
+                chain=chain,
+                day=day.isoformat(),
+                error=str(exc)[:100],
+            )
 
     def _delete_day_rows(self, client: Any, table: str, chain: str, day: date) -> int:
         """Delete a day's rows from a ClickHouse table (lightweight delete).
@@ -111,7 +152,6 @@ class ExportStateMixin:
         except Exception as exc:
             logger.warning("parquet_delete_failed", table=table, chain=chain, error=str(exc)[:120])
             return 0
-
 
     def _mark_exported(
         self,
@@ -143,4 +183,3 @@ class ExportStateMixin:
             )
         except OSError as exc:
             logger.warning("parquet_marker_failed", path=str(marker), error=str(exc)[:80])
-
