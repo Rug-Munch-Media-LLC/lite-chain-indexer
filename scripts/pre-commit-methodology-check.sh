@@ -145,8 +145,9 @@ if [ "$FOUND" -eq 1 ]; then
     echo "   These patterns reveal internal infrastructure or methods."
     echo "   See: METHODOLOGY-PROTECTION.md"
     echo ""
-    echo "   If this is a false positive, use:"
-    echo "   git commit --no-verify  (with Lead approval)"
+    echo "   Fix the finding. Do not bypass the gate."
+    echo "   A false positive is fixed in the PATTERN (allowlist it where it is"
+    echo "   defined) — there is no bypass flag in this repo's contract."
     exit 1
 fi
 
