@@ -65,10 +65,20 @@ def ch(sql: str, fmt: str = "TSV") -> str:
 def ch_parquet(sql: str, dest: Path) -> None:
     with dest.open("wb") as fh:
         proc = subprocess.run(
-            [*CH, "--max_execution_time", "0",
-             "--output_format_parquet_compression_method", "zstd",
-             "--query", sql, "--format", "Parquet"],
-            stdout=fh, stderr=subprocess.PIPE, check=False,
+            [
+                *CH,
+                "--max_execution_time",
+                "0",
+                "--output_format_parquet_compression_method",
+                "zstd",
+                "--query",
+                sql,
+                "--format",
+                "Parquet",
+            ],
+            stdout=fh,
+            stderr=subprocess.PIPE,
+            check=False,
         )
     if proc.returncode != 0 or dest.stat().st_size == 0:
         raise RuntimeError(proc.stderr.decode()[-400:] or "empty parquet")
@@ -101,8 +111,10 @@ def discover_units(spec: TableSpec, chains: list[str]) -> list[Unit]:
     if chains and spec.chain_column:
         where = f"WHERE {spec.chain_column} IN ({','.join(repr(c) for c in chains)})"
     date_expr = f"toDate({spec.cursor})" if spec.mode == CURSOR else "toDate(now())"
-    sql = (f"SELECT {chain_expr} AS c, {date_expr} AS d, count() AS r FROM {DB}.{spec.table} "
-           f"{where} GROUP BY c, d ORDER BY d, c")
+    sql = (
+        f"SELECT {chain_expr} AS c, {date_expr} AS d, count() AS r FROM {DB}.{spec.table} "
+        f"{where} GROUP BY c, d ORDER BY d, c"
+    )
     units = []
     for line in ch(sql).splitlines():
         if line.strip():
@@ -113,8 +125,7 @@ def discover_units(spec: TableSpec, chains: list[str]) -> list[Unit]:
 
 def parquet_count(path: Path) -> int:
     sql = f"SELECT count(*) FROM read_parquet('{path}')"
-    out = subprocess.run(["duckdb", "-noheader", "-list", "-c", sql],
-                         capture_output=True, text=True, check=True).stdout
+    out = subprocess.run(["duckdb", "-noheader", "-list", "-c", sql], capture_output=True, text=True, check=True).stdout
     return int(out.strip())
 
 
@@ -139,16 +150,23 @@ def export_unit(spec: TableSpec, unit: Unit) -> dict:
         ch_parquet(f"SELECT {cols} FROM {DB}.{spec.table} WHERE {pred}{order}", part)
         got = parquet_count(part)
         if got != unit.rows:
-            raise RuntimeError(
-                f"row mismatch {unit.chain}/{spec.table}/{unit.day}: ch={unit.rows} parquet={got}")
+            raise RuntimeError(f"row mismatch {unit.chain}/{spec.table}/{unit.day}: ch={unit.rows} parquet={got}")
         digest = hashlib.md5(part.read_bytes()).hexdigest()  # noqa: S324 — integrity, not auth
         size = part.stat().st_size
         upload(part, f"{key_dir}/part-000.parquet")
         manifest = {
-            "v": 1, "table": spec.table, "chain": unit.chain, "date": unit.day,
-            "mode": spec.mode, "cursor": spec.cursor or None, "rows": got,
-            "bytes": size, "md5": digest, "part": "part-000.parquet",
-            "predicate": pred, "exported_at": dt.datetime.now(dt.UTC).isoformat(),
+            "v": 1,
+            "table": spec.table,
+            "chain": unit.chain,
+            "date": unit.day,
+            "mode": spec.mode,
+            "cursor": spec.cursor or None,
+            "rows": got,
+            "bytes": size,
+            "md5": digest,
+            "part": "part-000.parquet",
+            "predicate": pred,
+            "exported_at": dt.datetime.now(dt.UTC).isoformat(),
             "clickhouse_rows": unit.rows,
         }
         mf = Path(tmp) / "manifest.json"
@@ -158,12 +176,26 @@ def export_unit(spec: TableSpec, unit: Unit) -> dict:
 
 
 def gate(spec: TableSpec, chains: list[str]) -> list[str]:
-    missing = []
-    for unit in discover_units(spec, chains):
-        key = f"{unit.chain}/{spec.table}/{unit.day}/manifest.json"
-        if not object_exists(key):
-            missing.append(key)
-    return missing
+    """Completeness gate: every unit ClickHouse still holds must have a manifest.
+
+    One recursive listing per chain (not one request per unit), compared as a
+    set — a missing unit is a FAILED run, never a silent omission.
+    """
+    units = discover_units(spec, chains)
+    present: set[str] = set()
+    for chain in sorted({u.chain for u in units}):
+        proc = subprocess.run(
+            [RCLONE, "lsf", "-R", "--files-only", f"{REMOTE}/{chain}/{spec.table}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        present |= {f"{chain}/{spec.table}/{line.strip()}" for line in proc.stdout.splitlines() if line.strip()}
+    return [
+        f"{u.chain}/{spec.table}/{u.day}/manifest.json"
+        for u in units
+        if f"{u.chain}/{spec.table}/{u.day}/manifest.json" not in present
+    ]
 
 
 def main() -> int:
@@ -173,6 +205,7 @@ def main() -> int:
     ap.add_argument("--oldest-first", action="store_true")
     ap.add_argument("--limit-units", type=int, default=0)
     ap.add_argument("--gate", action="store_true")
+    ap.add_argument("--gate-only", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     tables = args.table or ["solana_spl_balance_changes", "internal_transfers", "address_activity"]
@@ -187,12 +220,12 @@ def main() -> int:
                 print(f"   {u.chain} {u.day} {u.rows}")
             continue
         done = 0
-        for u in units:
+        for u in [] if args.gate_only else units:
             if args.limit_units and done >= args.limit_units:
                 break
             try:
                 m = export_unit(spec, u)
-                done += 1
+                done += 0 if m.get("skipped_existing") else 1
                 if m.get("skipped_existing"):
                     print(f"   skip {m['chain']}/{name}/{m['date']} (already archived)", flush=True)
                 else:

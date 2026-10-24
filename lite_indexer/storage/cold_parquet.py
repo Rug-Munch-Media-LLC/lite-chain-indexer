@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from lite_indexer.storage.archive_specs import TABLE_KINDS as _SPEC_KINDS
+
 # The hourly producer writes the v2 bucket; v1 (legacy) stopped 2026-08-31.
 PRODUCER_REMOTE = "b2-crypt-v2:chain-data/parquet"
 LEGACY_REMOTE = "b2-crypt:chain-data/parquet"
@@ -25,11 +27,13 @@ LEGACY_REMOTE = "b2-crypt:chain-data/parquet"
 # Table → parquet file-kind. The export writes transfers + dex today;
 # deployer/internal/solana mappings are reserved so the engine is ready
 # when the export pipeline grows.
+# Table → parquet file-kind. The registry in ``archive_specs`` is canonical for
+# every table with an export path; the legacy producer kinds stay here so older
+# objects keep reading. A table missing from BOTH maps has no archive at all.
+
 TABLE_KINDS: dict[str, str] = {
-    "evm_transfers": "transfers",
-    "dex_events": "dex",
+    **_SPEC_KINDS,
     "deployer_events": "deployer",
-    "internal_transfers": "internal",
     "solana_transfers": "solana",
 }
 
@@ -122,6 +126,34 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Canonical columns for the tables that had NO export path before 2026-10-24.
+TABLE_COLUMNS["address_activity"] = (
+    "address",
+    "tx_signature",
+    "slot",
+    "block_time",
+    "involved_accounts",
+    "program_ids",
+    "is_signer",
+    "ingested_at",
+    "chain",
+)
+TABLE_COLUMNS["solana_spl_balance_changes"] = (
+    "slot",
+    "block_timestamp",
+    "tx_hash",
+    "token_account",
+    "mint",
+    "owner",
+    "pre_amount",
+    "post_amount",
+    "delta",
+    "decimals",
+    "token_symbol",
+    "token_name",
+    "ingested_at",
+)
+
 # Canonical ORDER BY per table (newest first), matching real columns.
 TABLE_ORDER: dict[str, str] = {
     "evm_transfers": "block_timestamp DESC, block_number DESC, log_index DESC",
@@ -129,11 +161,14 @@ TABLE_ORDER: dict[str, str] = {
     "deployer_events": "block_timestamp DESC, block_number DESC",
     "internal_transfers": "block_timestamp DESC, block_number DESC, tx_hash DESC",
     "solana_transfers": "block_timestamp DESC, slot DESC",
+    "solana_spl_balance_changes": "block_timestamp DESC, slot DESC",
+    "address_activity": "block_time DESC, slot DESC",
+    "dex_ohlcv_hourly": "timestamp DESC",
 }
 
 # Tables whose producer file carries no ``chain`` column (the chain is only
 # in the directory): the read must not filter on it — it is injected instead.
-CHAINLESS_TABLES: frozenset[str] = frozenset({"solana_transfers"})
+CHAINLESS_TABLES: frozenset[str] = frozenset({"solana_transfers", "solana_spl_balance_changes"})
 
 # Type defaults for canonical columns absent from an older export.
 COLUMN_DEFAULTS: dict[str, Any] = {
