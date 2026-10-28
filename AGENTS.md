@@ -41,3 +41,20 @@ lite_indexer/
 ## Owner
 
 Community maintained. PRs welcome.
+
+<!-- agent-quickstart:start -->
+## Agent quickstart (repo facts only; doctrine is canonical, not repeated here)
+
+**What this is.** Lightweight chain indexer (Python).
+**Commands.** `ruff check .` / `pytest -q`
+
+**Lane rule.** Build, test, lint and install run on Talos (`/srv/work/repos/lite-chain-indexer`);
+Cinnabox is terminal-only, and `/home/dev` on Talos is the deploy root, not a code surface.
+
+**MCP first moves.** exact string/file -> `zoekt` (committed) or `rg-search` (uncommitted)
+/ symbol or callers -> `serena` / how we build it, verdicts, gotchas -> `context-crypto`
+(`rmi_playbook`, `rmi_gotchas`) / library API -> `context7`.
+**Token.** Forgejo API token: `/srv/secrets/forgejo_api_token` (Talos only, never copy to Cinnabox).
+
+**Canonical.** `standards/fleet/LEAD-CONTRACT.md` / runtime copy `/root/.config/opencode/LEAD-CONTRACT.md`.
+<!-- agent-quickstart:end -->
