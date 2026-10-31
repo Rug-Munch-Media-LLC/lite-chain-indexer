@@ -41,7 +41,10 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pre-commit>=4.6.0",
-    "gitleaks>=8.18.0",
+    # gitleaks is a Go binary, NOT a pip package: pip install -e ".[dev]"
+    # died on ResolutionImpossible for it, which is why both matrix legs of
+    # CI / lint-and-test failed at the install step before any gate ran.
+    # The binary is installed by the workflow (sast job) and by lefthook.
     "import-linter>=2.15",
     "vulture>=2.16",
 ]
