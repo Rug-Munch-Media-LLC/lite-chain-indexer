@@ -43,16 +43,21 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package + dev deps
+        # dev alone cannot run this suite: the tests import fastapi (26x),
+        # pyarrow (17x), duckdb (9x), nats, redis, websockets, lancedb,
+        # strawberry, fastmcp and msgspec - all in the api/parquet/query/
+        # streaming/vectors/mcp/perf extras. With dev only, collection died
+        # on ModuleNotFoundError: nats before a single assertion ran.
+        # `all` is the meta-extra that covers every one of them.
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,all]"
 
       # ── Ratchet gates (REQUIRED, in order) ───────────────────────
       # The four repo ratchets run before lint so a structural or
       # anti-pattern regression fails fast. See docs/CI-GATES.md.
-      - name: Structure gate (shrink-only ratchet)
-        run: python3 scripts/check-structure.py
-
+      # check-structure.py runs in its own `structure-gate` job: branch
+      # protection requires it as a standalone context.
       - name: Antipattern gate (per-repo ratchet)
         run: python3 scripts/check-antipatterns.py
 
@@ -123,9 +128,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install bats
-        run: sudo apt-get update -qq && sudo apt-get install -y bats
+        # The runner image (docker-x64 = node:22-bookworm-slim) ships no
+        # sudo; jobs already run as root, so sudo only produced
+        # command-not-found and failed the job at this step.
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends bats
       - name: Run ops-script scenario tests
         run: bats tests/scripts/
+
+  # ── Structure ratio ratchet (BLOCKING, required context) ──────
+  # Branch protection on main requires `CI / structure-gate (pull_request)`.
+  # Until 2026-10-31 the only `structure-gate` job lived in nightly.yml
+  # (workflow name "CI Nightly", schedule-only), so that exact context could
+  # never report on any PR and every PR deadlocked on a check that does not
+  # exist. Context shape is `<workflow name> / <job id> (<event>)`, so the job
+  # must live in THIS workflow (name: CI) and run on pull_request.
+  structure-gate:
+    runs-on: docker-x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Structure gate (shrink-only ratchet)
+        run: python3 scripts/check-structure.py
 
   # ── Coverage gates (blocking) ─────────────────────────────────
   # Single Python version (no matrix) — coverage is version-independent.

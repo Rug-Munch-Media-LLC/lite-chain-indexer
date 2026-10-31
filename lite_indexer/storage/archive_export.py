@@ -144,7 +144,7 @@ def export_unit(spec: TableSpec, unit: Unit) -> dict:
         got = parquet_count(part)
         if got != unit.rows:
             raise RuntimeError(f"row mismatch {unit.chain}/{spec.table}/{unit.day}: ch={unit.rows} parquet={got}")
-        digest = hashlib.md5(part.read_bytes()).hexdigest()  # noqa: S324 — integrity, not auth
+        digest = hashlib.md5(part.read_bytes(), usedforsecurity=False).hexdigest()  # noqa: S324 — integrity, not auth
         size = part.stat().st_size
         upload(part, f"{key_dir}/part-000.parquet")
         manifest = {

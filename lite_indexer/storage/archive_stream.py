@@ -138,7 +138,7 @@ def verify_upload(spec: TableSpec, out_dir: Path, expected: dict[tuple[str, str]
         if object_exists(f"{key_dir}/manifest.json") or object_exists(f"{key_dir}/part-00000.parquet"):
             summary["units"] += 1
             continue
-        digest = hashlib.md5(part.read_bytes()).hexdigest()  # noqa: S324 — integrity, not auth
+        digest = hashlib.md5(part.read_bytes(), usedforsecurity=False).hexdigest()  # noqa: S324 — integrity, not auth
         upload(part, f"{key_dir}/part-000.parquet")
         manifest = _manifest(
             spec, chain, day,
