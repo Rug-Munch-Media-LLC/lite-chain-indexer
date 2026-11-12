@@ -93,9 +93,7 @@ class EnvioSource:
         min_interval: float | None = None,
         post: Any | None = None,
     ) -> None:
-        self._token = (
-            rpc_token if rpc_token is not None else os.getenv("ENVIO_RPC_TOKEN", "")
-        ).strip()
+        self._token = (rpc_token if rpc_token is not None else os.getenv("ENVIO_RPC_TOKEN", "")).strip()
         if min_interval is None:
             try:
                 min_interval = float(os.getenv("ENVIO_RPC_MIN_INTERVAL", "0.5"))
@@ -363,9 +361,7 @@ def _cli() -> int:
     p_tr.add_argument("--limit", type=int, default=100)
     p_tr.set_defaults(fn=_cmd_transfers)
 
-    p_tb = sub.add_parser(
-        "trace-block", help="trace_block (ethereum/base) → internal_transfers rows"
-    )
+    p_tb = sub.add_parser("trace-block", help="trace_block (ethereum/base) → internal_transfers rows")
     p_tb.add_argument("chain")
     p_tb.add_argument("block", help="int or 0x-hex")
     p_tb.set_defaults(fn=_cmd_trace_block)

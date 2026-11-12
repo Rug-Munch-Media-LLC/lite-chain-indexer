@@ -18,16 +18,11 @@ def test_no_filters_renders_empty_where() -> None:
 
 
 def test_dict_filters_render_and_equality() -> None:
-    assert (
-        build_cold_where({"tx_hash": "0xabc", "log_index": 3})
-        == "tx_hash = '0xabc' AND log_index = 3"
-    )
+    assert build_cold_where({"tx_hash": "0xabc", "log_index": 3}) == "tx_hash = '0xabc' AND log_index = 3"
 
 
 def test_list_filters_render_or_equality() -> None:
-    where = build_cold_where(
-        [{"col": "from_address", "value": "0x1"}, {"col": "to_address", "value": "0x1"}]
-    )
+    where = build_cold_where([{"col": "from_address", "value": "0x1"}, {"col": "to_address", "value": "0x1"}])
     assert where == "(from_address = '0x1' OR to_address = '0x1')"
 
 

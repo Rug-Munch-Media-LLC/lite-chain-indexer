@@ -1,4 +1,5 @@
 """Unit tests for the blockwise balance-delta helper (timestamp contract)."""
+
 from typing import Any
 
 from lite_indexer.strategies.solana.strategy import SolanaStrategy
@@ -11,9 +12,7 @@ def _tx(pre: float | None, post: float | None, mint: str = MINT) -> dict[str, An
     return {
         "transaction": {"signatures": ["sig1"]},
         "meta": {
-            "preTokenBalances": [
-                {"mint": mint, "owner": "own", "accountIndex": 3, "uiTokenAmount": {"uiAmount": pre}}
-            ],
+            "preTokenBalances": [{"mint": mint, "owner": "own", "accountIndex": 3, "uiTokenAmount": {"uiAmount": pre}}],
             "postTokenBalances": [
                 {
                     "mint": mint,

@@ -23,9 +23,7 @@ def _delivery(tmp_path: Path) -> WebhookDelivery:
     return WebhookDelivery(enabled=False, store=WebhookStore(tmp_path / "webhooks.db"))
 
 
-def _entry(
-    entry_id: str, *, next_attempt_at: float | None = None, status: str = "pending"
-) -> DlqEntry:
+def _entry(entry_id: str, *, next_attempt_at: float | None = None, status: str = "pending") -> DlqEntry:
     return DlqEntry(
         id=entry_id,
         subscription_id="sub-1",
@@ -76,9 +74,7 @@ def test_reschedule_sets_pending_and_new_attempt_count(tmp_path: Path) -> None:
     delivery = _delivery(tmp_path)
     delivery._dlq_insert(_entry("e1"))
     delivery._claim_dlq_entry("e1")
-    delivery._reschedule_dlq(
-        "e1", attempts=2, next_attempt_at=time.time() + 5, status_code=503, error="boom"
-    )
+    delivery._reschedule_dlq("e1", attempts=2, next_attempt_at=time.time() + 5, status_code=503, error="boom")
     fetched = delivery._get_dlq_entry("e1")
     assert fetched is not None
     assert fetched.status == "pending"

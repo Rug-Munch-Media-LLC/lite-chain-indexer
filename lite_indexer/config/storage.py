@@ -116,6 +116,7 @@ CH_HOLDER_BALANCES_MV: str = "wallet_memory.holder_balances_mv"
 WALLET_OUT_PROJECTION: str = "wallet_out_proj"
 WALLET_IN_PROJECTION: str = "wallet_in_proj"
 
+
 @dataclass(frozen=True)
 class RetentionRule:
     """Hot-window retention for one ClickHouse table.

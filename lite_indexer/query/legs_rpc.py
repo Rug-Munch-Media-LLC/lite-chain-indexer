@@ -16,7 +16,6 @@ from lite_indexer.query.leg_request import LegRequest
 logger = get_logger(__name__)
 
 
-
 async def rpc_route(router: Any, req: LegRequest) -> list[dict[str, Any]]:
     """Route a query to the on-demand RPC fetcher, cached."""
     table, chain = req.table, req.chain

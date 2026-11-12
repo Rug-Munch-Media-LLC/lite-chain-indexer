@@ -1,4 +1,5 @@
 """Unit tests for the solana block-time coercion contract."""
+
 from datetime import UTC, datetime
 
 from lite_indexer.strategies.solana.timestamps import coerce_event_ts, iso_from_epoch

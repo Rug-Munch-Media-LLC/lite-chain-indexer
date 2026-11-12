@@ -43,9 +43,7 @@ async def _envio_ts(router: Any, chain: str, block: int) -> int | None:
     if not router.envio.available():
         return None
     try:
-        blk = await asyncio.to_thread(
-            router.envio.call, chain, "eth_getBlockByNumber", [hex(int(block)), False]
-        )
+        blk = await asyncio.to_thread(router.envio.call, chain, "eth_getBlockByNumber", [hex(int(block)), False])
     except Exception as exc:  # noqa: BLE001 — estimate path takes over
         logger.warning("envio_call_failed", chain=chain, error=str(exc)[:120])
         return None
@@ -157,8 +155,7 @@ async def biglake_route(router: Any, req: LegRequest) -> tuple[list[dict[str, An
         # an August range returns zero rows and looks like "no history",
         # which is the failure this tier exists to prevent.
         metrics_incr("biglake_no_dates")
-        logger.info("biglake_skipped", reason="dates_unresolved", chain=chain,
-                    from_block=from_block, to_block=to_block)
+        logger.info("biglake_skipped", reason="dates_unresolved", chain=chain, from_block=from_block, to_block=to_block)
         return [], False
     try:
         rows, truncated = await asyncio.to_thread(

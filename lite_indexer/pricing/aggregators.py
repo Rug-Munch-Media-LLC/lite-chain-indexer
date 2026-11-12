@@ -47,7 +47,9 @@ async def ensure_token_prices_table(ch_client: Any) -> bool:
         database is missing or privileges are insufficient.
     """
     try:
-        ch_client.execute(_TOKEN_PRICES_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+        ch_client.execute(
+            _TOKEN_PRICES_DDL
+        )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("token_prices_table_ensured", table=CH_TOKEN_PRICES_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort

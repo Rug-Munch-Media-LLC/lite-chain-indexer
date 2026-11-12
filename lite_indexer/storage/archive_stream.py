@@ -141,7 +141,9 @@ def verify_upload(spec: TableSpec, out_dir: Path, expected: dict[tuple[str, str]
         digest = hashlib.md5(part.read_bytes()).hexdigest()  # noqa: S324 — integrity, not auth
         upload(part, f"{key_dir}/part-000.parquet")
         manifest = _manifest(
-            spec, chain, day,
+            spec,
+            chain,
+            day,
             {"rows": got, "bytes": part.stat().st_size, "md5": digest, "late_rows": got - want},
         )
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:

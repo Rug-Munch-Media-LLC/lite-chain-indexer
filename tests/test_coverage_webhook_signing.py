@@ -77,10 +77,7 @@ def test_verify_accepts_retry_inside_replay_window() -> None:
 
 def test_verify_rejects_non_numeric_timestamp() -> None:
     header = _build_signature_header("secret", [], _WEBHOOK_ID, _TS, _PAYLOAD)
-    assert (
-        verify_signature(_PAYLOAD, _WEBHOOK_ID, "not-a-number", header, ["secret"], now=_TS)
-        is False
-    )
+    assert verify_signature(_PAYLOAD, _WEBHOOK_ID, "not-a-number", header, ["secret"], now=_TS) is False
 
 
 def test_verify_rejects_header_without_v1_token() -> None:

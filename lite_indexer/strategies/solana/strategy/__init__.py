@@ -48,7 +48,7 @@ class SolanaStrategy(
     WritesMixin,
     TracesMixin,
     DexEventsMixin,
-    AbstractChainStrategy
+    AbstractChainStrategy,
 ):
     """Strategy for Solana — indexes SPL token balance changes.
 

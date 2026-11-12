@@ -52,6 +52,7 @@ __all__ = ["ERC20_TRANSFER_TOPIC", "SQDPortalError", "SQDSource"]
 
 logger = get_logger(__name__)
 
+
 class SQDPortalError(RuntimeError):
     """Raised when the Portal returns a non-retryable error."""
 

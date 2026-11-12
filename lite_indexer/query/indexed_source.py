@@ -69,9 +69,7 @@ class IndexedXyzSource:
     BUCKET = "indexed-xyz-wnam"
 
     #: Chains with the raw/logs layout this module maps.
-    CHAINS: frozenset[str] = frozenset(
-        {"ethereum", "base", "gnosis", "linea", "optimism", "zksync", "zora"}
-    )
+    CHAINS: frozenset[str] = frozenset({"ethereum", "base", "gnosis", "linea", "optimism", "zksync", "zora"})
 
     def __init__(
         self,
@@ -83,18 +81,10 @@ class IndexedXyzSource:
         enabled: bool | None = None,
         connect: Any | None = None,
     ) -> None:
-        self._endpoint = (
-            endpoint if endpoint is not None else os.getenv("INDEXED_XYZ_ENDPOINT", "")
-        ).strip()
-        self._access_key = (
-            access_key if access_key is not None else os.getenv("INDEXED_XYZ_ACCESS_KEY", "")
-        ).strip()
-        self._secret_key = (
-            secret_key if secret_key is not None else os.getenv("INDEXED_XYZ_SECRET_KEY", "")
-        ).strip()
-        self._version = (
-            version if version is not None else os.getenv("INDEXED_XYZ_VERSION", "v2.0.0")
-        ).strip()
+        self._endpoint = (endpoint if endpoint is not None else os.getenv("INDEXED_XYZ_ENDPOINT", "")).strip()
+        self._access_key = (access_key if access_key is not None else os.getenv("INDEXED_XYZ_ACCESS_KEY", "")).strip()
+        self._secret_key = (secret_key if secret_key is not None else os.getenv("INDEXED_XYZ_SECRET_KEY", "")).strip()
+        self._version = (version if version is not None else os.getenv("INDEXED_XYZ_VERSION", "v2.0.0")).strip()
         self._enabled = _env_flag("INDEXED_XYZ_ENABLED", True) if enabled is None else enabled
         self._connect_impl = connect
         self._con: Any | None = None
@@ -161,9 +151,7 @@ class IndexedXyzSource:
     def _paths(self, chain: str, dates: list[str] | None) -> list[str]:
         if not dates:
             return []
-        return [
-            f"s3://{self.BUCKET}/{chain}/raw/logs/{self._version}/dt={d}/*.parquet" for d in dates
-        ]
+        return [f"s3://{self.BUCKET}/{chain}/raw/logs/{self._version}/dt={d}/*.parquet" for d in dates]
 
     def query(
         self,

@@ -44,7 +44,6 @@ def _stop_patchers() -> Any:
         _PATCHERS.pop().stop()
 
 
-
 def _log(block: int, index: int) -> dict[str, Any]:
     return {"blockNumber": hex(block), "logIndex": hex(index), "data": "0x"}
 

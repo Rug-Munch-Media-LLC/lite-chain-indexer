@@ -51,7 +51,7 @@ jobs:
       # The four repo ratchets run before lint so a structural or
       # anti-pattern regression fails fast. See docs/CI-GATES.md.
       - name: Structure gate (shrink-only ratchet)
-        run: python3 scripts/check-structure.py
+        run: python3 scripts/check-code-structure.py
 
       - name: Antipattern gate (per-repo ratchet)
         run: python3 scripts/check-antipatterns.py

@@ -71,7 +71,6 @@ ch_writer, nats_publisher)`` from the indexer's sync cycle where both the
 ClickHouse writer and the NATS publisher are available.
 """
 
-
 from lite_indexer.strategies.solana.launch_constants import (
     BONDING_CURVE_DISCRIMINATOR,
     BONDING_CURVE_SEED,

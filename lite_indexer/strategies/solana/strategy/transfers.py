@@ -213,9 +213,7 @@ class TransfersMixin(SolanaMixinBase):
             # inside the target window, nothing older is worth walking to —
             # stop paginating (pages 2+ would be fetched and discarded).
             if any(
-                isinstance(s, dict)
-                and s.get("slot") is not None
-                and from_slot <= int(s["slot"]) <= to_slot
+                isinstance(s, dict) and s.get("slot") is not None and from_slot <= int(s["slot"]) <= to_slot
                 for s in result["result"]
             ):
                 break

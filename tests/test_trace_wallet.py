@@ -32,9 +32,7 @@ class FakeRouter:
         self.error = error
         self.calls = 0
 
-    async def get_transfers(
-        self, chain: str, address: str, *, from_block: int, to_block: int, limit: int
-    ) -> Any:
+    async def get_transfers(self, chain: str, address: str, *, from_block: int, to_block: int, limit: int) -> Any:
         self.calls += 1
         if self.error:
             raise RuntimeError(self.error)
@@ -214,9 +212,7 @@ def test_evm_traces_window_filters_by_address() -> None:
 
 def test_solana_uses_sqd_instructions() -> None:
     sqd = FakeSQD()
-    out = asyncio.run(
-        trace_wallet("solana", "OwnerAddr", from_block=1000, to_block=1001, sqd=cast(Any, sqd))
-    )
+    out = asyncio.run(trace_wallet("solana", "OwnerAddr", from_block=1000, to_block=1001, sqd=cast(Any, sqd)))
     assert out["counts"] == {"sqd": 1}
     assert out["rows"][0]["kind"] == "instruction"
     assert sqd.solana_calls == 1
@@ -224,9 +220,7 @@ def test_solana_uses_sqd_instructions() -> None:
 
 def test_tron_uses_sqd_trc20_and_internal() -> None:
     sqd = FakeSQD()
-    out = asyncio.run(
-        trace_wallet("tron", "TWallet", from_block=10, to_block=20, sqd=cast(Any, sqd))
-    )
+    out = asyncio.run(trace_wallet("tron", "TWallet", from_block=10, to_block=20, sqd=cast(Any, sqd)))
     kinds = sorted(r["kind"] for r in out["rows"])
     assert kinds == ["internal_transfer", "transfer"]
     assert sqd.tron_calls == 2
@@ -234,9 +228,7 @@ def test_tron_uses_sqd_trc20_and_internal() -> None:
 
 def test_hyperliquid_fills() -> None:
     sqd = FakeSQD()
-    out = asyncio.run(
-        trace_wallet("hyperliquid", "0xUser", from_block=5, to_block=6, sqd=cast(Any, sqd))
-    )
+    out = asyncio.run(trace_wallet("hyperliquid", "0xUser", from_block=5, to_block=6, sqd=cast(Any, sqd)))
     assert out["counts"] == {"sqd": 1}
     assert out["rows"][0]["kind"] == "fill"
     assert out["rows"][0]["coin"] == "BTC"

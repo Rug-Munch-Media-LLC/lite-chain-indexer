@@ -48,9 +48,7 @@ def test_dict_filters_render_and_equality() -> None:
 
 
 def test_list_filters_render_or_equality() -> None:
-    clauses, params = _render(
-        [{"col": "from_address", "value": "0x1"}, {"col": "to_address", "value": "0x1"}]
-    )
+    clauses, params = _render([{"col": "from_address", "value": "0x1"}, {"col": "to_address", "value": "0x1"}])
     assert clauses == ["(from_address = %(f_from_address_0)s OR to_address = %(f_to_address_1)s)"]
     assert params == {"f_from_address_0": "0x1", "f_to_address_1": "0x1"}
 

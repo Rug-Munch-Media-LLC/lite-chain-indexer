@@ -4,6 +4,7 @@ Dependency-injection seams so tests and ops never monkeypatch module
 internals: call sites read the injected fakes, or fall back to the real
 ``shutil.which`` / ``subprocess.run``.
 """
+
 from __future__ import annotations
 
 import shutil

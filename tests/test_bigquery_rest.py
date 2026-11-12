@@ -1,4 +1,5 @@
 """REST transport tests: one job per query, free pages, dryRun pricing."""
+
 from typing import Any
 
 import pytest
@@ -84,9 +85,21 @@ def test_stream_query_walks_total_rows_by_start_index() -> None:
     """totalRows drives the walk: 3 pages even if pageToken is absent."""
     calls: list[dict[str, Any]] = []
     pages = [
-        {"schema": {"fields": [{"name": "n"}]}, "rows": [{"f": [{"v": str(i)}]} for i in range(50_000)], "totalRows": "150000"},
-        {"schema": {"fields": [{"name": "n"}]}, "rows": [{"f": [{"v": str(i)}]} for i in range(50_000, 100_000)], "totalRows": "150000"},
-        {"schema": {"fields": [{"name": "n"}]}, "rows": [{"f": [{"v": str(i)}]} for i in range(100_000, 150_000)], "totalRows": "150000"},
+        {
+            "schema": {"fields": [{"name": "n"}]},
+            "rows": [{"f": [{"v": str(i)}]} for i in range(50_000)],
+            "totalRows": "150000",
+        },
+        {
+            "schema": {"fields": [{"name": "n"}]},
+            "rows": [{"f": [{"v": str(i)}]} for i in range(50_000, 100_000)],
+            "totalRows": "150000",
+        },
+        {
+            "schema": {"fields": [{"name": "n"}]},
+            "rows": [{"f": [{"v": str(i)}]} for i in range(100_000, 150_000)],
+            "totalRows": "150000",
+        },
     ]
 
     def fake(method: str, url: str, **kw: Any) -> dict[str, Any]:
@@ -115,8 +128,12 @@ def test_stream_query_walks_until_empty_without_total_rows() -> None:
     def fake(method: str, url: str, **kw: Any) -> dict[str, Any]:
         calls.append({"method": method, "params": kw.get("params")})
         if method == "POST":
-            return {"jobReference": {"jobId": "j2", "location": "US"}, "schema": {"fields": [{"name": "n"}]},
-                    "rows": table_rows, "jobComplete": True}  # no totalRows!
+            return {
+                "jobReference": {"jobId": "j2", "location": "US"},
+                "schema": {"fields": [{"name": "n"}]},
+                "rows": table_rows,
+                "jobComplete": True,
+            }  # no totalRows!
         start = int((kw.get("params") or {}).get("startIndex") or 0)
         if start >= 150_000:
             return {"schema": {"fields": [{"name": "n"}]}, "rows": []}

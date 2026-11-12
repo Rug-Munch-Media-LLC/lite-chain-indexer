@@ -61,9 +61,7 @@ def test_market_rows_keep_one_image_per_condition_and_market() -> None:
 
 
 def test_holder_rows_flatten_tokens_and_key_on_asof() -> None:
-    payload = [
-        {"token": "111", "holders": [{"proxyWallet": "0xabc", "amount": 3, "outcomeIndex": 1}]}
-    ]
+    payload = [{"token": "111", "holders": [{"proxyWallet": "0xabc", "amount": 3, "outcomeIndex": 1}]}]
     rows = holder_rows(payload, "0xcond", ASOF)
     assert rows == [(ASOF, "0xcond", "111", "0xabc", 3.0, 1, "", "")]
 

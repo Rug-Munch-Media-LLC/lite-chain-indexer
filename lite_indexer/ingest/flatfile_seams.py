@@ -3,6 +3,7 @@
 Keeps network I/O testable without monkeypatching: tests (and ops) set a
 fetcher here; the flatfile source calls it when present.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable

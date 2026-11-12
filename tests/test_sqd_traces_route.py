@@ -17,9 +17,7 @@ class FakeSQD:
     def available(self) -> bool:
         return True
 
-    def evm_traces(
-        self, chain: str, from_block: int, to_block: int, *, address: Any = None, limit: int = 200
-    ) -> Any:
+    def evm_traces(self, chain: str, from_block: int, to_block: int, *, address: Any = None, limit: int = 200) -> Any:
         self.calls.append({"chain": chain, "from": from_block, "to": to_block, "address": address, "limit": limit})
         return self.rows
 
@@ -50,7 +48,9 @@ def test_gated_to_internal_transfers() -> None:
     sqd = FakeSQD(rows=[_trace_row()])
     router = _router(sqd)
     out = asyncio.run(
-        router._sqd_traces_route(LegRequest("evm_transfers", "polygon", from_block=1, to_block=2, filters=None, limit=10))
+        router._sqd_traces_route(
+            LegRequest("evm_transfers", "polygon", from_block=1, to_block=2, filters=None, limit=10)
+        )
     )
     assert out == []
     assert sqd.calls == []
@@ -61,13 +61,17 @@ def test_requires_bounded_range_and_known_chain() -> None:
     router = _router(sqd)
     assert (
         asyncio.run(
-            router._sqd_traces_route(LegRequest("internal_transfers", "polygon", from_block=None, to_block=2, filters=None, limit=10))
+            router._sqd_traces_route(
+                LegRequest("internal_transfers", "polygon", from_block=None, to_block=2, filters=None, limit=10)
+            )
         )
         == []
     )
     assert (
         asyncio.run(
-            router._sqd_traces_route(LegRequest("internal_transfers", "bsc", from_block=1, to_block=2, filters=None, limit=10))
+            router._sqd_traces_route(
+                LegRequest("internal_transfers", "bsc", from_block=1, to_block=2, filters=None, limit=10)
+            )
         )
         == []
     )
@@ -79,14 +83,16 @@ def test_forwards_address_and_returns_filtered_rows() -> None:
     sqd = FakeSQD(rows=[row])
     router = _router(sqd)
     out = asyncio.run(
-        router._sqd_traces_route(LegRequest(
-            "internal_transfers",
-            "polygon",
-            from_block=10,
-            to_block=20,
-            filters={"from_address": row["from_address"]},
-            limit=5,
-        ))
+        router._sqd_traces_route(
+            LegRequest(
+                "internal_transfers",
+                "polygon",
+                from_block=10,
+                to_block=20,
+                filters={"from_address": row["from_address"]},
+                limit=5,
+            )
+        )
     )
     assert len(out) == 1
     assert sqd.calls[0]["chain"] == "polygon"
@@ -98,13 +104,15 @@ def test_filter_mismatch_rejected_post_filter() -> None:
     sqd = FakeSQD(rows=[_trace_row()])
     router = _router(sqd)
     out = asyncio.run(
-        router._sqd_traces_route(LegRequest(
-            "internal_transfers",
-            "polygon",
-            from_block=10,
-            to_block=20,
-            filters={"from_address": "0x" + "9" * 40},
-            limit=5,
-        ))
+        router._sqd_traces_route(
+            LegRequest(
+                "internal_transfers",
+                "polygon",
+                from_block=10,
+                to_block=20,
+                filters={"from_address": "0x" + "9" * 40},
+                limit=5,
+            )
+        )
     )
     assert out == []

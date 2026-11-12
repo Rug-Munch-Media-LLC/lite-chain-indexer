@@ -168,10 +168,14 @@ def lci_attest_verify(
     """
     if not (cfg.ATTESTATION_ENABLED if enabled is None else enabled):
         return {"status": "disabled", "error": "attestation is disabled (ATTESTATION_ENABLED=0)"}
-    root = Path(
-        os.environ.get("LITE_INDEXER_MCP_MANIFEST_ROOT")
-        or str(cfg.ATTESTATION_DIR if attestation_dir is None else attestation_dir)
-    ).expanduser().resolve()
+    root = (
+        Path(
+            os.environ.get("LITE_INDEXER_MCP_MANIFEST_ROOT")
+            or str(cfg.ATTESTATION_DIR if attestation_dir is None else attestation_dir)
+        )
+        .expanduser()
+        .resolve()
+    )
     path = Path(manifest_path).expanduser().resolve()
     if not path.is_file() or root not in path.parents:
         return {"status": "error", "error": "manifest_path must be a file under the attestation directory"}
@@ -194,5 +198,3 @@ def lci_attest_verify(
 mcp = FastMCP("lite-chain-indexer")
 for _tool in (lci_status, lci_chain_head, lci_recent_transfers, lci_rpc_health, lci_attest_verify):
     mcp.add_tool(_tool)
-
-

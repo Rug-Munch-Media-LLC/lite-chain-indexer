@@ -42,7 +42,6 @@ def _stop_patchers() -> Any:
         _PATCHERS.pop().stop()
 
 
-
 @pytest.fixture(autouse=True)
 def _reset_metrics():
     metrics.reset()
@@ -240,9 +239,7 @@ class TestFailureSafe:
         client = rc.RpcClient()
         client._get_client = _get_client  # noqa: SLF001 — test seam
         with patch.object(respcache.cache_db, "get_db", _boom):
-            logs = await client.get_logs(
-                "https://archive.example", 1, 10, "0x" + "ab" * 32, chain="ethereum", tip=1000
-            )
+            logs = await client.get_logs("https://archive.example", 1, 10, "0x" + "ab" * 32, chain="ethereum", tip=1000)
         assert logs == [{"blockNumber": "0x5"}]
 
 

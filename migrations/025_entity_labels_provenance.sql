@@ -1,0 +1,76 @@
+-- Migration 025: entity_labels gains source_license + last_verified_at.
+--
+-- WHY: entity_labels is the canonical label graph, but until now it had no
+-- way to say WHEN a label was confirmed and under WHAT licence it was
+-- obtained. Several ingested sources are static snapshots that have not
+-- moved in years — etherscan-labels was last pushed in 2023, evm-labels in
+-- 2022. A row imported from either today is indistinguishable from a row
+-- verified today, because ``first_seen`` records the INSERT, not the
+-- upstream truth. That is the defect this migration closes. The label
+-- coverage metric (29% of addresses labelled) silently becomes wrong when a
+-- stale snapshot is counted as fresh coverage, and nothing in the row could
+-- contradict it. ``last_verified_at`` is the field that makes freshness
+-- measurable.
+--
+--   source_license    — the upstream licence (MIT, Apache-2.0,
+--                       public-domain, ...). A label graph assembled from
+--                       unknown-licence sources is not redistributable, and
+--                       this is the field that makes the obligation visible
+--                       per row instead of only in a README.
+--   last_verified_at  — when the upstream data was last confirmed live.
+--                       DEFAULT toDateTime(0) is deliberate and load-bearing.
+--                       A pre-existing row is UNVERIFIED, not fresh. A 2022
+--                       snapshot imported today must not look like a 2026
+--                       verification, so the sentinel is the epoch and not
+--                       now(). Consumers must test
+--                       ``last_verified_at > toDateTime(0)`` before treating
+--                       a label as fresh.
+--
+-- NOT first_seen, and first_seen is NOT reused for this. first_seen is the
+-- row's own arrival time and stays that way. Freshness is a property of the
+-- upstream source and needs its own clock. For a snapshot import the two
+-- differ by years, and conflating them is exactly the masquerade this
+-- migration exists to prevent.
+--
+-- PROBLEM THIS SCHEMA ADDRESSES. Coverage computed as count(labelled) /
+-- count(all) treats a 2022 import and a 2026 verification as the same event.
+-- With last_verified_at defaulting to the epoch, a coverage query can exclude
+-- stale rows and the number stops lying:
+--
+--     SELECT count() FROM wallet_memory.entity_labels
+--     WHERE last_verified_at > toDateTime(0)
+--
+-- ADD COLUMN IF NOT EXISTS + DEFAULT is metadata-only in ClickHouse. No part
+-- is rewritten, existing rows read the default through the column, and the
+-- writer's explicit 9-column INSERT (api/label_store.py::_INSERT_SQL) keeps
+-- working unchanged because both new columns have defaults. Rows already in
+-- the table therefore come back with last_verified_at at the epoch, which is
+-- the intended "not verified" reading.
+--
+-- ORDER BY and the ReplacingMergeTree(first_seen) version column are
+-- untouched. This is neither the sort key nor the version, so deduplication
+-- of re-imported sources behaves exactly as before.
+--
+-- The DDL below is duplicated in api/label_store.py (ENTITY_LABELS_DDL, the
+-- runtime CREATE TABLE IF NOT EXISTS) and in the scanner's label_importer
+-- config.py. All three copies must list the same columns —
+-- tests/test_migrations.py::test_entity_labels_ddl_copies_agree_on_new_columns
+-- fails when they drift.
+--
+-- UP
+ALTER TABLE wallet_memory.entity_labels
+    ADD COLUMN IF NOT EXISTS source_license LowCardinality(String) DEFAULT '';
+
+ALTER TABLE wallet_memory.entity_labels
+    ADD COLUMN IF NOT EXISTS last_verified_at DateTime DEFAULT toDateTime(0);
+
+-- Reads (GET /api/v1/labels) are covered by the existing table-level GRANT
+-- SELECT on wallet_memory.entity_labels TO chain_api (migration 018). A
+-- ClickHouse table grant is not per-column, so ADD COLUMN needs no GRANT
+-- change and no re-grant is issued here.
+--
+-- DOWN (rollback — run manually only. DROP is intentionally commented so no
+-- automated migration runner can ever execute it, and a column drop is a data
+-- loss the runner must never take on its own):
+-- ALTER TABLE wallet_memory.entity_labels DROP COLUMN IF EXISTS source_license
+-- ALTER TABLE wallet_memory.entity_labels DROP COLUMN IF EXISTS last_verified_at

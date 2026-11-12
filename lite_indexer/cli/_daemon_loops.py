@@ -3,6 +3,7 @@
 Split out of cli/_daemon.py (structure ratchet); each loop is a
 best-effort background task started by the daemon.
 """
+
 from __future__ import annotations
 
 import asyncio

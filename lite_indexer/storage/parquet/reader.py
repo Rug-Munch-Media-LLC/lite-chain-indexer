@@ -72,10 +72,12 @@ def _fetch_day_rows(
         f"{where_bounds} LIMIT {cap + 1}"
     )
     try:
-        rows, columns = client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
-            query,
-            query_params,
-            with_column_types=True,
+        rows, columns = (
+            client.execute(  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+                query,
+                query_params,
+                with_column_types=True,
+            )
         )
     except Exception as exc:
         # Table may not exist yet for this chain — not an error worth
@@ -161,5 +163,4 @@ def _verify_parquet(
         return False
 
 
-__all__ = ["_day_row_stats",
-    "_fetch_day_rows", "_verify_parquet"]
+__all__ = ["_day_row_stats", "_fetch_day_rows", "_verify_parquet"]

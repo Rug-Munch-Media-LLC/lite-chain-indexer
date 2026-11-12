@@ -6,6 +6,7 @@ which the ClickHouse writer silently dropped — those rows stored the ingest
 time instead of the block time (breaking freshness, TTL and analytics).
 Producers and consumers share these helpers so the contract is explicit.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime

@@ -106,9 +106,7 @@ VENUES: tuple[VenueSpec, ...] = (
         launch_instruction_names=frozenset({"initialize_v2"}),
         requires_config_account=LETSBONK_PLATFORM_CONFIG,
     ),
-    VenueSpec(
-        "launchlab", LAUNCHLAB_PROGRAM, launch_instruction_names=frozenset({"initialize_v2"})
-    ),
+    VenueSpec("launchlab", LAUNCHLAB_PROGRAM, launch_instruction_names=frozenset({"initialize_v2"})),
     VenueSpec("pumpswap", PUMP_SWAP_PROGRAM, graduation=True),
     VenueSpec(
         "raydium_amm_v4",
@@ -120,9 +118,7 @@ VENUES: tuple[VenueSpec, ...] = (
         RAYDIUM_CPMM_PROGRAM,
         launch_instruction_names=frozenset({"initialize", "createPool"}),
     ),
-    VenueSpec(
-        "raydium_clmm", RAYDIUM_CLMM_PROGRAM, launch_instruction_names=frozenset({"initialize"})
-    ),
+    VenueSpec("raydium_clmm", RAYDIUM_CLMM_PROGRAM, launch_instruction_names=frozenset({"initialize"})),
 )
 
 _VENUE_PRIORITY: dict[str, int] = {spec.venue: i for i, spec in enumerate(VENUES)}

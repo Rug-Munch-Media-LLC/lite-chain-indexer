@@ -19,6 +19,7 @@ from lite_indexer.query.bigquery_source import BigQuerySource
 
 DAY = "2026-09-21"
 
+
 @pytest.fixture(autouse=True)
 def _cli_transport() -> Any:
     """Unit tests fake the source/runner: pin the legacy CLI read path."""
@@ -27,7 +28,6 @@ def _cli_transport() -> Any:
 
     with patch.dict(os.environ, {"BIGQUERY_TRANSPORT": "cli"}):
         yield
-
 
 
 class FakeRunner:

@@ -110,10 +110,7 @@ def _event(**overrides: object) -> dict[str, object]:
 
 
 def test_parse_returns_none_when_from_missing() -> None:
-    assert (
-        parse_tron_transfer_event(_event(from_address="", result={"value": "1"}), TOKEN, "tron")
-        is None
-    )
+    assert parse_tron_transfer_event(_event(from_address="", result={"value": "1"}), TOKEN, "tron") is None
 
 
 def test_parse_returns_none_when_to_missing() -> None:
@@ -164,9 +161,7 @@ def test_parse_explicit_none_event_index_is_not_fallback() -> None:
 
 def test_parse_normalizes_hex_addresses_from_result() -> None:
     evt = parse_tron_transfer_event(
-        _event(
-            from_address="", to_address="", result={"value": "1", "from": USDT_HEX, "to": USDT_HEX}
-        ),
+        _event(from_address="", to_address="", result={"value": "1", "from": USDT_HEX, "to": USDT_HEX}),
         TOKEN,
         "tron",
     )

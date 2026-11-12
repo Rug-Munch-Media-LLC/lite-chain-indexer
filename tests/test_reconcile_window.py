@@ -215,7 +215,11 @@ class TestReconcileDoesNotRewindWhenHeadMovedPast:
             summary: dict[str, Any] = {}
             indexer._maybe_reconcile_range(1000, HEAD, expected=5, summary=summary)
 
-        range_counts = [p for q, p in zip(fake.queries, fake.params, strict=True) if "count()" in q and "WHERE" in q and any(isinstance(v, int) for v in (p or {}).values())]
+        range_counts = [
+            p
+            for q, p in zip(fake.queries, fake.params, strict=True)
+            if "count()" in q and "WHERE" in q and any(isinstance(v, int) for v in (p or {}).values())
+        ]
         # Clamped to the durable max, not the caller's HEAD.
         assert range_counts, "expected a numeric range count query"
         assert DURABLE_MAX in [v for v in range_counts[0].values() if isinstance(v, int)]

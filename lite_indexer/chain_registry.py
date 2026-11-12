@@ -216,22 +216,31 @@ EVM_PRESETS: dict[str, ChainConfig] = {
         block_time_seconds=5.0,
     ),
     "blast": ChainConfig(
-        name="blast", chain_type=ChainType.EVM, chain_id=81457,
+        name="blast",
+        chain_type=ChainType.EVM,
+        chain_id=81457,
         rpc_endpoints=["https://rpc.blast.io"],
-        native_currency="ETH", block_time_seconds=2.0,
+        native_currency="ETH",
+        block_time_seconds=2.0,
     ),
     # ENABLED 2026-10-23 but LAGGING ~500k blocks: keyless endpoints (rpc.frax.com,
     # tenderly, pocket) serve the tip, so most deep pages come back
     # tail-truncated and it advances a chunk every few minutes.
     "fraxtal": ChainConfig(
-        name="fraxtal", chain_type=ChainType.EVM, chain_id=252,
+        name="fraxtal",
+        chain_type=ChainType.EVM,
+        chain_id=252,
         rpc_endpoints=["https://rpc.frax.com"],
-        native_currency="FRAX", block_time_seconds=2.0,
+        native_currency="FRAX",
+        block_time_seconds=2.0,
     ),
     "metis": ChainConfig(
-        name="metis", chain_type=ChainType.EVM, chain_id=1088,
+        name="metis",
+        chain_type=ChainType.EVM,
+        chain_id=1088,
         rpc_endpoints=["https://metis.api.pocket.network"],
-        native_currency="METIS", block_time_seconds=2.0,
+        native_currency="METIS",
+        block_time_seconds=2.0,
     ),
     "robinhood": ChainConfig(
         name="robinhood",

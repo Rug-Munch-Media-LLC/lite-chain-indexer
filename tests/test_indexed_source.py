@@ -47,9 +47,7 @@ def _topics(frm: str = WALLET40, to: str = TO40) -> str:
 
 def _source(rows: list[tuple[Any, ...]]) -> tuple[IndexedXyzSource, FakeConnection]:
     fake = FakeConnection(rows, COLS)
-    src = IndexedXyzSource(
-        endpoint="https://r2.example", access_key="k", secret_key="s", connect=lambda: fake
-    )
+    src = IndexedXyzSource(endpoint="https://r2.example", access_key="k", secret_key="s", connect=lambda: fake)
     return src, fake
 
 

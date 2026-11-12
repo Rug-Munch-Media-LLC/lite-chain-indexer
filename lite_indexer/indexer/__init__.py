@@ -214,8 +214,11 @@ class LiteIndexer(
         ndjson_enabled: bool | None = None,
         lazy_indexing: bool | None = None,
         traces_enabled: bool | None = None,
-        vector_ingestion: bool | None = None, nats_enabled: bool | None = None, webhook_enabled: bool | None = None,
-        state_dir: Path | str | None = None, demand_dir: Path | str | None = None,
+        vector_ingestion: bool | None = None,
+        nats_enabled: bool | None = None,
+        webhook_enabled: bool | None = None,
+        state_dir: Path | str | None = None,
+        demand_dir: Path | str | None = None,
     ) -> None:
         self.chain, self.batch_size, self.disk_cap = chain, batch_size, disk_cap
         self.dex_enabled = False

@@ -60,9 +60,7 @@ async def _logs_429(endpoint: str, resp: httpx.Response, attempt: int) -> None:
     await asyncio.sleep(wait)
 
 
-async def _logs_success(
-    endpoint: str, resp: httpx.Response
-) -> tuple[str, list[dict[str, Any]] | None]:
+async def _logs_success(endpoint: str, resp: httpx.Response) -> tuple[str, list[dict[str, Any]] | None]:
     """raise_for_status + decode + classify a non-429 getLogs response.
 
     Returns ``("ok", logs)`` for a list/null result and
@@ -113,9 +111,7 @@ async def _logs_exc(
             return ("range", None)
         _facade.record_endpoint_failure(ctx.endpoint)
         _facade._safe_record(_facade.record_rpc_outcome, ctx.endpoint, ok=False)
-    elif isinstance(
-        exc, (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError)
-    ):
+    elif isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.WriteError)):
         logger.debug(
             "rpc_connection_error",
             endpoint=ctx.endpoint[:40],

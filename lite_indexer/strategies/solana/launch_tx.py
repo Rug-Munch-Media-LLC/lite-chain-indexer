@@ -113,9 +113,7 @@ def _iso_timestamp(value: Any) -> str:
     return ""
 
 
-def _match_instruction(
-    ix: dict[str, Any], venue: VenueSpec, message_pubkeys: set[str]
-) -> _Match | None:
+def _match_instruction(ix: dict[str, Any], venue: VenueSpec, message_pubkeys: set[str]) -> _Match | None:
     """Match one instruction against one venue spec (see module docstring)."""
     if str(ix.get("programId") or "") != venue.program:
         return None
