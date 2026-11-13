@@ -67,27 +67,53 @@ def hook_path(explicit: str | None) -> Path | None:
     return None
 
 
-def _guarded(text: str, ref: str) -> bool:
-    """True when the hook only runs this script after checking it exists.
+def _strip_comments(text: str) -> str:
+    r"""Drop YAML comment lines before scanning.
 
-    `if [ -f scripts/x.py ]; then ... fi` cannot crash a push, so flagging it would be a
-    false positive — and a gate that cries wolf is one people learn to bypass. The check
-    is textual and deliberately simple: a guard must appear as `[ -f <ref> ]` or
-    `test -f <ref>` within the same run block. A conditional that merely LOOKS similar is
-    treated as unguarded, because a missed guard is a broken push and a false alarm is
-    only an annoyance.
+    MEASURED 2026-11-12: without this the gate reported 42 of 44 repos as broken, and the
+    largest single cause was PROSE. `lefthook.yml` explains each gate in a comment above
+    it, and those comments quote the very command they describe — `# bare
+    \`bash scripts/guard-destructive-git.sh\` died with exit 127` is documentation of a
+    bug that was fixed, not an invocation. Scanning it made the guard flag its own
+    changelog.
+
+    Only whole-line comments are removed. A trailing `# ...` after a `run:` value is left
+    alone, because a `#` inside a shell string is not a comment and guessing would drop
+    real commands.
+    """
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+def _guarded(text: str, ref: str) -> bool:
+    """True when the hook cannot be taken down by this script being absent.
+
+    A gate that cries wolf is one people learn to bypass, and MEASURED 2026-11-12 it cried
+    wolf 42 times out of 44 repos. Every one of those was a real guard that this function
+    failed to recognise, not a missing script. Four shapes, all of which leave the push
+    alive:
+
+        if [ -f scripts/x.py ]; then ... fi      plain existence check
+        test ! -f scripts/x.py || python3 ...    inverted check, runs only if present
+        if [ -f "$_c/scripts/x.py" ]; then       a PREFIXED path (another root's copy)
+        ... 2>/dev/null || true                  failure swallowed, exits 0
+
+    The `-f` patterns deliberately allow anything before the ref, because a guard checks a
+    path (`$_c/scripts/x.py`, `$_std/scripts/x.py`) at least as often as a bare relative
+    one. Erring towards "guarded" is correct here: this gate exists to catch a push that
+    dies before any verdict, and a guarded reference cannot do that.
     """
     name = ref.replace(".", r"\.")
     patterns = (
-        # an existence check: `if [ -f scripts/x.py ]` / `test -f scripts/x.py`
-        rf"\[\s*-f\s+{name}\s*\]",
-        rf"test\s+-f\s+{name}",
+        # `-f <anything>/scripts/x.py` — plain or prefixed, inside [ ] or after `test`.
+        rf"-f\s+[^\s\]]*{name}",
         # a failure SWALLOWED on the same line: `... 2>/dev/null || true` or `|| true`.
-        # A missing file then exits 0, so the push proceeds — the script may not run, but
-        # it cannot take the push down, which is the only thing this gate measures.
         rf"{name}[^\n]*\|\|[^\n]*true",
+        # the whole line already ends in `|| true`
+        rf"{name}[^\n]*\|\|\s*true\s*$",
     )
-    return any(re.search(pat, text) for pat in patterns)
+    return any(re.search(pat, text, re.MULTILINE) for pat in patterns)
 
 
 def referenced_scripts(hook: Path) -> tuple[list[str], list[str]]:
@@ -100,7 +126,7 @@ def referenced_scripts(hook: Path) -> tuple[list[str], list[str]]:
         text = hook.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return [], []
-    every = sorted(set(SCRIPT_REF.findall(text)))
+    every = sorted(set(SCRIPT_REF.findall(_strip_comments(text))))
     guarded = [r for r in every if _guarded(text, r)]
     return [r for r in every if r not in guarded], guarded
 
