@@ -65,9 +65,10 @@ def run_integrity_check_cli(args: argparse.Namespace) -> int:
         args: Parsed CLI args (``--chains``).
 
     Returns:
-        Process exit code (0 = clean, 1 = ClickHouse unavailable,
-        2 = gaps found).
+        Process exit code (0 = every chain fresh, 1 = ClickHouse
+        unavailable, 2 = at least one chain STALE).
     """
+    from lite_indexer.freshness_query import measure
     from lite_indexer.recovery import run_integrity_check, summarize_report
     from lite_indexer.strategies import SUPPORTED_CHAINS
 
@@ -79,12 +80,42 @@ def run_integrity_check_cli(args: argparse.Namespace) -> int:
 
     chains = [c.strip() for c in args.chains.split(",") if c.strip()]
     chain_types = {c: SUPPORTED_CHAINS.get(c, {}).get("type", "evm") for c in chains}
+
+    # 2026-11-16: pass/fail is TEMPORAL FRESHNESS, not block contiguity.
+    # Contiguity pits distinct blocks against the min..max block span, which a
+    # sampling indexer can never satisfy -- it read 1-25% on healthy chains and
+    # printed "gaps" every day until everyone ignored it, while ten chains went
+    # 20-24 days stale underneath. Freshness answers the question a user
+    # actually has: did this chain produce data today?
+    freshness = measure(ch_client, chains)
+    fresh_summary = freshness.summary()
+
+    # Contiguity is still reported (a badly under-sampled range is worth
+    # seeing) but it no longer decides anything.
     report = run_integrity_check(ch_client, chains, chain_types)
     summary = summarize_report(report)
-    out: dict[str, Any] = {"status": "ok" if summary["gap_count"] == 0 else "gaps_found", **summary}
+
+    stale = fresh_summary["stale"]
+    out: dict[str, Any] = {
+        "status": "stale_chains" if stale else "ok",
+        "stale_chains": stale,
+        "lagging_chains": fresh_summary["lagging"],
+        "freshness": fresh_summary,
+        **summary,
+    }
     out["chains"] = report
+    out["freshness_detail"] = {
+        c.chain: {
+            "newest_day": c.newest_day,
+            "days_stale": c.days_stale,
+            "rows_recent": c.rows_recent,
+            "status": c.status,
+            "detail": c.detail,
+        }
+        for c in freshness.chains.values()
+    }
     print(json.dumps(out, default=str))  # noqa: T201
-    return 0 if summary["gap_count"] == 0 else 2
+    return 0 if not stale else 2
 
 
 async def run_recover_cli(
