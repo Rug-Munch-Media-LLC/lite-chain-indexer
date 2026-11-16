@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import TYPE_CHECKING
 
 from lite_indexer.config import (
     BACKOFF_CAP,
@@ -40,7 +41,45 @@ from lite_indexer.rpc.ban_state import (  # re-exported for pool API compat
 from lite_indexer.rpc.budgets import budget_available
 from lite_indexer.rpc.capabilities import is_logs_capability_excluded
 
+if TYPE_CHECKING:
+    # Import for the annotation only: routing.health imports this module
+    # lazily, so a TYPE_CHECKING-only import keeps the cycle impossible.
+    from lite_indexer.rpc.routing.health import RpcCircuitBreaker
+
 logger = get_logger(__name__)
+
+# Explicit re-export surface. The ban-state helpers are imported into this
+# module for pool API compatibility and are part of its public surface: every
+# importer in the tree (rpc/__init__, routing/, verify, client, tests) reaches
+# them through ``lite_indexer.rpc.pool``, not directly through ``ban_state``.
+# Under ``no_implicit_reexport`` (mypy strict) a bare import does not make a
+# name re-exportable, so the surface is declared here rather than guessed at
+# each call site.
+__all__ = [
+    "BUDGET_EXHAUSTED_PENALTY",
+    "apply_endpoint_backoff",
+    "ban_endpoint",
+    "clear_ban_state",
+    "desperation_probe_due",
+    "force_probe_endpoint",
+    "get_best_endpoint",
+    "handle_rate_limit",
+    "is_endpoint_banned",
+    "is_endpoint_hard_banned",
+    "is_endpoint_soft_banned",
+    "least_banned_endpoint",
+    "load_ban_state",
+    "mark_desperation_probe",
+    "pool_fully_down",
+    "pool_rate_limited",
+    "probe_eligible_endpoints",
+    "record_endpoint_failure",
+    "record_endpoint_success",
+    "record_rate_limit",
+    "reset_selection_state",
+    "selection_counts",
+    "unban_endpoint",
+]
 
 # Penalty applied to an endpoint whose per-identity budget is pre-emptively
 # cooled. Matches the circuit-open penalty: the endpoint drops out of the
@@ -52,6 +91,11 @@ BUDGET_EXHAUSTED_PENALTY = 20000
 # Selection prefers the least-used half of the healthy set (so no endpoint
 # absorbs a chain) and uses P2C only as the latency tiebreak within it.
 _SELECTION_COUNTS: dict[str, int] = {}
+
+#: Per-PROVIDER selection counters (registrable domain). The limit we respect
+#: is per provider account, not per URL, so fairness has to be measured at the
+#: same granularity the provider meters -- see _select_fair.
+_PROVIDER_COUNTS: dict[str, int] = {}
 
 
 def _logs_capability_reprobe_due(endpoint: str) -> bool:
@@ -212,7 +256,11 @@ def force_probe_endpoint(endpoint: str) -> bool:
     """
     from lite_indexer.rpc.routing.seams import circuit_breaker
 
-    return circuit_breaker().force_probe(endpoint)
+    # circuit_breaker() is annotated ``-> Any`` because tests inject fakes
+    # through it; declaring the production type here is what makes the
+    # returned bool checked instead of trusting an Any.
+    breaker: RpcCircuitBreaker = circuit_breaker()
+    return breaker.force_probe(endpoint)
 
 
 def desperation_probe_due(endpoints: list[str], now: float | None = None) -> bool:
@@ -233,7 +281,8 @@ def desperation_probe_due(endpoints: list[str], now: float | None = None) -> boo
 
     if not endpoints:
         return False
-    return circuit_breaker().desperation_probe_due(endpoints[0], now=now)
+    breaker: RpcCircuitBreaker = circuit_breaker()
+    return breaker.desperation_probe_due(endpoints[0], now=now)
 
 
 def mark_desperation_probe(endpoints: list[str], now: float | None = None) -> None:
@@ -352,25 +401,66 @@ def get_best_endpoint(endpoints: list[str]) -> str:
 
 
 def _select_fair(healthy: list[str]) -> str:
-    """Fair-spread selection: least-used half of the healthy set, P2C tiebreak.
+    """Provider-aware fair-spread selection, P2C tiebreak.
 
-    The global load-distribution fix: instead of always handing the chain to
-    the lowest-latency (fastest) endpoint until it 429s, candidates are the
-    least-recently-chosen half of the healthy pool, and P2C picks within that
-    window by damped latency. The chosen endpoint's counter increments, so it
-    rotates out of the window and no endpoint can absorb a chain. P2C remains
-    the tiebreak, so latency still matters among equally-used peers.
+    WHY PROVIDER-AWARE (2026-11-16)
+        Rotation used to key on the endpoint URL only. That is the wrong
+        identity for the limit we are trying to respect: several endpoints of
+        one provider share ONE rate-limit bucket, so spreading across their
+        sibling URLs spreads nothing. Measured on this fleet, tenderly held 21
+        of our 111 endpoints and pocket 19, and those two absorbed 571 of 803
+        observed calls in 30 minutes while the provider emitted 702
+        `rpc_rate_limit_streak_softban` and 186 `provider_429_backoff` events
+        in two hours. Per-URL fairness was working exactly as designed and was
+        still the cause: 21 "different" endpoints were one account.
+
+    THE RULE
+        1. Rank PROVIDERS by how much traffic they have taken recently.
+        2. Admit only the least-used half of the providers.
+        3. Within that set, rank endpoint URLs by their own counters and P2C
+           the least-used half again, so a provider with many endpoints cannot
+           re-absorb the share it just gave up.
+        4. P2C (damped latency) remains the final tiebreak, so latency still
+           decides among peers that are equally used.
+
+    A provider whose endpoints all score equal cannot win by having more
+    siblings: the provider ranking happens BEFORE the endpoint ranking.
     """
+    from lite_indexer.rpc.ledger_keys import provider_id_for_endpoint
+
     if len(healthy) == 1:
         chosen = healthy[0]
-    else:
-        ordered = sorted(enumerate(healthy), key=lambda item: (_SELECTION_COUNTS.get(item[1], 0), item[0]))
-        window = max(2, (len(ordered) + 1) // 2)
-        candidates = [ep for _i, ep in ordered[:window]]
-        from lite_indexer.rpc.routing.seams import selector
+        _SELECTION_COUNTS[chosen] = _SELECTION_COUNTS.get(chosen, 0) + 1
+        pid = provider_id_for_endpoint(chosen)
+        _PROVIDER_COUNTS[pid] = _PROVIDER_COUNTS.get(pid, 0) + 1
+        return chosen
 
-        chosen = selector()(candidates)
+    # 1+2. least-used half of PROVIDERS, not of endpoints
+    by_provider: dict[str, list[str]] = {}
+    for ep in healthy:
+        by_provider.setdefault(provider_id_for_endpoint(ep), []).append(ep)
+    prov_rank = sorted(
+        by_provider.items(),
+        key=lambda kv: (_PROVIDER_COUNTS.get(kv[0], 0), kv[0]),
+    )
+    prov_window = max(1, (len(prov_rank) + 1) // 2)
+    admitted = [ep for _p, eps in prov_rank[:prov_window] for ep in eps]
+
+    # 3. least-used half of the admitted ENDPOINTS
+    ordered = sorted(
+        enumerate(admitted),
+        key=lambda item: (_SELECTION_COUNTS.get(item[1], 0), item[0]),
+    )
+    ep_window = max(2, (len(ordered) + 1) // 2)
+    candidates = [ep for _i, ep in ordered[:ep_window]]
+
+    # 4. latency tiebreak within equally-used peers
+    from lite_indexer.rpc.routing.seams import selector
+
+    chosen = selector()(candidates)
     _SELECTION_COUNTS[chosen] = _SELECTION_COUNTS.get(chosen, 0) + 1
+    pid = provider_id_for_endpoint(chosen)
+    _PROVIDER_COUNTS[pid] = _PROVIDER_COUNTS.get(pid, 0) + 1
     return chosen
 
 

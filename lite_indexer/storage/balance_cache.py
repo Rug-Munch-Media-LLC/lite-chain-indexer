@@ -84,7 +84,17 @@ FROM
         chain,
         token_address,
         address,
-        if(address = to_address, toInt128OrZero(value), -toInt128OrZero(value)) AS delta
+        -- 2026-11-16: evm_transfers.value became Nullable(String) (migration 024,
+        -- the lake preserves NULL rather than fabricating "0"). toInt128OrZero on a
+        -- Nullable returns Nullable, so sum(delta) was Nullable(Int128) and every
+        -- insert died with Code 349 'Cannot convert NULL value to non-Nullable type'
+        -- on holder_balances.balance -- stalling 11 of 21 chains for weeks.
+        -- A NULL value means the source does not know the amount; it moves no known
+        -- balance delta, so it contributes 0 to the accumulator rather than being
+        -- dropped (dropping would lose transfer_count) or fabricated as a real 0.
+        if(address = to_address,
+           toInt128OrZero(coalesce(value, '0')),
+           -toInt128OrZero(coalesce(value, '0'))) AS delta
     FROM
     (
         SELECT
@@ -122,7 +132,9 @@ async def ensure_balance_cache_table(ch_client: Any) -> bool:
         database is missing or privileges are insufficient.
     """
     try:
-        ch_client.execute(_HOLDER_BALANCES_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+        ch_client.execute(
+            _HOLDER_BALANCES_DDL
+        )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("balance_cache_table_ensured", table=CH_HOLDER_BALANCES_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort
@@ -377,7 +389,9 @@ async def ensure_holder_balances_mv(ch_client: Any) -> bool:
         True when the view exists (or was created), False otherwise.
     """
     try:
-        ch_client.execute(_HOLDER_BALANCES_MV_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+        ch_client.execute(
+            _HOLDER_BALANCES_MV_DDL
+        )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("holder_balances_mv_ensured", view=CH_HOLDER_BALANCES_MV)
         metrics_incr("holder_balances_mv_ready")
         return True
