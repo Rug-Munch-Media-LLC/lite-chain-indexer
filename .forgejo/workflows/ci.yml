@@ -174,8 +174,22 @@ jobs:
       - name: Semgrep community rules (BLOCKING on ERROR)
         run: |
           # Retry: --config auto fetches rules from semgrep.dev (network).
+          #
+          # 2026-11-16: --exclude-rule javascript.lang.security.detect-insecure-websocket
+          #   (the id repeats its own suffix: <ns>.<name>.<name>)
+          #   That rule is scoped to javascript but semgrep's `auto` config applies
+          #   it to .py files, where it fires on the STRING "ws://" in docstrings
+          #   and constants. A javascript rule cannot be a valid finding in a
+          #   Python file, so it is excluded rather than annotated: burning a
+          #   suppression on ten docstrings would hide a real JS finding later.
+          #
+          #   This check is REQUIRED by branch protection, and it was failing on
+          #   main for the same reason -- so no PR could ever merge.
           for i in 1 2 3; do
-            semgrep scan --config auto --severity=ERROR --error --quiet --exclude='.forgejo/' --exclude='.github/' --exclude='tests/' && break || { [ "$i" -eq 3 ] && exit 1; echo "semgrep attempt $i failed — retrying"; sleep 15; }
+            semgrep scan --config auto --severity=ERROR --error --quiet \
+              --exclude-rule 'javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket' \
+              --exclude='.forgejo/' --exclude='.github/' --exclude='tests/' \
+              && break || { [ "$i" -eq 3 ] && exit 1; echo "semgrep attempt $i failed — retrying"; sleep 15; }
           done
       - name: Gitleaks secret scan
         run: gitleaks detect --source . --no-banner --redact
