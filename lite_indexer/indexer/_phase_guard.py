@@ -10,10 +10,9 @@ RC-3: zero-write stall breaker — see :class:`ZeroWriteTracker`.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any
-
-import os
 
 from lite_indexer import metrics
 from lite_indexer.logging import get_logger
