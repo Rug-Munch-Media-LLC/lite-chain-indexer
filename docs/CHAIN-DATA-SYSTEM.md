@@ -132,7 +132,7 @@ The data is not the product. It feeds three consumers:
 
 **Entity labelling compounds.** Every trace we serve and every launch we index is another
 labelled edge. The label set only grows, and it grows for free as a side effect of data we
-were passing through anyway. That is the moat: Helius/Arkham/Nansen-level tracing built on
+were passing through anyway. That is the moat: commercial-grade tracing built on
 data we already hold, at ~zero marginal cost.
 
 Two rules follow, and they are not negotiable:
