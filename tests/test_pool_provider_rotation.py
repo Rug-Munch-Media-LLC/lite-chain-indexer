@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections import Counter
 
 import pytest
+
 from lite_indexer.rpc.ledger_keys import provider_id_for_endpoint
 from lite_indexer.rpc.pool import (
     _PROVIDER_COUNTS,
