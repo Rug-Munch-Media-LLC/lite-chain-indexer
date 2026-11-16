@@ -43,38 +43,25 @@ ORDER BY days_stale DESC
 """  # nosemgrep: formatted-sql-query -- identifiers are module constants
 
 
-def measure(ch_client: Any, chains: list[str] | None = None) -> FreshnessReport:
-    """Measure temporal freshness for every chain in the durable table.
+def _unavailable(
+    report: FreshnessReport, chains: list[str] | None, detail: str
+) -> FreshnessReport:
+    """Mark every requested chain ``unavailable`` with a reason.
 
-    Args:
-        ch_client: ClickHouse client exposing ``execute``.
-        chains: Optional subset; ``None`` audits every chain present.
-
-    Returns:
-        A :class:`FreshnessReport`. A query failure yields an empty report with
-        every requested chain marked ``unavailable`` rather than raising, so a
-        monitoring caller reports "cannot tell" instead of crashing.
+    Split out of :func:`measure` so the happy path and both failure paths each
+    stay inside the complexity budget (CCN 13 became 3x small functions).
     """
-    as_of = datetime.now(UTC).isoformat()
-    report = FreshnessReport(as_of=as_of)
+    for chain in chains or []:
+        report.chains[chain] = ChainFreshness(
+            chain=chain, status="unavailable", detail=detail
+        )
+    return report
 
-    if ch_client is None:
-        for chain in chains or []:
-            report.chains[chain] = classify(chain, None, None, 0).__class__(
-                chain=chain, status="unavailable", detail="clickhouse_unavailable"
-            )
-        return report
 
-    try:
-        rows = ch_client.execute(_ROWS_SQL)
-    except Exception as exc:  # noqa: BLE001 -- audit must never crash the timer
-        logger.warning("freshness_query_failed", error=str(exc)[:160])
-        for chain in chains or []:
-            report.chains[chain] = ChainFreshness(
-                chain=chain, status="unavailable", detail=str(exc)[:120]
-            )
-        return report
-
+def _collect(
+    report: FreshnessReport, rows: list[tuple[Any, ...]], chains: list[str] | None
+) -> FreshnessReport:
+    """Turn raw SQL rows into verdicts, then account for requested-but-absent chains."""
     seen: set[str] = set()
     for chain, newest_day, days_stale, rows_recent in rows:
         seen.add(chain)
@@ -84,14 +71,38 @@ def measure(ch_client: Any, chains: list[str] | None = None) -> FreshnessReport:
             int(days_stale) if days_stale is not None else None,
             int(rows_recent or 0),
         )
-
     # A chain that is configured but has never written a row is EMPTY, not
     # absent: silence is the failure, so it must appear in the report.
     for chain in chains or []:
         if chain not in seen:
             report.chains[chain] = classify(chain, None, None, 0)
-
     return report
+
+
+def measure(ch_client: Any, chains: list[str] | None = None) -> FreshnessReport:
+    """Measure temporal freshness for every chain in the durable table.
+
+    Args:
+        ch_client: ClickHouse client exposing ``execute``.
+        chains: Optional subset; ``None`` audits every chain present.
+
+    Returns:
+        A :class:`FreshnessReport`. A query failure yields a report with every
+        requested chain marked ``unavailable`` rather than raising, so a
+        monitoring caller reports "cannot tell" instead of crashing.
+    """
+    report = FreshnessReport(as_of=datetime.now(UTC).isoformat())
+
+    if ch_client is None:
+        return _unavailable(report, chains, "clickhouse_unavailable")
+
+    try:
+        rows = ch_client.execute(_ROWS_SQL)
+    except Exception as exc:  # noqa: BLE001 -- audit must never crash the timer
+        logger.warning("freshness_query_failed", error=str(exc)[:160])
+        return _unavailable(report, chains, str(exc)[:120])
+
+    return _collect(report, rows, chains)
 
 
 __all__ = ["FRESHNESS_COLUMN", "FRESHNESS_TABLE", "measure"]
