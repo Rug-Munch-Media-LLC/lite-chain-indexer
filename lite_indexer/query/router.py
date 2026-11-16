@@ -221,9 +221,14 @@ class QueryRouter:
         cold_rows: list[dict[str, Any]],
         from_block: int | None,
         to_block: int | None,
+        requested_rows: int | None = None,
     ) -> bool:
-        """Whether the free lake should be read for this range."""
-        return should_try_lake(ch_rows, cold_rows, from_block, to_block)
+        """Whether the free lake should be read for this range.
+
+        ``requested_rows`` is how many rows the caller asked for: a response with
+        fewer than that is a gap, and a gap is what the free lake is for.
+        """
+        return should_try_lake(ch_rows, cold_rows, from_block, to_block, requested_rows)
 
     # ── Filter helpers ───────────────────────────────────────────────
 
@@ -302,13 +307,16 @@ class QueryRouter:
         cold_rows = self._query_cold(req)
         merged = self._merge_rows(table, ch_rows, cold_rows, limit=limit)
 
-        # Consult the free lake whenever the cold tier is empty and the
-        # range is bounded — NOT only when the RPC-fallback predicate is
-        # already true. That predicate returns False for a bounded WIDE
-        # range, which is exactly the range the lake holds and RPC would
-        # refuse or charge for.
+        # Consult the free lake whenever the range is bounded AND the local
+        # tiers did not satisfy the request — NOT only when the RPC-fallback
+        # predicate is already true. That predicate returns False for a bounded
+        # WIDE range, which is exactly the range the lake holds and RPC would
+        # refuse or charge for. A PARTIAL fill is also a gap: `limit` is what the
+        # caller asked for, so fewer rows than that means the lake may have more.
         biglake_rows: list[dict[str, Any]] = []
-        if leg_enabled(self, "biglake", use_rpc) and self._should_try_lake(ch_rows, cold_rows, from_block, to_block):
+        if leg_enabled(self, "biglake", use_rpc) and self._should_try_lake(
+            ch_rows, cold_rows, from_block, to_block, requested_rows=limit
+        ):
             biglake_rows, self.last_read_truncated = await self._biglake_route(req)
             if biglake_rows:
                 merged = self._merge_rows(table, ch_rows, cold_rows, biglake_rows, limit=limit)

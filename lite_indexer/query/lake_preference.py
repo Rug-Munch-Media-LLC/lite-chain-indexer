@@ -18,6 +18,7 @@ def should_try_lake(
     cold_rows: list[dict[str, object]],
     from_block: int | None,
     to_block: int | None,
+    requested_rows: int | None = None,
 ) -> bool:
     """Return True when a free lake read is worth making.
 
@@ -32,6 +33,22 @@ def should_try_lake(
     A partially-filled narrow range still reaches the lake: the gap is real
     and the lake is free, so filling it costs no money.
     """
-    if ch_rows or cold_rows:
+    if from_block is None or to_block is None:
+        # No bounded range means no date partitions can be derived, so there is
+        # nothing for a date-partitioned lake to read.
         return False
-    return from_block is not None and to_block is not None
+
+    have = len(ch_rows) + len(cold_rows)
+    if have == 0:
+        return True
+
+    # 2026-11-16: A PARTIAL GAP MUST REACH THE LAKE.
+    # This used to return False as soon as ANY row was present, which is the
+    # commonest backfill shape: ClickHouse holds a few days of an 84-day range,
+    # so the range is neither empty nor complete. Treating "not empty" as "done"
+    # sent the entire remainder of the range to the PAID RPC leg — the free tier
+    # that holds exactly that history was skipped precisely when it had the most
+    # to offer. The caller passes how many rows it wanted; anything less than
+    # that is a gap the lake may fill.
+    requested = requested_rows if requested_rows is not None else have
+    return have < requested
