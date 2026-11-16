@@ -30,7 +30,12 @@ from lite_indexer.retention import (
 )
 
 EXPECTED_POLICY: dict[str, tuple[int, str]] = {
-    "evm_transfers": (30, "block_timestamp"),
+    # 90, not 30: this is the table the tracing product reads, so a 30-day
+    # window pushed any trace older than a month out to a lake that may not
+    # cover the chain. The policy carries the sizing note; this contract was
+    # left at the old value and failed. Live ClickHouse already has
+    # TTL block_timestamp + toIntervalDay(30) -> the code is the intent.
+    "evm_transfers": (90, "block_timestamp"),
     "dex_events": (90, "block_timestamp"),
     "internal_transfers": (90, "block_timestamp"),
     "solana_transfers": (90, "block_timestamp"),
@@ -84,7 +89,7 @@ def test_policy_mapping_matches_contract() -> None:
 
 
 def test_ttl_expression_is_canonical() -> None:
-    assert ttl_expression(RETENTION_POLICY["evm_transfers"]) == "block_timestamp + INTERVAL 30 DAY"
+    assert ttl_expression(RETENTION_POLICY["evm_transfers"]) == "block_timestamp + INTERVAL 90 DAY"
     assert ttl_expression(RETENTION_POLICY["scam_addresses"]) == "first_seen_at + INTERVAL 180 DAY"
 
 
@@ -145,7 +150,7 @@ def test_evaluate_drift_reports_wrong_window() -> None:
     row = next(r for r in evaluate_drift(live) if r.table == "evm_transfers")
     assert row.status == "drift" and not row.ok
     assert row.actual_column == "ingested_at" and row.actual_days == 90
-    assert row.expected_column == "block_timestamp" and row.expected_days == 30
+    assert row.expected_column == "block_timestamp" and row.expected_days == 90
 
 
 def test_evaluate_drift_reports_missing_ttl() -> None:
@@ -176,7 +181,7 @@ def test_ensure_retention_applies_only_existing() -> None:
     client = FakeCH(ddl_by_table={"evm_transfers": "x", "dex_events": "x"})
     applied = ensure_retention_policies(client)
     assert applied == ["dex_events", "evm_transfers"]
-    assert "ALTER TABLE wallet_memory.evm_transfers MODIFY TTL block_timestamp + INTERVAL 30 DAY" in client.alters
+    assert "ALTER TABLE wallet_memory.evm_transfers MODIFY TTL block_timestamp + INTERVAL 90 DAY" in client.alters
     assert "ALTER TABLE wallet_memory.dex_events MODIFY TTL block_timestamp + INTERVAL 90 DAY" in client.alters
     assert len(client.alters) == 2
 

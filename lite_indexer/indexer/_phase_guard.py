@@ -13,12 +13,27 @@ import asyncio
 import time
 from typing import Any
 
+import os
+
 from lite_indexer import metrics
 from lite_indexer.logging import get_logger
 
 logger = get_logger(__name__)
 
-RPC_PHASE_TIMEOUT_S = 300.0
+# 300 s in production: a real transfers/dex phase legitimately takes minutes on a
+# busy backfill range, and cutting it short would discard fetched progress.
+#
+# WHY IT IS ENV-TUNABLE (2026-11-16)
+#   It was a bare constant, so a test that wanted to exercise the timeout path had
+#   to sit through the real 300 s (or a real 60 s in practice). One such test
+#   (test_dex_phase_timeout_is_nonfatal_after_transfers) accounted for 63 of the
+#   suite's 146 seconds -- 43% of CI wall time for a single assertion about error
+#   handling. Hard-coded timing constants are a CI tax: they make the suite slow
+#   in proportion to how correct the production value is.
+#
+#   LITE_INDEXER_RPC_PHASE_TIMEOUT_S lets the suite set it to something tiny. The
+#   production default is unchanged, so behaviour is identical outside tests.
+RPC_PHASE_TIMEOUT_S = float(os.environ.get("LITE_INDEXER_RPC_PHASE_TIMEOUT_S", "300"))
 
 
 class PhaseTimeoutError(Exception):

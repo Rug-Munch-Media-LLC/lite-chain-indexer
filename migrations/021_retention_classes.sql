@@ -10,7 +10,7 @@
 --
 -- POLICY (single source of truth: lite_indexer/config/storage.py
 -- RETENTION_POLICY, mirrored in docs/CLICKHOUSE_RETENTION.md):
---   30d   evm_transfers            on block_timestamp  (volume hog; event time)
+--   90d   evm_transfers            on block_timestamp  (tracing reads this table)
 --   90d   dex_events               on block_timestamp
 --   90d   internal_transfers       on block_timestamp
 --   90d   solana_transfers         on block_timestamp
@@ -40,11 +40,20 @@
 -- table-level TTL metadata. TTL deletion is lazy (part merges), never
 -- synchronous.
 
--- ── 30-day class: the volume hog. Event-time TTL so backfills do not extend
---    retention. ReplacingMergeTree + partitioned ⇒ cheap partition drops.
+-- ── evm_transfers: 90 days, NOT 30.
+--
+-- This migration declared 30 while lite_indexer/config/storage.py (named in the
+-- header as the single source of truth) says 90, so the file contradicted the
+-- policy it claimed to mirror. 90 is the intent: evm_transfers is the table the
+-- tracing product reads, and a 30-day window pushed any trace older than a month
+-- out to a lake that may not cover the chain. The policy carries the sizing
+-- (90d ~= 12 GiB against 256 GiB free, 0.4% of headroom).
+--
+-- Event-time TTL so backfills do not extend retention. ReplacingMergeTree +
+-- partitioned => cheap partition drops.
 
 ALTER TABLE wallet_memory.evm_transfers
-    MODIFY TTL block_timestamp + INTERVAL 30 DAY;
+    MODIFY TTL block_timestamp + INTERVAL 90 DAY;
 
 -- ── 90-day event tables.
 

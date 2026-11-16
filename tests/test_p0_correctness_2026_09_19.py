@@ -58,10 +58,27 @@ async def test_deferred_getlogs_none_is_not_empty_list(monkeypatch):
 # ── RC-2 — every sync phase is time-bound ───────────────────────────────
 
 
-def test_phase_timeout_constant_exists():
-    from lite_indexer.indexer._phase_guard import RPC_PHASE_TIMEOUT_S
+def test_phase_timeout_default_is_300s():
+    """The PRODUCTION default must stay 300 s.
 
-    assert RPC_PHASE_TIMEOUT_S == 300.0
+    The value is env-tunable because the suite runs the timeout path against a
+    tiny value instead of waiting 300 s for real (one test was 43% of CI wall
+    time). That makes asserting the LIVE constant wrong -- conftest sets it low.
+    What must not regress is the default the daemon actually uses, so read the
+    default out of the source rather than trusting the imported value.
+    """
+    import os
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "lite_indexer" / "indexer" / "_phase_guard.py"
+    text = src.read_text(encoding="utf-8")
+    assert 'os.environ.get("LITE_INDEXER_RPC_PHASE_TIMEOUT_S", "300")' in text, (
+        "production phase timeout default changed: expected 300 s"
+    )
+    # And the override must actually take effect when set.
+    from lite_indexer.indexer import _phase_guard
+
+    assert float(os.environ.get("LITE_INDEXER_RPC_PHASE_TIMEOUT_S", "300")) == _phase_guard.RPC_PHASE_TIMEOUT_S
 
 
 class _StubState:
