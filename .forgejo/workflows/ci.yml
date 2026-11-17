@@ -183,11 +183,28 @@ jobs:
           #   Python file, so it is excluded rather than annotated: burning a
           #   suppression on ten docstrings would hide a real JS finding later.
           #
+          #   SAME CLASS, and the bigger one: python.sqlalchemy.security.
+          #   sqlalchemy-execute-raw-query was firing on 78 `client.execute(...)`
+          #   calls in a repo that does not depend on SQLAlchemy AT ALL
+          #   (`grep sqlalchemy pyproject.toml` -> 0, no imports anywhere). The
+          #   client is clickhouse_driver.Client, whose signature is
+          #   `execute(query, params=None, ...)` -- a SEPARATE params argument IS
+          #   the parameterization, and the SQLAlchemy rule cannot see that. It
+          #   matches the method NAME.
+          #
+          #   So 78 "blocking SQL injection" findings were a method-name collision.
+          #   They were previously suppressed with `# nosemgrep:
+          #   formatted-sql-query`, which names no real rule and therefore
+          #   suppressed nothing -- the code read as reviewed while the gate
+          #   stayed red. Excluded by rule id; the annotations are left in place
+          #   as the parameterization rationale a reader actually needs.
+          #
           #   This check is REQUIRED by branch protection, and it was failing on
-          #   main for the same reason -- so no PR could ever merge.
+          #   main for both reasons -- so no PR could ever merge.
           for i in 1 2 3; do
             semgrep scan --config auto --severity=ERROR --error --quiet \
               --exclude-rule 'javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket' \
+              --exclude-rule 'python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query' \
               --exclude='.forgejo/' --exclude='.github/' --exclude='tests/' \
               && break || { [ "$i" -eq 3 ] && exit 1; echo "semgrep attempt $i failed — retrying"; sleep 15; }
           done
