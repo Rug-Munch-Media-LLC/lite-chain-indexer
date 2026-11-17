@@ -52,6 +52,7 @@ __all__ = ["ERC20_TRANSFER_TOPIC", "SQDPortalError", "SQDSource"]
 
 logger = get_logger(__name__)
 
+
 class SQDPortalError(RuntimeError):
     """Raised when the Portal returns a non-retryable error."""
 
@@ -114,6 +115,13 @@ class SQDSource:
         "scroll": "scroll-mainnet",
         "linea": "linea-mainnet",
         "mantle": "mantle-mainnet",
+        # 2026-11-16: metis confirmed live on portal.sqd.dev by metadata probe
+        # (start_block 0, full history). It had NO free source anywhere: AWS
+        # sonarx carries base/arbitrum only and BigQuery has no metis dataset.
+        # solana and tron are deliberately NOT here: this map drives the EVM
+        # ERC-20 log-decode path, and both already have their own entries in
+        # DATASETS/DATASET_TYPES with non-EVM decoders.
+        "metis": "metis-mainnet",
     }
 
     #: Epoch → datetime helper (kept for backwards compatibility).

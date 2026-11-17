@@ -279,7 +279,17 @@ async def test_ensure_holder_balances_mv_ddl() -> None:
     assert "sum(delta) AS balance" in ddl
     assert "count() AS transfer_count" in ddl
     assert "arrayJoin([from_address, to_address]) AS address" in ddl
-    assert "toInt128OrZero(value)" in ddl
+    # 2026-11-16: value became Nullable(String) (migration 024, so the lake can
+    # preserve NULL rather than fabricate "0"). toInt128OrZero on a Nullable
+    # returns Nullable, so sum(delta) became Nullable(Int128) and the view could
+    # not write into holder_balances.balance Int128 -- every insert failed with
+    # Code 349 and 11 of 21 chains stalled for weeks. coalesce keeps the type
+    # non-nullable; a NULL amount adds no known delta but still counts.
+    assert "toInt128OrZero(coalesce(value, '0'))" in ddl
+    assert "toInt128OrZero(value)" not in ddl, (
+        "the MV must coalesce value: it is Nullable and toInt128OrZero would "
+        "propagate NULL into a non-nullable Int128 column"
+    )
     assert "GROUP BY chain, token_address, address" in ddl
 
 
