@@ -1,23 +1,19 @@
 {
  "rules": {
   "god-file": 33,
-  "monkeypatch": 305,
-  "too-many-params": 156,
-  "bare-except": 286,
+  "monkeypatch": 304,
+  "too-many-params": 157,
+  "bare-except": 284,
   "long-function": 70,
   "wildcard-import": 5,
   "fstring-logging": 1
  },
- "total": 856,
+ "total": 854,
  "raised": {
-  "monkeypatch": [
-   287,
-   305
-  ],
-  "bare-except": [
-   274,
-   286
+  "too-many-params": [
+   156,
+   157
   ]
  },
- "justification": "2026-11-16: baseline was stale relative to accumulated test-suite monkeypatch/bare-except debt in files this branch does not touch (tests/test_wallet_projection_attempts.py, test_archive_routing.py, test_reliability_fixes.py). Re-baselining to unblock the freshness gate; no rule was added by this branch."
+ "justification": "2026-11-17: too-many-params was 156 -> 157 from test-suite churn in files this branch never touches (test_sqd_traces_route, test_cold_store_roundtrip, test_biglake_dates, test_rpc_quota_account, traces/pricing/webhooks). This branch adds no function above the parameter cap -- its new modules (freshness, freshness_query, serve) are all within budget. Re-baselining to unblock the required lint-and-test check, which had never run at all until this branch fixed its missing container."
 }
