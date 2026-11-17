@@ -32,15 +32,30 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+    container:
+      # 2026-11-17: this job had NO container, so actions/setup-python ran on the
+      # bare runner, where the toolcache has no Python at all:
+      #   ::error::The version '3.11' with architecture 'x64' was not found
+      #   ::error::The version '3.12' with architecture 'x64' was not found
+      # Both matrix legs therefore died at STEP 4 -- before checkout installed
+      # anything and before a single test ran. The suite was never the reason
+      # this check failed; it could not start.
+      #
+      # The image provides the interpreter, so the version is selected by the
+      # matrix tag rather than downloaded. Same approach as the sast job.
+      image: nikolaik/python-nodejs:python${{ matrix.python-version }}-nodejs22
 
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+      - name: Show interpreter
+        # Replaces actions/setup-python: the container already has the exact
+        # version from the matrix tag. Proving it here means a future image
+        # change fails loudly instead of silently testing the wrong Python.
+        run: |
+          python3 --version
+          python3 -c 'import sys; want = "${{ matrix.python-version }}"; got = "%d.%d" % sys.version_info[:2]; assert got == want, f"image provides {got}, matrix wants {want}"'
 
       - name: Install package + dev deps
         # dev alone cannot run this suite: the tests import fastapi (26x),
