@@ -219,16 +219,23 @@ class QueryRouter:
         self,
         ch_rows: list[dict[str, Any]],
         cold_rows: list[dict[str, Any]],
-        from_block: int | None,
-        to_block: int | None,
-        requested_rows: int | None = None,
+        req: Any,
     ) -> bool:
-        """Whether the free lake should be read for this range.
+        """Whether the free lake should be read for this request.
 
-        ``requested_rows`` is how many rows the caller asked for: a response with
-        fewer than that is a gap, and a gap is what the free lake is for.
+        The request carries its own bounds AND its appetite (``req.limit``): a
+        response with fewer rows than the caller asked for is a gap, and a gap is
+        what the free lake is for. Passing the request instead of five scalars
+        keeps this the same shape as the other leg predicates — and under the
+        structure gate's param ceiling.
         """
-        return should_try_lake(ch_rows, cold_rows, from_block, to_block, requested_rows)
+        return should_try_lake(
+            ch_rows,
+            cold_rows,
+            getattr(req, "from_block", None),
+            getattr(req, "to_block", None),
+            getattr(req, "limit", None),
+        )
 
     # ── Filter helpers ───────────────────────────────────────────────
 
@@ -314,9 +321,7 @@ class QueryRouter:
         # refuse or charge for. A PARTIAL fill is also a gap: `limit` is what the
         # caller asked for, so fewer rows than that means the lake may have more.
         biglake_rows: list[dict[str, Any]] = []
-        if leg_enabled(self, "biglake", use_rpc) and self._should_try_lake(
-            ch_rows, cold_rows, from_block, to_block, requested_rows=limit
-        ):
+        if leg_enabled(self, "biglake", use_rpc) and self._should_try_lake(ch_rows, cold_rows, req):
             biglake_rows, self.last_read_truncated = await self._biglake_route(req)
             if biglake_rows:
                 merged = self._merge_rows(table, ch_rows, cold_rows, biglake_rows, limit=limit)
