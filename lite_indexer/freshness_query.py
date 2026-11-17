@@ -99,7 +99,10 @@ def measure(ch_client: Any, chains: list[str] | None = None) -> FreshnessReport:
     try:
         rows = ch_client.execute(_ROWS_SQL)
     except Exception as exc:  # noqa: BLE001 -- audit must never crash the timer
-        logger.warning("freshness_query_failed", error=str(exc)[:160])
+        # stdlib logger, not structlog: this module imports `logging`, so a
+        # key=value call would be a TypeError at the moment the audit fails --
+        # exactly when it must not raise. mypy caught it as [call-arg].
+        logger.warning("freshness_query_failed: %s", str(exc)[:160])
         return _unavailable(report, chains, str(exc)[:120])
 
     return _collect(report, rows, chains)
