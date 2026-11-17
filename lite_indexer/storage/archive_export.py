@@ -142,8 +142,28 @@ def export_unit(spec: TableSpec, unit: Unit) -> dict:
         part = Path(tmp) / "part-000.parquet"
         ch_parquet(f"SELECT {cols} FROM {DB}.{spec.table} WHERE {pred}{order}", part)
         got = parquet_count(part)
-        if got != unit.rows:
-            raise RuntimeError(f"row mismatch {unit.chain}/{spec.table}/{unit.day}: ch={unit.rows} parquet={got}")
+
+        # 2026-11-17: compare against a count taken AT EXPORT TIME, not the one
+        # discover_units measured earlier.
+        #
+        # unit.rows is captured when the (chain, day) units are enumerated; the
+        # Parquet is written seconds-to-minutes later. Any day that is STILL
+        # INGESTING therefore drifts between the two reads, and the check fires:
+        #     blast/evm_transfers/2026-11-17   ch=1643 parquet=1664
+        #     gnosis/evm_transfers/2026-10-27  ch=483965 parquet=486773
+        #     tron/evm_transfers/2026-10-28    ch=24676 parquet=25276
+        # Verified: those days kept growing while the export ran (blast was 1761
+        # by the time this was investigated). The archive was CORRECT every time;
+        # the reference number was stale.
+        #
+        # The check exists to catch a truncated write, so it must compare the
+        # Parquet against ClickHouse AS IT WAS when that Parquet was produced.
+        now_rows = int(ch(f"SELECT count() FROM {DB}.{spec.table} WHERE {pred}").strip() or 0)
+        if got != now_rows:
+            raise RuntimeError(
+                f"row mismatch {unit.chain}/{spec.table}/{unit.day}: "
+                f"exported={got} ch_now={now_rows} ch_at_discovery={unit.rows}"
+            )
         digest = hashlib.md5(part.read_bytes(), usedforsecurity=False).hexdigest()  # noqa: S324 — integrity, not auth
         size = part.stat().st_size
         upload(part, f"{key_dir}/part-000.parquet")
