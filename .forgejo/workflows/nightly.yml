@@ -15,6 +15,9 @@ concurrency:
 jobs:
   public-leak-gate:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -26,6 +29,9 @@ jobs:
   # Every failure mode now has a scenario test; the suite must stay green.
   coverage-gate:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -87,6 +93,9 @@ jobs:
   # ── Docstring coverage ───────────────────────────────────────────────
   docstring-coverage:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -114,6 +123,9 @@ jobs:
 # Append these jobs under `jobs:` in any repo's ci.yml. Self-contained.
   supply-chain:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 25
     container:
       image: nikolaik/python-nodejs:python3.11-nodejs22
     steps:
@@ -141,6 +153,9 @@ jobs:
   nightly-deep-scan:
     if: ${{ github.event_name == 'schedule' }}
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 60
     container:
       image: nikolaik/python-nodejs:python3.11-nodejs22
     steps:
@@ -165,6 +180,9 @@ jobs:
   # ── SAST + secret scan (added 2026-08-25 — fleet-standard gates) ──
   container-scan:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 15
     container:
       # node image: checkout@v4 is a node20 action (trivy image had no node).
       image: node:22-bookworm-slim
@@ -185,6 +203,9 @@ jobs:
   # is never clobbered.
   changelog:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -197,6 +218,9 @@ jobs:
   # ── SBOM (CycloneDX) ─────────────────────────────────────────────
   sbom:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Generate SBOM (CycloneDX)
@@ -212,6 +236,9 @@ jobs:
   # ── Keyless image signing (Cosign) ────────────────────────────────
   sign-image:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 25
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Install Cosign
@@ -259,6 +286,9 @@ jobs:
   # intentionally not enforced — historic noise, not correctness.
   migration-sql-lint:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 15
     container:
       image: nikolaik/python-nodejs:python3.11-nodejs22
     steps:
@@ -286,6 +316,9 @@ jobs:
   # ── Dependency vulnerability audit (pip-audit) ─────────────────
   pip-audit:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 25
     container:
       image: nikolaik/python-nodejs:python3.12-nodejs22
     steps:
@@ -320,6 +353,9 @@ jobs:
   # Regenerate deliberately: --update-baseline.
   structure-gate:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 25
     container:
       image: nikolaik/python-nodejs:python3.11-nodejs22
     steps:
@@ -329,6 +365,9 @@ jobs:
 
   mutation-test:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 60
     continue-on-error: true  # informational only for now
     container:
       image: nikolaik/python-nodejs:python3.11-nodejs22
