@@ -29,6 +29,8 @@ from lite_indexer.cli._backfill_parsers import add_backfill_parsers
 from lite_indexer.cli._bootstrap import run_bootstrap_cli
 from lite_indexer.cli._bootstrap_parsers import add_bootstrap_parsers
 from lite_indexer.cli._daemon import main_daemon
+from lite_indexer.cli._entities import run_entities
+from lite_indexer.cli._entities_parsers import add_entities_parsers
 from lite_indexer.cli._export import run_export_parquet
 from lite_indexer.cli._export_parsers import add_export_parsers
 from lite_indexer.cli._integrity import run_integrity_check_cli, run_reconcile_cli, run_recover_cli
@@ -57,6 +59,7 @@ __all__ = [
     "run_backfill_dex_prices",
     "run_backfill_whales",
     "run_bootstrap_cli",
+    "run_entities",
     "run_export_parquet",
     "run_integrity_check_cli",
     "run_lake_command",
@@ -180,6 +183,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_integrity_parsers(sub)
     add_attest_parsers(sub)
     add_export_parsers(sub)
+    add_entities_parsers(sub)
     add_backfill_parsers(sub)
     add_bootstrap_parsers(sub)
     add_query_parsers(sub)
@@ -197,6 +201,10 @@ async def async_main(args: argparse.Namespace) -> int:
     # ── export-parquet subcommand ────────────────────────────────────
     if args.command == "export-parquet":
         return run_export_parquet(args)
+
+    # ── entities subcommand (wallet-entity clustering) ───────────────
+    if args.command == "entities":
+        return run_entities(args)
 
     if args.command and args.command.startswith(("lake-", "sqd-", "fill-", "orphan-")):
         return run_lake_command(args)  # lake/sqd/fill + orphan-sweep
