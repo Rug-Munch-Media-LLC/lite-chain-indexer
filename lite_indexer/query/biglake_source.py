@@ -11,7 +11,8 @@ Coverage (v1): ``ethereum`` only.
 * ``token_transfers`` → ``evm_transfers`` row shape
 * ``traces``          → ``internal_transfers`` row shape
 
-``btc/`` exists in the lake but is not mapped yet.
+``btc/`` is mapped separately by :mod:`lite_indexer.query.btc_source`
+(UTXO shape — see :mod:`lite_indexer.query.btc_rowmap` for the lossy parts).
 
 Scope: reads are bounded by ``date=`` partitions. Pass explicit
 ``dates`` (``["2026-09-12", ...]``) for exact days, or rely on
