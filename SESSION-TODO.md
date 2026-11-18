@@ -105,3 +105,34 @@ yet.**
 - **`blockscout.com` returns HTML**, not JSON-RPC, on every chain.
 - **`backfill-evm-hours.py` sources from ClickHouse**, so it is a ~30-day tool,
   not a 90-day one.
+
+---
+
+## CI status (2026-11-18, verified locally with CI's own invocation)
+
+| gate | state |
+|---|---|
+| `ruff check .` | **PASS** |
+| `check-structure.py` | **PASS** |
+| `check-public-no-freemium.py` | **PASS** |
+| `pytest -m 'not smoke'` | **2729 passed, 0 failed** |
+| `lint-imports` | **PASS** |
+| `check-antipatterns.py` | FAIL — `bare-except 295 (baseline 284)` |
+| `check-monkeypatch.py` | FAIL — `86 (baseline 85)` |
+
+**Both remaining failures are pre-existing on `origin/main`**, verified by running
+the same gates on a clean `origin/main` checkout. They are decrease-only
+ratchets and the delta arrived through the merge that brought this branch level
+with main (110 files, none of them the archive package).
+
+**Do not bump either baseline.** A decrease-only ratchet is bumped only by
+fixing occurrences. `--update-baseline` here would launder 11 bare-except and 1
+monkeypatch into permanent debt, which is the failure mode those gates exist to
+prevent.
+
+The archive package contributes **zero** to both counters (verified: 0
+`monkeypatch`, 0 `except:` in `lite_indexer/archive/*.py`).
+
+To fix them properly: `python3 scripts/check-antipatterns.py --top 40` lists the
+`bare-except` sites by file; each needs a specific exception type. That is real
+work in code this branch does not own, and should be its own commit.
