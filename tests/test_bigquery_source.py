@@ -172,7 +172,12 @@ def test_missing_columns_map_to_defaults(tmp_path: Any) -> None:
     r = out[0]
     assert r["block_timestamp"] is None
     assert r["from_address"] == ""
-    assert r["value"] == "0"
+    # A missing `value` must stay None, NOT "0". A fabricated zero is
+    # indistinguishable from a real zero-value transfer and silently corrupts
+    # balances and volume — see the docstring in lite_indexer/lake_numbers.py
+    # and commit 5fe57f764 "preserve NULL values end-to-end", which made this
+    # deliberate and simply never updated this assertion.
+    assert r["value"] is None
 
 
 # ── Registry quota fields ────────────────────────────────────────────

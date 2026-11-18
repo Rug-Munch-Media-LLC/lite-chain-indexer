@@ -344,6 +344,11 @@ class TestPoolWideOutage:
 
         from lite_indexer.rpc import capabilities as caps
 
+        # CAPABILITY_REPROBE_INTERVAL moved to capability_constants when that
+        # module was split out; capabilities re-exports the FUNCTION but not the
+        # constant, so the test reached through the old path and got AttributeError.
+        from lite_indexer.rpc.capability_constants import CAPABILITY_REPROBE_INTERVAL
+
         stale = "https://stale-incapable.invalid"
         fresh = "https://fresh-incapable.invalid"
         records = {
@@ -351,7 +356,7 @@ class TestPoolWideOutage:
                 endpoint=stale,
                 chain="celo",
                 logs_capable=False,
-                probed_at=_time.time() - caps.CAPABILITY_REPROBE_INTERVAL - 1,
+                probed_at=_time.time() - CAPABILITY_REPROBE_INTERVAL - 1,
             ),
             fresh: caps.CapabilityRecord(
                 endpoint=fresh,
@@ -370,13 +375,18 @@ class TestPoolWideOutage:
 
         from lite_indexer.rpc import capabilities as caps
 
+        # CAPABILITY_REPROBE_INTERVAL moved to capability_constants when that
+        # module was split out; capabilities re-exports the FUNCTION but not the
+        # constant, so the test reached through the old path and got AttributeError.
+        from lite_indexer.rpc.capability_constants import CAPABILITY_REPROBE_INTERVAL
+
         eps = ["https://s1.invalid", "https://s2.invalid"]
         records = {
             ep: caps.CapabilityRecord(
                 endpoint=ep,
                 chain="celo",
                 logs_capable=False,
-                probed_at=_time.time() - caps.CAPABILITY_REPROBE_INTERVAL - 1,
+                probed_at=_time.time() - CAPABILITY_REPROBE_INTERVAL - 1,
             )
             for ep in eps
         }
@@ -388,6 +398,10 @@ class TestPoolWideOutage:
         import time as _time
 
         from lite_indexer.rpc import capabilities as caps
+
+        # CAPABILITY_REPROBE_INTERVAL moved to capability_constants when that
+        # module was split out; capabilities re-exports the FUNCTION but not the
+        # constant, so the test reached through the old path and got AttributeError.
 
         fresh = "https://fresh-incapable.invalid"
         records = {
