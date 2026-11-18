@@ -78,11 +78,11 @@ def _is_structurally_one_unit(rel: str, facts: dict) -> bool:
 
 def _structure(rel: str) -> dict:
     """Structural facts for one repo-relative path, or {} when unreadable."""
-    from pathlib import Path as _P
+    from pathlib import Path
 
     import structure_metrics as sm
 
-    here = _P(__file__).resolve().parent
+    here = Path(__file__).resolve().parent
     for base in (here.parent, here.parent.parent):
         candidate = base / rel
         if candidate.is_file():

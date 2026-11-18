@@ -139,10 +139,9 @@ def _superseded(repo: Path, branch: str) -> bool:
     rc, out = git(repo, "cherry", "main", branch)
     if rc != 0:
         return False
-    for line in out.splitlines():
-        if line.startswith("+"):
-            return False
-    return True
+    # SIM110: a "+" line is a commit main does NOT have, so any one means the
+    # branch is not fully landed. `all()` says that without the loop.
+    return all(not line.startswith("+") for line in out.splitlines())
 
 
 def _count(repo: Path, args: list[str]) -> int:
