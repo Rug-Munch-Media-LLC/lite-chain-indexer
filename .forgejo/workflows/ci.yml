@@ -28,6 +28,9 @@ concurrency:
 jobs:
   lint-and-test:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -139,6 +142,9 @@ jobs:
   # only — no dependencies required.
   script-tests:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -161,6 +167,9 @@ jobs:
   # must live in THIS workflow (name: CI) and run on pull_request.
   structure-gate:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -172,6 +181,9 @@ jobs:
   # Smoke-marked tests need live ClickHouse/RPC endpoints and are excluded.
   sast:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 60
     container:
       # python+node: checkout@v4 is a node20 action (python:3.12-slim has no node).
       image: nikolaik/python-nodejs:python3.12-nodejs22
@@ -229,6 +241,9 @@ jobs:
   # ── Dockerfile linting (hadolint) ─────────────────────────────────
   docker-lint:
     runs-on: docker-x64
+    # Bounded on purpose — an uncapped job waits on the runner default,
+    # which is how a hung worker reads as a 20-minute suite (2026-11-18).
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
