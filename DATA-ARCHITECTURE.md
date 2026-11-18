@@ -67,23 +67,33 @@ delete the only copy.
 **Measured capability matrix, 2026-11-18** — largest `eth_getLogs` span that
 returned a `result`, per provider per chain:
 
-| provider | span | notes |
-|---|---|---|
-| tenderly | **2000** | 11 chains |
-| ankr | 2000 | 6 chains; **DEAD** on eth/optimism/linea/zksync |
-| thirdweb | **1000** | 15/15 chains (celo 50, fantom 50, gnosis 200) |
-| drpc | 50 | **0** (no getLogs) on avalanche/zksync/bsc/mantle |
-| blockpi | 1000 | ethereum only |
-| alchemy | **10** | every chain it answers. 3 keys multiply RATE, never RANGE |
-| infura / 1rpc | **DEAD** | 401 / paid-only upsell |
+Provider names, per-account keys, tier lists and verified rate caps are **not
+listed here on purpose**. The public tree ships free/keyless endpoints plus a
+private overlay extension point (`LITE_INDEXER_ENDPOINT_OVERLAY`); the curated
+freemium stack lives in the runtime overlay at
+`/data/lite-indexer-endpoints.json` and never enters git.
+`scripts/check-public-no-freemium.py` enforces that, and it is right to.
+
+What matters for design, and is measurable without naming anyone:
+
+- Measured `eth_getLogs` span ranged from **0 to 2000 blocks** across the
+  curated tiers. One tier answered `eth_blockNumber` but rejected every
+  `eth_getLogs` — it is a block/timestamp provider, not a log provider.
+- A slice is 200 blocks chunked at 50, so **any endpoint below a 50-block span
+  can never complete a DEX chunk**. Retrying it burns the slice budget until
+  `slices_done=0` while the pool still looks healthy. That froze 8 of 21 chains.
+- Three keys of one provider multiply **rate**, never **range**.
+- Passing `--threads`/batch tuning, provider budgets and span per chain are all
+  recorded in the private overlay and the generated
+  `docs/RPC-CAPABILITY-MATRIX.md` (which names tiers by span, not by account).
 
 **Rules that came from measurement:**
 - **Never put a sub-chunk endpoint in a DEX leg list.** A slice is 200 blocks
   chunked at 50; an endpoint capped at 10 can never complete a chunk, and
   retrying it burns the slice budget until `slices_done=0` while the pool still
   looks healthy. That exact failure froze 8 of 21 chains.
-- **rps=3, not the advertised tier.** rps=10 soft-banned thirdweb within minutes
-  (62 of 81 softban events on `56.rpc.` and `100.rpc.thirdweb.com`; 439
+- **rps=3, not the advertised tier.** rps=10 soft-banned a curated tier within minutes
+  (62 of 81 softban events on `56.rpc.` and `100.rpc.a curated tier.com`; 439
   `all_endpoints_down`). The advertised number is where throttling *starts*.
 - **Pacing is per KEY, quota is per ACCOUNT.** N keys of one provider give N rate
   buckets but do NOT multiply the daily budget. Rotation cannot silently spend.
@@ -134,7 +144,7 @@ available tier — treat it as a fallback, not a default.
 
 ---
 
-## 7. Parity with Helius / Arkham-class providers
+## 7. Parity with a curated tier / Arkham-class providers
 
 Their advantage is breadth (every token, every wallet, precomputed) and a
 retained history. Ours is that we own the data and the archive.
@@ -179,6 +189,6 @@ archive gives us and what their API charges for.
 - "BigLake covers all chains." It does not — `v1.0/` holds only `btc/` and `eth/`.
   The all-chain sources are **Subsquid** and **Envio**.
 - "ClickHouse is our history." It is ~30 days. B2 is the history.
-- "Alchemy gives us span because we have 3 keys." Keys multiply rate, not range.
+- "a curated tier gives us span because we have 3 keys." Keys multiply rate, not range.
 - "The rule is deployed because it merged." `/etc/prometheus/rules/` is
   `chattr +i` and drifted 25 days; check `api/v1/rules`.
