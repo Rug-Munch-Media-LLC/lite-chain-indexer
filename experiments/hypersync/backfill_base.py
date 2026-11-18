@@ -8,6 +8,7 @@ never rewrites an existing partition (append-only).
 Usage:
     ENVIO_API_TOKEN=<token> python backfill_base.py --days 7
 """
+
 from __future__ import annotations
 
 import argparse
@@ -108,11 +109,7 @@ def write_partition(rows: list[dict], out_root: Path) -> list[tuple[str, int, in
     buckets: dict[str, list[dict]] = {}
     for r in rows:
         ts = r["block_timestamp"]
-        day = (
-            datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d")
-            if ts
-            else "unknown-date"
-        )
+        day = datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%d") if ts else "unknown-date"
         buckets.setdefault(day, []).append(r)
 
     written: list[tuple[str, int, int]] = []
@@ -121,17 +118,14 @@ def write_partition(rows: list[dict], out_root: Path) -> list[tuple[str, int, in
         part_dir = out_root / CHAIN / day
         part_dir.mkdir(parents=True, exist_ok=True)
         path = part_dir / f"transfers-{stamp}-{len(day_rows)}.parquet"
-        pq.write_table(pa.Table.from_pylist(day_rows, schema=SCHEMA), path,
-                       compression="zstd")
+        pq.write_table(pa.Table.from_pylist(day_rows, schema=SCHEMA), path, compression="zstd")
         written.append((str(path), len(day_rows), path.stat().st_size))
     return written
 
 
 async def _bootstrap(client: hypersync.HypersyncClient) -> tuple[int, int]:
     """Fetch chain height + chain id (both async in hypersync 1.2.x)."""
-    height, chain_id = await asyncio.gather(
-        client.get_height(), client.get_chain_id()
-    )
+    height, chain_id = await asyncio.gather(client.get_height(), client.get_chain_id())
     return int(height), int(chain_id)
 
 
@@ -147,9 +141,7 @@ def main() -> int:
         )
         return 2
 
-    client = hypersync.HypersyncClient(
-        hypersync.ClientConfig(url=ENDPOINT, api_token=token)
-    )
+    client = hypersync.HypersyncClient(hypersync.ClientConfig(url=ENDPOINT, api_token=token))
     try:
         height, chain_id = asyncio.run(_bootstrap(client))
     except Exception as exc:
@@ -189,7 +181,7 @@ def main() -> int:
                 rows += 1
             q.from_block = res.next_block
             while len(buf) >= args.rows_per_file:
-                chunk, buf = buf[: args.rows_per_file], buf[args.rows_per_file:]
+                chunk, buf = buf[: args.rows_per_file], buf[args.rows_per_file :]
                 w = write_partition(chunk, args.out)
                 files.extend(w)
                 total_bytes += sum(x[2] for x in w)
@@ -233,9 +225,7 @@ def main() -> int:
     if days_per_sec > 0:
         report["projected_90d_hours"] = round(90 / days_per_sec / 3600, 2)
         report["projected_90d_rows"] = int(rps * 90 / days_per_sec)
-        report["projected_90d_gb"] = round(
-            (total_bytes / days_done) * 90 / 1e9, 2
-        )
+        report["projected_90d_gb"] = round((total_bytes / days_done) * 90 / 1e9, 2)
 
     try:
         report["rate_limit_info"] = str(client.rate_limit_info())

@@ -480,9 +480,7 @@ class AddressBackfill:
         result.provider = final_provider
         result.signatures = len(sig_infos)
         result.rows_written = written
-        logger.info(
-            "address_backfill_done", chain=chain, address=addr[:12], provider=final_provider, rows=written
-        )
+        logger.info("address_backfill_done", chain=chain, address=addr[:12], provider=final_provider, rows=written)
         return result
 
 

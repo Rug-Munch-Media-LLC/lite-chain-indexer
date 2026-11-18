@@ -149,12 +149,7 @@ async def trace_wallet(
                 notes.append("evm transfers: Envio token missing (ENVIO_RPC_TOKEN)")
 
         # ── Envio traces (bounded window) ────────────────────────────
-        if (
-            include_traces
-            and chain in EnvioSource.TRACES_CHAINS
-            and from_block is not None
-            and to_block is not None
-        ):
+        if include_traces and chain in EnvioSource.TRACES_CHAINS and from_block is not None and to_block is not None:
             window = min(int(trace_window), to_block - from_block + 1)
             if window <= 0:
                 notes.append("traces: empty range")
@@ -164,9 +159,7 @@ async def trace_wallet(
                 traced = 0
                 for block_number in range(start, start + window):
                     try:
-                        block_rows = await asyncio.to_thread(
-                            envio.block_traces_rows, chain, block_number
-                        )
+                        block_rows = await asyncio.to_thread(envio.block_traces_rows, chain, block_number)
                     except Exception as exc:  # noqa: BLE001
                         notes.append(f"traces block {block_number} failed: {str(exc)[:80]}")
                         continue
@@ -180,9 +173,7 @@ async def trace_wallet(
     # ── Solana (SQD instructions mentioning the owner) ───────────────
     elif chain == "solana":
         if sqd.available() and from_block is not None and to_block is not None:
-            sol_rows = await asyncio.to_thread(
-                sqd.solana_owner_activity, address, from_block, to_block, limit=limit
-            )
+            sol_rows = await asyncio.to_thread(sqd.solana_owner_activity, address, from_block, to_block, limit=limit)
             rows.extend(_envelope("sqd", "instruction", r) for r in sol_rows)
         else:
             notes.append("solana: from/to slot range required (and SQD available)")
@@ -190,13 +181,9 @@ async def trace_wallet(
     # ── Tron (SQD TRC-20 + native internals) ─────────────────────────
     elif chain == "tron":
         if sqd.available() and from_block is not None and to_block is not None:
-            trc20 = await asyncio.to_thread(
-                sqd.tron_trc20_transfers, address, from_block, to_block, limit=limit
-            )
+            trc20 = await asyncio.to_thread(sqd.tron_trc20_transfers, address, from_block, to_block, limit=limit)
             rows.extend(_envelope("sqd", "transfer", r) for r in trc20)
-            internal = await asyncio.to_thread(
-                sqd.tron_internal_transfers, address, from_block, to_block, limit=limit
-            )
+            internal = await asyncio.to_thread(sqd.tron_internal_transfers, address, from_block, to_block, limit=limit)
             rows.extend(_envelope("sqd", "internal_transfer", r) for r in internal)
         else:
             notes.append("tron: from/to block range required (and SQD available)")
@@ -204,9 +191,7 @@ async def trace_wallet(
     # ── Hyperliquid (SQD fills) ──────────────────────────────────────
     elif chain == "hyperliquid":
         if sqd.available() and from_block is not None and to_block is not None:
-            fills = await asyncio.to_thread(
-                sqd.hyperliquid_owner_fills, address, from_block, to_block, limit=limit
-            )
+            fills = await asyncio.to_thread(sqd.hyperliquid_owner_fills, address, from_block, to_block, limit=limit)
             rows.extend(_envelope("sqd", "fill", r) for r in fills)
         else:
             notes.append("hyperliquid: from/to fill-block range required")

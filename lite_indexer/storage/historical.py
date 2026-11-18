@@ -123,9 +123,7 @@ class HistoricalAccess(HistoricalAccessSQL, HistoricalAccessQuery, HistoricalAcc
     def _check_table(self, table: str) -> str:
         """Validate a logical table name against the supported set."""
         if table not in self.AVAILABLE_TABLES:
-            raise ValueError(
-                f"unknown table '{table}' — expected one of {', '.join(self.AVAILABLE_TABLES)}"
-            )
+            raise ValueError(f"unknown table '{table}' — expected one of {', '.join(self.AVAILABLE_TABLES)}")
         return table
 
     def _detect_ttl(self, table: str) -> int:

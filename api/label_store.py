@@ -7,7 +7,8 @@ credentials (``CH_WRITE_*`` falling back to ``CH_*``/``CLICKHOUSE_*``).
 
 Both the label-growth pipeline (which POSTs batches to
 ``/api/v1/labels``) and the label importer write the same canonical
-9-column row shape. ``entity_labels`` is a ``ReplacingMergeTree`` keyed on
+row shape (9 named columns; 025's two provenance columns take their
+DEFAULTs until a writer is taught to set them). ``entity_labels`` is a ``ReplacingMergeTree`` keyed on
 ``(address, chain_id, source)`` — re-inserting a label is an idempotent
 upsert, never a duplicate.
 
@@ -27,8 +28,11 @@ from api.config import (
     CH_WRITE_USER,
 )
 
-# Canonical 9-column order — must match the INSERT below and the scanner's
-# ``EntityLabel.to_ch_row``.
+# Canonical 11-column order — must match the scanner's
+# ``EntityLabel.to_ch_row``. The INSERT below names 9 columns explicitly and
+# relies on the DEFAULTs added by migration 025 for ``source_license`` and
+# ``last_verified_at``; that is deliberate, so an older writer cannot write a
+# fabricated verification timestamp.
 ENTITY_LABELS_DDL = """
 CREATE TABLE IF NOT EXISTS entity_labels (
     address     String,
@@ -39,7 +43,9 @@ CREATE TABLE IF NOT EXISTS entity_labels (
     source      LowCardinality(String) DEFAULT '',
     provenance  LowCardinality(String) DEFAULT '',
     first_seen  DateTime DEFAULT now(),
-    confidence  Float32 DEFAULT 0.8
+    confidence  Float32 DEFAULT 0.8,
+    source_license   LowCardinality(String) DEFAULT '',
+    last_verified_at DateTime DEFAULT toDateTime(0)
 ) ENGINE = ReplacingMergeTree(first_seen)
 ORDER BY (address, chain_id, source);
 """
@@ -86,7 +92,7 @@ def ensure_entity_labels_table() -> bool:
 
     Returns True when the table is present after the call. Called by the
     router on first write so a fresh deployment never 500s on a missing
-    table; the SQL migration (``016_entity_labels.sql``) is the canonical
+    table; the SQL migration (``018_entity_labels.sql``) is the canonical
     provisioning path.
     """
     client = get_write_client()
@@ -120,7 +126,12 @@ def insert_entity_labels(labels: list[dict[str, Any]]) -> int:
 
 
 def _to_row(label: dict[str, Any]) -> tuple[Any, ...]:
-    """Map a label dict to the canonical 9-column ClickHouse tuple."""
+    """Map a label dict to the canonical ClickHouse tuple.
+
+    Deliberately 9 columns: ``source_license`` and ``last_verified_at`` are
+    left to their DEFAULTs so an unverified label never claims a
+    verification it did not make.
+    """
     first_seen = label.get("first_seen")
     if not isinstance(first_seen, datetime):
         first_seen = datetime.now(UTC)

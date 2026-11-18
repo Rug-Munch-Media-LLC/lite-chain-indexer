@@ -62,8 +62,6 @@ class NATSUnavailableError(RuntimeError):
     """Raised internally when the NATS connection is unavailable."""
 
 
-
-
 class NATSPublisher:
     """Publishes indexed events to NATS (JetStream when available).
 
@@ -391,8 +389,11 @@ class NATSPublisher:
             ok, failed = await send_batch(self._js, self._nc, prepared, timeout=self._batch_timeout)
         except TimeoutError:
             logger.warning(
-                "nats_batch_timeout", chain=chain, block=block,
-                events=len(prepared), timeout_s=self._batch_timeout,
+                "nats_batch_timeout",
+                chain=chain,
+                block=block,
+                events=len(prepared),
+                timeout_s=self._batch_timeout,
             )
             metrics_incr("nats_publish_failures", len(prepared))
             if self._breaker.record_failure():

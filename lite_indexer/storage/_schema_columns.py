@@ -16,7 +16,6 @@ logger = get_logger(__name__)
 
 
 class _SchemaCoreColumnMixin:
-
     """Idempotent column/projection/TTL DDL for writer tables."""
 
     @_ddl_memo

@@ -47,6 +47,8 @@ async def discover_chain_rpcs(
     registry = await _fetch_registry(timeout=timeout)
     candidates = _extract_candidates(chain_id, registry)
     return candidates
+
+
 async def _fetch_registry(
     url: str = "https://chainid.network/chains.json",
     timeout: float = 15.0,

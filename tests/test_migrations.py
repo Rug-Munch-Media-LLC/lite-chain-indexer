@@ -132,3 +132,36 @@ def test_every_migration_name_is_parseable() -> None:
     found = parse_migration_dir(MIGRATIONS_DIR)
     assert all(m.path.name[:3].isdigit() for m in found)
     assert all(isinstance(m, Migration) for m in found)
+
+
+def test_entity_labels_provenance_columns_written_by_025() -> None:
+    """025 adds the two provenance columns, with the freshness sentinel.
+
+    ``last_verified_at`` must default to ``toDateTime(0)``, never ``now()``:
+    a static snapshot imported today (etherscan-labels 2023, evm-labels
+    2022) would otherwise report a verification that never happened, and the
+    label-coverage metric would count stale rows as fresh.
+    """
+    migration = (MIGRATIONS_DIR / "025_entity_labels_provenance.sql").read_text(encoding="utf-8")
+
+    assert "ALTER TABLE wallet_memory.entity_labels" in migration
+    for column in ("source_license", "last_verified_at"):
+        assert f"ADD COLUMN IF NOT EXISTS {column}" in migration, f"025 is missing {column}"
+
+    verified_default = migration.split("last_verified_at", 1)[1]
+    assert "DEFAULT toDateTime(0)" in verified_default
+    assert "DEFAULT now()" not in verified_default
+
+
+def test_entity_labels_ddl_copies_agree_on_new_columns() -> None:
+    """The migration and the writer's runtime DDL must not drift.
+
+    ``ENTITY_LABELS_DDL`` in api/label_store.py is a second copy of the 018
+    table shape and is executed on every write (``ensure_entity_labels_table``
+    is ``CREATE TABLE IF NOT EXISTS``, so it can never add a column on its
+    own). Both copies carry the 025 columns or the column-set contract breaks.
+    """
+    from api.label_store import ENTITY_LABELS_DDL
+
+    for column in ("source_license", "last_verified_at"):
+        assert column in ENTITY_LABELS_DDL, f"api/label_store.py ENTITY_LABELS_DDL is missing {column}"

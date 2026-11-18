@@ -4,6 +4,7 @@ The shared circuit breaker, the P2C selector, and the EWMA damping
 constant are read through these seams. Production uses the defaults;
 tests/ops inject fakes via the setters and reset them afterwards.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable

@@ -38,9 +38,7 @@ def _rpc_err(message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": 1, "error": {"code": -32000, "message": message}}
 
 
-def _log(
-    block: int, log_index: int, frm: str = "0x" + "1" * 40, to: str = "0x" + "2" * 40
-) -> dict[str, Any]:
+def _log(block: int, log_index: int, frm: str = "0x" + "1" * 40, to: str = "0x" + "2" * 40) -> dict[str, Any]:
     return {
         "address": "0xToken",
         "blockNumber": hex(block),

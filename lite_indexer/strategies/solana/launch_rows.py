@@ -90,5 +90,3 @@ def _insert_launch(client: Any, launch: LaunchEvent, now: datetime) -> None:
             mint=launch.mint,
             error=str(exc)[:150],
         )
-
-

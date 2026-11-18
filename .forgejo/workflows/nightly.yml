@@ -325,7 +325,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Structure gate
-        run: python3 scripts/check-structure.py --repo . --scan-root lite_indexer
+        run: python3 scripts/check-code-structure.py --quiet
 
   mutation-test:
     runs-on: docker-x64

@@ -3,6 +3,7 @@
 One bounded wait per batch instead of per-event acks: the old sequential
 loop stalled sync windows for minutes when the NATS server degraded.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -52,9 +53,7 @@ async def send_batch(js: Any, nc: Any, prepared: list[tuple[str, bytes]], *, tim
     """
     if js is not None:
         futures = [js.publish_async(subject, payload) for subject, payload in prepared]
-        results = await asyncio.wait_for(
-            asyncio.gather(*futures, return_exceptions=True), timeout=timeout
-        )
+        results = await asyncio.wait_for(asyncio.gather(*futures, return_exceptions=True), timeout=timeout)
         ok = sum(1 for result in results if not isinstance(result, BaseException))
         return ok, len(prepared) - ok
     for subject, payload in prepared:

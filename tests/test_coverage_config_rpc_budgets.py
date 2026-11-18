@@ -20,9 +20,7 @@ from lite_indexer.config.rpc import (
 
 
 def test_mapping_parses_all_fields() -> None:
-    budget = _budget_from_mapping(
-        {"rps": 5, "max_concurrency": 2, "daily_budget": 100, "preemptive_pct": 50}
-    )
+    budget = _budget_from_mapping({"rps": 5, "max_concurrency": 2, "daily_budget": 100, "preemptive_pct": 50})
     assert budget is not None
     assert budget.rps == 5.0
     assert budget.max_concurrency == 2
@@ -86,9 +84,7 @@ def test_parse_skips_empty_identity_key() -> None:
 
 
 def test_resolve_falls_back_to_default() -> None:
-    budget = resolve_provider_budget(
-        "unknown.com", "https://x/v1", provider_budgets={}, endpoint_budgets={}
-    )
+    budget = resolve_provider_budget("unknown.com", "https://x/v1", provider_budgets={}, endpoint_budgets={})
     assert budget is DEFAULT_PROVIDER_BUDGET
     assert budget.explicit is False
 

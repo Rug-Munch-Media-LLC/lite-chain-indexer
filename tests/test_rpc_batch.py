@@ -42,7 +42,6 @@ def _stop_patchers() -> Any:
         _PATCHERS.pop().stop()
 
 
-
 class _Resp:
     def __init__(self, payload: Any, status_code: int = 200) -> None:
         self._payload = payload

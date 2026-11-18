@@ -140,6 +140,7 @@ def run_bq(bq_bin: str, sql: str, params: list[tuple[str, str, Any]]) -> list[di
         return []
     raise BigQueryQuotaError(last_quota_error or "quota exhausted on all accounts")
 
+
 def _silence_console_logs() -> None:
     """CLI stdout must stay machine-parseable (JSON only)."""
     try:
@@ -177,8 +178,11 @@ def main() -> int:
         return 1
     rows = src.query(
         BigQuerySpec(
-            table=args.table, chain=args.chain, address=args.address,
-            dates=args.dates, limit=args.limit,
+            table=args.table,
+            chain=args.chain,
+            address=args.address,
+            dates=args.dates,
+            limit=args.limit,
         )
     )
     print(_json.dumps(rows, default=str, indent=2))  # noqa: T201

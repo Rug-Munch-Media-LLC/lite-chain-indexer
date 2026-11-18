@@ -1,4 +1,5 @@
 """Typed query spec shared by the BigQuery source and its table builders."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

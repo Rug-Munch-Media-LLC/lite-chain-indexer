@@ -399,7 +399,6 @@ def verify_chunk(rows: Iterable[Mapping[str, Any]], manifest: Mapping[str, Any])
 # ── Sync-path integration helper ───────────────────────────────────────
 
 
-
 # Re-exported so callers keep one import surface (the implementation lives in
 # attestation_record so this module stays under its shrink-only ratchet).
 from lite_indexer.attestation_record import AttestOptions as AttestOptions  # noqa: E402,F401

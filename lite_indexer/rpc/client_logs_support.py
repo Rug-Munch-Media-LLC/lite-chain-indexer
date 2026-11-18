@@ -32,9 +32,7 @@ class _LogsQuery:
 
     def filter(self) -> dict[str, Any]:
         """Build one ``eth_getLogs`` filter object for the block range."""
-        return _facade.RpcClient._logs_filter(
-            self.from_block, self.to_block, self.topic, self.address
-        )
+        return _facade.RpcClient._logs_filter(self.from_block, self.to_block, self.topic, self.address)
 
     def cache_params(self) -> list[Any]:
         """Filter shaped for the persistent response cache."""

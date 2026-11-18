@@ -42,9 +42,7 @@ class ProviderLedgerPersist:
                     continue
                 self._fold_loaded_budget(data)
             if self._budgets:
-                logger.debug(
-                    "quota_ledger_loaded", budgets=len(self._budgets), path=str(self._path)
-                )
+                logger.debug("quota_ledger_loaded", budgets=len(self._budgets), path=str(self._path))
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
             logger.warning("quota_ledger_load_failed", path=str(self._path), error=str(exc)[:80])
 

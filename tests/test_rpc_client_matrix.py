@@ -31,9 +31,7 @@ class FakeResp:
         if self.status_code >= 400:
             import httpx
 
-            raise httpx.HTTPStatusError(
-                "err", request=None, response=self
-            )
+            raise httpx.HTTPStatusError("err", request=None, response=self)
 
     def json(self):
         import json

@@ -71,7 +71,9 @@ def ensure_solana_transfers_table(ch_client: Any) -> bool:
         True when the table exists (or was created), False on failure.
     """
     try:
-        ch_client.execute(_SOLANA_TRACE_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+        ch_client.execute(
+            _SOLANA_TRACE_DDL
+        )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("solana_transfers_table_ensured", table=SOLANA_TRANSFERS_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort

@@ -78,6 +78,7 @@ class FakeClickHouse:
         self.transfers = transfers or []
         self.dex = dex or []
         self.state_inserts: list[list[tuple[Any, ...]]] = []
+        self._uploaded_at: dict[tuple[Any, Any], Any] = {}
         self.deletes: list[str] = []
         self.queries: list[str] = []
 
@@ -92,7 +93,24 @@ class FakeClickHouse:
             return []
         if query.startswith("INSERT INTO wallet_memory.parquet_export_state"):
             self.state_inserts.append(params)
+            # Remember the upload proof so the uploaded -> deleted transition can
+            # carry it forward. updated/deleted only ever follow an upload, so the
+            # timestamp is the moment this row was recorded.
+            row = params[0] if isinstance(params, list) and params else None
+            if row and len(row) >= 8 and row[6]:  # uploaded_at column
+                # Key on the ISO STRING: the insert carries a date object but
+                # _prior_uploaded_at queries with params["day"] as a string, so
+                # keying on the raw value never matched and the guard correctly
+                # (but confusingly) reported deleted_without_upload_proof.
+                self._uploaded_at[(row[0], str(row[1]))] = row[6]
             return 1
+        if "SELECT max(uploaded_at)" in query:
+            # _prior_uploaded_at: the delete path refuses to record 'deleted'
+            # without this proof, which is deliberate. The double must answer it
+            # or the guard correctly reports deleted_without_upload_proof.
+            key = (params.get("chain"), params.get("day")) if isinstance(params, dict) else None
+            got = self._uploaded_at.get(key) if key else None
+            return [[got]]
         if (
             "ALTER TABLE wallet_memory.evm_transfers DELETE" in query
             or "ALTER TABLE wallet_memory.dex_events DELETE" in query

@@ -1,4 +1,5 @@
 """Consecutive-failure circuit breaker for the NATS publisher (split)."""
+
 from __future__ import annotations
 
 import time
@@ -74,4 +75,3 @@ class CircuitBreaker:
             self._open_until = self._clock() + self.cooldown_seconds
             return True
         return False
-

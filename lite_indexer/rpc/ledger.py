@@ -157,6 +157,8 @@ def record_call(provider_id: str, method: str, key_id: str | None = None) -> int
 
 def record_endpoint_call(endpoint: str, method: str) -> int:
     return LEDGER.record_endpoint_call(endpoint, method)
+
+
 def defer_reason(
     provider_id: str,
     method: str,

@@ -45,6 +45,7 @@ ORDER BY (mint, slot)
 TTL {_SOLANA_LAUNCH_RULE.time_column} + INTERVAL {_SOLANA_LAUNCH_RULE.days} DAY
 """
 
+
 def ensure_solana_launches_table(ch_client: Any) -> bool:
     """Create ``wallet_memory.solana_launches`` if it does not exist.
 

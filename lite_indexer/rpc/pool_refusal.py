@@ -119,8 +119,6 @@ def classify_pool_refusal(statuses: list[int | None]) -> PoolRefusal:
     )
 
 
-
-
 def report_exhausted(chain: str, block: int, tried: Sequence[str], statuses: Sequence[int | None]) -> None:
     """Name WHY the pool could not serve ``block``, in the log and metrics.
 

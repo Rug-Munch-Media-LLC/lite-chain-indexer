@@ -39,6 +39,7 @@ logger = get_logger(__name__)
 _PAGE_ROWS = 50_000  # per-BQ-read page size (solana SQL clamp is 50k)
 FILLABLE_TABLES: tuple[str, ...] = ("token_transfers",)  # only tables with a CH writer
 
+
 @dataclass
 class SolanaBigQueryFillRequest:
     """One BigLake fill run: dates, tables, batching and volume guards."""
@@ -62,6 +63,7 @@ class SolanaBigQueryFillRequest:
     # lands, fills are bounded to a single page per day on purpose.
     max_pages_per_day: int = 1
 
+
 @dataclass
 class _FillCtx:
     """Per-run context: source, writers, request (keeps arities small)."""
@@ -72,6 +74,7 @@ class _FillCtx:
     req: SolanaBigQueryFillRequest
     since_dt: Any = None
     until_dt: Any = None
+
 
 def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int:
     """Stream one (date, table) partition; ``sink=None`` counts only (dry run)."""
@@ -88,9 +91,14 @@ def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int
             break
         rows = ctx.src.query(
             BigQuerySpec(
-                table, chain="solana", dates=[day], limit=_PAGE_ROWS,
-                mints=list(ctx.req.mints) or None, offset=offset or None,
-                since_ts=ctx.req.since_ts, until_ts=ctx.req.until_ts,
+                table,
+                chain="solana",
+                dates=[day],
+                limit=_PAGE_ROWS,
+                mints=list(ctx.req.mints) or None,
+                offset=offset or None,
+                since_ts=ctx.req.since_ts,
+                until_ts=ctx.req.until_ts,
             )
         )
         if not rows:
@@ -111,6 +119,7 @@ def _read_pages(ctx: _FillCtx, table: str, day: str, *, sink: Any | None) -> int
     if sink is not None and batch:
         sink.write_clickhouse(batch, ctx.ch)
     return total
+
 
 def backfill_solana_from_bigquery(
     req: SolanaBigQueryFillRequest,
@@ -137,8 +146,12 @@ def backfill_solana_from_bigquery(
         return {}
     wh = ch_writer if ch_writer is not None else _default_ch_writer()
     ctx = _FillCtx(
-        src=src, writer=build_writer(), ch=wh, req=req,
-        since_dt=parse_since(req.since_ts), until_dt=parse_since(req.until_ts),
+        src=src,
+        writer=build_writer(),
+        ch=wh,
+        req=req,
+        since_dt=parse_since(req.since_ts),
+        until_dt=parse_since(req.until_ts),
     )
 
     counts: dict[str, int] = {}
@@ -164,12 +177,17 @@ def backfill_solana_from_bigquery(
             counts[key] = total
             written_total += total
             logger.info(
-                "bigquery_fill_progress", date=day, table=table,
-                rows=total, dry_run=req.dry_run, total=written_total,
+                "bigquery_fill_progress",
+                date=day,
+                table=table,
+                rows=total,
+                dry_run=req.dry_run,
+                total=written_total,
             )
     if written_total >= req.max_rows:
         logger.warning("bigquery_fill_max_rows_reached", max_rows=req.max_rows)
     return counts
+
 
 def _guarded_write(ctx: _FillCtx, table: str, day: str) -> int:
     """Write one partition, skipping days ClickHouse already covers."""
@@ -182,9 +200,9 @@ def _guarded_write(ctx: _FillCtx, table: str, day: str) -> int:
         return 0
     return _read_pages(ctx, table, day, sink=ctx.writer)
 
+
 def _default_ch_writer() -> Any:
     """Build the real ClickHouseWriter (same client the indexer uses)."""
     from lite_indexer.storage.clickhouse import ClickHouseWriter
 
     return ClickHouseWriter()
-

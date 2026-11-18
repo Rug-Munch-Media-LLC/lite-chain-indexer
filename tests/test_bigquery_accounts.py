@@ -1,4 +1,5 @@
 """Two-account alternation tests (env pairs + quota swap)."""
+
 import os
 from typing import Any
 from unittest.mock import patch
@@ -18,6 +19,7 @@ def _state_tmp(tmp_path: Any) -> Any:
     with patch.dict(os.environ, {"BIGQUERY_STATE_FILE": str(tmp_path / "bqstate.json")}):
         yield
 
+
 PRIMARY = {"BIGQUERY_PROJECT_ID": "proj-a", "GOOGLE_APPLICATION_CREDENTIALS": "/k/a.json"}
 ALT = {"BIGQUERY_ALT_PROJECT_ID": "proj-b", "BIGQUERY_ALT_CREDENTIALS": "/k/b.json"}
 
@@ -28,7 +30,9 @@ def test_bq_accounts_primary_only() -> None:
 
 
 def test_bq_accounts_with_alt() -> None:
-    with patch.dict(os.environ, {**PRIMARY, **ALT, "BIGQUERY_STATE_FILE": os.environ["BIGQUERY_STATE_FILE"]}, clear=True):
+    with patch.dict(
+        os.environ, {**PRIMARY, **ALT, "BIGQUERY_STATE_FILE": os.environ["BIGQUERY_STATE_FILE"]}, clear=True
+    ):
         assert cli.bq_accounts() == [("proj-a", "/k/a.json"), ("proj-b", "/k/b.json")]
 
 
@@ -55,8 +59,10 @@ def test_quota_on_primary_swaps_to_alt() -> None:
         return _Proc(0, out='[{"ok": 1}]')
 
     state_file = os.environ["BIGQUERY_STATE_FILE"]
-    with patch.dict(os.environ, {**PRIMARY, **ALT, "BIGQUERY_STATE_FILE": state_file}, clear=True), \
-            patch("lite_indexer.query.bigquery_cli.subprocess.run", fake_run):
+    with (
+        patch.dict(os.environ, {**PRIMARY, **ALT, "BIGQUERY_STATE_FILE": state_file}, clear=True),
+        patch("lite_indexer.query.bigquery_cli.subprocess.run", fake_run),
+    ):
         rows = cli.run_bq("/usr/bin/bq", "SELECT 1", [])
     assert rows == [{"ok": 1}]
     assert len(calls) == 2
@@ -65,8 +71,13 @@ def test_quota_on_primary_swaps_to_alt() -> None:
 
 def test_quota_on_last_account_raises() -> None:
     state_file = os.environ["BIGQUERY_STATE_FILE"]
-    with patch.dict(os.environ, {**PRIMARY, "BIGQUERY_STATE_FILE": state_file}, clear=True), \
-            patch("lite_indexer.query.bigquery_cli.subprocess.run", lambda cmd, **kw: _Proc(1, err="Quota exceeded: free query bytes scanned")):
+    with (
+        patch.dict(os.environ, {**PRIMARY, "BIGQUERY_STATE_FILE": state_file}, clear=True),
+        patch(
+            "lite_indexer.query.bigquery_cli.subprocess.run",
+            lambda cmd, **kw: _Proc(1, err="Quota exceeded: free query bytes scanned"),
+        ),
+    ):
         with pytest.raises(BigQueryQuotaError):
             cli.run_bq("/usr/bin/bq", "SELECT 1", [])
 

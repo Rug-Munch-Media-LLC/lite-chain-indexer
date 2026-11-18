@@ -102,9 +102,7 @@ def test_paths_to_cex_respects_max_hops():
 
 
 def test_sql_for_binds_every_value():
-    sql, params = sql_for(
-        "evm_edges", chain="base", since="2026-10-01", addrs=[ROOT, CEX], limit=10
-    )
+    sql, params = sql_for("evm_edges", chain="base", since="2026-10-01", addrs=[ROOT, CEX], limit=10)
     assert "base" not in sql and ROOT not in sql and CEX not in sql
     assert params["chain"] == "base" and params["addrs"] == [ROOT, CEX]
 

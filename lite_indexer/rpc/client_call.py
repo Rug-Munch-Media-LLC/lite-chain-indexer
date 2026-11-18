@@ -94,9 +94,7 @@ async def _call_attempt(ctx: _CallCtx) -> tuple[bool, dict[str, Any] | None]:
         async with _facade.budget_slot(ctx.endpoint):
             async with _facade.provider_concurrency_slot(ctx.account_key):
                 resp = await _facade._post_json(ctx.endpoint, ctx.payload, ctx.timeout)
-        _facade._safe_record(
-            _facade.record_rpc_latency, ctx.endpoint, (time.perf_counter() - ctx.started) * 1000.0
-        )
+        _facade._safe_record(_facade.record_rpc_latency, ctx.endpoint, (time.perf_counter() - ctx.started) * 1000.0)
         return await _process_call_response(ctx.endpoint, ctx.method, resp, ctx.started)
     except (httpx.HTTPError, ConnectionError, OSError, TimeoutError, ValueError) as exc:
         return (_handle_call_exception(ctx.endpoint, ctx.method, exc), None)

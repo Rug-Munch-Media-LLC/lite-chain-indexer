@@ -22,9 +22,7 @@ from lite_indexer.query.trace_deployer import deployer_path
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="trace", description="Wallet / deployer tracing over owned data"
-    )
+    parser = argparse.ArgumentParser(prog="trace", description="Wallet / deployer tracing over owned data")
     sub = parser.add_subparsers(dest="command", required=True)
 
     walk = sub.add_parser("trace", help="depth-bounded wallet graph")
@@ -42,9 +40,7 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="BigLake YYYY-MM-DD partitions (ethereum only)",
     )
-    walk.add_argument(
-        "--trim", type=int, default=0, help="print only the first N nodes and edges (0 = all)"
-    )
+    walk.add_argument("--trim", type=int, default=0, help="print only the first N nodes and edges (0 = all)")
 
     line = sub.add_parser("deployer", help="token-or-deployer lineage")
     line.add_argument("target")

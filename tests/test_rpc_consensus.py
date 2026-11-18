@@ -293,9 +293,7 @@ async def test_intrinsic_validators_off_is_observe_only() -> None:
     client = StubClient({ALPHA: out_of_range, BETA: out_of_range, GAMMA: good})
 
     with patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_VALIDATORS", False):
-        out = await verify_across_providers(
-            client, "ethereum", "eth_getLogs", params, endpoints=[ALPHA, BETA, GAMMA]
-        )
+        out = await verify_across_providers(client, "ethereum", "eth_getLogs", params, endpoints=[ALPHA, BETA, GAMMA])
     # Observe-only: the invalid pair still counts, so quorum is reached.
     assert out.verified is True
     assert out.agreement == 2
@@ -308,9 +306,7 @@ async def test_intrinsic_validators_on_rejects_invalid() -> None:
     client = StubClient({ALPHA: out_of_range, BETA: out_of_range, GAMMA: good})
 
     with patch("lite_indexer.rpc.consensus.RPC_CONSENSUS_VALIDATORS", True):
-        out = await verify_across_providers(
-            client, "ethereum", "eth_getLogs", params, endpoints=[ALPHA, BETA, GAMMA]
-        )
+        out = await verify_across_providers(client, "ethereum", "eth_getLogs", params, endpoints=[ALPHA, BETA, GAMMA])
     # Validators on: the two invalid answers are rejected, leaving one
     # provider — not enough evidence, so the read is not failed either.
     assert out.verified is False

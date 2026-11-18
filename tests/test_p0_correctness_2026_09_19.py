@@ -27,12 +27,15 @@ def _no_live_endpoint_verify() -> Any:
     """The EVM endpoint verification probes live RPCs (~20s); stub it here."""
     from unittest.mock import AsyncMock, patch
 
-    with patch("lite_indexer.indexer.LiteIndexer._evm_verify_endpoints", AsyncMock(return_value=None)), \
-            patch("lite_indexer.indexer.LiteIndexer._publish_nats_events", AsyncMock(return_value=0)), \
-            patch("lite_indexer.indexer.LiteIndexer._dispatch_plugin_events", AsyncMock(return_value={})), \
-            patch("lite_indexer.indexer.LiteIndexer._run_backfill_sidecar", AsyncMock(return_value={})), \
-            patch("lite_indexer.indexer.LiteIndexer._run_vector_ingestion_guarded", AsyncMock(return_value=None)):
+    with (
+        patch("lite_indexer.indexer.LiteIndexer._evm_verify_endpoints", AsyncMock(return_value=None)),
+        patch("lite_indexer.indexer.LiteIndexer._publish_nats_events", AsyncMock(return_value=0)),
+        patch("lite_indexer.indexer.LiteIndexer._dispatch_plugin_events", AsyncMock(return_value={})),
+        patch("lite_indexer.indexer.LiteIndexer._run_backfill_sidecar", AsyncMock(return_value={})),
+        patch("lite_indexer.indexer.LiteIndexer._run_vector_ingestion_guarded", AsyncMock(return_value=None)),
+    ):
         yield
+
 
 # ── RC-1 — deferred getLogs is None, not [] ─────────────────────────────
 

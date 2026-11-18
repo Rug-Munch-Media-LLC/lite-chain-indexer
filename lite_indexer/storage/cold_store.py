@@ -262,9 +262,7 @@ class ColdStore:
         # Unbounded (or chain-less): list the tree once, then cat each file.
         remote_root = f"{self.remote}/{chain}" if chain else self.remote
         wanted = (
-            {f"{d.year:04d}/{d.month:02d}/{d.day:02d}" for d in days} | {d.isoformat() for d in days}
-            if days
-            else None
+            {f"{d.year:04d}/{d.month:02d}/{d.day:02d}" for d in days} | {d.isoformat() for d in days} if days else None
         )
         files: list[Path] = []
         try:

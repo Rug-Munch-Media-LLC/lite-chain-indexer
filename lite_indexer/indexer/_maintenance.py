@@ -21,9 +21,6 @@ log = get_logger(__name__)
 logger = log  # god-file bodies reference `logger`; keep both names
 
 
-
-
-
 class MaintenanceMixin(IndexerMixinBase):
     "Memory gates, GC cycles, ClickHouse range reconciliation."
 

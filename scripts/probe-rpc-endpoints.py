@@ -58,6 +58,7 @@ PROBE_TIMEOUT = float(os.getenv("RPC_PROBE_TIMEOUT", "8.0"))
 LATENCY_PROMOTE_MS = float(os.getenv("RPC_PROBE_MAX_LATENCY_MS", "1500"))
 GETLOGS_RANGE = 10  # blocks back from tip for the topic-only getLogs check
 
+
 async def _rpc(client: httpx.AsyncClient, url: str, method: str, params: list) -> tuple[dict | None, float, str]:
     """Single JSON-RPC POST. Returns (response_dict, latency_ms, error_class)."""
     body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}

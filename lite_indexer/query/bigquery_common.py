@@ -1,4 +1,5 @@
 """Shared BigQuery helpers (flag parsing + epoch conversion)."""
+
 from __future__ import annotations
 
 import os
@@ -26,7 +27,6 @@ def ms_to_dt(value: Any) -> datetime | None:
     except (TypeError, ValueError):
         logger.debug("bigquery_ms_unparseable", value=str(value)[:40])
         return None
-
 
 
 class BigQueryQuotaError(RuntimeError):

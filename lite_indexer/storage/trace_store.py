@@ -76,7 +76,9 @@ async def ensure_internal_transfers_table(ch_client: Any) -> bool:
         database is missing or privileges are insufficient.
     """
     try:
-        ch_client.execute(_TRACE_DDL)  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
+        ch_client.execute(
+            _TRACE_DDL
+        )  # nosemgrep: formatted-sql-query — identifiers are module constants; values parameterized
         logger.info("internal_transfers_table_ensured", table=CH_TRACE_TABLE)
         return True
     except Exception as exc:  # noqa: BLE001 — DDL is best-effort

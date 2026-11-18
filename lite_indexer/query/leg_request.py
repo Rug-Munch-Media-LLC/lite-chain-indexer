@@ -3,6 +3,7 @@
 Grouping the per-leg parameters keeps each leg signature at two arguments
 (router + request) and gives one place to own the cache-key contract.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

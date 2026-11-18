@@ -33,10 +33,7 @@ def test_health_thresholds_are_ordered() -> None:
 
 def test_health_healthy_below_warn() -> None:
     assert WebhookSubscription(id="a", url="https://x", failure_count=0).health == "healthy"
-    assert (
-        WebhookSubscription(id="a", url="https://x", failure_count=HEALTH_WARN - 1).health
-        == "healthy"
-    )
+    assert WebhookSubscription(id="a", url="https://x", failure_count=HEALTH_WARN - 1).health == "healthy"
 
 
 def test_health_warn_at_threshold() -> None:
@@ -44,16 +41,11 @@ def test_health_warn_at_threshold() -> None:
 
 
 def test_health_broken_at_threshold() -> None:
-    assert (
-        WebhookSubscription(id="a", url="https://x", failure_count=HEALTH_BREAK).health == "broken"
-    )
+    assert WebhookSubscription(id="a", url="https://x", failure_count=HEALTH_BREAK).health == "broken"
 
 
 def test_health_disabled_at_threshold() -> None:
-    assert (
-        WebhookSubscription(id="a", url="https://x", failure_count=HEALTH_DISABLE).health
-        == "disabled"
-    )
+    assert WebhookSubscription(id="a", url="https://x", failure_count=HEALTH_DISABLE).health == "disabled"
 
 
 # ── subscription CRUD ───────────────────────────────────────────────────
@@ -61,9 +53,7 @@ def test_health_disabled_at_threshold() -> None:
 
 def test_create_then_get_roundtrips(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    sub = store.create_subscription(
-        "https://example.com/hook", ["chain.ethereum.transfer"], secret="s3cr3t"
-    )
+    sub = store.create_subscription("https://example.com/hook", ["chain.ethereum.transfer"], secret="s3cr3t")
     fetched = store.get_subscription(sub.id)
     assert fetched is not None
     assert fetched.url == "https://example.com/hook"

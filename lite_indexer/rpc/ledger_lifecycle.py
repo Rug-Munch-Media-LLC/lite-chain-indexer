@@ -47,19 +47,13 @@ class ProviderLedgerLifecycle:
         now = time.time() if now is None else now
         if period == "day":
             dt = datetime.fromtimestamp(now, UTC)
-            return (
-                (dt + timedelta(days=1))
-                .replace(hour=0, minute=0, second=0, microsecond=0)
-                .timestamp()
-            )
+            return (dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
         if period == "month":
             return _month_reset_at(now)
         days = 30 if period == "30d" else 1
         return now + days * 86_400
 
-    def _seed_budget(
-        self, provider_id: str, account_id: str, key_id: str | None = None
-    ) -> QuotaBudget:
+    def _seed_budget(self, provider_id: str, account_id: str, key_id: str | None = None) -> QuotaBudget:
         seed = KNOWN_QUOTAS.get(provider_id)
         now = time.time()
         if seed is None:
@@ -102,9 +96,7 @@ class ProviderLedgerLifecycle:
         if budget is None:
             budget = self._seed_budget(provider_id, account, key_id)
             self._budgets[key] = budget
-            logger.debug(
-                "quota_budget_seeded", provider=provider_id, account_id=account, key_id=key_id or ""
-            )
+            logger.debug("quota_budget_seeded", provider=provider_id, account_id=account, key_id=key_id or "")
         return budget
 
     def _maybe_reset(self, budget: QuotaBudget, now: float | None = None) -> None:

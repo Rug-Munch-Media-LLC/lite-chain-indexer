@@ -84,9 +84,7 @@ class ProviderLedgerViews(ProviderLedgerLifecycle):
     def snapshot(self, now: float | None = None) -> dict[str, dict[str, Any]]:
         """Full ledger view (for logging / metrics)."""
         return {
-            key: self.state_for(
-                budget.provider_id, budget.key_id, now, account_id=budget.account_id
-            )
+            key: self.state_for(budget.provider_id, budget.key_id, now, account_id=budget.account_id)
             for key, budget in self._budgets.items()
         }
 

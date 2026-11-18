@@ -41,9 +41,7 @@ BONDING_CURVE_SEED = b"bonding-curve"
 
 # ClickHouse table for Solana launch events. Override with
 # CH_SOLANA_LAUNCHES_TABLE for operators who prefer a different database.
-SOLANA_LAUNCHES_TABLE: str = os.environ.get(
-    "CH_SOLANA_LAUNCHES_TABLE", "wallet_memory.solana_launches"
-)
+SOLANA_LAUNCHES_TABLE: str = os.environ.get("CH_SOLANA_LAUNCHES_TABLE", "wallet_memory.solana_launches")
 
 # NATS routing for the launch stream (subject is chain.solana.launch).
 # Mirrors lite_indexer.strategies.tron.launch: event type "launch" maps to
