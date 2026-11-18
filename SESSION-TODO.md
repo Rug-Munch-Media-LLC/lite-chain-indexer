@@ -1,138 +1,125 @@
-> **Status:** active · owner: Rug Munch Media LLC Engineering · opened 2026-11-18
-> **Operator intent:** 90 days of backfill per chain into B2 (permanent), with a
-> bounded local footprint — gather a day, verify it, upload it, delete the local
-> copy, repeat. Then live indexing. Then the remaining alerts.
+> **Status:** active · owner: Rug Munch Media LLC Engineering · updated 2026-11-18
+> Operator sequence: 90-day backfill to B2 first, indexer second.
 
 # SESSION-TODO — lite-chain-indexer
 
-## CORRECTION to my earlier reading
+## PROVEN END TO END (this session)
 
-I said "BigLake is ethereum-only, so 90 days for all chains is impossible." That
-was **wrong** — I read one of five tiers and generalised. The actual backfill
-surface:
+### BTC archive path — DONE, real B2
+```
+btc_transactions 2026-11-15: 963,618 rows -> 118,659,116 B  [verified]
+btc_blocks       2026-11-15:     172 rows ->      24,852 B  [verified]
+read back from B2: 963,618 rows, 963,618 DISTINCT tx_hash  (100%, no dupes)
+```
+This was previously "39.3M BTC labels and zero transaction tables". It is now a
+real archive with a verifiable round trip. The whole `unit_writer` contract is
+proven against production B2, not a scratch remote.
 
-| tier | module | coverage |
-|---|---|---|
-| Subsquid (SQD) | `sqd_source.py` `EVM_DATASETS` | **13 EVM chains** + Tron |
-| Envio HyperSync | `envio_source.py` `CHAIN_IDS` | **19 chains** (traces: eth, base) |
-| BigQuery GCP public | `bigquery_tables.py` | eth (`crypto_ethereum`), solana (`crypto_solana_mainnet_us`) |
-| BigLake AWS Open Data | `biglake_source.py` | **eth only** (`v1.0/eth/*` — the bucket has only `btc/` and `eth/`) |
-| ClickHouse local | `legs_clickhouse.py` | whatever is hot — **~30 days** |
+### Entity clustering — DONE, live in ClickHouse
+```
+cex_deposit   55,513 rows / 103 cohorts / 5 chains   confidence 0.38–0.85
+same_deployer    222 rows / 103 cohorts / 8 chains   confidence 0.95
+```
+Before this session: 223 rows, one heuristic. The lane reported 55,518/103;
+production shows 55,513/103. Per chain: ethereum 44,845, bsc 5,539,
+arbitrum 4,576, optimism 527, gnosis 26.
 
-So the all-chain 90-day backfill is achievable. Subsquid is the widest EVM
-source and needs no per-chain plumbing: `EVM_DATASETS[chain]` is the whole map.
-
-**Keys present in the indexer:** `SQD_API_KEY`, `ENVIO_API_TOKEN`,
-`ENVIO_RPC_TOKEN`, `GOLDSKY_API_KEY`, `BIGQUERY_ACCOUNTS` (4 GCP projects).
-
-## The retention design the operator specified
-
-    day N:  gather from source  ->  write parquet  ->  verify row count
-            ->  upload to B2  ->  verify object  ->  DELETE local copy
-            next day repeats; B2 keeps 90 days permanently
-
-Local disk therefore holds at most ~1 day of one chain's work plus its in-flight
-upload. B2 is the permanent record. This is the existing verify-then-upload
-contract in `backfill-evm-hours.py` ("A unit is uploaded only when its parquet
-row count equals ClickHouse `count()`") **plus a delete step that does not exist
-yet.**
-
-## Open — in order
-
-### 1. Add the verify-then-delete step (the design gap)
-- [ ] `scripts/archive-daily.py` and `scripts/archive-export.py` currently upload
-      and keep the local part. Add: after a verified B2 object, delete the local
-      parquet and its staging dir.
-- [ ] Gate the delete on the SAME evidence the upload used (row count match +
-      object present in B2), never on "upload returned 0".
-- [ ] Bound local: reaper for any `staging/` older than 24h that has a verified
-      B2 twin.
-- [ ] Prove it: run one day, confirm local part gone AND `read_parquet` over the
-      B2 path returns the expected count.
-
-### 2. Backfill 90 days, widest source first
-- [ ] Per chain, pick the tier by coverage (SQD 13, Envio 19, BQ eth/sol,
-      BigLake eth). Cross-check two tiers on ethereum — cheap, and it is the one
-      chain where overlap exists.
-- [ ] `--dry-run` first per chain; the script reports which hours do not match.
-- [ ] Upload to `b2-crypt-v2:chain-data/parquet/<chain>/<table>/<date>/`.
-- [ ] Record depth per chain; **do not assume 90** — source retention governs it.
-
-### 3. DuckDB accessibility proof
-- [ ] `SELECT count(*) FROM read_parquet('.../parquet/<chain>/<table>/*/*/*.parquet')`
-      per chain must equal the sum of verified units.
-- [ ] Document the exact glob in the runbook so the MCP/query layer reads it the
-      same way.
-
-### 4. Then live indexing — 3 remaining stalls
-- [ ] `bsc` — providers cap getLogs at 10 blocks; `SYNC_CHECKPOINT_SLICE=200`
-      makes every slice arithmetically impossible. Needs per-chain slice sizing.
-- [ ] `ethereum` — `-32005 log response size exceeded`; behind ~4h so slices are
-      denser than the cap.
-- [ ] `linea` — `1rpc.io` still in the merged pool (paid-subscription upsell).
-
-### 5. Remaining criticals
-- [ ] `mcp-stack-health` / "retrieval DEGRADED" — supermemory ingest backlog
-      32→39 with memory-agent calls timing out at **300s**. Local 4B Q6_K is the
-      bottleneck; `/srv/models/qwen3.5-2b-heretic` is a 28K stub that needs
-      re-downloading for a smaller/faster lane.
-- [ ] `check-lane-sync` (200/hr) — real twin divergence
-      (`security_patterns` base=825 twin=15487)
-- [ ] 10 × `FleetUnitFailedNew`
-- [ ] `RepoWorkNotLanding` × 57 — genuine unlanded-work backlog
-
-## Done (verified)
-
-- [x] `archive-export` → `success 0` (was 220 fails/hr; `/data` mount ordering)
-- [x] CH artifact check reads the B2 `.horizon` sidecar → `PASS rpo=23h/24h`
-- [x] Deployed the chain-state join into the LIVE Prometheus. `/etc/prometheus/rules/`
-      was a stale 24-Oct file with `chattr +i`; the git fix had never reached it.
-      **B2 alerts 8 → 0.**
-- [x] `b2-retention-status.sh` date matchers fixed (base 1→71 days)
-- [x] RPC capability matrix measured; `gen-rpc-overlay.py`,
-      `verify-rpc-pool.py`, `seed-capability-refusals.py` landed on main
-
-## Do not re-derive
-
-- **BigLake is eth-only.** The AWS bucket has exactly `v1.0/btc/` and `v1.0/eth/`.
-  I got this wrong once by reading one module and generalising; the all-chain
-  paths are **Subsquid** and **Envio**.
-- **ClickHouse holds ~30 days.** Never a 90-day source.
-- **`--max-concurrent` is a daemon ARGV flag** and beats `MAX_CONCURRENT_CHAINS`.
-- **rps=10 soft-bans thirdweb in minutes.** rps=3 is the ceiling.
-- **`/etc/prometheus/rules/` is immutable and drifted 25 days.** Check
-  `api/v1/rules` for the live expression; git != running.
-- **`blockscout.com` returns HTML**, not JSON-RPC, on every chain.
-- **`backfill-evm-hours.py` sources from ClickHouse**, so it is a ~30-day tool,
-  not a 90-day one.
+### Merged
+| PR | what |
+|---|---|
+| #260 (contextcrypto) | `window_limits` merges registry+policy — routing can size its own lane |
+| #17 | BTC tracing adapter |
+| #18 | `cex_deposit` entity clustering |
+| #19 | SQD backfill adapter |
 
 ---
 
-## CI status (2026-11-18, verified locally with CI's own invocation)
+## THE MEASURED BLOCKER: SQD sheds at ~61k rows
 
-| gate | state |
-|---|---|
-| `ruff check .` | **PASS** |
-| `check-structure.py` | **PASS** |
-| `check-public-no-freemium.py` | **PASS** |
-| `pytest -m 'not smoke'` | **2729 passed, 0 failed** |
-| `lint-imports` | **PASS** |
-| `check-antipatterns.py` | FAIL — `bare-except 295 (baseline 284)` |
-| `check-monkeypatch.py` | FAIL — `86 (baseline 85)` |
+The SQD portal does **not** enforce the documented ~20 req / 10 s. Measured by
+walking batches until 529:
 
-**Both remaining failures are pre-existing on `origin/main`**, verified by running
-the same gates on a clean `origin/main` checkout. They are decrease-only
-ratchets and the delta arrived through the merge that brought this branch level
-with main (110 files, none of them the archive package).
+```
+bare block requests      : 8/8 batches OK, twice, 30 s apart
+ERC-20 log requests      : trips at batch 3, after 61,352 rows
+polygon day              : ~598,000 rows
+ratio                    : 9.7x the measured ceiling
+```
 
-**Do not bump either baseline.** A decrease-only ratchet is bumped only by
-fixing occurrences. `--update-baseline` here would launder 11 bare-except and 1
-monkeypatch into permanent debt, which is the failure mode those gates exist to
-prevent.
+So a day **cannot** be fetched in one `stream()` call, at any pacing. Coding
+rate (`SQD_MIN_INTERVAL` 0.55 s → 1.2 s) made no difference, which is how we
+know it is a volume ceiling and not a request-rate one.
 
-The archive package contributes **zero** to both counters (verified: 0
-`monkeypatch`, 0 `except:` in `lite_indexer/archive/*.py`).
+**What this means:** the SQD adapter is correct and the CLI works —
+`--dry-run` on a 500-block window returns 15,728 real log rows — but a
+day-granularity unit needs a **resumable windowed pull**: fetch ~61k rows, cool
+down, continue from the last block, and only publish the day when the window
+set is complete. That is a design change to `sqd_backfill.py`, not a bug fix.
 
-To fix them properly: `python3 scripts/check-antipatterns.py --top 40` lists the
-`bare-except` sites by file; each needs a specific exception type. That is real
-work in code this branch does not own, and should be its own commit.
+**Do not "fix" this by raising retries.** Retrying into a volume ceiling is what
+gets an account banned, and a ban loses 14 chains.
+
+---
+
+## Open — in order
+
+### 1. SQD resumable windowed pull (the blocker above)
+- [ ] Add a cursor: `(chain, table, day, last_block_done)` persisted so a run
+      resumes instead of restarting.
+- [ ] Cap rows per sitting at ~50k (below the measured 61,352), then yield.
+- [ ] A day publishes only when every window is fetched — `write_unit` already
+      refuses a partial count, so use it as the gate.
+- [ ] Test: a synthetic 10-window day completes in ≥2 sittings and produces one
+      verified parquet with the exact expected row count.
+
+### 2. BTC history breadth
+- [ ] One day is proven. Backfill a real range (e.g. 90 days = ~90 × 113 MB
+      ≈ 10 GB) and record actual wall time per day.
+- [ ] Decide: full history from 2009, or from a chosen date. AWS read is free but
+      a 2011 day took a different shape (659 rows) than a 2026 day (963,618).
+
+### 3. Remaining 5 real stalls (live indexer)
+- [ ] `bsc` — providers cap getLogs at 10 blocks vs `SYNC_CHECKPOINT_SLICE=200`.
+      Needs per-chain slice sizing; arithmetic in `RETENTION-STRATEGY.md`.
+- [ ] `ethereum` — `-32005 log response size exceeded`, behind ~4h.
+- [ ] `linea` — `1rpc.io` still in the merged pool (paid-subscription upsell).
+- [ ] `arbitrum`, `solana` — verify against current logs before assuming.
+
+### 4. Entity heuristics beyond `cex_deposit`
+Measured reason each is blocked:
+- [ ] `shared_funding` — needs **unbounded** `internal_transfers`; TTL is 90 d.
+- [ ] `cex_deposit` on base yields **0** (its 11 CEX labels match no funder).
+- [ ] 7 of 16 chains with native data have **zero** exchange labels.
+- [ ] The 15.7M exchange labels are **99.4% Bitcoin**; Ethereum has 3,799.
+
+---
+
+## Do not re-derive
+
+- **`evm_transfers` is ERC20-only** — all 49.5M rows have a `token_address`.
+  `internal_transfers` is the only native-value table.
+- **`internal_transfers` needs traces + the sibling `transactions` table** —
+  traces alone carry only `transactionIndex`, so `tx_hash` (the archive dedupe
+  key) is empty without it.
+- **SQD traces are absent on celo, mantle, optimism** (HTTP 400 "table 'traces'
+  does not exist"). A zero-row block is **not** evidence of absence.
+- **SQD sheds at ~61k rows**, not at the documented 20 req/10 s. Rate tuning
+  does not help.
+- **`wallet_entities` dedupe key is `(wallet_address, chain_id)`**, so one wallet
+  belongs to exactly ONE entity. `entity_id` is a **cohort key, not an owner
+  key** — never treat two wallets in a cohort as the same owner.
+- **`/app/cc_mcp` is baked into the image**, built from `/srv/build/contextcrypto-mcp/tree`
+  (a plain copy, not a git checkout). Merging does not deploy. Use
+  `scripts/deploy/build-contextcrypto-mcp.sh --ref <ref>`, retag to
+  `contextcrypto-mcp:main-<sha>`, and update the compose pin.
+- **`dispatch_brief` `fleet:` is a fleet NAME, not a boolean.** Free lanes are
+  `free_only: true`.
+- **Subagent commits land on detached HEAD.** Check `git branch --contains` and
+  `git switch -c` before pushing.
+
+## CI state (verified locally with CI's invocation)
+`ruff` PASS · `structure-gate` PASS · `public-leak` PASS ·
+`pytest -m 'not smoke'` 2767+ passed, 0 failed ·
+`lint-and-test` red **identically on origin/main** (two decrease-only ratchets,
+`check-antipatterns` + `check-monkeypatch`). **Never `--update-baseline`** — it
+launders 11 bare-except and 1 monkeypatch into permanent debt.

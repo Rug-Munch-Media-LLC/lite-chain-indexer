@@ -12,7 +12,7 @@ wrong and both must be fixed in the same commit.
 
 ## 1. The thesis, in one paragraph
 
-Incumbents (Helius, Arkham, Nansen) sell **computed labels** and **query
+Incumbents in this market sell **computed labels** and **query
 access**. We cannot out-label them on day one. What we can own is the
 **archive plus the reasoning over it**: permanent 90-day+ history in B2 we
 control, one entity model that every product writes into, and an AI layer that
@@ -239,7 +239,7 @@ restating a third-party API. The compounding effect: an entity discovered by the
 scanner is immediately available to the bot's answers and to every later scan,
 without a new integration.
 
-**This is the parity argument with a twist.** Helius sells tracing; Arkham sells
+**This is the parity argument with a twist.** The incumbents sell tracing; they sell
 entity pages; Nansen sells smart-money labels. We are building a system where
 the **label, the entity, the archive and the AI answer share one store**, so the
 marginal cost of the next question approaches zero. That is the "any dumbass can
@@ -279,7 +279,7 @@ Non-negotiables:
 4. **EVM testnet-style thin chains** (base 5,988; bsc 5,520; arbitrum 3,152) are
    under-covered relative to their scan volume.
 
-We are not at Helius or Arkham parity today. The path is the four items above,
+We are not at incumbent parity today. The path is the four items above,
 in that order, and each one is measurable.
 
 ---
@@ -312,5 +312,5 @@ in that order, and each one is measurable.
 - **"We have an entity system."** 223 rows, one heuristic.
 - **"BigLake covers all chains."** AWS has exactly `eth/` and `btc/`.
 - **"The archive is 90 days."** Measured: base 71, ethereum 67; the rest less.
-- **"Alchemy gives us range because we have 3 keys."** Keys multiply rate, never
+- **"Three keys give us range."** Keys multiply rate, never
   span.
