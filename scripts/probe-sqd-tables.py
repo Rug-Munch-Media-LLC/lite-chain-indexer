@@ -19,6 +19,12 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
+
+# Run as a script: `scripts/` is not on sys.path, so the package would not
+# import. Anchor to the repo root so `python3 scripts/probe-sqd-tables.py`
+# works the way its own docstring says it does.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lite_indexer.query.sqd_source import SQDPortalError, SQDSource
 from lite_indexer.query.sqd_tables import probe_logs, probe_traces
