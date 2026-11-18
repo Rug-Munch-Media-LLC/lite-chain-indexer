@@ -133,7 +133,25 @@ def compute_integrity(stats: dict[str, Any]) -> dict[str, Any]:
     contiguous_pct = 100.0 * distinct / expected_span if expected_span else 100.0
     stats["expected_span"] = expected_span
     stats["contiguous_pct"] = round(contiguous_pct, 2)
-    stats["status"] = "ok" if contiguous_pct >= 99.0 else "gaps"
+
+    # 2026-11-16: contiguity CANNOT be the pass/fail signal.
+    #   contiguous_pct counts distinct block_numbers over the min..max block
+    #   span. This indexer does not index every block -- it indexes the blocks
+    #   that carry transfers, and it samples. So the value sits at 1-25% on a
+    #   perfectly healthy chain, the ">= 99.0 -> ok" branch is unreachable by
+    #   construction, and the audit printed `status: gaps` on EVERY chain for
+    #   months. Everyone learned to ignore it, and ten chains were then allowed
+    #   to sit 20-24 days stale underneath it.
+    #
+    #   A metric that can never pass is a mute gate, not a strict one.
+    #
+    #   contiguity_pct is now REPORTED (useful for spotting a badly under-
+    #   sampled range) but not a status. The status comes from temporal
+    #   freshness -- is there a calendar day with no rows -- which a sampling
+    #   indexer can satisfy and which fails loudly when a writer dies.
+    #   See lite_indexer.freshness and lite_indexer.freshness_query.
+    stats["contiguity_pct"] = stats["contiguous_pct"]
+    stats["status"] = "observed"
     return stats
 
 
@@ -329,12 +347,14 @@ def summarize_report(report: dict[str, dict[str, Any]]) -> dict[str, Any]:
         ``{chains, ok_count, gap_count, empty_count, unavailable_count,
         total_rows, chains_with_gaps}``.
     """
-    ok_count = gap_count = empty_count = unavailable_count = 0
+    ok_count = gap_count = empty_count = unavailable_count = observed_count = 0
     total_rows = 0
     chains_with_gaps: list[str] = []
     for chain, stats in report.items():
         status = stats.get("status")
-        if status == "ok":
+        if status == "observed":
+            observed_count += 1
+        elif status == "ok":
             ok_count += 1
         elif status == "gaps":
             gap_count += 1
@@ -347,6 +367,7 @@ def summarize_report(report: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return {
         "chains": len(report),
         "ok_count": ok_count,
+        "observed_count": observed_count,
         "gap_count": gap_count,
         "empty_count": empty_count,
         "unavailable_count": unavailable_count,

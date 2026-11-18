@@ -10,6 +10,7 @@ authors = [
 ]
 
 dependencies = [
+    "pydantic>=2.6",  # imported unconditionally by webhooks/ and strategies/ (tron, solana) — was only in the [api] extra, so a bare `pip install -e ".[dev]"` produced a tree where those modules failed to import
     "httpx>=0.27.0",
     "structlog>=24.4.0",
     "clickhouse-driver>=0.2.0",
@@ -41,12 +42,23 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pre-commit>=4.6.0",
-    "gitleaks>=8.18.0",
+    # gitleaks is a Go binary, NOT a pip package: pip install -e ".[dev]"
+    # died on ResolutionImpossible for it, which is why both matrix legs of
+    # CI / lint-and-test failed at the install step before any gate ran.
+    # The binary is installed by the workflow (sast job) and by lefthook.
     "import-linter>=2.15",
     "vulture>=2.16",
 ]
 query = [
     "duckdb>=1.0.0",
+]
+# 2026-11-16: the lake_fill/bigquery_rest path was written and wired but
+# declared no dependency, so every `fill-eth`/`fill-solana` run died at
+# `from google.auth.transport.requests import Request` with ModuleNotFoundError
+# in the release image. The free public-dataset backfill was unreachable.
+bigquery = [
+    "google-auth>=2.30.0",
+    "requests>=2.31.0",
 ]
 parquet = [
     "pyarrow>=15.0.0",

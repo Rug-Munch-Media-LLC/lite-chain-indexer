@@ -1,28 +1,25 @@
-"""
-Persistent L2 response cache — SQLite (WAL) behind the in-memory LRU.
+"""Persistent L2 response cache — SQLite (WAL) behind the in-memory LRU.
 
-The in-process cache (``rpc/respcache.py``) dies on restart, so backfill and
-reconciliation re-fetch immutable history every process lifetime. This module
-adds a durable tier:
+Facade over the cohesive cache modules; every public name that existed before
+the split is still importable from here:
 
-  * SQLite in WAL mode (concurrent readers, durable commits),
-  * bounded by ``RPC_CACHE_MAX_ENTRIES`` + ``RPC_CACHE_MAX_MB`` with LRU-ish
-    eviction (oldest ``accessed_at`` first) and TTL pruning,
-  * reorg-aware range invalidation (``invalidate_range``),
-  * **failure-safe**: every operation swallows DB errors and reports a miss
-    / no-op, so a broken or missing database can never break an RPC read.
+* :mod:`lite_indexer.rpc.cache_schema` — DDL + sizing constants
+* :mod:`lite_indexer.rpc.cache_conn` — connection / lifecycle
+* :mod:`lite_indexer.rpc.cache_rows` — payload reads + writes
+* :mod:`lite_indexer.rpc.cache_maint` — reorg invalidation, clear, stats
+* :mod:`lite_indexer.rpc.cache_gating` — capability/health/ban gating state
+* :mod:`lite_indexer.rpc.cache_store` — the assembled ``ResponseCacheDB``
+
+The tier is bounded by ``RPC_CACHE_MAX_ENTRIES`` + ``RPC_CACHE_MAX_MB`` with
+LRU-ish eviction and TTL pruning, reorg-aware range invalidation, and is
+failure-safe: every operation swallows DB errors and reports a miss / no-op,
+so a broken or missing database can never break an RPC read.
 
 Stored keys are opaque strings built by ``rpc/respcache.py``. The payload is
 canonical JSON text. This module never sees provider names or secrets.
 """
 
 from __future__ import annotations
-
-import sqlite3
-import threading
-import time
-from pathlib import Path
-from typing import Any
 
 from lite_indexer.config import (
     RPC_CACHE_DB,
@@ -31,416 +28,10 @@ from lite_indexer.config import (
     RPC_CACHE_MAX_MB,
     RPC_CACHE_TTL_S,
 )
-from lite_indexer.logging import get_logger
-from lite_indexer.metrics import incr as metrics_incr
-
-logger = get_logger(__name__)
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS rpc_cache (
-    key          TEXT PRIMARY KEY,
-    chain        TEXT NOT NULL,
-    method       TEXT NOT NULL,
-    from_block   INTEGER,
-    to_block     INTEGER,
-    block_number INTEGER,
-    block_hash   TEXT,
-    payload      TEXT NOT NULL,
-    size_bytes   INTEGER NOT NULL,
-    hits         INTEGER NOT NULL DEFAULT 0,
-    created_at   REAL NOT NULL,
-    accessed_at  REAL NOT NULL,
-    expires_at   REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_rpc_cache_expires ON rpc_cache(expires_at);
-CREATE INDEX IF NOT EXISTS idx_rpc_cache_range ON rpc_cache(chain, from_block, to_block);
-CREATE INDEX IF NOT EXISTS idx_rpc_cache_block ON rpc_cache(chain, block_number);
-CREATE INDEX IF NOT EXISTS idx_rpc_cache_accessed ON rpc_cache(accessed_at);
-CREATE TABLE IF NOT EXISTS gating_state (
-    kind       TEXT NOT NULL,
-    key        TEXT NOT NULL,
-    payload    TEXT NOT NULL,
-    updated_at REAL NOT NULL,
-    expires_at REAL NOT NULL,
-    PRIMARY KEY (kind, key)
-);
-CREATE INDEX IF NOT EXISTS idx_gating_state_expires ON gating_state(expires_at);
-"""
-
-# Cap for the gating-state table (capability verdicts, health, bans). Small
-# and bounded; prune oldest rows when exceeded. 0 disables the cap.
-GATING_STATE_MAX_ENTRIES = 5000
-
-# Enforce the size cap every N writes (SUM over 200k rows is not free).
-_SIZE_CHECK_EVERY = 32
-
-
-class ResponseCacheDB:
-    """Durable SQLite cache store. All methods are exception-safe."""
-
-    def __init__(
-        self,
-        path: str | Path,
-        *,
-        max_entries: int,
-        ttl_s: float,
-        max_mb: int,
-        enabled: bool = True,
-    ) -> None:
-        self.path = str(path)
-        self.max_entries = max(0, int(max_entries))
-        self.ttl_s = max(0.0, float(ttl_s))
-        self.max_mb = max(0, int(max_mb))
-        self.enabled = enabled
-        self._conn: sqlite3.Connection | None = None
-        self._lock = threading.Lock()
-        self._writes = 0
-
-    # ── Connection / lifecycle ────────────────────────────────────────
-
-    def _connect(self) -> sqlite3.Connection | None:
-        """Open (once) the WAL database; None when unavailable."""
-        if not self.enabled:
-            return None
-        if self._conn is not None:
-            return self._conn
-        try:
-            db_path = Path(self.path)
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=5.0)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.executescript(_SCHEMA)
-            conn.commit()
-            self._conn = conn
-        except Exception as exc:  # noqa: BLE001 — cache must never break reads
-            logger.debug("rpc_cache_db_unavailable", path=self.path[:80], error=str(exc)[:100])
-            self._conn = None
-        return self._conn
-
-    def close(self) -> None:
-        """Close the connection (idempotent)."""
-        conn, self._conn = self._conn, None
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("rpc_cache_db_close_failed", error=str(exc)[:80])
-
-    # ── Reads ─────────────────────────────────────────────────────────
-
-    def get(self, key: str, now: float | None = None) -> str | None:
-        """Return the cached payload text, or None (miss / expired / error)."""
-        conn = self._connect()
-        if conn is None:
-            return None
-        now = time.time() if now is None else now
-        try:
-            with self._lock:
-                row = conn.execute("SELECT payload, expires_at FROM rpc_cache WHERE key = ?", (key,)).fetchone()
-                if row is None:
-                    return None
-                payload, expires_at = row
-                if float(expires_at) <= now:
-                    conn.execute("DELETE FROM rpc_cache WHERE key = ?", (key,))
-                    conn.commit()
-                    return None
-                conn.execute(
-                    "UPDATE rpc_cache SET hits = hits + 1, accessed_at = ? WHERE key = ?",
-                    (now, key),
-                )
-                conn.commit()
-                return str(payload)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("rpc_cache_db_get_failed", error=str(exc)[:100])
-            return None
-
-    # ── Writes ────────────────────────────────────────────────────────
-
-    def put(
-        self,
-        key: str,
-        *,
-        chain: str,
-        method: str,
-        payload: str,
-        from_block: int | None = None,
-        to_block: int | None = None,
-        block_number: int | None = None,
-        block_hash: str | None = None,
-        ttl: float | None = None,
-        now: float | None = None,
-    ) -> bool:
-        """Insert/replace one entry, then enforce TTL + caps. False on error."""
-        conn = self._connect()
-        if conn is None:
-            return False
-        now = time.time() if now is None else now
-        ttl = self.ttl_s if ttl is None else max(0.0, ttl)
-        try:
-            with self._lock:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO rpc_cache
-                        (key, chain, method, from_block, to_block, block_number,
-                         block_hash, payload, size_bytes, hits, created_at,
-                         accessed_at, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-                    """,
-                    (
-                        key,
-                        chain,
-                        method,
-                        from_block,
-                        to_block,
-                        block_number,
-                        block_hash,
-                        payload,
-                        len(payload.encode("utf-8", "replace")),
-                        now,
-                        now,
-                        now + ttl,
-                    ),
-                )
-                evicted = self._enforce_limits(conn, now)
-                conn.commit()
-            self._writes += 1
-            if evicted:
-                metrics_incr("rpc_cache_evictions", float(evicted))
-            return True
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("rpc_cache_db_put_failed", error=str(exc)[:100])
-            return False
-
-    def _enforce_limits(self, conn: sqlite3.Connection, now: float) -> int:
-        """Prune expired rows, then evict oldest until under entry/size caps."""
-        evicted = 0
-        cursor = conn.execute("DELETE FROM rpc_cache WHERE expires_at <= ?", (now,))
-        evicted += max(0, cursor.rowcount)
-        if self.max_entries > 0:
-            row = conn.execute("SELECT COUNT(*) FROM rpc_cache").fetchone()
-            count = int(row[0]) if row else 0
-            if count > self.max_entries:
-                evicted += self._evict_oldest(conn, count - self.max_entries)
-        if self.max_mb > 0 and self._writes % _SIZE_CHECK_EVERY == 0:
-            row = conn.execute("SELECT COALESCE(SUM(size_bytes), 0), COUNT(*) FROM rpc_cache").fetchone()
-            total, count = (int(row[0]), int(row[1])) if row else (0, 0)
-            limit = self.max_mb * 1024 * 1024
-            if total > limit and count > 0:
-                evicted += self._evict_oldest(conn, max(1, count // 10))
-        return evicted
-
-    @staticmethod
-    def _evict_oldest(conn: sqlite3.Connection, limit: int) -> int:
-        cursor = conn.execute(
-            "DELETE FROM rpc_cache WHERE key IN "
-            "(SELECT key FROM rpc_cache ORDER BY accessed_at ASC, created_at ASC LIMIT ?)",
-            (int(limit),),
-        )
-        return max(0, cursor.rowcount)
-
-    # ── Invalidation ──────────────────────────────────────────────────
-
-    def invalidate_range(self, chain: str, from_block: int, to_block: int) -> int:
-        """Purge entries whose block range/number overlaps ``[from, to]``.
-
-        Rows keyed only by block hash are not range-addressable and are left
-        alone (a hash identifies immutable content). Returns rows deleted.
-
-        Note: the ``_range`` predicate uses two parameters per bound.
-        """
-        conn = self._connect()
-        if conn is None:
-            return 0
-        lo, hi = int(from_block), int(to_block)
-        if lo > hi:
-            lo, hi = hi, lo
-        try:
-            with self._lock:
-                cursor = conn.execute(
-                    """
-                    DELETE FROM rpc_cache
-                    WHERE chain = ?
-                      AND (
-                        (from_block IS NOT NULL AND to_block IS NOT NULL
-                         AND to_block >= ? AND from_block <= ?)
-                        OR (block_number IS NOT NULL AND block_number BETWEEN ? AND ?)
-                      )
-                    """,
-                    (chain, lo, hi, lo, hi),
-                )
-                deleted = max(0, cursor.rowcount)
-                conn.commit()
-            return deleted
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("rpc_cache_db_invalidate_failed", error=str(exc)[:100])
-            return 0
-
-    def clear(self) -> int:
-        """Delete every entry (tests/ops). Returns rows deleted."""
-        conn = self._connect()
-        if conn is None:
-            return 0
-        try:
-            with self._lock:
-                cursor = conn.execute("DELETE FROM rpc_cache")
-                deleted = max(0, cursor.rowcount)
-                conn.commit()
-            return deleted
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("rpc_cache_db_clear_failed", error=str(exc)[:100])
-            return 0
-
-    def stats(self) -> dict[str, Any]:
-        """Entry count + on-disk payload bytes (empty dict when unavailable)."""
-        conn = self._connect()
-        if conn is None:
-            return {}
-        try:
-            with self._lock:
-                row = conn.execute("SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM rpc_cache").fetchone()
-            return {
-                "entries": int(row[0]) if row else 0,
-                "size_bytes": int(row[1]) if row else 0,
-                "max_entries": self.max_entries,
-                "max_mb": self.max_mb,
-            }
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("rpc_cache_db_stats_failed", error=str(exc)[:100])
-            return {}
-
-    # ── Gating state (capability / health / bans) ─────────────────────
-    # A small, bounded key/value store used to survive restarts: capability
-    # verdicts, endpoint-health timestamps, and ban windows. Every method is
-    # exception-safe (a broken DB degrades to a cache miss).
-
-    def state_get(self, kind: str, key: str, now: float | None = None) -> str | None:
-        """Return a gating-state payload, or None (miss / expired / error)."""
-        conn = self._connect()
-        if conn is None:
-            return None
-        now = time.time() if now is None else now
-        try:
-            with self._lock:
-                row = conn.execute(
-                    "SELECT payload, expires_at FROM gating_state WHERE kind = ? AND key = ?",
-                    (kind, key),
-                ).fetchone()
-                if row is None:
-                    return None
-                payload, expires_at = row
-                if float(expires_at) <= now:
-                    conn.execute("DELETE FROM gating_state WHERE kind = ? AND key = ?", (kind, key))
-                    conn.commit()
-                    return None
-                return str(payload)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("gating_state_get_failed", kind=kind, error=str(exc)[:100])
-            return None
-
-    def state_put(
-        self,
-        kind: str,
-        key: str,
-        payload: str,
-        *,
-        ttl: float = 0.0,
-        now: float | None = None,
-    ) -> bool:
-        """Upsert one gating-state entry (ttl <= 0 means no expiry)."""
-        conn = self._connect()
-        if conn is None:
-            return False
-        now = time.time() if now is None else now
-        expires_at = now + ttl if ttl > 0 else float("inf")
-        try:
-            with self._lock:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO gating_state
-                        (kind, key, payload, updated_at, expires_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (kind, key, payload, now, expires_at),
-                )
-                if GATING_STATE_MAX_ENTRIES > 0:
-                    row = conn.execute("SELECT COUNT(*) FROM gating_state").fetchone()
-                    count = int(row[0]) if row else 0
-                    if count > GATING_STATE_MAX_ENTRIES:
-                        conn.execute(
-                            "DELETE FROM gating_state WHERE rowid IN "
-                            "(SELECT rowid FROM gating_state ORDER BY updated_at ASC LIMIT ?)",
-                            (count - GATING_STATE_MAX_ENTRIES,),
-                        )
-                conn.commit()
-            return True
-        except Exception as exc:  # noqa: BLE001
-            # WARNING, not debug: this is how 2026-10-16..23 happened — the
-            # capability/health/ban store was read-only (root-owned volume,
-            # uid 1000 process) and every verdict was silently dropped, so
-            # each restart re-derived "unknown capability" and the pool gauge
-            # read 0. Log once per kind per process, then stay quiet.
-            if kind not in _WRITE_FAILED_KINDS:
-                _WRITE_FAILED_KINDS.add(kind)
-                logger.warning(
-                    "gating_state_put_failed",
-                    kind=kind,
-                    error=str(exc)[:120],
-                    path=self.path[:80],
-                )
-            return False
-
-    def state_delete(self, kind: str, key: str) -> None:
-        """Remove one gating-state entry (best-effort)."""
-        conn = self._connect()
-        if conn is None:
-            return
-        try:
-            with self._lock:
-                conn.execute("DELETE FROM gating_state WHERE kind = ? AND key = ?", (kind, key))
-                conn.commit()
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("gating_state_delete_failed", kind=kind, error=str(exc)[:100])
-
-    def state_load(self, kind: str, now: float | None = None) -> dict[str, str]:
-        """Return every live entry for ``kind`` as ``{key: payload}``."""
-        conn = self._connect()
-        if conn is None:
-            return {}
-        now = time.time() if now is None else now
-        try:
-            with self._lock:
-                conn.execute("DELETE FROM gating_state WHERE expires_at <= ?", (now,))
-                conn.commit()
-                rows = conn.execute(
-                    "SELECT key, payload FROM gating_state WHERE kind = ?",
-                    (kind,),
-                ).fetchall()
-            return {str(k): str(v) for k, v in rows}
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("gating_state_load_failed", kind=kind, error=str(exc)[:100])
-            return {}
-
-    def state_count(self, kind: str) -> int:
-        """Number of live entries for ``kind`` (0 when unavailable)."""
-        conn = self._connect()
-        if conn is None:
-            return 0
-        try:
-            with self._lock:
-                row = conn.execute("SELECT COUNT(*) FROM gating_state WHERE kind = ?", (kind,)).fetchone()
-            return int(row[0]) if row else 0
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("gating_state_count_failed", kind=kind, error=str(exc)[:100])
-            return 0
-
+from lite_indexer.rpc.cache_gating import GATING_STATE_MAX_ENTRIES
+from lite_indexer.rpc.cache_store import ResponseCacheDB
 
 # ── Process-wide singleton ─────────────────────────────────────────────
-
-#: Gating-state kinds whose write already failed in this process (one
-#: warning each — never a per-write log storm).
-_WRITE_FAILED_KINDS: set[str] = set()
 
 _DB: ResponseCacheDB | None = None
 _OVERRIDE_PATH: str | None = None
@@ -480,6 +71,9 @@ def configured_path() -> str:
     return _OVERRIDE_PATH or RPC_CACHE_DB
 
 
+# ── Module-level gating-state wrappers ─────────────────────────────────
+
+
 def state_get(kind: str, key: str, now: float | None = None) -> str | None:
     """Module-level gating-state read (see :meth:`ResponseCacheDB.state_get`)."""
     return get_db().state_get(kind, key, now)
@@ -507,6 +101,11 @@ def state_count(kind: str) -> int:
 
 __all__ = [
     "GATING_STATE_MAX_ENTRIES",
+    "RPC_CACHE_DB",
+    "RPC_CACHE_ENABLED",
+    "RPC_CACHE_MAX_ENTRIES",
+    "RPC_CACHE_MAX_MB",
+    "RPC_CACHE_TTL_S",
     "ResponseCacheDB",
     "configured_path",
     "get_db",

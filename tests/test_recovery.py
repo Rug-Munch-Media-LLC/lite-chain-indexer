@@ -102,19 +102,39 @@ class TestChainStats:
 
 
 class TestComputeIntegrity:
-    def test_contiguous_ok(self):
+    """Contiguity is OBSERVED, never a pass/fail status.
+
+    2026-11-16: this indexer samples blocks, so contiguous_pct sits at 1-25% on
+    a healthy chain and the old ">= 99.0 -> ok" branch was unreachable. It
+    printed `gaps` on every chain for months, everyone ignored it, and ten
+    chains went 20-24 days stale underneath it. Pass/fail now comes from
+    temporal freshness (lite_indexer.freshness); these tests pin that contiguity
+    is still measured but no longer decides.
+    """
+
+    def test_contiguity_is_reported(self):
         stats = compute_integrity(
             {"ok": True, "min_block": 100, "max_block": 1_000_000, "distinct_blocks": 999_901, "total_rows": 5_000_000}
         )
-        assert stats["status"] == "ok"
         assert stats["contiguous_pct"] >= 99.9
+        assert stats["status"] == "observed"
 
-    def test_gaps_detected(self):
+    def test_low_contiguity_is_not_a_status(self):
+        """A sampling indexer's normal shape must not read as a failure."""
         stats = compute_integrity(
-            {"ok": True, "min_block": 0, "max_block": 1_000_000, "distinct_blocks": 500_000, "total_rows": 5_000_000}
+            {"ok": True, "min_block": 0, "max_block": 1_000_000, "distinct_blocks": 5_000, "total_rows": 5_000_000}
         )
-        assert stats["status"] == "gaps"
-        assert stats["contiguous_pct"] == pytest.approx(50.0)
+        assert stats["contiguous_pct"] == pytest.approx(0.5)
+        assert stats["status"] == "observed"
+
+    def test_contiguity_never_passes_or_fails(self):
+        """No input produces ok/gaps: the branch that lied is gone."""
+        for distinct in (0, 5_000, 999_901):
+            stats = compute_integrity(
+                {"ok": True, "min_block": 0, "max_block": 1_000_000,
+                 "distinct_blocks": distinct, "total_rows": 1}
+            )
+            assert stats["status"] not in ("ok", "gaps")
 
     def test_empty_status(self):
         stats = compute_integrity({"ok": True, "min_block": None, "max_block": None, "total_rows": 0})
@@ -237,19 +257,28 @@ class TestIntegrityCheck:
             ["ethereum", "base", "solana"],
             chain_types={"ethereum": "evm", "base": "evm", "solana": "solana"},
         )
-        # The fake returns the same stats for every chain.
+        # The fake returns the same stats for every chain. Status is now
+        # "observed": contiguity no longer decides pass/fail, so no chain is
+        # counted as ok or gapped. Freshness (lite_indexer.freshness) does.
         summary = summarize_report(report)
         assert summary["chains"] == 3
-        assert summary["ok_count"] == 3
+        assert summary["ok_count"] == 0
         assert summary["gap_count"] == 0
+        assert summary["observed_count"] == 3
         assert summary["total_rows"] == 15_000_000
 
-    def test_summary_flags_gaps(self):
+    def test_summary_does_not_invent_gaps_from_contiguity(self):
+        """Half the blocks touched is NORMAL for a sampler, not a gap.
+
+        This test used to assert gap_count == 1 for exactly this input, which is
+        the assertion that made ten stale chains invisible.
+        """
         ch = FakeCH(stats=[(0, 1_000_000, 500_000, 5_000_000)])
         report = run_integrity_check(ch, ["ethereum"])
         summary = summarize_report(report)
-        assert summary["gap_count"] == 1
-        assert summary["chains_with_gaps"] == ["ethereum"]
+        assert summary["gap_count"] == 0
+        assert summary["chains_with_gaps"] == []
+        assert summary["observed_count"] == 1
 
     def test_summary_unavailable(self):
         report = run_integrity_check(None, ["ethereum"])

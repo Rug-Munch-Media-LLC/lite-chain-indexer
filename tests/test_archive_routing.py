@@ -18,8 +18,6 @@ Hermetic — no network, no disk.
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 
 from lite_indexer.rpc import capabilities as cap
@@ -175,7 +173,7 @@ class _FakePooled:
 
 class TestClientDispatchGuard:
     @pytest.mark.asyncio
-    async def test_archive_call_fails_closed_on_known_non_archive(self):
+    async def test_archive_call_fails_closed_on_known_non_archive(self, monkeypatch):
         from lite_indexer.rpc import client as rc
 
         _cap("https://nonarchive.example", archive=False)
@@ -184,13 +182,13 @@ class TestClientDispatchGuard:
         async def fake_get(timeout):
             return pooled
 
-        with patch.object(rc, "_get_call_client", fake_get):
-            out = await rc.RpcClient().call("https://nonarchive.example", "eth_getLogs")
+        monkeypatch.setattr(rc, "_get_call_client", fake_get)
+        out = await rc.RpcClient().call("https://nonarchive.example", "eth_getLogs")
         assert out is None
         assert pooled.calls == 0  # never hit the wire
 
     @pytest.mark.asyncio
-    async def test_tip_call_still_dispatches(self):
+    async def test_tip_call_still_dispatches(self, monkeypatch):
         from lite_indexer.rpc import client as rc
 
         _cap("https://tip-dispatch.example", archive=False)
@@ -199,13 +197,13 @@ class TestClientDispatchGuard:
         async def fake_get(timeout):
             return pooled
 
-        with patch.object(rc, "_get_call_client", fake_get):
-            out = await rc.RpcClient().call("https://tip-dispatch.example", "eth_chainId")
+        monkeypatch.setattr(rc, "_get_call_client", fake_get)
+        out = await rc.RpcClient().call("https://tip-dispatch.example", "eth_chainId")
         assert out == {"result": "0x4b7"}
         assert pooled.calls == 1
 
     @pytest.mark.asyncio
-    async def test_archive_call_allowed_on_probed_archive(self):
+    async def test_archive_call_allowed_on_probed_archive(self, monkeypatch):
         from lite_indexer.rpc import client as rc
 
         _cap(ARCHIVE_EP, archive=True)
@@ -214,8 +212,8 @@ class TestClientDispatchGuard:
         async def fake_get(timeout):
             return pooled
 
-        with patch.object(rc, "_get_call_client", fake_get):
-            out = await rc.RpcClient().call(ARCHIVE_EP, "eth_getLogs")
+        monkeypatch.setattr(rc, "_get_call_client", fake_get)
+        out = await rc.RpcClient().call(ARCHIVE_EP, "eth_getLogs")
         assert out == {"result": []}
         assert pooled.calls == 1
 

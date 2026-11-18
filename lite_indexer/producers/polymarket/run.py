@@ -112,4 +112,25 @@ def main(argv: list[str] | None = None) -> int:
     summary = run(tuple(d.strip() for d in args.datasets.split(",") if d.strip()), force=args.force)
     if args.json:
         sys.stdout.write(json.dumps(summary, sort_keys=True) + "\n")
-    return 0 if all(r.get("status") != "error" for r in summary["datasets"].values()) else 1
+
+    # 2026-11-17: exit non-zero only when NO dataset produced anything.
+    #
+    # It used to be "error in ANY dataset -> rc=1", so one permanently broken
+    # upstream failed the whole unit forever. Measured cause:
+    # data-api.polymarket.com is RETIRED -- HTTP 410 Gone from Cloudflare on
+    # every path including /markets, while gamma-api returns 200 from the same
+    # IP, so it is not an IP block. trades.py and holders.py call DATA_API;
+    # markets.py calls GAMMA_API and still works. Markets therefore wrote 1,004
+    # rows every cycle while the unit reported failure, and pm-producer has sat
+    # in `failed` state since 2026-11-02 with pm_trades frozen there.
+    #
+    # A partial success IS the honest state, and the per-dataset `results`
+    # already say which failed and why. Failing the unit on it hides the
+    # datasets that are landing, which inverts what a health signal is for.
+    failed = {k: v for k, v in summary["datasets"].items() if v.get("status") == "error"}
+    ok = [k for k, v in summary["datasets"].items() if v.get("status") == "ok"]
+    if failed and not ok:
+        return 1
+    if failed:
+        logger.warning("polymarket_partial_cycle", failed=sorted(failed), ok=sorted(ok))
+    return 0

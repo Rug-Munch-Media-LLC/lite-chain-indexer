@@ -18,6 +18,15 @@ import os
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+# 2026-11-16: the RPC phase timeout is 300 s in production, and one test
+# (test_dex_phase_timeout_is_nonfatal_after_transfers) exercised the timeout path
+# by waiting that long for real -- 63 of the suite's 146 seconds, 43% of CI wall
+# time for a single assertion. The suite proves the HANDLING of a phase timeout,
+# not its duration, so it runs against a tiny one. Must be set before
+# lite_indexer.indexer._phase_guard is first imported, which is why it lives here
+# at module scope rather than in a fixture (fixtures run too late).
+os.environ.setdefault("LITE_INDEXER_RPC_PHASE_TIMEOUT_S", "0.05")
+
 import pytest
 
 

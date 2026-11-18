@@ -219,11 +219,23 @@ class QueryRouter:
         self,
         ch_rows: list[dict[str, Any]],
         cold_rows: list[dict[str, Any]],
-        from_block: int | None,
-        to_block: int | None,
+        req: Any,
     ) -> bool:
-        """Whether the free lake should be read for this range."""
-        return should_try_lake(ch_rows, cold_rows, from_block, to_block)
+        """Whether the free lake should be read for this request.
+
+        The request carries its own bounds AND its appetite (``req.limit``): a
+        response with fewer rows than the caller asked for is a gap, and a gap is
+        what the free lake is for. Passing the request instead of five scalars
+        keeps this the same shape as the other leg predicates — and under the
+        structure gate's param ceiling.
+        """
+        return should_try_lake(
+            ch_rows,
+            cold_rows,
+            getattr(req, "from_block", None),
+            getattr(req, "to_block", None),
+            getattr(req, "limit", None),
+        )
 
     # ── Filter helpers ───────────────────────────────────────────────
 
@@ -302,13 +314,14 @@ class QueryRouter:
         cold_rows = self._query_cold(req)
         merged = self._merge_rows(table, ch_rows, cold_rows, limit=limit)
 
-        # Consult the free lake whenever the cold tier is empty and the
-        # range is bounded — NOT only when the RPC-fallback predicate is
-        # already true. That predicate returns False for a bounded WIDE
-        # range, which is exactly the range the lake holds and RPC would
-        # refuse or charge for.
+        # Consult the free lake whenever the range is bounded AND the local
+        # tiers did not satisfy the request — NOT only when the RPC-fallback
+        # predicate is already true. That predicate returns False for a bounded
+        # WIDE range, which is exactly the range the lake holds and RPC would
+        # refuse or charge for. A PARTIAL fill is also a gap: `limit` is what the
+        # caller asked for, so fewer rows than that means the lake may have more.
         biglake_rows: list[dict[str, Any]] = []
-        if leg_enabled(self, "biglake", use_rpc) and self._should_try_lake(ch_rows, cold_rows, from_block, to_block):
+        if leg_enabled(self, "biglake", use_rpc) and self._should_try_lake(ch_rows, cold_rows, req):
             biglake_rows, self.last_read_truncated = await self._biglake_route(req)
             if biglake_rows:
                 merged = self._merge_rows(table, ch_rows, cold_rows, biglake_rows, limit=limit)

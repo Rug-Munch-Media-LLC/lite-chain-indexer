@@ -60,8 +60,21 @@ def test_should_try_lake_prefers_lake_on_a_wide_bounded_range() -> None:
     # Cold tier empty, range bounded and far wider than max_block_range.
     assert should_try_lake([], [], 1, 10_000_000) is True
 
-    # Cold tier has data: the lake adds nothing, so it is not read.
-    assert should_try_lake([], [{"block_number": 5}], 1, 10_000_000) is False
+    # 2026-11-16: A PARTIAL FILL IS STILL A GAP.
+    # These two used to assert False — "any row present means done". That is the
+    # commonest backfill shape (a few days held out of an 84-day range), and
+    # treating it as done sent the whole remainder to the PAID RPC leg while the
+    # free lake held exactly that history. The caller's `limit` defines "enough":
+    # fewer rows than requested means the lake may fill the rest.
+    assert should_try_lake([], [{"block_number": 5}], 1, 10_000_000, requested_rows=100) is True
+    assert should_try_lake([{"block_number": 5}], [], 1, 10_000_000, requested_rows=100) is True
+
+    # Satisfied request: the lake adds nothing, so it is not read.
+    full = [{"block_number": i} for i in range(100)]
+    assert should_try_lake(full, [], 1, 10_000_000, requested_rows=100) is False
+    assert should_try_lake(full, [], 1, 10_000_000, requested_rows=100) is False
+
+    # No stated appetite: fall back to "any row means done" (previous contract).
     assert should_try_lake([{"block_number": 5}], [], 1, 10_000_000) is False
 
     # Unbounded: no date partitions can be derived, so no lake read.

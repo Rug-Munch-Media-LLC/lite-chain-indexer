@@ -84,7 +84,17 @@ FROM
         chain,
         token_address,
         address,
-        if(address = to_address, toInt128OrZero(value), -toInt128OrZero(value)) AS delta
+        -- 2026-11-16: evm_transfers.value became Nullable(String) (migration 024,
+        -- the lake preserves NULL rather than fabricating "0"). toInt128OrZero on a
+        -- Nullable returns Nullable, so sum(delta) was Nullable(Int128) and every
+        -- insert died with Code 349 'Cannot convert NULL value to non-Nullable type'
+        -- on holder_balances.balance -- stalling 11 of 21 chains for weeks.
+        -- A NULL value means the source does not know the amount; it moves no known
+        -- balance delta, so it contributes 0 to the accumulator rather than being
+        -- dropped (dropping would lose transfer_count) or fabricated as a real 0.
+        if(address = to_address,
+           toInt128OrZero(coalesce(value, '0')),
+           -toInt128OrZero(coalesce(value, '0'))) AS delta
     FROM
     (
         SELECT
