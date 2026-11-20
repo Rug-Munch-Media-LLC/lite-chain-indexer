@@ -141,7 +141,19 @@ class RetentionRule:
 # lock-step with migrations/021_retention_classes.sql, the runtime DDLs
 # (which read this dict), and tests/test_retention.py.
 RETENTION_POLICY: dict[str, RetentionRule] = {
-    "evm_transfers": RetentionRule("evm_transfers", 30, "block_timestamp"),
+    # 2026-11-20: was 30. THIS dict is the authoritative TABLE-level TTL - the one
+    # enforce_retention_policies() compares against the live TTL and re-applies on
+    # the write path, so any manual ALTER is reverted on the next insert batch.
+    # (The RETENTION_DAYS dict below only drives per-COLUMN degradation of the heavy
+    # token_symbol/token_name strings.)
+    #
+    # At 30 days a 90-day backfill was written and then deleted by its own TTL in
+    # the same run: on base, 19 days were inserted (255M rows reported) and 5
+    # survived. EVERY sibling history table keeps 90 (dex_events,
+    # internal_transfers, solana_transfers) and the system's target window is 90,
+    # so evm_transfers was the only table that could not hold the history it was
+    # being handed.
+    "evm_transfers": RetentionRule("evm_transfers", 90, "block_timestamp"),
     "dex_events": RetentionRule("dex_events", 90, "block_timestamp"),
     "internal_transfers": RetentionRule("internal_transfers", 90, "block_timestamp"),
     "solana_transfers": RetentionRule("solana_transfers", 90, "block_timestamp"),
@@ -156,7 +168,19 @@ RETENTION_POLICY: dict[str, RetentionRule] = {
 
 # Retention (days) per table before column-level degradation.
 RETENTION_DAYS: dict[str, int] = {
-    "evm_transfers": 30,
+    # 2026-11-20: was 30. EVERY sibling history table keeps 90 days of detail
+    # (dex_events, internal_transfers, solana_transfers, token_transfers), and the
+    # system's stated goal is a 90-day window. evm_transfers at 30 meant a 90-day
+    # backfill was WRITTEN AND THEN DELETED BY ITS OWN TTL within the same run:
+    # measured on base, 19 days were inserted (255M rows reported) and only 5
+    # survived, because `TTL block_timestamp + INTERVAL 30 DAY` is a TABLE-level
+    # TTL that drops whole rows, not the column-degradation this dict was meant to
+    # drive. 17 of the 19 days were eaten.
+    #
+    # This value is the COLUMN-degradation window (heavy token_symbol/token_name
+    # columns blank out after it); row identity is kept for the table-level TTL.
+    # Both are 90 now so the two layers agree.
+    "evm_transfers": 90,
     "dex_events": 90,
     "deployer_events": 365,
     "internal_transfers": 90,
