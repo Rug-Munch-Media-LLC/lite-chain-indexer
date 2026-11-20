@@ -10,7 +10,10 @@
 --
 -- POLICY (single source of truth: lite_indexer/config/storage.py
 -- RETENTION_POLICY, mirrored in docs/CLICKHOUSE_RETENTION.md):
---   30d   evm_transfers            on block_timestamp  (volume hog; event time)
+--   90d   evm_transfers            on block_timestamp  (was 30d: a 30-day table
+--                                                   deleted its own 90-day
+--                                                   backfill in the same run,
+--                                                   2026-11-20)
 --   90d   dex_events               on block_timestamp
 --   90d   internal_transfers       on block_timestamp
 --   90d   solana_transfers         on block_timestamp
@@ -44,7 +47,7 @@
 --    retention. ReplacingMergeTree + partitioned ⇒ cheap partition drops.
 
 ALTER TABLE wallet_memory.evm_transfers
-    MODIFY TTL block_timestamp + INTERVAL 30 DAY;
+    MODIFY TTL block_timestamp + INTERVAL 90 DAY;
 
 -- ── 90-day event tables.
 

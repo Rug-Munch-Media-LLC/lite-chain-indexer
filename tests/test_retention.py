@@ -30,7 +30,8 @@ from lite_indexer.retention import (
 )
 
 EXPECTED_POLICY: dict[str, tuple[int, str]] = {
-    "evm_transfers": (30, "block_timestamp"),
+    # 90, not 30: a 30-day table deletes its own 90-day backfill (2026-11-20)
+    "evm_transfers": (90, "block_timestamp"),
     "dex_events": (90, "block_timestamp"),
     "internal_transfers": (90, "block_timestamp"),
     "solana_transfers": (90, "block_timestamp"),
@@ -84,7 +85,7 @@ def test_policy_mapping_matches_contract() -> None:
 
 
 def test_ttl_expression_is_canonical() -> None:
-    assert ttl_expression(RETENTION_POLICY["evm_transfers"]) == "block_timestamp + INTERVAL 30 DAY"
+    assert ttl_expression(RETENTION_POLICY["evm_transfers"]) == "block_timestamp + INTERVAL 90 DAY"
     assert ttl_expression(RETENTION_POLICY["scam_addresses"]) == "first_seen_at + INTERVAL 180 DAY"
 
 
@@ -141,11 +142,14 @@ def test_evaluate_drift_all_ok() -> None:
 
 
 def test_evaluate_drift_reports_wrong_window() -> None:
-    live = {"evm_transfers": "TTL ingested_at + toIntervalDay(90)"}
+    # The live value must be wrong on BOTH axes for this test to mean anything.
+    # It used to use 90, which became the CORRECT window on 2026-11-20, so 60 is
+    # used here: still a drift, and it keeps asserting both column and days.
+    live = {"evm_transfers": "TTL ingested_at + toIntervalDay(60)"}
     row = next(r for r in evaluate_drift(live) if r.table == "evm_transfers")
     assert row.status == "drift" and not row.ok
-    assert row.actual_column == "ingested_at" and row.actual_days == 90
-    assert row.expected_column == "block_timestamp" and row.expected_days == 30
+    assert row.actual_column == "ingested_at" and row.actual_days == 60
+    assert row.expected_column == "block_timestamp" and row.expected_days == 90
 
 
 def test_evaluate_drift_reports_missing_ttl() -> None:
@@ -176,7 +180,7 @@ def test_ensure_retention_applies_only_existing() -> None:
     client = FakeCH(ddl_by_table={"evm_transfers": "x", "dex_events": "x"})
     applied = ensure_retention_policies(client)
     assert applied == ["dex_events", "evm_transfers"]
-    assert "ALTER TABLE wallet_memory.evm_transfers MODIFY TTL block_timestamp + INTERVAL 30 DAY" in client.alters
+    assert "ALTER TABLE wallet_memory.evm_transfers MODIFY TTL block_timestamp + INTERVAL 90 DAY" in client.alters
     assert "ALTER TABLE wallet_memory.dex_events MODIFY TTL block_timestamp + INTERVAL 90 DAY" in client.alters
     assert len(client.alters) == 2
 
@@ -222,3 +226,43 @@ def test_main_passes_when_matching(monkeypatch: pytest.MonkeyPatch, capsys: pyte
 def test_drift_row_defaults() -> None:
     row = DriftRow("t", "c", 1, ok=True, status="ok")
     assert row.actual_column == "" and row.actual_days is None
+
+
+def test_evm_transfers_keeps_the_same_window_as_its_siblings() -> None:
+    """evm_transfers must not be the one short-window history table.
+
+    Measured 2026-11-20: it was 30 days while dex_events, internal_transfers and
+    solana_transfers all keep 90, and the system's stated window is 90 days. A
+    90-day backfill was therefore written and deleted by the table's own TTL in the
+    same run — 19 days inserted on base, 5 survived.
+
+    This pins the invariant rather than the literal: every
+    block_timestamp-keyed transfer/event table must keep at least the 90-day
+    window. A future table added at 30 fails here instead of silently eating
+    history.
+    """
+    from lite_indexer.config.storage import RETENTION_POLICY
+
+    window = 90
+    short = {
+        name: rule.days
+        for name, rule in RETENTION_POLICY.items()
+        if rule.time_column == "block_timestamp" and rule.days < window
+    }
+    assert not short, (
+        f"block_timestamp tables below the {window}-day window would delete their "
+        f"own backfill: {short}"
+    )
+
+
+def test_evm_transfers_policy_and_column_degradation_agree() -> None:
+    """The TABLE ttl and the COLUMN-degradation window must not contradict."""
+    from lite_indexer.config.storage import RETENTION_DAYS, RETENTION_POLICY
+
+    for name in ("evm_transfers", "dex_events", "internal_transfers"):
+        table_days = RETENTION_POLICY[name].days
+        col_days = RETENTION_DAYS.get(name, table_days)
+        assert table_days == col_days, (
+            f"{name}: table TTL {table_days}d but column degradation {col_days}d — "
+            "rows would be dropped before their heavy columns were ever degraded"
+        )
