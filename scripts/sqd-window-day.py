@@ -29,6 +29,7 @@ from lite_indexer.archive import UnitSpec, write_unit  # noqa: E402
 from lite_indexer.query.sqd_window import (  # noqa: E402
     DEFAULT_ROWS_PER_SITTING,
     DEFAULT_STATE_DIR,
+    SitConfig,
     assemble_parts,
     clear_parts,
     open_day,
@@ -73,17 +74,18 @@ def main(argv: list[str] | None = None) -> int:
         print("dry run: nothing fetched, nothing uploaded")
         return 0
 
+    cfg = SitConfig(
+        state_dir=a.state_dir,
+        part_dir=part_dir,
+        rows_per_sitting=a.rows_per_sitting,
+    )
+
     if state.complete:
         print(f"day already complete: {state.rows_so_far} rows in {state.sittings} sittings")
     else:
         for n in range(max(1, a.max_sittings)):
             started = time.monotonic()
-            state = run_sitting(
-                state,
-                state_dir=a.state_dir,
-                part_dir=part_dir,
-                rows_per_sitting=a.rows_per_sitting,
-            )
+            state = run_sitting(state, cfg)
             took = time.monotonic() - started
             print(
                 f"sitting {n + 1}: rows={state.rows_so_far} "

@@ -161,14 +161,26 @@ def open_day(
     return state
 
 
+@dataclass(frozen=True)
+class SitConfig:
+    """The knobs one sitting needs, bundled so the function stays under 5 params.
+
+    These are all "how much / how fast", not "which day" -- the state already
+    carries the day. Bundling them keeps the signature honest instead of a
+    7-parameter call whose arguments are easy to transpose.
+    """
+
+    state_dir: Path = DEFAULT_STATE_DIR
+    part_dir: Path = Path(".")
+    rows_per_sitting: int = DEFAULT_ROWS_PER_SITTING
+    block_batch: int = DEFAULT_BLOCK_BATCH
+    sleep_s: float = DEFAULT_SLEEP_S
+
+
 def run_sitting(
     state: WindowState,
+    cfg: SitConfig,
     *,
-    state_dir: Path = DEFAULT_STATE_DIR,
-    part_dir: Path,
-    rows_per_sitting: int = DEFAULT_ROWS_PER_SITTING,
-    block_batch: int = DEFAULT_BLOCK_BATCH,
-    sleep_s: float = DEFAULT_SLEEP_S,
     src: SQDSource | None = None,
 ) -> WindowState:
     """Fetch one sitting, appending a parquet part and advancing the cursor.
@@ -181,6 +193,7 @@ def run_sitting(
         return state
     source = src or SQDSource()
     dataset = source.EVM_DATASETS[state.chain]
+    part_dir = cfg.part_dir
     part_dir.mkdir(parents=True, exist_ok=True)
     part = part_dir / f"part-{state.sittings:03d}.ndjson"
 
@@ -196,13 +209,13 @@ def run_sitting(
                 state.table,
                 state.next_block,
                 state.last_block,
-                block_batch,
-                sleep_s,
+                cfg.block_batch,
+                cfg.sleep_s,
             ):
                 fh.write(json.dumps(row, default=str))
                 fh.write("\n")
                 collected += 1
-                if collected >= rows_per_sitting:
+                if collected >= cfg.rows_per_sitting:
                     # Cursor advances only to the last block actually consumed.
                     # stream_window yields per block batch, so the safest resume
                     # point is the last row's block_number + 1.
@@ -225,7 +238,7 @@ def run_sitting(
             )
             if collected:
                 cursor = int(row.get("block_number", cursor)) + 1
-    if not shed and collected < rows_per_sitting:
+    if not shed and collected < cfg.rows_per_sitting:
         # The stream ended before the cap: the day is fully fetched.
         cursor = state.last_block + 1
 
@@ -233,7 +246,7 @@ def run_sitting(
     state.rows_so_far += collected
     state.sittings += 1
     state.complete = state.next_block > state.last_block
-    save_state(state_dir, state)
+    save_state(cfg.state_dir, state)
     logger.info(
         "sqd_window_sitting",
         chain=state.chain,
