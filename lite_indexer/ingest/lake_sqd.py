@@ -122,13 +122,44 @@ class SqdIngestSource:
 
 @dataclass
 class SqdFillRequest:
-    """One SQD hole fill: chain, inclusive block range, batching."""
+    """One SQD hole fill: chain, inclusive block range, batching.
+
+    The range can be given as BLOCKS (``from_block``/``to_block``) or as DATES
+    (``from_date``/``to_date``, UTC, inclusive). Dates are the natural unit for a
+    backfill — the AWS-lake and BigLake routes are both date-driven — and until
+    2026-11-20 SQD could only be driven by block number, which meant a human had to
+    translate. ``resolve_dates`` converts them via
+    :mod:`lite_indexer.chains.date_to_block` (binary search over
+    ``eth_getBlockByNumber``), so one date range becomes the exact block span that
+    covers those UTC days. Dates take precedence when both are supplied.
+    """
 
     chain: str
-    from_block: int
-    to_block: int
+    from_block: int = 0
+    to_block: int = 0
     dry_run: bool = False
     batch_rows: int = 5000
+    from_date: str | None = None
+    to_date: str | None = None
+
+    def resolve_dates(self) -> "SqdFillRequest":
+        """Fill from_block/to_block from from_date/to_date when dates were given."""
+        if not self.from_date and not self.to_date:
+            return self
+        start = self.from_date or self.to_date
+        end = self.to_date or self.from_date
+        assert start and end
+        from lite_indexer.chains.date_to_block import DateBlockResolver
+
+        r = DateBlockResolver(self.chain)
+        first = r.resolve_day(start)["first"]
+        last = r.resolve_day(end)["last"]
+        logger.info(
+            "sqd_dates_resolved chain=%s dates=%s..%s blocks=%d..%d",
+            self.chain, start, end, first, last,
+        )
+        self.from_block, self.to_block = first, last
+        return self
 
 
 def fill_chain_from_sqd(req: SqdFillRequest, *, source: Any | None = None, writer: Any | None = None) -> dict[str, int]:
@@ -138,6 +169,7 @@ def fill_chain_from_sqd(req: SqdFillRequest, *, source: Any | None = None, write
     """
     if req.chain not in SQDSource.EVM_DATASETS:
         raise ValueError(f"unsupported sqd chain: {req.chain!r}")
+    req.resolve_dates()
     if req.to_block < req.from_block:
         raise ValueError("to_block is before from_block")
     src = source if source is not None else SqdIngestSource()
