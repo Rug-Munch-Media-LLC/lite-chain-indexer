@@ -26,11 +26,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lite_indexer.archive import UnitSpec, write_unit  # noqa: E402
-from lite_indexer.query.sqd_window import (  # noqa: E402
+from lite_indexer.query.sqd_daily import (  # noqa: E402
     DEFAULT_ROWS_PER_SITTING,
     DEFAULT_STATE_DIR,
-    SitConfig,
     assemble_parts,
+    build_sit_config,
     clear_parts,
     open_day,
     run_sitting,
@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         print("dry run: nothing fetched, nothing uploaded")
         return 0
 
-    cfg = SitConfig(
+    cfg = build_sit_config(
         state_dir=a.state_dir,
         part_dir=part_dir,
         rows_per_sitting=a.rows_per_sitting,
